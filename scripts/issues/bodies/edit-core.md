@@ -1,0 +1,78 @@
+## 背景
+
+M1 的 [[buffer]] 只做“打开、读取”，M3 是 Rove 第一次往文件里写字。`PLAN.md` 给 M3 的完成标准是一句话：**能放心地做局部修改**。“放心”意味着两件事——改动本身可撤销、可追溯；不改的地方一个字节都不变（编码、BOM、混合换行符）。
+
+本 issue 只做与界面无关的数据层，放在 `rove-buffer`（`rove-base` 已有编辑与位置类型），**不依赖 gpui**。它是 [[edit-ui]]、[[replace]]、[[save]]、[[replace-all]] 共同的地基：这四个 issue 都不自己改文本，一律经过这里的事务接口。为多光标（[[multicursor]]，M4）留的余量在本 issue 一次性做足——事务从第一天起就是**多区间**的，M4 只是把多个光标接上来，不需要改模型。
+
+可以参考被取代的草稿 `out/issues-superseded/05-edit-docview.md` 的「编辑核心模型」一节（部分内容已过时：行操作、注释切换、查找替换在当前拆分中归属其他 issue）。
+
+必读：`FEATURES.md` §4（编辑表：撤销重做与单词操作是 P0，补全、片段、重命名、代码动作**不做**），`UX_SPEC.md` §3.5–§3.6，`docs/compat/SYNTAX_AND_LANGUAGES.md` §6（`wordPattern`），`SETTINGS.md`（`editor.wordSeparators`、`editor.emptySelectionClipboard`、`editor.useTabStops`、`editor.stickyTabStops`），`PROJECT_CHARTER.md` §6。
+
+## 目标
+
+### 1. 编辑事务
+
+- 插入、删除、替换，以**一组区间**为单位原子执行；区间按位置排序、互不重叠（重叠时报错而不是悄悄合并），一次事务内的后续区间按前面的改动自动平移。
+- 每次事务产出 tree-sitter 需要的 `InputEdit`（字节偏移 + 行列的新旧值），供 [[syntax]] 做增量解析；位置类型沿用 [[contracts]] 中字节偏移 / UTF-8 列 / UTF-16 列三种不同的类型，不得退化成裸 `usize`。
+- **换行符**：事务插入的换行一律用文档的主换行符（[[buffer]] 识别出的多数派）；混合换行符的文档**不因为一次编辑就被统一**（`UX_SPEC.md` §3.6 是与 VS Code 的明确差异）。
+- 变更通知：给出“哪些行区间变了”“行数变化量”，供视图按行失效（[[codeview]] 的装饰协议要求可按行失效）。
+
+### 2. 撤销与重做
+
+- 分组规则照搬 VS Code：连续输入合并为一次撤销；光标跳转、时间间隔超过阈值、切换编辑类型（输入 → 删除）时断开；一次多区间事务永远是一个撤销单元（[[replace]] 的“全部替换”、[[replace-all]] 的跨文件批量编辑都依赖这一点）。
+- 撤销 / 重做恢复**编辑前的选区与光标**，不是编辑后的。
+- 光标撤销 / 重做：`cursorUndo`、`cursorRedo` 的模型——只回退光标与选区，不回退文本，独立于文本撤销栈。
+
+### 3. 选区与光标模型
+
+多选区（主选区 + 次选区）的集合类型：排序、相交时按 `editor.multiCursorMergeOverlapping` 合并、上限 `editor.multiCursorLimit`（这两项的界面行为在 [[multicursor]]，本 issue 只实现模型语义）；每个选区带 anchor / active 与“期望列”（上下移动跨过短行后回到原列）；CJK 与组合字符按**字符**而不是字节移动。
+
+### 4. 单词边界规则（移植，P0）
+
+- 移植 VS Code 的 `wordOperations` 与 `wordPartOperations`：`cursorWordLeft` / `cursorWordRight` / `cursorWordStartLeft` / `cursorWordStartRight` / `cursorWordEndLeft` / `cursorWordEndRight`、`cursorWordPart*`（驼峰子词），以及对应的 `deleteWord*` / `deleteWordPart*` 的边界计算。命令本身由 [[edit-ui]] 登记，本 issue 只提供“给定位置与方向，下一个边界在哪”。
+- 判定依据：`editor.wordSeparators`，以及 [[langcfg]] 提供的语言级 `wordPattern`（Markdown 与 XML 自定义了该字段）。
+- **用 VS Code 的单元测试做对拍**：把 `wordOperations.test.ts` / `wordPartOperations.test.ts` 的用例翻译成 Rust 测试，逐例断言，不自己重新发明用例。
+
+### 5. 剪贴板语义
+
+复制 / 剪切 / 粘贴的**文本语义**（系统剪贴板读写在 [[edit-ui]]）：遵循 `editor.emptySelectionClipboard`（无选区时复制整行，粘贴时作为整行插入到当前行之前）；多选区复制产出分段内容，粘贴按 `editor.multiCursorPaste` 的 `spread` / `full` 语义分配（界面在 [[multicursor]]）；复制出的文本保持原换行符。
+
+### 6. 缩进与换行符的改写事务
+
+状态栏的两个“会改写文件”的动作在 M1 被 [[statusbar]] 推迟到了 M3（见该 issue 第 24、26 行），本 issue 提供它们的算法，登记方由后续 issue 承担：
+
+- **缩进转换**（`editor.action.indentationToSpaces` / `indentationToTabs`）：按 `editor.tabSize` / `indentSize` 只改每行的前导空白，不碰行内对齐之外的内容；命令与状态栏选择器项由 [[edit-ui]] 登记。
+- **换行符统一**（`workbench.action.editor.changeEOL`，混合时的“统一为 LF / CRLF”）：作为一次事务改写全部行尾；命令与状态栏选择器项由 [[save]] 登记。
+
+### 7. 登记与替换
+
+本 issue 不新增命令与界面字符串（都在 [[edit-ui]] / [[save]] 一侧）；需要读取的设置项一律经 [[contracts]] 的设置读取接口，不自己读文件。[[skeleton]] 中没有本 issue 对应的 `SKELETON(...)` 标记（骨架是只读的），本 issue 只在 `docs/ARCHITECTURE.md` 中新增 / 更新自己的一行，不新增标记。不得在本 PR 中修改 [[contracts]] 的接口（契约变更走单独小 PR）。
+
+## 不包含
+
+- 输入处理、输入法、命令与键位绑定、剪贴板系统调用（[[edit-ui]]）。
+- 保存、原子写入、编码回写、外部修改（[[save]]）；热退出备份（[[hotexit]]）。
+- 自动缩进规则引擎、`onEnterRules`、自动闭合与包围、注释切换（[[autoedit]]）；智能扩选（[[smartselect]]）。
+- 多光标手势与行操作命令（[[multicursor]]）；替换界面（[[replace]]）、跨文件批量编辑的界面与预览（[[replace-all]]，但它复用本 issue 的“一次事务 = 一次撤销”）。
+- 超大文件的编辑：超大文件一律只读（`UX_SPEC.md` §3.1），本 issue 的接口对只读文本源直接返回错误。
+
+## 验收标准
+
+- [ ] **proptest**：对随机文本施加随机编辑序列（含多区间事务、CJK、emoji、CRLF）后全部撤销，文本与初始状态**逐字节相同**；再全部重做，与撤销前相同
+- [ ] **基准**：10 万行文件中插入一个字符 **< 100 µs**（不含高亮与绘制，接入 [[perf]]，附 p50 / p99）
+- [ ] 撤销分组：连续输入合并为一次、光标跳转后断开、超时后断开、输入与删除之间断开，四种情况各有用例；一次多区间事务只撤销一次
+- [ ] 撤销后选区回到编辑前的位置；`cursorUndo` / `cursorRedo` 只动光标不动文本
+- [ ] 单词边界：VS Code 的 `wordOperations` / `wordPartOperations` 用例全部通过；Markdown / XML 的 `wordPattern` 生效（与 [[langcfg]] 的用例对齐）
+- [ ] 多选区模型：重叠合并、排序、上限截断、期望列在跨短行上下移动后保持，各有用例
+- [ ] 混合换行符文档中输入换行后，新换行是主换行符，其余行尾**一个都没变**（字节级比对）
+- [ ] 剪贴板语义：`emptySelectionClipboard` 为 true / false 两种取值下的复制与粘贴结果；多选区复制粘贴
+- [ ] 缩进转换与换行符统一各有一个事务级用例（空行、只有空白的行、Tab 与空格混排）
+- [ ] `cargo tree -p rove-buffer -i gpui` 为空；`docs/ARCHITECTURE.md` 已更新
+- [ ] [[skeleton]] 的端到端测试仍然通过；新增一个“打开 → 编辑 → 撤销 → 查变更通知与 `InputEdit`”的集成测试
+
+## 风险与提示
+
+- **三套坐标是最大的坑**（[[buffer]] 的风险提示同样适用）：`ropey` 以 char 为索引，接口以字节偏移为主，C# 索引还要 UTF-16 列。事务内部只用一种坐标，边界处集中转换，并在类型上区分。
+- 不要把撤销栈做成“保存整份文本的快照”。10 万行文件连续输入时快照会立刻吃光内存预算（空闲内存 < 60 MB）；按“反向事务 + 分组”存储。
+- 多区间事务的区间平移很容易写错方向。建议从后往前应用，并用 proptest 覆盖“同一事务内相邻区间紧挨着”“区间长度为 0（纯插入）”这两种退化情况。
+- 单词边界不要凭感觉实现。`wordPattern` 里的 JavaScript 正则由 [[langcfg]] 的兼容层负责，本 issue 只调用它；自己再写一套正则会和双击选词（[[codeview-hl]]）出现不一致。

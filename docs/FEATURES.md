@@ -35,7 +35,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | VS Code 部件 | 判定 | 优先级 | 说明 |
 |---|---|---|---|
 | 标题栏（自定义标题栏 + 命令中心） | 照搬 | P0 | 自绘标题栏，中间是命令中心（点击后打开快速打开）；菜单栏折叠为一个汉堡菜单 |
-| 活动栏 | 改造 | P0 | 固定几个视图：资源管理器、搜索、大纲；以后再加上下文篮子。不能由插件扩展 |
+| 活动栏 | 改造 | P0 | 固定几个视图：资源管理器、搜索（大纲是资源管理器中的一个小节，见 UX_SPEC §1.3）；P1 加上下文篮子。不能由插件扩展 |
 | 主侧边栏 | 照搬 | P0 | 可以隐藏（`Ctrl+B`），可以切换到左侧或右侧 |
 | 辅助侧边栏（右侧） | 照搬 | P2 | |
 | 编辑区（编辑器组网格） | 照搬 | P0 | 支持任意方向的分屏网格、拖动标签分屏、编辑器组的锁定与最大化 |
@@ -63,7 +63,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | 悬停（hover） | 改造 | P0 | 显示签名、文档注释和来源层级（精确或近似）；不显示诊断与快速修复 |
 | 链接检测（links） | 照搬 | P1 | URL、文件路径可以 `Ctrl+点击` 打开；打开外部链接前需要确认 |
 | 软换行（word wrap） | 照搬 | P1 | 超大文件模式下禁用 |
-| 字体缩放（fontZoom） | 照搬 | P0 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` |
+| 缩放 | 照搬 | P0 | 与 VS Code 相同的两套机制：**窗口缩放** `workbench.action.zoomIn/zoomOut/zoomReset`（默认键位 `Ctrl+=` / `Ctrl+-` / `Ctrl+小键盘0`）；**编辑器字体缩放** `editor.action.fontZoomIn/fontZoomOut/fontZoomReset`（VS Code 没有默认键位，另有 `editor.mouseWheelZoom`） |
 | 中键滚动（middleScroll） | 照搬 | P2 | |
 | 长行处理（longLinesHelper） | 改造 | P0 | 超长行截断显示，避免卡顿 |
 | Unicode 高亮（不可见字符、易混淆字符） | 照搬 | P2 | |
@@ -110,6 +110,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | 导航历史（前进、后退、上次编辑位置） | 照搬 | P0 | `Alt+←/→` |
 | 大纲视图（outline） | 照搬 | P0 | |
 | 问题面板（markers）、转到下一个问题（gotoError） | 改造 | P1 | 只显示 JSON/YAML/XML 的语法错误；**不做 C# 编译诊断** |
+| 不生效的预处理代码置灰（`#if` 中按当前宏不成立的代码） | 照搬（VS Code 的 C# 扩展） | P1 | 数据来自预计算索引（D9） |
 | 内嵌提示（inlayHints） | 不做 | P2 待议 | 参数名、推断类型可以由索引提供，但收益与成本待评估 |
 | 语言检测（languageDetection） | 改造 | P1 | VS Code 用机器学习模型；我们只做基于扩展名和内容的启发式判断 |
 | 语言状态（languageStatus） | 照搬 | P0 | 状态栏显示语言，以及 C# 索引的状态和进度 |
@@ -131,7 +132,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | 本地历史（localHistory） | 改造 | P2 | 保存时留存历史版本，作为外部工具改坏文件时的安全网 |
 | 比较文件 / 与已保存版本比较（diff 编辑器） | 改造 | P2 | 只读对比视图 |
 | 图片预览（mediaPreview） | 照搬 | P1 | png、jpg、gif、svg、tga；只读 |
-| 跟随文件末尾（类似 `tail -f`） | （VS Code 没有） | 新增 | P1 | 查看 Unity `Editor.log` 等日志；见 UX_SPEC §3.2 |
+| 跟随文件末尾（类似 `tail -f`） | 新增（VS Code 没有） | P1 | 查看 Unity `Editor.log` 等日志；见 UX_SPEC §3.2 |
 | 欢迎页 / 最近打开 | 改造 | P0 | 只保留“最近打开的文件夹和文件”与“打开文件夹”，没有引导流程 |
 | 多根工作区（workspaces） | 不做 | — | 一个窗口一个文件夹；可以开多个窗口 |
 | 工作区信任 | 不做 | — | Rove 不执行任何代码 |
@@ -141,8 +142,8 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 
 | VS Code 功能 | 判定 | 优先级 | 说明 |
 |---|---|---|---|
-| 颜色主题（themes） | 照搬 | P0 | **直接加载 VS Code 的主题 JSON**（`colors` 和 `tokenColors`）；内置 Dark Modern、Light Modern、Dark+、Light+。由于共用设置（D4），`workbench.colorTheme` 可能指向用户在 VS Code 中安装的扩展主题：P1 支持从 `%USERPROFILE%\.vscode\extensions\*\package.json` 的 `contributes.themes` 中**只读加载主题数据**（不运行任何扩展代码）；找不到时回退到内置主题 |
-| 文件图标主题 | 改造 | P1 | 内置一套（Seti 或 codicons 风格），不支持用户安装图标主题 |
+| 颜色主题（themes） | 照搬 | P0 | **直接加载 VS Code 的主题 JSON**（`colors` 和 `tokenColors`）；内置 VS Code 当前的默认主题 Dark 2026、Light 2026（VS Code 1.145 的 `workbench.colorTheme` 默认值是 `Dark 2026`），以及 Dark Modern、Light Modern、Dark+、Light+。由于共用设置（D4），`workbench.colorTheme` 可能指向用户在 VS Code 中安装的扩展主题：P1 支持从 `%USERPROFILE%\.vscode\extensions\*\package.json` 的 `contributes.themes` 中**只读加载主题数据**（不运行任何扩展代码）；找不到时回退到内置主题 |
+| 文件图标主题 | 改造 | P1 | 内置 VS Code 的 Seti；与颜色主题相同，可以只读加载用户在 VS Code 中安装的图标主题（不运行任何扩展代码），扩展目录通过启动参数 `--vscode-extensions-dir` 或环境变量 `ROVE_VSCODE_EXTENSIONS_DIR` 覆盖 |
 | 产品图标（codicons） | 照搬 | P0 | codicons 字体为 CC-BY-4.0 许可，需注明来源 |
 | 设置（`settings.json`） | 改造 | P0 | **与 VS Code 共用同一份设置文件**（D4），规则见第 13 节 |
 | 设置界面（preferences） | 改造 | P1 | 首版只提供 JSON 编辑（打开 `settings.json`），图形化的设置界面以后再做 |
@@ -213,10 +214,13 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | D5 | Markdown 渲染方式 | 完整支持（内嵌 HTML、Mermaid、数学公式）；**仅 Markdown 预览使用 WebView2**，其余界面仍然原生渲染 |
 | D6 | `.md` 默认打开方式 | 默认以预览模式打开（VS Code 默认打开源码） |
 | D7 | 所见即所得 Markdown 编辑器（VS Code 1.145 新增的 `vscode.markdown.editor`） | 不做，保持“预览 + 源码”两种模式 |
+| D8 | 热退出的里程碑 | 从 M4 提前到 M3，避免 M3 交付后意外退出丢失未保存的修改 |
+| D9 | 不生效的预处理代码置灰 | 新增，P1，与 VS Code 的 C# 扩展一致，归 M4 的语义高亮 |
+| D10 | 文件图标主题 | 内置 Seti，并像颜色主题一样只读加载用户在 VS Code 中安装的图标主题（不运行扩展代码） |
 
 ## 13. 与 VS Code 共用设置文件的规则（D4 的落地）
 
-1. **文件位置**：默认读取 `%APPDATA%\Code\User\settings.json` 和 `keybindings.json`。可以通过环境变量或启动参数改为其他发行版的目录（例如 VSCodium、Cursor）。如果本机没有安装 VS Code，就在同样的位置创建文件。
+1. **文件位置**：默认读取 `%APPDATA%\Code\User\settings.json` 和 `keybindings.json`。可以通过环境变量 `ROVE_VSCODE_USER_DIR` 或启动参数 `--vscode-user-dir` 改为其他发行版的目录（例如 VSCodium、Cursor）——这个位置不能写在设置文件里，否则会出现“先要知道文件在哪，才能读到文件在哪”的问题。如果本机没有安装 VS Code，就在同样的位置创建文件。
 2. **读取**：解析 JSONC（允许注释和尾逗号）。支持语言级覆盖（如 `"[csharp]": {...}`）。Rove 不支持的设置项静默忽略，不报错，不提示（因为同一个文件里本来就有大量 VS Code 专有的设置项）。
 3. **写入**：只有当用户在 Rove 中主动修改设置时才写入（例如切换主题、修改字号）。写入时**保留原有的注释、格式和键的顺序**，只修改目标键。写入前先备份到 `%LOCALAPPDATA%\Rove\settings-backup\`。
 4. **Rove 专有设置**：放在 `rove.*` 命名空间下（如 `rove.index.cacheDir`、`rove.largeFile.threshold`）。VS Code 会把它们当作未知设置并忽略，两边互不干扰。

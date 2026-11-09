@@ -38,14 +38,14 @@ SECTION_NOTE = {
 
 # 支持的分区中，逐个键排除（对应功能不做）
 KEY_NO = re.compile(
-    r"(CodeLens|codeLens|LightBulb|lightBulb|InlayHint|inlayHint|GhostText|ghostText|inlineEdit|InlineEdit|"
-    r"[cC]hat|commentsWidget|CommentsWidget|editorCommentsWidget|SuggestWidget|suggestWidget|editorUnnecessaryCode|"
+    r"(minimapGutter\.(added|modified|deleted)|CodeLens|codeLens|LightBulb|lightBulb|InlayHint|inlayHint|GhostText|ghostText|inlineEdit|InlineEdit|"
+    r"[cC]hat|commentsWidget|CommentsWidget|editorCommentsWidget|SuggestWidget|suggestWidget|"
     r"editorGutter\.(added|modified|deleted|commentRange|commentGlyph|commentUnresolvedGlyph|itemGlyph|itemBackground|addedSecondary|modifiedSecondary|deletedSecondary)|"
     r"editorOverviewRuler\.(added|modified|deleted|comment|incoming|current|common|inlineChat)|"
     r"[dD]ebug|[tT]esting|[sS]cm|[tT]erminal|remote|Remote|offline|Offline|profile|Profile|extensionButton|extensionBadge|extensionIcon|"
     r"walkThrough|walkthrough|welcomePage\.(progress|tileBorder|tileShadow)|editorActionList|actionList|"
     r"editorHoverWidget\.highlightForeground|ports|notebook|inlineCompletions|editorParameterHint)")
-KEY_P1 = re.compile(r"(editorStickyScroll|editorBracketHighlight|editorBracketPairGuide|editorMultiCursor|"
+KEY_P1 = re.compile(r"(editorUnnecessaryCode\.opacity|editorStickyScroll|editorBracketHighlight|editorBracketPairGuide|editorMultiCursor|"
                     r"editorLink|editorError|editorWarning|editorInfo|editorHint|editorMarkerNavigation|minimap|"
                     r"editorOverviewRuler|editorRuler|editorWordHighlight|wordHighlight|editorSelectionHighlight)")
 KEY_P2 = re.compile(r"(searchEditor|editorUnicodeHighlight|linkedEditing|diffEditor|editor\.placeholder|editorWatermark\b)")

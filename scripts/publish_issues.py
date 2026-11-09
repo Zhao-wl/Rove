@@ -1,22 +1,25 @@
-"""把 docs/issues/ 中的 issue 草稿发布到 GitHub。
+"""把 docs/issues/ 中渲染好的 issue 发布到 GitHub。
+
+数据来源：scripts/issues/issues_data.py（骨架）+ docs/issues/Rxx-<键>.md（由 scripts/issues/plan.py 渲染的正文）
++ docs/issues/README.md（路线图总览）。发布前请先运行 `python scripts/issues/plan.py`。
 
 用法:
-    python scripts/publish_issues.py            # 预演：只打印将要创建的内容
-    python scripts/publish_issues.py --apply    # 实际创建标签、里程碑、issue 和路线图 issue
+    python scripts/publish_issues.py --milestones M1,M2            # 预演：只打印将要创建的内容
+    python scripts/publish_issues.py --milestones M1,M2 --apply    # 实际创建
+
+--milestones 必须显式指定，只发布已经审阅确认的里程碑（审阅状态见 docs/PLAN.md 阶段 0.4）。
+依赖未发布里程碑中的 issue 时，正文中保留 Rxx 编号，待该里程碑发布后重新运行即可补上链接与依赖关系。
 
 流程:
-    1. 创建/更新标签（难度、领域、状态）与里程碑
-    2. 按 R01..R42 顺序创建 issue（正文先保留 Rxx 文本）
-    3. 第二遍编辑每个 issue：把正文中的 Rxx 替换为 #编号，加上元信息表头，
-       并尝试设置 GitHub 原生的 "blocked by" 依赖关系
-    4. 创建路线图 issue（docs/issues/README.md，Rxx 同样替换为 #编号）
+    1. 创建或更新标签（难度、领域、状态）与里程碑
+    2. 按 R01..Rnn 顺序创建 issue（标题带 Rxx 前缀，正文先用占位）
+    3. 第二遍：正文中的 Rxx 替换为 #编号，写入正文；尝试设置 GitHub 原生的 blocked-by 依赖
+    4. 创建或更新路线图 issue（README.md，Rxx 同样替换为 #编号）
 
-幂等：已创建的映射保存在 docs/issues/.published.json，重复运行会跳过已创建的 issue，只刷新正文。
+幂等：已创建的编号保存在 docs/issues/.published.json；重复运行会跳过已创建的 issue，只刷新正文与依赖。
 """
-
 from __future__ import annotations
 
-import glob
 import json
 import re
 import subprocess
@@ -27,103 +30,70 @@ REPO = "Zhao-wl/Rove"
 ROOT = Path(__file__).resolve().parent.parent
 ISSUE_DIR = ROOT / "docs" / "issues"
 STATE = ISSUE_DIR / ".published.json"
+sys.path.insert(0, str(ROOT / "scripts" / "issues"))
+from issues_data import ISSUES  # noqa: E402
+from plan import MILESTONES  # noqa: E402
 
-MILESTONES = {
-    "M1": "M1 基础与阅读器",
-    "M2": "M2 C# 导航",
-    "M3": "M3 编辑",
-    "M4": "M4 文档渲染与发布",
-}
 DIFFICULTY = {
-    "1": ("difficulty/1-easy", "0e8a16", "简单：需求明确、改动集中、几乎无需设计"),
-    "2": ("difficulty/2-medium", "fbca04", "中等：需要一定的模块内设计"),
-    "3": ("difficulty/3-hard", "d93f0b", "困难：跨模块接口、性能敏感、需要权衡"),
-    "4": ("difficulty/4-expert", "b60205", "专家：深入框架或编译器内部，存在未知风险"),
+    1: ("difficulty/1-easy", "0e8a16", "简单：需求明确、改动集中、几乎无需设计"),
+    2: ("difficulty/2-medium", "fbca04", "中等：需要一定的模块内设计"),
+    3: ("difficulty/3-hard", "d93f0b", "困难：跨模块接口、性能敏感、需要权衡"),
+    4: ("difficulty/4-expert", "b60205", "专家：深入框架或编译器内部，存在未知风险"),
 }
 AREAS = {
-    "infra": "工程基础设施", "core": "核心层（文本缓冲、配置）", "syntax": "语法分析",
-    "workspace": "工作区、搜索", "ui": "界面（GPUI）", "lang-cs": "C# 语言智能（Rove 侧）",
-    "indexer": "C# 索引进程（.NET）", "docview": "文档类型渲染", "release": "打包发布",
+    "infra": "工程基础设施与集成验收", "core": "核心层（文本缓冲、设置、键位、编辑模型）", "syntax": "语法分析与高亮",
+    "workspace": "工作区与搜索", "ui": "界面（GPUI）", "lang-cs": "C# 语言智能（Rove 侧）",
+    "indexer": "C# 索引进程（.NET）", "docview": "文档类型视图", "release": "打包发布",
 }
-STATUS = {
-    "status/ready": ("0e8a16", "依赖已满足，可以认领"),
-    "status/blocked": ("cccccc", "存在未完成的前置依赖"),
-}
-
-
-def parse_issues() -> dict[str, dict]:
-    issues = {}
-    for f in sorted(glob.glob(str(ISSUE_DIR / "0*.md"))):
-        text = Path(f).read_text(encoding="utf-8")
-        parts = re.split(r"^(?=## R\d\d )", text, flags=re.M)
-        for part in parts:
-            m = re.match(r"## (R\d\d) (.+)\n<!-- meta: (.*?) -->\n", part)
-            if not m:
-                continue
-            meta = dict(kv.strip().split("=", 1) for kv in m.group(3).split(";"))
-            body = part[m.end():].strip()
-            body = re.sub(r"\n---\s*$", "", body).strip()
-            issues[m.group(1)] = {
-                "id": m.group(1),
-                "title": m.group(2).strip(),
-                "milestone": meta["milestone"],
-                "difficulty": meta["difficulty"],
-                "areas": [a for a in meta["area"].split(",") if a],
-                "depends": [d for d in meta["depends"].split(",") if d],
-                "body": body,
-            }
-    return issues
-
-
-def batches(issues: dict[str, dict]) -> dict[str, int]:
-    b: dict[str, int] = {}
-    def depth(r: str) -> int:
-        if r not in b:
-            deps = issues[r]["depends"]
-            b[r] = 1 + max((depth(d) for d in deps), default=0)
-        return b[r]
-    for r in issues:
-        depth(r)
-    return b
+STATUS = {"status/ready": ("0e8a16", "依赖已满足，可以认领"), "status/blocked": ("cccccc", "存在未完成的前置依赖")}
+RID = re.compile(r"\bR(\d{2})\b")
 
 
 def gh(*args: str, input_text: str | None = None) -> str:
     r = subprocess.run(["gh", *args], input=input_text, capture_output=True, text=True, encoding="utf-8")
     if r.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args[:3])}… failed: {r.stderr.strip()}")
+        raise RuntimeError(f"gh {' '.join(args[:3])}… 失败：{r.stderr.strip()}")
     return r.stdout.strip()
 
 
-def replace_refs(text: str, mapping: dict[str, int]) -> str:
-    return re.sub(r"\bR(\d\d)\b", lambda m: f"#{mapping[m.group(0)]}" if m.group(0) in mapping else m.group(0), text)
+def load():
+    issues = []
+    for n, (key, ms, diff, area, title, deps) in enumerate(ISSUES, start=1):
+        rid = f"R{n:02d}"
+        body_file = ISSUE_DIR / f"{rid}-{key}.md"
+        if not body_file.exists():
+            raise SystemExit(f"缺少正文 {body_file.name}，请先运行 python scripts/issues/plan.py")
+        body = body_file.read_text(encoding="utf-8")
+        body = body.split("\n", 1)[1].lstrip()  # 去掉第一行标题（GitHub issue 标题单独设置）
+        issues.append(dict(rid=rid, key=key, ms=ms, diff=diff, area=area, title=title, deps=deps, body=body))
+    by_key = {i["key"]: i for i in issues}
+    for i in issues:
+        i["dep_rids"] = [by_key[d]["rid"] for d in i["deps"]]
+        i["labels"] = [DIFFICULTY[i["diff"]][0], f"area/{i['area']}",
+                       "status/blocked" if i["deps"] else "status/ready"]
+    return issues
 
 
-def header(issue: dict, mapping: dict[str, int], batch: int, dependents: list[str]) -> str:
-    d = DIFFICULTY[issue["difficulty"]]
-    dep = "、".join(f"#{mapping[x]}" for x in issue["depends"]) or "无"
-    nxt = "、".join(f"#{mapping[x]}" for x in dependents) or "无"
-    return (
-        f"| 计划编号 | 难度 | 并行批次 | 前置依赖 | 被依赖 |\n|---|---|---|---|---|\n"
-        f"| {issue['id']} | **{issue['difficulty']}** · {d[2]} | 第 {batch} 批 | {dep} | {nxt} |\n\n"
-        f"> 认领前请阅读 `AGENTS.md` 与 `docs/issues/README.md`。前置依赖全部关闭后，本 issue 才可以开工。\n\n"
-    )
+def replace_ids(text: str, mapping: dict[str, int]) -> str:
+    return RID.sub(lambda m: f"#{mapping[m.group(0)]}" if m.group(0) in mapping else m.group(0), text)
 
 
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     apply = "--apply" in sys.argv
-    issues = parse_issues()
-    order = sorted(issues)
-    batch = batches(issues)
-    dependents = {r: sorted(x for x in issues if r in issues[x]["depends"]) for r in issues}
+    if "--milestones" not in sys.argv:
+        raise SystemExit("必须用 --milestones 指定要发布的里程碑，例如 --milestones M1,M2（只发布已审阅的里程碑）")
+    wanted = set(sys.argv[sys.argv.index("--milestones") + 1].split(","))
+    unknown = wanted - set(MILESTONES)
+    if unknown:
+        raise SystemExit(f"未知的里程碑：{sorted(unknown)}")
+    issues = [i for i in load() if i["ms"] in wanted]
     state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
-
-    print(f"{len(issues)} issues → {REPO}  ({'APPLY' if apply else 'dry-run'})")
-    for r in order:
-        i = issues[r]
-        labels = [DIFFICULTY[i["difficulty"]][0], *(f"area/{a}" for a in i["areas"]),
-                  "status/ready" if not i["depends"] else "status/blocked"]
-        print(f"  {r} [{MILESTONES[i['milestone']]}] 第{batch[r]}批 {i['title']}  labels={labels}  deps={i['depends']}")
+    print(f"{len(issues)} 个 issue（{','.join(sorted(wanted))}）→ {REPO}（{'实际执行' if apply else '预演'}）")
+    for i in issues:
+        mark = "已创建" if i["rid"] in state else "新建"
+        print(f"  [{mark}] {i['rid']} [{MILESTONES[i['ms']]}] {i['title'][:50]}  标签={i['labels']}  依赖={i['dep_rids']}")
     if not apply:
         print("\n预演结束。确认无误后加 --apply 执行。")
         return
@@ -140,44 +110,44 @@ def main() -> None:
         if title not in existing:
             gh("api", f"repos/{REPO}/milestones", "-f", f"title={title}")
 
-    # 2. 创建 issue
-    for r in order:
-        if r in state:
+    # 2. 创建
+    for i in issues:
+        if i["rid"] in state:
             continue
-        i = issues[r]
-        labels = [DIFFICULTY[i["difficulty"]][0], *(f"area/{a}" for a in i["areas"]),
-                  "status/ready" if not i["depends"] else "status/blocked"]
-        url = gh("issue", "create", "-R", REPO, "--title", f"[{r}] {i['title']}",
-                 "--body", "（正文生成中）", "--milestone", MILESTONES[i["milestone"]],
-                 *sum((["--label", l] for l in labels), []))
-        state[r] = int(url.rstrip("/").rsplit("/", 1)[1])
+        args = ["issue", "create", "-R", REPO, "--title", f"[{i['rid']}] {i['title']}", "--body", "（正文生成中）",
+                "--milestone", MILESTONES[i["ms"]]]
+        for label in i["labels"]:
+            args += ["--label", label]
+        url = gh(*args)
+        state[i["rid"]] = int(url.rstrip("/").rsplit("/", 1)[1])
         STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        print(f"  created {r} → #{state[r]}")
+        print(f"  已创建 {i['rid']} → #{state[i['rid']]}")
 
-    # 3. 第二遍：正文与依赖关系
-    for r in order:
-        i = issues[r]
-        body = header(i, state, batch[r], dependents[r]) + replace_refs(i["body"], state)
-        gh("issue", "edit", str(state[r]), "-R", REPO, "--body-file", "-", input_text=body)
-        for d in i["depends"]:
-            try:  # GitHub 原生 issue 依赖（若仓库/接口不支持则忽略）
+    # 3. 正文与依赖
+    for i in issues:
+        num = state[i["rid"]]
+        gh("issue", "edit", str(num), "-R", REPO, "--body-file", "-", input_text=replace_ids(i["body"], state))
+        for d in i["dep_rids"]:
+            if d not in state:
+                continue  # 依赖所在的里程碑尚未发布
+            try:
                 dep_id = json.loads(gh("api", f"repos/{REPO}/issues/{state[d]}"))["id"]
-                gh("api", "-X", "POST", f"repos/{REPO}/issues/{state[r]}/dependencies/blocked_by",
-                   "-F", f"issue_id={dep_id}")
+                gh("api", "-X", "POST", f"repos/{REPO}/issues/{num}/dependencies/blocked_by", "-F", f"issue_id={dep_id}")
             except RuntimeError as e:
-                print(f"  (skip native dependency {r}←{d}: {str(e)[:80]})")
-        print(f"  updated #{state[r]}")
+                if "already" not in str(e).lower():
+                    print(f"  （跳过原生依赖 {i['rid']}←{d}：{str(e)[:80]}）")
+        print(f"  已更新 #{num}")
 
-    # 4. 路线图 issue
-    roadmap = replace_refs((ISSUE_DIR / "README.md").read_text(encoding="utf-8"), state)
+    # 4. 路线图
+    roadmap = replace_ids((ISSUE_DIR / "README.md").read_text(encoding="utf-8"), state)
     if "roadmap" not in state:
-        url = gh("issue", "create", "-R", REPO, "--title", "[Roadmap] Issue 拆分总览、依赖与并行批次",
+        url = gh("issue", "create", "-R", REPO, "--title", "[Roadmap] Rove issue 总览：拆分原则、依赖与并行批次",
                  "--body-file", "-", input_text=roadmap)
         state["roadmap"] = int(url.rstrip("/").rsplit("/", 1)[1])
     else:
         gh("issue", "edit", str(state["roadmap"]), "-R", REPO, "--body-file", "-", input_text=roadmap)
     STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    print(f"roadmap → #{state['roadmap']}")
+    print(f"路线图 → #{state['roadmap']}")
 
 
 if __name__ == "__main__":

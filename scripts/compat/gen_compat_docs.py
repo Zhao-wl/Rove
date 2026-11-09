@@ -35,7 +35,6 @@ ROVE_COMMANDS = [
 ]
 
 ROVE_SETTINGS = [
-    ("rove.vscodeUserDir", "\"\"", "P0", "共用的 VS Code 用户配置目录；为空时使用 `%APPDATA%\\Code\\User`（FEATURES §13 规则 1）"),
     ("rove.largeFile.threshold", "67108864", "P0", "超大文件（只读、内存映射）的阈值，单位字节，默认 64 MB（UX_SPEC §3.1）"),
     ("rove.files.extraExclude", "{\"**/Library\": true, \"**/Temp\": true, \"**/obj\": true, \"**/Logs\": true}", "P0", "附加的排除规则，与 `files.exclude` 合并生效（FEATURES §13 规则 5）"),
     ("rove.files.extraReadonlyInclude", "{\"**/Library/PackageCache/**\": true}", "P0", "附加的只读规则，与 `files.readonlyInclude` 合并生效（UX_SPEC §3.4）"),
@@ -46,19 +45,33 @@ ROVE_SETTINGS = [
     ("rove.markdown.allowRemoteResources", "false", "P0", "预览中是否加载远程图片等资源（UX_SPEC §4.3）"),
     ("rove.contextBasket.referenceTemplate", "\"@{path} (lines {start}-{end})\"", "P1", "“复制为引用”的格式（UX_SPEC §5.3）"),
     ("rove.contextBasket.contextLines", "3", "P1", "从速览或搜索结果加入时，额外带上的前后行数（UX_SPEC §5.1）"),
+    ("rove.locale", "\"auto\"", "P1", "界面语言：`auto`（跟随系统）、`zh-cn`、`en`。只读参考共用用户目录下 `argv.json` 的 `locale`，从不写入它"),
     ("rove.contextBasket.clearAfterCopy", "false", "P1", "复制后是否清空篮子（UX_SPEC §5.3）"),
 ]
 
 # Rove 的默认值与 VS Code 不同（只在用户未设置时生效，不写入共用文件；FEATURES §13 规则 5）
+# VS Code 的隐藏设置：不出现在默认设置导出中，但 Rove 支持
+HIDDEN_SETTINGS = [
+    ("editor.stopRenderingLineAfter", "10000", "P0", "超长行在多少个字符之后停止渲染（UX_SPEC §3.3）"),
+]
+
+# 人工补充的键位：导出中缺失、但 UX 规格要求的行为
+EXTRA_BINDINGS = [
+    ("ctrl+shift+m", "workbench.actions.view.problems", "!workbench.panel.markers.view.active", "P0",
+     "导出中只有“问题视图已激活时”这一条；UX_SPEC §1.4 要求面板隐藏时也能用 Ctrl+Shift+M 打开问题视图"),
+]
+
 DIFFERENT_DEFAULTS = [
     ("files.autoGuessEncoding", "false", "true", "Unity 项目中常见 GBK 文件（UX_SPEC §3.5）"),
     ("files.candidateGuessEncodings", "[]", "[\"gbk\"]", "同上"),
     ("workbench.editorAssociations", "{}", "{\"*.md\": \"vscode.markdown.preview.editor\"}", "`.md` 默认以预览打开（D6）"),
-    ("search.useIgnoreFiles", "true", "（忽略）", "Rove 不读取 `.gitignore`（FEATURES §6）"),
+    ("markdown.preview.doubleClickToSwitchToEditor", "false", "true", "`.md` 默认以预览打开（D6），双击切换到源码是主要的编辑入口（UX_SPEC §4.3）"),
 ]
 
 
 def esc(s: str) -> str:
+    # 导出文件中个别 when 条件含有导出者本机的用户目录，生成文档时统一替换为 %APPDATA%
+    s = re.sub(r"[cC](?::|%3A)/Users/[^/]+/AppData/Roaming", "%APPDATA%", s)
     return s.replace("|", "\\|").replace("\n", " ")
 
 
@@ -77,7 +90,9 @@ def gen_keybindings():
         stats[(d, pr)] += 1
         if d == "impl":
             impl[area].append((pr, b["key"], b["command"], b.get("when", ""), note))
-            for k in re.findall(r"[A-Za-z_][\w.\-]*", b.get("when", "")):
+            w = re.sub(r"'[^']*'|\"[^\"]*\"", " ", b.get("when", ""))
+            w = re.sub(r"=~\s*/(?:\\/|[^/])*/[a-z]*", "=~ ", w)  # 正则字面量整体去掉
+            for k in re.findall(r"[A-Za-z_][\w.\-]*", w):
                 if k not in ("true", "false", "config", "in", "not") and not k.startswith("config."):
                     ctx[k] += 1
         elif d == "no":
@@ -120,6 +135,12 @@ def gen_keybindings():
         L.append(", ".join(f"`{x}`" for x in cmds))
         L.append("\n</details>\n")
 
+    L.append("### 人工补充的键位\n")
+    L.append("| 优先级 | 键 | 命令 | when | 原因 |\n|---|---|---|---|---|")
+    for key, cmd, when, pr, why in EXTRA_BINDINGS:
+        L.append(f"| {pr} | `{key}` | `{cmd}` | `{esc(when)}` | {why} |")
+    L.append("")
+
     L.append("## 5. Rove 专有命令\n")
     L.append("命令 ID 以 `rove.` 开头。默认键位已与 VS Code 的全部默认键位逐一核对，没有冲突；还特意避开了 `ctrl+alt+a`（国内常见的截图全局热键）。\n")
     L.append("| 优先级 | 命令 | 默认键 | when | 说明 | 冲突检查 |\n|---|---|---|---|---|---|")
@@ -136,6 +157,15 @@ def gen_keybindings():
     L.append("以下是“需要实现的键位”中引用到的上下文键（按引用次数排序）。Rove 必须实现这些上下文键；不认识的上下文键一律视为 false（FEATURES §13 规则 7）。\n")
     L.append(", ".join(f"`{k}`（{n}）" for k, n in ctx.most_common()))
     L.append("")
+    L.append("## 7. 附录：没有默认键位、但需要实现的 VS Code 命令\n")
+    L.append("导出文件末尾列出了 VS Code 中没有默认键位的命令。按同一套判定规则筛选后，下列命令需要以相同的 ID 实现（出现在命令面板中，用户也可以自己绑定键位）。\n")
+    groups = defaultdict(list)
+    for cmd in unbound:
+        d, pr, area, _ = c.classify(cmd, c._cmd) or ("", "", "", "")
+        if d == "impl":
+            groups[(pr, area)].append(cmd)
+    for (pr, area) in sorted(groups, key=lambda x: (PRI_ORDER[x[0]], x[1])):
+        L.append(f"**{pr} · {area}**（{len(groups[(pr, area)])}）：" + ", ".join(f"`{x}`" for x in sorted(groups[(pr, area)])) + "\n")
     (OUT / "KEYBINDINGS.md").write_text("\n".join(L), encoding="utf-8")
     return stats
 
@@ -170,6 +200,13 @@ def gen_settings():
     L.append("| 设置项 | VS Code 默认值 | Rove 默认值 | 原因 |\n|---|---|---|---|")
     for k, a, b, why in DIFFERENT_DEFAULTS:
         L.append(f"| `{k}` | `{esc(a)}` | `{esc(b)}` | {why} |")
+    L.append("")
+
+    L.append("### Rove 支持的 VS Code 隐藏设置\n")
+    L.append("以下设置项是 VS Code 的隐藏设置，不出现在默认设置导出中，但 Rove 读取并遵循它们。\n")
+    L.append("| 优先级 | 设置项 | 默认值 | 说明 |\n|---|---|---|---|")
+    for k, v, pr, desc in HIDDEN_SETTINGS:
+        L.append(f"| {pr} | `{k}` | `{v}` | {desc} |")
     L.append("")
 
     L.append("## 4. Rove 专有设置项（`rove.*`）\n")

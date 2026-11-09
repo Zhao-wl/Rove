@@ -1,0 +1,63 @@
+## 背景
+
+状态栏容器、条目登记机制和临时消息由 [[shell]] 提供；本 issue 负责**往里登记具体条目**，并实现每一项的点击行为。文件状态（编码、换行符、只读原因、大小级别）从 [[buffer]] 与 [[groups]] 的文档模型读取，不自己探测。
+
+必读：`UX_SPEC.md` §1.5（条目与左右分区）、§3.1–§3.6（大小级别、只读、编码、换行符）、§6.1（反馈分级），`FEATURES.md` §8，`docs/compat/SETTINGS.md`（`files.*`、`editor.tabSize` / `insertSpaces` / `detectIndentation`）、`KEYBINDINGS.md`、`THEME_COLORS.md`（`statusBar*`）。
+
+## 目标
+
+### 1. 右侧条目（顺序与 VS Code 一致）
+
+| 条目 | 显示 | 点击 |
+|---|---|---|
+| 光标位置 | `行 12，列 34`；有选区时附加已选字符数；多选区时显示选区个数与总字符数 | `workbench.action.gotoLine`（转到行） |
+| 缩进 | `空格: 4` / `制表符长度: 4`（来自 `editor.tabSize`、`editor.insertSpaces`、`editor.detectIndentation` 的检测结果） | `changeEditorIndentation` 选择器 |
+| 编码 | 编码名；自动识别出来的编码，悬停提示中注明「自动识别」（UX_SPEC §3.5） | `workbench.action.editor.changeEncoding` |
+| 换行符 | `LF` / `CRLF` / `混合`（UX_SPEC §3.6） | `workbench.action.editor.changeEOL` |
+| 语言模式 | 语言名 | `workbench.action.editor.changeLanguageMode`（`ctrl+k m`） |
+| 只读 / 超大文件 | `只读` 或 `超大文件 · 只读`；悬停时列出被关闭的功能与只读原因（UX_SPEC §3.2、§3.4） | 无（纯提示） |
+
+所有条目通过 [[contracts]] 的状态栏条目登记机制注册（键名、位置、优先级、`when` 条件），不得写死在状态栏布局里；文字全部走界面字符串表；颜色只用登记过的 `statusBarItem.*` 键（只读与警告态用 `statusBarItem.warningBackground` / `prominentBackground`，不自造颜色）。
+
+### 2. 各选择器的内容
+
+- **缩进**：`editor.action.indentUsingSpaces`、`editor.action.indentUsingTabs`、`editor.action.detectIndentation`（这三项只改变本文件的缩进视图参数，不改文件内容）。真正改写文件的「转换缩进为空格 / 制表符」要经过 [[edit-core]]，在它合并之前这两项**不登记、不显示**（UX_SPEC §1.2：未实现的项直接不显示）。
+- **编码**：M1 只提供「通过编码重新打开」，走 [[buffer]] 的指定编码重读并保持滚动位置；「通过编码保存」依赖 [[save]]，在它合并后才出现在同一个选择器中。候选编码列表包含 `files.encoding`、`files.candidateGuessEncodings`（Rove 默认 `["gbk"]`）与常用编码。
+- **换行符**：显示当前值；`混合` 时选择器提供「统一为 LF」「统一为 CRLF」。统一操作会改写文件，因此同样经过 [[edit-core]] / [[save]]，在它们合并前只显示当前值与说明，不提供统一项。
+- **语言模式**：列出 [[langcfg]] 已登记的语言，选择后只对当前文件生效（会话内有效），并触发 [[syntax]] 重新解析。
+
+### 3. 与文档状态同步
+
+切换标签、切换编辑器组、光标移动、文件在外部被修改后重载时，条目都要同步更新；没有活动编辑器时，文件相关的条目全部隐藏（与 VS Code 一致）。
+
+### 4. 登记与替换
+
+替换 [[skeleton]] 中的 `SKELETON(statusbar)`（骨架里状态栏固定显示三项信息），删除标记并更新 `docs/ARCHITECTURE.md` 的对照表。
+
+## 不包含
+
+- **C# 索引状态项**（五种状态、详情、日志、失败通知）：[[idx-life]]（M2）。
+- 问题计数：问题面板在 [[structure]] 之后才有数据；通知铃铛属于 [[shell]]。
+- 行索引进度（`行索引 45%`）、「已暂停跟随」：[[largefile-ui]] 与 [[tail]]。
+- 语言的启发式检测：[[langdetect]]；图形化设置界面：[[settings-ui]]。
+- 保存相关的全部行为（含无法编码字符的模态框）：[[save]]（M3）。
+- 修改 [[contracts]] 的接口与状态栏登记机制：需要改时走契约变更流程，单独提小 PR。
+
+## 验收标准
+
+- [ ] 六类条目都按 UX_SPEC §1.5 的顺序显示在右侧，文字与 VS Code 一致
+- [ ] 在 `ROVE_TEST_UNITY_MEDIUM` 的真实 GBK 文件上验证：编码项显示 `GBK`，悬停提示含「自动识别」，「通过编码重新打开」切到 UTF-8 后显示乱码、切回 GBK 后正常
+- [ ] 混合换行符的文件显示 `混合`，并且打开再关闭不会改动文件（字节级比对）
+- [ ] 超大文件（≥ 64 MB）显示 `超大文件 · 只读`，悬停列出被关闭的功能；`Library/PackageCache/**` 下的文件显示只读与原因
+- [ ] 切换标签时所有条目同步更新，更新耗时 < 16 ms
+- [ ] 语言模式选择器可以把 `.asmdef` 切换为 JSON 并立即重新高亮
+- [ ] 全部条目经由登记机制注册，字符串来自字符串表，颜色来自颜色键登记表，无硬编码
+- [ ] [[skeleton]] 的端到端测试仍然通过；另加覆盖本 issue 的集成测试（打开 GBK 文件 → 断言编码项文本与悬停提示）
+- [ ] 无运行时网络访问
+
+## 风险与提示
+
+- “语言模式”使用 [[langcfg]] 的语言表，“超大文件标记”使用 [[largefile]] 的大小级别（两者都已列为前置依赖）。不要自己探测文件大小或扩展名。
+- **“只读 / 超大文件”条目由本 issue 登记**，是同一个条目的不同状态；[[largefile-ui]] 只提供超大文件状态下的数据（行索引进度、被关闭的功能列表），不另外登记条目。
+- 缩进与换行符的“转换 / 统一”在 M1 是只读阅读器里唯一会写文件的入口。宁可不显示，也不要在没有 [[edit-core]] 的情况下自己写一遍文件改写逻辑。
+- 光标位置项每次光标移动都要更新，不能触发整个状态栏重新布局。

@@ -81,7 +81,7 @@ Markdown 预览运行在 WebView2 中（D5）。代码块高亮与 VS Code 一�
 
 ## 6. 语言配置（`language-configuration.json`）
 
-Rove 直接使用 VS Code 内置扩展中各语言的 `language-configuration.json`（MIT），不自己重写。下表列出这 8 份配置中实际出现的字段，以及 Rove 的支持情况：
+Rove 直接使用 VS Code 内置扩展中各语言的 `language-configuration.json`（MIT），不自己重写。这 8 份配置是：`csharp`、`json`（JSONC 共用）、`yaml`、`xml`、`markdown-basics`（M1），以及 `hlsl`、`shaderlab`、`lua`（随 M4 的其他语言一起接入）。下表列出其中实际出现的字段，以及 Rove 的支持情况：
 
 | 字段 | 用到它的语言 | Rove 用它实现的功能 | 优先级 |
 |---|---|---|---|

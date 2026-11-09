@@ -20,6 +20,9 @@ COMMAND_RULES = [
      r"chat|chatEditing|chatEditor|agentSession|agentsVoice|inlineChat2?|refactorPreview|extension|o)\.", NO, "", "调试/终端/SCM/AI/扩展", "FEATURES §10"),
     (r"^workbench\.action\.(terminal|debug|tasks|chat|remote|extensions|notebook|testing|interactive|tunnels|speech|voice|"
      r"inlineChat|agent|output|toggleDevTools|reportIssue|openIssueReporter|showRuntimeExtensions|showEmmetCommands)", NO, "", "调试/终端/SCM/AI/扩展", "FEATURES §10"),
+    (r"^workbench\.panel\.chat", NO, "", "调试/终端/SCM/AI/扩展", "AI 聊天面板，不做"),
+    (r"^workbench\.action\.(toggleAuxiliaryBar|focusAuxiliaryBar|closeAuxiliaryBar)", IMPL, "P2", "布局", "辅助侧边栏（FEATURES §2，P2）"),
+    (r"^workbench\.action\.(toggleZenMode|exitZenMode|toggleCenteredLayout|toggleFullScreen)", IMPL, "P1", "布局", "Zen 模式、全屏、居中布局（FEATURES §2，P1，M4）"),
     (r"^workbench\.(debug|chat|banner)\.", NO, "", "调试/终端/SCM/AI/扩展", "FEATURES §10"),
     (r"^workbench\.view\.(scm|debug|extensions|testing|remote)", NO, "", "调试/终端/SCM/AI/扩展", "FEATURES §10"),
     (r"^editor\.(debug|action\.(dirtydiff|accessibleDiffViewer|showDebugHover|toggleBreakpoint))|^editor\.(toggleBreakpoint|toggleInlineBreakpoint|closeExceptionWidget|showDebugHover|closeTestPeek)", NO, "", "调试/终端/SCM/AI/扩展", "FEATURES §10"),
@@ -40,6 +43,11 @@ COMMAND_RULES = [
     # —— 无障碍 ——
     (r"(accessib|Accessib|announce|accessibleView|widgetNavigation|toggleTabFocusMode|noteMultiCursor|stopReadingLine)", IMPL, "P2", "无障碍", "无障碍功能，P2"),
     # —— 光标与基础编辑（M3） ——
+    (r"^editor\.action\.clipboardCopyWithSyntaxHighlightingAction", IMPL, "P2", "编辑基础", "带语法高亮复制（与 editor.copyWithSyntaxHighlighting 一致，P2）"),
+    (r"^(editor\.action\.selectAllMatches|removeSecondaryCursors)", IMPL, "P1", "多光标", "需要多选区才有意义，随多光标（M4）"),
+    (r"^editor\.action\.(indentationToSpaces|indentationToTabs|detectIndentation|indentUsingSpaces|indentUsingTabs|changeEditorIndentation)|^workbench\.action\.editor\.(changeEOL|changeEncoding)", IMPL, "P0", "编辑基础", "状态栏的缩进、换行符、编码选择器（UX_SPEC §1.5、§3.5、§3.6）"),
+    (r"^editor\.action\.(reindentlines|reindentselectedlines)", IMPL, "P2", "编辑基础", "重新缩进，P2"),
+    (r"^(closeReplaceInFilesWidget|toggleSearchPreserveCase)", IMPL, "P1", "搜索", "全局替换（FEATURES §6，M4）"),
     (r"^(cursor[A-Z]|cursorUndo|cursorRedo|deleteLeft|deleteRight|deleteWord|deleteAllLeft|deleteAllRight|cancelSelection|removeSecondaryCursors|tab$|outdent$|lineBreakInsert|undo$|redo$|default:type|type$|scroll(Line|Page)(Up|Down)|expandLineSelection)", IMPL, "P0", "编辑基础", "FEATURES §4"),
     (r"^editor\.action\.(clipboard|selectAll|insertLineAfter|insertLineBefore|indentLines|outdentLines|setSelectionAnchor|selectFromAnchorToCursor|cancelSelectionAnchor|goToSelectionAnchor|pasteAsText)", IMPL, "P0", "编辑基础", "FEATURES §4"),
     (r"^(editor\.action\.(changePasteType|changeDropType|dropIntoEditor))|^editor\.(changePasteType|changeDropType|cancelOperation)", IMPL, "P2", "编辑基础", "拖放与粘贴类型选择，P2"),
@@ -55,6 +63,7 @@ COMMAND_RULES = [
     (r"^(actions\.find|closeFindWidget|toggleFind|toggleCaseSensitive|toggleWholeWord|toggleRegex|togglePreserveCase|toggleSearch)|^editor\.action\.(nextMatchFindAction|previousMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|startFindReplaceAction|replaceOne|replaceAll|findWithSelection|toggleFindInSelection|findReferencesInFiles)", IMPL, "P0", "查找替换", "FEATURES §4"),
     # —— 导航与语言智能 ——
     (r"^editor\.action\.(revealDefinition|goToDeclaration|goToTypeDefinition|peekDefinition|goToReferences|referenceSearch|showHover|goToTopHover|goToBottomHover|pageUpHover|pageDownHover|scroll(Up|Down|Left|Right)Hover|increaseHoverVerbosity|decreaseHoverVerbosity)|^closeReferenceSearch|^editor\.(gotoNextSymbolFromResult|gotoPreviousSymbolFromResult)|^references-view\.(?!showCallHierarchy|showTypeHierarchy)", IMPL, "P0", "导航", "FEATURES §5；查找引用默认用速览（D3）"),
+    (r"^editor\.action\.openLink", IMPL, "P1", "阅读", "链接检测与打开（FEATURES §3）"),
     (r"^editor\.action\.(revealDefinitionAside|goToImplementation|peekImplementation|wordHighlight)", IMPL, "P1", "导航", "FEATURES §5"),
     (r"(CallHierarchy|callHierarchy|TypeHierarchy|typeHierarchy)", IMPL, "P2", "导航", "调用层级 / 类型层级，P2"),
     (r"^editor\.action\.marker\.|^closeMarkersNavigation", IMPL, "P1", "问题", "只用于 JSON/YAML/XML 的语法错误（FEATURES §5）"),
@@ -68,7 +77,9 @@ COMMAND_RULES = [
     (r"^workbench\.action\.(quickOpen|showCommands|gotoLine|gotoSymbol|quickOpenNavigate|quickOpenSelect|closeQuickOpen|acceptSelectedQuickOpenItem|alternativeAcceptSelectedQuickOpenItem|focusQuickOpen|quickInputBack|showAllEditors|quickOpenView|openRecent|openPreviousRecentlyUsedEditor|openNextRecentlyUsedEditor|quickOpenPreviousRecentlyUsedEditor|quickOpenLeastRecentlyUsedEditor|quickOpenPreviousEditorFromHistory|quickOpenRecent|quickTextSearch)|^quickInput\.", IMPL, "P0", "快速访问", "FEATURES §6"),
     (r"^workbench\.action\.showAllSymbols", IMPL, "P1", "快速访问", "工作区符号（FEATURES §5）"),
     # —— 搜索 ——
-    (r"^workbench\.action\.(findInFiles|replaceInFiles|clearSearchResults|focusNextSearchResult|focusPreviousSearchResult|toggleSearchEditor|search)|^search\.action\.(?!replace)|^search\.(focus|toggle|searchEditor)|^closeReplaceInFilesWidget", IMPL, "P0", "搜索", "FEATURES §6"),
+    (r"(WithAI|withAI|AISearch|aiSearch)", NO, "", "调试/终端/SCM/AI/扩展", "AI 搜索，不做（FEATURES §10）"),
+    (r"^search\.action\.replace|^workbench\.action\.replaceInFiles", IMPL, "P1", "搜索", "全局替换（FEATURES §6，M4）"),
+    (r"^workbench\.action\.(findInFiles|clearSearchResults|focusNextSearchResult|focusPreviousSearchResult|toggleSearchEditor|search)|^search\.action\.(?!replace)|^search\.(focus|toggle|searchEditor)|^closeReplaceInFilesWidget", IMPL, "P0", "搜索", "FEATURES §6"),
     (r"^search\.action\.replace|^workbench\.action\.replaceInFiles", IMPL, "P1", "搜索", "全局替换（FEATURES §6）"),
     (r"(SearchEditor|searchEditor)", IMPL, "P2", "搜索", "搜索编辑器（FEATURES §6）"),
     # —— 文件与资源管理器 ——
@@ -92,12 +103,15 @@ COMMAND_RULES = [
     (r"^welcome\.", IMPL, "P0", "欢迎页", "UX_SPEC §1.6（只保留开始与最近）"),
     (r"^diffEditor\.|^workbench\.action\.compareEditor|^editor\.action\.diffReview", IMPL, "P2", "对比", "对比视图（FEATURES §6）"),
     (r"^workbench\.edit\.", IMPL, "P1", "编辑基础", ""),
-    (r"^(closeBreakpointWidget|editor\.action\.(extensioneditor|webvieweditor|submitComment)|workbench\.action\.(browser|addComment|hideComment|editorDictation|issueReporter|openAgentsWindow|openChat|quickchat|files\.openLocalFile|files\.openLocalFolder|closeModalEditor|navigateModalEditor)|insertBestCompletion|toggleExplainMode|toggleQuickDiffWidgetFocus)", NO, "", "调试/终端/SCM/AI/扩展",
+    (r"^(closeBreakpointWidget|editor\.action\.(extensioneditor|submitComment)|workbench\.action\.(browser|addComment|hideComment|editorDictation|issueReporter|openAgentsWindow|openChat|quickchat|files\.openLocalFile|files\.openLocalFolder|closeModalEditor|navigateModalEditor)|insertBestCompletion|toggleExplainMode|toggleQuickDiffWidgetFocus)", NO, "", "调试/终端/SCM/AI/扩展",
      "扩展页、WebView、内置浏览器、评论、听写、问题上报、AI、远程文件对话框、模态编辑器等，均不做"),
+    (r"^editor\.action\.webvieweditor\.", IMPL, "P1", "Markdown", "Markdown 预览（WebView2）中的查找（UX_SPEC §4.3）"),
+    (r"^(explorer\.(download|upload)|settings\.action\.toggleAiSearch)", NO, "", "调试/终端/SCM/AI/扩展", "仅用于 Web/远程场景或依赖 AI，不做（FEATURES §10）"),
+    (r"^workbench\.action\.(openWorkspaceSettings|openWorkspaceSettingsFile|openFolderSettings)", IMPL, "P2", "设置", "工作区级设置首版不做（P2）"),
     (r"^(goToNextReference|goToPreviousReference|openReferenceToSide|revealReference|togglePeekWidgetFocus)", IMPL, "P0", "导航", "速览窗口内的操作（D3）"),
     (r"^(editor\.action\.showContextMenu|leaveEditorMessage|saveAll|workbench\.action\.(showHover|editor\.changeLanguageMode|joinEditorInGroup))", IMPL, "P0", "编辑器组", ""),
     (r"^(firstCompressedFolder|lastCompressedFolder|nextCompressedFolder|previousCompressedFolder)", IMPL, "P0", "文件", "资源管理器的紧凑文件夹导航"),
-    (r"^editor\.action\.toggleOvertypeInsertMode", IMPL, "P1", "编辑基础", "Insert 键切换改写模式"),
+    (r"^editor\.action\.toggleOvertypeInsertMode", IMPL, "P0", "编辑基础", "Insert 键切换改写模式"),
     (r"^(editor\.(hideDropWidget|hidePasteWidget|showIncomingCalls|showOutgoingCalls|showSubtypes|showSupertypes)|workbench\.action\.(editor\.nextChange|editor\.previousChange|restoreAuxiliaryBar))", IMPL, "P2", "导航", "调用/类型层级、对比视图中的变更导航、辅助侧边栏，P2"),
     (r"^workbench\.action\.(togglePreserveCase|toggleScreencastMode|logStorage|inspectContextKeys|inspectKeyMappings|showLogs|openLogFile|openProcessExplorer|toggleKeybindingsLog)", IMPL, "P2", "开发者", "开发者工具类命令"),
 ]
@@ -113,6 +127,7 @@ SETTING_RULES = [
     (r"^editor\.renderRichScreenReaderContent|^workbench\.editor\.dragToOpenWindow", IMPL, "P2", "编辑器", "P2"),
     # 编辑器：不做
     (r"^editor\.(suggest|quickSuggestions|acceptSuggestion|suggestOnTrigger|suggestSelection|suggestFontSize|suggestLineHeight|tabCompletion|snippetSuggestions|wordBasedSuggestions|inlineSuggest|inlineCompletions|parameterHints|codeLens|codeActions|lightbulb|inlayHints|colorDecorators|defaultColorDecorators|formatOnType|renameOnType|pasteAs|dropIntoEditor|experimental|gotoLocation\.alternative|codeActionWidget|occurrencesHighlightDelay|editContext|aiStats|inlineCompletionsAccessibilityVerbose|screenReaderAnnounceInlineSuggestion|showDeprecated|showUnused|foldingImportsByDefault|linkedEditing)", NO, "", "实时语言服务", "FEATURES §4/§5"),
+    (r"^editor\.minimap\.renderCharacters", NO, "", "编辑器", "Rove 的缩略图只渲染色块（FEATURES §3）"),
     (r"^editor\.(minimap|stickyScroll|bracketPairColorization|guides\.bracketPairs|multiCursor|columnSelection|wordWrap|wrappingIndent|wrappingStrategy|rulers|autoClosing|autoIndent|autoSurround|trimAutoWhitespace|formatOnSave|formatOnPaste|defaultFormatter|semanticHighlighting|semanticTokenColorCustomizations|links|overviewRuler|hideCursorInOverviewRuler|smartSelect|comments|insertSpaces|tabSize|detectIndentation|indentSize|useTabStops|cursorSmoothCaretAnimation|smoothScrolling|definitionLinkOpensInPeek)", IMPL, "P1", "编辑器", "FEATURES §3/§4"),
     (r"^editor\.(unicodeHighlight|renderControlCharacters|unusualLineTerminators|dragAndDrop|copyWithSyntaxHighlighting|accessibility|ariaLabel|ariaRequired|screenReader|accessibilitySupport|accessibilityPageSize|tabFocusMode|middleClick|selectionClipboard|mouseMiddleClickAction)", IMPL, "P2", "编辑器", "P2"),
     (r"^editor\.", IMPL, "P0", "编辑器", "外观、光标、查找、悬停、折叠、滚动等基础行为（FEATURES §3）"),
@@ -140,6 +155,7 @@ SETTING_RULES = [
     (r"^references\.", IMPL, "P1", "导航", "引用视图（备选）"),
     (r"^json\.(schemas|schemaDownload|colorDecorators|validate\.enable)", NO, "", "JSON", "不做 JSON Schema（FEATURES §9）"),
     (r"^json\.", IMPL, "P1", "JSON", "格式化、大纲（FEATURES §9）"),
+    (r"^markdown\.editor\.(highlightActiveBlock|quickSuggestions|renderWhitespace)", NO, "", "Markdown", "只服务于所见即所得 Markdown 编辑器（D7 不做）"),
     (r"^markdown\.(validate|updateLinksOnFileMove|suggest|editor\.(drop|paste|filePaste|updateLinks)|server|experimental|occurrencesHighlight|copyFiles)", NO, "", "Markdown", "依赖 Markdown 语言服务的链接校验、补全、文件拖放等，不做"),
     (r"^markdown\.", IMPL, "P0", "Markdown", "预览与样式（UX_SPEC §4.3、D5）"),
     (r"^(accessibility|screencastMode)\.", IMPL, "P2", "无障碍", "P2"),

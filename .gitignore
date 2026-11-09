@@ -5,3 +5,5 @@ obj/
 *.user
 /.rove-cache
 /out
+__pycache__/
+*.pyc
