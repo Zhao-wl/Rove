@@ -26,7 +26,9 @@ fn stats(name: &str, mut v: Vec<Duration>) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("usage: cs_index_bench <index.idx> [samples]");
+    let path = args
+        .get(1)
+        .expect("usage: cs_index_bench <index.idx> [samples]");
     let samples: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20000);
 
     let m0 = mem_mb();
@@ -40,7 +42,11 @@ fn main() {
         idx.symbols().len(),
         idx.occurrences().len()
     );
-    println!("open: {:.1} ms, resident +{:.1} MB", open.as_secs_f64() * 1e3, mem_mb() - m0);
+    println!(
+        "open: {:.1} ms, resident +{:.1} MB",
+        open.as_secs_f64() * 1e3,
+        mem_mb() - m0
+    );
 
     // 随机抽样引用位置（xorshift，可复现）
     let occs = idx.occurrences();
@@ -69,7 +75,11 @@ fn main() {
         let t = Instant::now();
         let defs = idx.goto_definition(p, *l, *c);
         let d = t.elapsed();
-        if i < 200 { cold.push(d) } else { def_t.push(d) }
+        if i < 200 {
+            cold.push(d)
+        } else {
+            def_t.push(d)
+        }
         if idx.symbol_at(p, *l, *c) != Some(*sym) {
             wrong += 1;
         }
@@ -91,20 +101,39 @@ fn main() {
     }
     stats("find_references", ref_t);
     ref_counts.sort();
-    println!("  result size: p50={} p99={} max={}", ref_counts[ref_counts.len() / 2], ref_counts[ref_counts.len() * 99 / 100], ref_counts.last().unwrap());
+    println!(
+        "  result size: p50={} p99={} max={}",
+        ref_counts[ref_counts.len() / 2],
+        ref_counts[ref_counts.len() * 99 / 100],
+        ref_counts.last().unwrap()
+    );
 
     // 最重的查找引用：引用最多的 20 个源码符号
-    let mut heavy: Vec<(u32, u32)> = idx.symbols().iter().enumerate().filter(|(_, s)| s.flags & 1 != 0).map(|(i, s)| (s.ref_count, i as u32)).collect();
+    let mut heavy: Vec<(u32, u32)> = idx
+        .symbols()
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.flags & 1 != 0)
+        .map(|(i, s)| (s.ref_count, i as u32))
+        .collect();
     heavy.sort_unstable_by(|a, b| b.cmp(a));
     let mut heavy_t = Vec::new();
     for &(_, sym) in heavy.iter().take(20) {
+        let mut n = 0usize;
         let t = Instant::now();
-        let n = idx.symbol_occurrences(sym).map(|o| idx.location(o)).count();
+        for o in idx.symbol_occurrences(sym) {
+            let _ = idx.location(o);
+            n += 1;
+        }
         heavy_t.push(t.elapsed());
         assert!(n > 0);
     }
     stats("find_references (top-20 heavy)", heavy_t);
-    println!("  heaviest: {} refs ({})", heavy[0].0, idx.str(idx.symbols()[heavy[0].1 as usize].display));
+    println!(
+        "  heaviest: {} refs ({})",
+        heavy[0].0,
+        idx.str(idx.symbols()[heavy[0].1 as usize].display)
+    );
 
     // 同名噪音：按名称查引用 vs 语义查引用
     println!("\nname-based vs semantic references (source symbols):");
@@ -114,10 +143,22 @@ fn main() {
             by_name.entry(idx.str(s.name)).or_default().push(i as u32);
         }
     }
-    for name in ["Update", "Init", "OnEnable", "Awake", "Show", "Get", "Value", "Count", "Dispose", "Refresh"] {
-        let Some(syms) = by_name.get(name) else { continue };
-        let total: u32 = syms.iter().map(|&s| idx.symbols()[s as usize].ref_count).sum();
-        let max = syms.iter().map(|&s| idx.symbols()[s as usize].ref_count).max().unwrap_or(0);
+    for name in [
+        "Update", "Init", "OnEnable", "Awake", "Show", "Get", "Value", "Count", "Dispose",
+        "Refresh",
+    ] {
+        let Some(syms) = by_name.get(name) else {
+            continue;
+        };
+        let total: u32 = syms
+            .iter()
+            .map(|&s| idx.symbols()[s as usize].ref_count)
+            .sum();
+        let max = syms
+            .iter()
+            .map(|&s| idx.symbols()[s as usize].ref_count)
+            .max()
+            .unwrap_or(0);
         let avg = total as f64 / syms.len() as f64;
         println!(
             "  {name:<10} distinct symbols={:<5} name-based hits={:<7} semantic per symbol: avg={:<7.1} max={}",

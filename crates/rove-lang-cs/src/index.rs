@@ -109,7 +109,11 @@ impl CsIndex {
             let count = u64::from_le_bytes(mmap[at + 8..at + 16].try_into().unwrap()) as usize;
             *s = (off, count);
         }
-        let mut idx = CsIndex { mmap, sections, path_to_file: HashMap::new() };
+        let mut idx = CsIndex {
+            mmap,
+            sections,
+            path_to_file: HashMap::new(),
+        };
         idx.validate()?;
         let map = idx
             .files()
@@ -124,8 +128,12 @@ impl CsIndex {
     fn validate(&self) -> io::Result<()> {
         let sizes = [4, 1, 24, 28, 20, 4, 12, 12, 1];
         for (i, &(off, count)) in self.sections.iter().enumerate() {
-            let end = off.checked_add(count.checked_mul(sizes[i]).ok_or_else(|| invalid("overflow"))?);
-            if end.map_or(true, |e| e > self.mmap.len()) {
+            let end = off.checked_add(
+                count
+                    .checked_mul(sizes[i])
+                    .ok_or_else(|| invalid("overflow"))?,
+            );
+            if end.is_none_or(|e| e > self.mmap.len()) {
                 return Err(invalid("section out of bounds"));
             }
         }
@@ -213,7 +221,9 @@ impl CsIndex {
     }
 
     pub fn goto_definition(&self, rel_path: &str, line: u32, col: u32) -> Vec<Location<'_>> {
-        let Some(sym) = self.symbol_at(rel_path, line, col) else { return Vec::new() };
+        let Some(sym) = self.symbol_at(rel_path, line, col) else {
+            return Vec::new();
+        };
         self.symbol_occurrences(sym)
             .take_while(|o| Role(o.role).is_def())
             .map(|o| self.location(o))
@@ -221,8 +231,12 @@ impl CsIndex {
     }
 
     pub fn find_references(&self, rel_path: &str, line: u32, col: u32) -> Vec<Location<'_>> {
-        let Some(sym) = self.symbol_at(rel_path, line, col) else { return Vec::new() };
-        self.symbol_occurrences(sym).map(|o| self.location(o)).collect()
+        let Some(sym) = self.symbol_at(rel_path, line, col) else {
+            return Vec::new();
+        };
+        self.symbol_occurrences(sym)
+            .map(|o| self.location(o))
+            .collect()
     }
 
     /// 实现 / 重写 / 派生：关系表中 to == symbol 的所有 from。
