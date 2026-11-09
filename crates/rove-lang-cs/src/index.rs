@@ -1,51 +1,111 @@
 use bytemuck::{Pod, Zeroable};
 use memmap2::Mmap;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(not(target_endian = "little"))]
+compile_error!("RVCSIDX requires a little-endian target");
 
 const MAGIC: &[u8; 8] = b"RVCSIDX\0";
-const VERSION: u32 = 1;
-const SECTION_COUNT: usize = 9;
-const HEADER_LEN: usize = 16 + SECTION_COUNT * 16;
+const VERSION: u32 = 2;
+const TABLE_OFFSET: usize = 96;
 const NONE: u32 = u32::MAX;
+const LOCAL_BIT: u32 = 1 << 31;
+
+#[repr(usize)]
+#[derive(Clone, Copy)]
+enum Section {
+    StringOffsets,
+    Files,
+    Paths,
+    Symbols,
+    LocalKeys,
+    Occurrences,
+    WideOccurrences,
+    References,
+    RelationsFrom,
+    RelationsTo,
+    Inactive,
+    Signatures,
+    XmlDocs,
+    MetadataViews,
+    Strings,
+}
+
+const SECTION_COUNT: usize = Section::Strings as usize + 1;
+const HEADER_LEN: usize = TABLE_OFFSET + SECTION_COUNT * 16;
+const SECTION_SIZES: [usize; SECTION_COUNT] = [4, 24, 1, 24, 8, 8, 24, 1, 12, 12, 8, 8, 8, 1, 1];
+
+/// Zero-based byte column in the decoded UTF-8 line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Utf8Column(pub u32);
+
+/// Zero-based byte offset in decoded UTF-8 source, excluding any BOM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ByteOffset(pub u32);
+
+/// Zero-based UTF-16 code-unit column for consumers of Roslyn coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Utf16Column(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SymbolKey<'a> {
+    Global(&'a str),
+    Local { file: u32, offset: ByteOffset },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexHeader {
+    pub format_version: u32,
+    pub indexer_version: [u16; 4],
+    pub project_config_hash: [u8; 32],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
 pub struct FileRecord {
-    pub path: u32,
+    path_start: u32,
     pub occ_start: u32,
     pub occ_count: u32,
-    _pad: u32,
+    inactive_start: u32,
     pub hash: u64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
 pub struct SymbolRecord {
-    pub key: u32,
+    key: u32,
     pub name: u32,
     pub display: u32,
     pub container: u32,
     pub ref_start: u32,
-    pub ref_count: u32,
     pub kind: u8,
     pub flags: u8,
-    _pad: u16,
+    definition_count: u16,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Occurrence {
     pub file: u32,
     pub line: u32,
-    /// UTF-16 列号（Roslyn 坐标）
-    pub col: u32,
+    pub col: Utf8Column,
     pub symbol: u32,
-    pub len: u16,
+    pub len: u32,
     pub role: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct WideOccurrence {
+    file: u32,
+    line: u32,
+    col: u32,
+    symbol: u32,
+    len: u32,
+    role: u32,
 }
 
 #[repr(C)]
@@ -56,12 +116,28 @@ pub struct Relation {
     pub kind: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, Eq)]
+pub struct InactiveLines {
+    pub start: u32,
+    pub end: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, Eq)]
+pub struct SymbolText {
+    pub symbol: u32,
+    pub text: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Role(pub u16);
+
 impl Role {
     pub const REF: u16 = 1;
     pub const DEF: u16 = 2;
     pub const CANDIDATE: u16 = 4;
+
     pub fn is_def(self) -> bool {
         self.0 & Self::DEF != 0
     }
@@ -75,138 +151,394 @@ pub const REL_OVERRIDES: u32 = 3;
 pub struct Location<'a> {
     pub path: &'a str,
     pub line: u32,
-    pub col: u32,
-    pub len: u16,
+    pub col: Utf8Column,
+    pub len: u32,
     pub is_def: bool,
 }
 
 pub struct CsIndex {
     mmap: Mmap,
-    sections: [(usize, usize); SECTION_COUNT],
-    path_to_file: HashMap<Box<str>, u32>,
+    sections: [Range<usize>; SECTION_COUNT],
+    header: IndexHeader,
+    ref_width: usize,
+    path_spans: Vec<(u32, u32)>,
+    string_reads: AtomicUsize,
 }
 
 fn invalid(msg: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg.to_string())
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+fn read_u32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn read_u64(bytes: &[u8]) -> u64 {
+    u64::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn header_checksum(header: &[u8]) -> u64 {
+    header[..88]
+        .iter()
+        .chain(&header[TABLE_OFFSET..])
+        .fold(14695981039346656037, |hash, &b| {
+            (hash ^ u64::from(b)).wrapping_mul(1099511628211)
+        })
 }
 
 impl CsIndex {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = File::open(path)?;
-        // SAFETY: 索引文件由索引进程原子替换写入，打开后不会被原地修改。
+        // SAFETY: The writer publishes complete snapshots by atomic replacement. An open
+        // snapshot must not be modified or truncated in place while it is being read.
         let mmap = unsafe { Mmap::map(&file)? };
-        if mmap.len() < HEADER_LEN || &mmap[..8] != MAGIC {
+        if mmap.len() < 12 || &mmap[..8] != MAGIC {
             return Err(invalid("not a Rove C# index"));
         }
-        let version = u32::from_le_bytes(mmap[8..12].try_into().unwrap());
+        let version = read_u32(&mmap[8..12]);
         if version != VERSION {
-            return Err(invalid("unsupported index version"));
+            return Err(invalid(&format!(
+                "unsupported C# index version {version} (expected {VERSION})"
+            )));
         }
-        let mut sections = [(0usize, 0usize); SECTION_COUNT];
-        for (i, s) in sections.iter_mut().enumerate() {
-            let at = 16 + i * 16;
-            let off = u64::from_le_bytes(mmap[at..at + 8].try_into().unwrap()) as usize;
-            let count = u64::from_le_bytes(mmap[at + 8..at + 16].try_into().unwrap()) as usize;
-            *s = (off, count);
+        let header = mmap
+            .get(..HEADER_LEN)
+            .ok_or_else(|| invalid("truncated index header"))?;
+        if read_u32(&header[12..16]) as usize != SECTION_COUNT
+            || read_u64(&header[16..24]) != mmap.len() as u64
+            || header[64..88] != [0; 24]
+            || read_u64(&header[88..96]) != header_checksum(header)
+        {
+            return Err(invalid("invalid C# index header"));
         }
-        let mut idx = CsIndex {
+
+        let mut sections = std::array::from_fn(|_| 0..0);
+        let mut previous_end = HEADER_LEN;
+        for (i, range) in sections.iter_mut().enumerate() {
+            let at = TABLE_OFFSET + i * 16;
+            let off = usize::try_from(read_u64(&header[at..at + 8]))
+                .map_err(|_| invalid("section offset overflow"))?;
+            let count = usize::try_from(read_u64(&header[at + 8..at + 16]))
+                .map_err(|_| invalid("section count overflow"))?;
+            let end = count
+                .checked_mul(SECTION_SIZES[i])
+                .and_then(|n| off.checked_add(n))
+                .ok_or_else(|| invalid("section size overflow"))?;
+            if off % 8 != 0 || off < previous_end || end > mmap.len() || count > u32::MAX as usize {
+                return Err(invalid("misaligned, overlapping or out-of-bounds section"));
+            }
+            *range = off..end;
+            previous_end = end;
+        }
+        if (previous_end
+            .checked_add(7)
+            .ok_or_else(|| invalid("file length overflow"))?
+            & !7)
+            != mmap.len()
+        {
+            return Err(invalid("unexpected data after final section"));
+        }
+        let occurrence_count = sections[Section::Occurrences as usize].len() / 8;
+        let ref_width = if occurrence_count <= 1 << 24 { 3 } else { 4 };
+        if occurrence_count.checked_mul(ref_width)
+            != Some(sections[Section::References as usize].len())
+        {
+            return Err(invalid("reference count does not match occurrence count"));
+        }
+
+        let index_header = IndexHeader {
+            format_version: version,
+            indexer_version: std::array::from_fn(|i| {
+                let at = 24 + i * 2;
+                u16::from_le_bytes(header[at..at + 2].try_into().unwrap())
+            }),
+            project_config_hash: header[32..64].try_into().unwrap(),
+        };
+        let mut index = Self {
             mmap,
             sections,
-            path_to_file: HashMap::new(),
+            header: index_header,
+            ref_width,
+            path_spans: Vec::new(),
+            string_reads: AtomicUsize::new(0),
         };
-        idx.validate()?;
-        let map = idx
-            .files()
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (Box::from(idx.str(f.path)), i as u32))
-            .collect();
-        idx.path_to_file = map;
-        Ok(idx)
+        index.path_spans = index.validate_directories()?;
+        Ok(index)
     }
 
-    fn validate(&self) -> io::Result<()> {
-        let sizes = [4, 1, 24, 28, 20, 4, 12, 12, 1];
-        for (i, &(off, count)) in self.sections.iter().enumerate() {
-            let end = off.checked_add(
-                count
-                    .checked_mul(sizes[i])
-                    .ok_or_else(|| invalid("overflow"))?,
-            );
-            if end.is_none_or(|e| e > self.mmap.len()) {
-                return Err(invalid("section out of bounds"));
-            }
+    fn bytes(&self, section: Section) -> &[u8] {
+        &self.mmap[self.sections[section as usize].clone()]
+    }
+
+    fn section<T: Pod>(&self, section: Section) -> &[T] {
+        bytemuck::cast_slice(self.bytes(section))
+    }
+
+    fn validate_directories(&self) -> io::Result<Vec<(u32, u32)>> {
+        // Read directory offsets only. Neither string nor path payload pages are needed.
+        let offsets: &[u32] = self.section(Section::StringOffsets);
+        if offsets.first() != Some(&0)
+            || offsets.last().copied().map(|n| n as usize)
+                != Some(self.sections[Section::Strings as usize].len())
+            || offsets.windows(2).any(|w| w[0] > w[1])
+        {
+            return Err(invalid("invalid string offsets"));
         }
-        Ok(())
+        let mut path_spans = Vec::with_capacity(self.files().len());
+        let mut occ_start = 0_u32;
+        let mut prev_path = None;
+        let mut inactive = 0;
+        let path_len = self.sections[Section::Paths as usize].len();
+        let inactive_count = self.sections[Section::Inactive as usize].len() / 8;
+        for file in self.files() {
+            let path = file.path_start as usize;
+            if file.occ_start != occ_start
+                || path >= path_len
+                || prev_path.map_or(path != 0, |prev| prev >= path)
+                || file.inactive_start < inactive
+                || file.inactive_start as usize > inactive_count
+                || (prev_path.is_none() && file.inactive_start != 0)
+            {
+                return Err(invalid("invalid file directory"));
+            }
+            if let Some(start) = prev_path {
+                path_spans.push((start as u32, file.path_start));
+            }
+            prev_path = Some(path);
+            inactive = file.inactive_start;
+            occ_start = occ_start
+                .checked_add(file.occ_count)
+                .ok_or_else(|| invalid("occurrence range overflow"))?;
+        }
+        if occ_start as usize != self.occurrence_count()
+            || (self.files().is_empty() && (path_len != 0 || inactive_count != 0))
+        {
+            return Err(invalid("invalid file directory totals"));
+        }
+        if let Some(start) = prev_path {
+            path_spans.push((start as u32, path_len as u32));
+        }
+        Ok(path_spans)
     }
 
-    fn section<T: Pod>(&self, i: usize) -> &[T] {
-        let (off, count) = self.sections[i];
-        bytemuck::cast_slice(&self.mmap[off..off + count * std::mem::size_of::<T>()])
+    pub fn header(&self) -> &IndexHeader {
+        &self.header
     }
 
-    fn str_offsets(&self) -> &[u32] {
-        self.section(0)
+    pub fn string_payload_reads(&self) -> usize {
+        self.string_reads.load(Ordering::Relaxed)
     }
-    pub fn str(&self, id: u32) -> &str {
-        let offs = self.str_offsets();
-        let (blob_off, _) = self.sections[1];
-        let a = offs[id as usize] as usize;
-        let b = offs[id as usize + 1] as usize;
-        std::str::from_utf8(&self.mmap[blob_off + a..blob_off + b]).unwrap_or("")
+
+    pub fn str(&self, id: u32) -> io::Result<&str> {
+        let offsets: &[u32] = self.section(Section::StringOffsets);
+        let i = id as usize;
+        let next = i
+            .checked_add(1)
+            .ok_or_else(|| invalid("invalid string ID"))?;
+        let end = *offsets
+            .get(next)
+            .ok_or_else(|| invalid("invalid string ID"))? as usize;
+        let start = offsets[i] as usize;
+        self.string_reads.fetch_add(1, Ordering::Relaxed);
+        std::str::from_utf8(&self.bytes(Section::Strings)[start..end])
+            .map_err(|_| invalid("invalid UTF-8 in string payload"))
     }
+
     pub fn files(&self) -> &[FileRecord] {
-        self.section(2)
+        self.section(Section::Files)
     }
+
     pub fn symbols(&self) -> &[SymbolRecord] {
-        self.section(3)
+        self.section(Section::Symbols)
     }
-    pub fn occurrences(&self) -> &[Occurrence] {
-        self.section(4)
+
+    pub fn symbol_key(&self, symbol: u32) -> io::Result<SymbolKey<'_>> {
+        let s = self
+            .symbols()
+            .get(symbol as usize)
+            .ok_or_else(|| invalid("invalid symbol ID"))?;
+        if s.key & LOCAL_BIT == 0 {
+            return self.str(s.key).map(SymbolKey::Global);
+        }
+        let keys: &[[u32; 2]] = self.section(Section::LocalKeys);
+        let &[file, offset] = keys
+            .get((s.key & !LOCAL_BIT) as usize)
+            .ok_or_else(|| invalid("invalid local key ID"))?;
+        if file as usize >= self.files().len() {
+            return Err(invalid("invalid local key file ID"));
+        }
+        Ok(SymbolKey::Local {
+            file,
+            offset: ByteOffset(offset),
+        })
     }
-    fn ref_index(&self) -> &[u32] {
-        self.section(5)
+
+    pub fn signatures(&self) -> &[SymbolText] {
+        self.section(Section::Signatures)
     }
-    fn rels_by_from(&self) -> &[Relation] {
-        self.section(6)
+
+    pub fn xml_docs(&self) -> &[SymbolText] {
+        self.section(Section::XmlDocs)
     }
-    fn rels_by_to(&self) -> &[Relation] {
-        self.section(7)
+
+    pub fn metadata_views(&self) -> &[u8] {
+        self.bytes(Section::MetadataViews)
+    }
+
+    pub fn inactive_lines(&self, file: u32) -> &[InactiveLines] {
+        let files = self.files();
+        let ranges: &[InactiveLines] = self.section(Section::Inactive);
+        let i = file as usize;
+        let Some(record) = files.get(i) else {
+            return &[];
+        };
+        let end = files
+            .get(i + 1)
+            .map_or(ranges.len(), |next| next.inactive_start as usize);
+        &ranges[record.inactive_start as usize..end]
+    }
+
+    pub fn file_path(&self, file: u32) -> Option<&str> {
+        let &(start, end) = self.path_spans.get(file as usize)?;
+        std::str::from_utf8(&self.bytes(Section::Paths)[start as usize..end as usize]).ok()
     }
 
     pub fn file_id(&self, rel_path: &str) -> Option<u32> {
-        self.path_to_file.get(rel_path).copied()
+        let paths = self.bytes(Section::Paths);
+        let needle = rel_path.as_bytes();
+        self.path_spans
+            .binary_search_by(|&(start, end)| paths[start as usize..end as usize].cmp(needle))
+            .ok()
+            .map(|i| i as u32)
     }
 
     pub fn file_occurrences(&self, file: u32) -> Range<usize> {
-        let f = &self.files()[file as usize];
-        f.occ_start as usize..(f.occ_start + f.occ_count) as usize
+        self.files().get(file as usize).map_or(0..0, |f| {
+            f.occ_start as usize..(f.occ_start + f.occ_count) as usize
+        })
     }
 
-    /// 找到覆盖 (line, col) 的出现位置。出现位置在文件内按 (line, col) 排序。
-    pub fn occurrence_at(&self, file: u32, line: u32, col: u32) -> Option<usize> {
-        let range = self.file_occurrences(file);
-        let occs = &self.occurrences()[range.clone()];
-        // 最后一个 (line, col) <= 目标的出现位置
-        let n = occs.partition_point(|o| (o.line, o.col) <= (line, col));
-        if n == 0 {
-            return None;
+    fn packed_occurrences(&self) -> &[u64] {
+        self.section(Section::Occurrences)
+    }
+
+    pub fn occurrence_count(&self) -> usize {
+        self.packed_occurrences().len()
+    }
+
+    fn wide_occurrence(&self, packed: u64) -> Option<&WideOccurrence> {
+        let wide: &[WideOccurrence] = self.section(Section::WideOccurrences);
+        wide.get(usize::try_from(packed >> 3).ok()?)
+    }
+
+    fn decode_occurrence(&self, packed: u64) -> Option<Occurrence> {
+        let role = (packed & 7) as u16;
+        if role != 0 {
+            return Some(Occurrence {
+                file: (packed >> 49) as u32,
+                line: ((packed >> 16) & 0xfff) as u32,
+                col: Utf8Column(((packed >> 8) & 0xff) as u32),
+                symbol: ((packed >> 28) & 0x1f_ffff) as u32,
+                len: ((packed >> 3) & 0x1f) as u32,
+                role,
+            });
         }
-        let o = &occs[n - 1];
-        (o.line == line && col < o.col + o.len as u32).then_some(range.start + n - 1)
+        let wide = self.wide_occurrence(packed)?;
+        Some(Occurrence {
+            file: wide.file,
+            line: wide.line,
+            col: Utf8Column(wide.col),
+            symbol: wide.symbol,
+            len: wide.len,
+            role: wide.role as u16,
+        })
     }
 
-    /// 某符号的全部出现位置（定义在前）。
-    pub fn symbol_occurrences(&self, symbol: u32) -> impl Iterator<Item = &Occurrence> + '_ {
-        let s = &self.symbols()[symbol as usize];
-        let ids = &self.ref_index()[s.ref_start as usize..(s.ref_start + s.ref_count) as usize];
-        let occs = self.occurrences();
-        ids.iter().map(move |&i| &occs[i as usize])
+    pub fn occurrence(&self, i: usize) -> Option<Occurrence> {
+        self.decode_occurrence(*self.packed_occurrences().get(i)?)
     }
 
-    pub fn location(&self, o: &Occurrence) -> Location<'_> {
+    pub fn occurrence_at(&self, file: u32, line: u32, col: Utf8Column) -> Option<usize> {
+        self.find_occurrence(file, line, col)
+            .map(|(index, _)| index)
+    }
+
+    fn find_occurrence(
+        &self,
+        file: u32,
+        line: u32,
+        col: Utf8Column,
+    ) -> Option<(usize, Occurrence)> {
+        let range = self.file_occurrences(file);
+        let occurrences = self.packed_occurrences().get(range.clone())?;
+        let n = occurrences.partition_point(|&packed| {
+            let pos = if packed & 7 == 0 {
+                let Some(wide) = self.wide_occurrence(packed) else {
+                    return false;
+                };
+                (wide.line, wide.col)
+            } else {
+                (
+                    ((packed >> 16) & 0xfff) as u32,
+                    ((packed >> 8) & 0xff) as u32,
+                )
+            };
+            pos <= (line, col.0)
+        });
+        let index = n.checked_sub(1)?;
+        let o = self.decode_occurrence(occurrences[index])?;
+        (o.file == file && o.line == line && col.0.checked_sub(o.col.0)? < o.len)
+            .then_some((range.start + index, o))
+    }
+
+    fn symbol_refs(&self, symbol: u32) -> &[u8] {
+        let symbols = self.symbols();
+        let i = symbol as usize;
+        let Some(s) = symbols.get(i) else { return &[] };
+        let end = symbols
+            .get(i + 1)
+            .map_or(self.occurrence_count(), |next| next.ref_start as usize);
+        let bytes = self.bytes(Section::References);
+        (s.ref_start as usize)
+            .checked_mul(self.ref_width)
+            .zip(end.checked_mul(self.ref_width))
+            .and_then(|(a, b)| bytes.get(a..b))
+            .unwrap_or_default()
+    }
+
+    pub fn reference_count(&self, symbol: u32) -> usize {
+        self.symbol_refs(symbol).len() / self.ref_width
+    }
+
+    fn decode_refs<'a>(
+        &'a self,
+        refs: &'a [u8],
+        symbol: u32,
+    ) -> impl Iterator<Item = Occurrence> + 'a {
+        let occurrences = self.packed_occurrences();
+        refs.chunks_exact(self.ref_width).filter_map(move |id| {
+            let i = u32::from_le_bytes([
+                id[0],
+                id[1],
+                id[2],
+                if self.ref_width == 4 { id[3] } else { 0 },
+            ]);
+            self.decode_occurrence(*occurrences.get(i as usize)?)
+                .filter(|o| o.symbol == symbol)
+        })
+    }
+
+    pub fn symbol_occurrences(&self, symbol: u32) -> impl Iterator<Item = Occurrence> + '_ {
+        self.decode_refs(self.symbol_refs(symbol), symbol)
+    }
+
+    pub fn location(&self, o: &Occurrence) -> Option<Location<'_>> {
+        Some(Self::location_on(self.file_path(o.file)?, o))
+    }
+
+    fn location_on<'a>(path: &'a str, o: &Occurrence) -> Location<'a> {
         Location {
-            path: self.str(self.files()[o.file as usize].path),
+            path,
             line: o.line,
             col: o.col,
             len: o.len,
@@ -214,51 +546,86 @@ impl CsIndex {
         }
     }
 
-    pub fn symbol_at(&self, rel_path: &str, line: u32, col: u32) -> Option<u32> {
+    pub fn symbol_at(&self, rel_path: &str, line: u32, col: Utf8Column) -> Option<u32> {
         let f = self.file_id(rel_path)?;
-        let i = self.occurrence_at(f, line, col)?;
-        Some(self.occurrences()[i].symbol)
+        let (_, occurrence) = self.find_occurrence(f, line, col)?;
+        let symbol = occurrence.symbol;
+        self.symbols().get(symbol as usize)?;
+        Some(symbol)
     }
 
-    pub fn goto_definition(&self, rel_path: &str, line: u32, col: u32) -> Vec<Location<'_>> {
+    pub fn goto_definition(&self, rel_path: &str, line: u32, col: Utf8Column) -> Vec<Location<'_>> {
         let Some(sym) = self.symbol_at(rel_path, line, col) else {
             return Vec::new();
         };
-        self.symbol_occurrences(sym)
-            .take_while(|o| Role(o.role).is_def())
-            .map(|o| self.location(o))
-            .collect()
+        let definitions = self.symbols()[sym as usize].definition_count;
+        if definitions == 0 {
+            return Vec::new();
+        }
+
+        let refs = self.symbol_refs(sym);
+        if definitions == u16::MAX {
+            return self
+                .decode_refs(refs, sym)
+                .take_while(|o| Role(o.role).is_def())
+                .filter_map(|o| self.location(&o))
+                .collect();
+        }
+
+        let Some(prefix) = refs.get(..usize::from(definitions) * self.ref_width) else {
+            return Vec::new();
+        };
+        let mut locations = Vec::with_capacity(usize::from(definitions));
+        locations.extend(
+            self.decode_refs(prefix, sym)
+                .take_while(|o| Role(o.role).is_def())
+                .filter_map(|o| self.location(&o)),
+        );
+        locations
     }
 
-    pub fn find_references(&self, rel_path: &str, line: u32, col: u32) -> Vec<Location<'_>> {
+    pub fn find_references(&self, rel_path: &str, line: u32, col: Utf8Column) -> Vec<Location<'_>> {
         let Some(sym) = self.symbol_at(rel_path, line, col) else {
             return Vec::new();
         };
-        self.symbol_occurrences(sym)
-            .map(|o| self.location(o))
-            .collect()
+        // Positions are ordered by file within definitions and within references. Reuse
+        // the borrowed UTF-8 path across adjacent results for the same file.
+        let refs = self.symbol_refs(sym);
+        let mut result = Vec::with_capacity(refs.len() / self.ref_width);
+        let mut last = (NONE, None);
+        for o in self.decode_refs(refs, sym) {
+            if o.file != last.0 {
+                last = (o.file, self.file_path(o.file));
+            }
+            if let Some(path) = last.1 {
+                result.push(Self::location_on(path, &o));
+            }
+        }
+        result
     }
 
-    /// 实现 / 重写 / 派生：关系表中 to == symbol 的所有 from。
     pub fn implementations(&self, symbol: u32) -> impl Iterator<Item = &Relation> + '_ {
-        let rels = self.rels_by_to();
+        let rels: &[Relation] = self.section(Section::RelationsTo);
         let start = rels.partition_point(|r| r.to < symbol);
         rels[start..].iter().take_while(move |r| r.to == symbol)
     }
 
-    /// 基类型 / 被实现的接口成员 / 被重写的成员。
     pub fn bases(&self, symbol: u32) -> impl Iterator<Item = &Relation> + '_ {
-        let rels = self.rels_by_from();
+        let rels: &[Relation] = self.section(Section::RelationsFrom);
         let start = rels.partition_point(|r| r.from < symbol);
         rels[start..].iter().take_while(move |r| r.from == symbol)
     }
 
     pub fn container(&self, symbol: u32) -> Option<u32> {
-        let c = self.symbols()[symbol as usize].container;
-        (c != NONE).then_some(c)
+        let container = self.symbols().get(symbol as usize)?.container;
+        self.symbols().get(container as usize).map(|_| container)
     }
 
     pub fn byte_len(&self) -> usize {
         self.mmap.len()
     }
 }
+
+#[cfg(test)]
+#[path = "index_tests.rs"]
+mod tests;
