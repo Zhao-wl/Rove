@@ -73,12 +73,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-base"
+version = "0.0.1"
+
+[[package]]
 name = "rove-buffer"
 version = "0.0.1"
+dependencies = [
+ "rove-base",
+]
+
+[[package]]
+name = "rove-commands"
+version = "0.0.1"
+dependencies = [
+ "rove-base",
+]
+
+[[package]]
+name = "rove-config"
+version = "0.0.1"
+dependencies = [
+ "rove-base",
+]
 
 [[package]]
 name = "rove-docview"
 version = "0.0.1"
+dependencies = [
+ "rove-base",
+ "rove-syntax",
+]
+
+[[package]]
+name = "rove-i18n"
+version = "0.0.1"
+dependencies = [
+ "rove-base",
+]
 
 [[package]]
 name = "rove-lang-cs"
@@ -87,19 +119,48 @@ dependencies = [
  "bytemuck",
  "memmap2",
  "memory-stats",
+ "rove-base",
+ "rove-syntax",
 ]
 
 [[package]]
 name = "rove-syntax"
 version = "0.0.1"
+dependencies = [
+ "rove-base",
+ "rove-buffer",
+]
+
+[[package]]
+name = "rove-theme"
+version = "0.0.1"
+dependencies = [
+ "rove-base",
+]
 
 [[package]]
 name = "rove-ui"
 version = "0.0.1"
+dependencies = [
+ "rove-base",
+ "rove-buffer",
+ "rove-commands",
+ "rove-config",
+ "rove-docview",
+ "rove-i18n",
+ "rove-lang-cs",
+ "rove-syntax",
+ "rove-theme",
+ "rove-workspace",
+]
 
 [[package]]
 name = "rove-workspace"
 version = "0.0.1"
+dependencies = [
+ "rove-base",
+ "rove-buffer",
+]
 
 [[package]]
 name = "syn"

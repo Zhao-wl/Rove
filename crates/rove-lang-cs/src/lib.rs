@@ -8,3 +8,5 @@
 pub mod index;
 
 pub use index::{CsIndex, Location, Occurrence, Role, SymbolRecord};
+
+pub mod query;

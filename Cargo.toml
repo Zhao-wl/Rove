@@ -16,6 +16,12 @@ rove-lang-cs = { path = "crates/rove-lang-cs" }
 rove-docview = { path = "crates/rove-docview" }
 rove-ui = { path = "crates/rove-ui" }
 
+rove-base = { path = "crates/rove-base" }
+rove-theme = { path = "crates/rove-theme" }
+rove-config = { path = "crates/rove-config" }
+rove-commands = { path = "crates/rove-commands" }
+rove-i18n = { path = "crates/rove-i18n" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
