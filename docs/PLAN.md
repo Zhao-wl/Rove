@@ -12,7 +12,10 @@
 | 0.1 功能清单 | `FEATURES.md`：逐个模块判定“照搬 / 改造 / 不做”，并给出优先级 | 已确认（D1–D4，2026-11-09） |
 | 0.2a WebView2 嵌入验证 | 在 GPUI 窗口中嵌入 WebView2（候选方案：`wry` 的子窗口模式），验证四件事：①弹出层（命令面板、菜单、悬停卡片）与预览区域重叠时的遮挡问题；②焦点与键盘事件的路由；③首次打开耗时和内存占用；④主题同步与滚动同步的通信方式。输出一份验证报告 | 未开始（D5 引入的技术风险，需要在 M1 之前完成） |
 | 0.2 UI/UX 规格 | `UX_SPEC.md`：**默认与 VS Code 一致**，只记录与 VS Code 不同的地方，并为 Rove 特有的界面出设计稿 | 已确认（2026-11-09） |
-| 0.3 兼容范围 | 设置项、键位、主题、语言配置的兼容清单（具体到每一个设置项、每一条键位）；上下文篮子在 Claude Code、Codex、dsh 三个桌面版中的引用格式实测 | 未开始 |
+| 0.3a 键位兼容清单 | `docs/compat/KEYBINDINGS.md`：VS Code 1.145 的每一条默认键位标注“实现 / 不做”及优先级，再加上 Rove 专有命令的键位（不能与 VS Code 冲突） | 已确认（2026-11-09） |
+| 0.3b 设置兼容清单 | `docs/compat/SETTINGS.md`：相关命名空间（`editor.*`、`files.*`、`search.*`、`workbench.*` 的一部分、`explorer.*`、`outline.*`、`breadcrumbs.*`、`markdown.*`）中的每一个设置项标注“支持 / 部分支持 / 忽略”，再列出全部 `rove.*` 设置项 | 已确认（2026-11-09） |
+| 0.3c 主题与语言配置 | 支持的主题颜色键、tree-sitter 捕获名到 TextMate scope 的映射表、`language-configuration.json` 中支持的字段 | 已确认（2026-11-09）：`docs/compat/THEME_COLORS.md`、`docs/compat/SYNTAX_AND_LANGUAGES.md` |
+| 0.3d 引用格式 | `docs/compat/REFERENCE_FORMATS.md`：调研结论已完成，等待你在三个桌面版中实测 | 调研完成，待实测 |
 | 0.4 拆分 issue | 按里程碑拆分，标注依赖、并行批次和难度，审阅后再发布 | 未开始（之前的草稿 `docs/issues/` 已作废，会重新生成） |
 
 0.2 不需要重新设计整个界面。VS Code 的布局和交互就是规格本身，设计稿只覆盖 Rove 特有或与 VS Code 不同的部分：

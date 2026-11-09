@@ -212,6 +212,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | D4 | 设置迁移方式 | 与 VS Code 共用同一份设置文件和键位文件 |
 | D5 | Markdown 渲染方式 | 完整支持（内嵌 HTML、Mermaid、数学公式）；**仅 Markdown 预览使用 WebView2**，其余界面仍然原生渲染 |
 | D6 | `.md` 默认打开方式 | 默认以预览模式打开（VS Code 默认打开源码） |
+| D7 | 所见即所得 Markdown 编辑器（VS Code 1.145 新增的 `vscode.markdown.editor`） | 不做，保持“预览 + 源码”两种模式 |
 
 ## 13. 与 VS Code 共用设置文件的规则（D4 的落地）
 
