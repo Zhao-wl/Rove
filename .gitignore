@@ -7,3 +7,4 @@ obj/
 /out
 __pycache__/
 *.pyc
+/docs/issues/.publish_progress.json

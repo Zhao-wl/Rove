@@ -49,11 +49,24 @@ STATUS = {"status/ready": ("0e8a16", "依赖已满足，可以认领"), "status/
 RID = re.compile(r"\bR(\d{2})\b")
 
 
-def gh(*args: str, input_text: str | None = None) -> str:
-    r = subprocess.run(["gh", *args], input=input_text, capture_output=True, text=True, encoding="utf-8")
-    if r.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args[:3])}… 失败：{r.stderr.strip()}")
-    return r.stdout.strip()
+NETWORK_ERRORS = ("TLS handshake timeout", "timeout", "connection reset", "EOF", "502", "503", "504",
+                  "error connecting", "check your internet connection", "connection refused", "no such host")
+PROGRESS = ISSUE_DIR / ".publish_progress.json"
+
+
+def gh(*args: str, input_text: str | None = None, retries: int = 8) -> str:
+    """调用 gh；遇到网络类错误时指数退避重试。"""
+    import time
+    for attempt in range(retries):
+        r = subprocess.run(["gh", *args], input=input_text, capture_output=True, text=True, encoding="utf-8")
+        if r.returncode == 0:
+            return r.stdout.strip()
+        err = r.stderr.strip()
+        if attempt < retries - 1 and any(e.lower() in err.lower() for e in NETWORK_ERRORS):
+            time.sleep(min(2 ** attempt, 30))
+            continue
+        raise RuntimeError(f"gh {' '.join(args[:3])}… 失败：{err}")
+    raise AssertionError("unreachable")
 
 
 def load():
@@ -123,20 +136,38 @@ def main() -> None:
         STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
         print(f"  已创建 {i['rid']} → #{state[i['rid']]}")
 
-    # 3. 正文与依赖
+    # 3. 正文与依赖（记录进度，中断后重跑只处理未完成的部分）
+    import hashlib
+    prog = json.loads(PROGRESS.read_text(encoding="utf-8")) if PROGRESS.exists() else {"body": {}, "deps": []}
+    def save_prog():
+        PROGRESS.write_text(json.dumps(prog, indent=2, ensure_ascii=False), encoding="utf-8")
+    failed = []
     for i in issues:
         num = state[i["rid"]]
-        gh("issue", "edit", str(num), "-R", REPO, "--body-file", "-", input_text=replace_ids(i["body"], state))
+        text = replace_ids(i["body"], state)
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+        if prog["body"].get(i["rid"]) != digest:
+            gh("issue", "edit", str(num), "-R", REPO, "--body-file", "-", input_text=text)
+            prog["body"][i["rid"]] = digest
+            save_prog()
         for d in i["dep_rids"]:
-            if d not in state:
-                continue  # 依赖所在的里程碑尚未发布
+            edge = f"{i['rid']}<-{d}"
+            if d not in state or edge in prog["deps"]:
+                continue  # 依赖所在的里程碑尚未发布，或已经建立
             try:
                 dep_id = json.loads(gh("api", f"repos/{REPO}/issues/{state[d]}"))["id"]
                 gh("api", "-X", "POST", f"repos/{REPO}/issues/{num}/dependencies/blocked_by", "-F", f"issue_id={dep_id}")
             except RuntimeError as e:
-                if "already" not in str(e).lower():
-                    print(f"  （跳过原生依赖 {i['rid']}←{d}：{str(e)[:80]}）")
+                msg = str(e).lower()
+                if "already" not in msg and "exists" not in msg:
+                    failed.append(edge)
+                    print(f"  （原生依赖未建立 {edge}：{str(e)[:80]}）")
+                    continue
+            prog["deps"].append(edge)
+            save_prog()
         print(f"  已更新 #{num}")
+    if failed:
+        print(f"  有 {len(failed)} 条原生依赖未建立，重跑本脚本即可补上：{failed}")
 
     # 4. 路线图
     roadmap = replace_ids((ISSUE_DIR / "README.md").read_text(encoding="utf-8"), state)
