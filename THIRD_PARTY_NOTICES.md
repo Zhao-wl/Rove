@@ -29,3 +29,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## GPUI 0.2.2
+
+Source: https://crates.io/crates/gpui/0.2.2 (Zed Industries).
+License: Apache License, Version 2.0. The original license is retained in
+`vendor/gpui/LICENSE-APACHE`. Rove modifications and reapplication instructions
+are recorded in `vendor/gpui/ROVE_PATCHES.md`.
