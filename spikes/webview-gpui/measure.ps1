@@ -13,7 +13,7 @@ try {
       $env:ROVE_WEBVIEW_PROFILE = $profile
       $out = Join-Path $runRoot "$name.jsonl"
       $err = Join-Path $runRoot "$name.stderr.log"
-      $p = Start-Process -FilePath $exe -ArgumentList '--auto' -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+      $p = Start-Process -FilePath $exe -ArgumentList '--auto' -PassThru -WindowStyle Normal -RedirectStandardOutput $out -RedirectStandardError $err
       $watch = [Diagnostics.Stopwatch]::StartNew()
       $samples = [Collections.Generic.List[object]]::new()
       while (-not $p.HasExited -and $watch.Elapsed.TotalSeconds -lt 45) {

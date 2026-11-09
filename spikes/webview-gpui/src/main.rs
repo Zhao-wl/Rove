@@ -163,7 +163,7 @@ unsafe fn configure(
 ) -> windows::core::Result<()> {
     let web = controller.CoreWebView2()?;
     let settings = web.Settings()?;
-    settings.SetIsScriptEnabled(false)?;
+    settings.SetIsScriptEnabled(std::env::var_os("ROVE_WEBVIEW_DISABLE_SCRIPT").is_none())?;
     settings.SetAreDevToolsEnabled(false)?;
     settings.SetAreDefaultContextMenusEnabled(false)?;
     settings.SetIsStatusBarEnabled(false)?;
@@ -233,16 +233,35 @@ unsafe fn configure(
         &mut token,
     )?;
     let weak = Rc::downgrade(state);
-    web.add_WebMessageReceived(&WebMessageReceivedEventHandler::create(Box::new(move |_,args| {
-        if let (Some(s),Some(a))=(weak.upgrade(),args){let mut raw=PWSTR::null();a.WebMessageAsJson(&mut raw)?;let text=CoTaskMemPWSTR::from(raw).to_string();
-            if let Ok(m)=serde_json::from_str::<Value>(&text){
-                if m["version"]!=1{return Ok(())}
-                if m["type"]=="ready"{s.borrow_mut().ready=true;log("ready",json!({"ms":start.elapsed().as_secs_f64()*1000.0,"documentScriptBlocked":m["documentScriptBlocked"]}));}
-                else if m["type"]=="pong"{if let Some(seq)=m["seq"].as_u64(){if let Some(sent)=s.borrow_mut().pings.remove(&seq){log("roundtrip",json!({"seq":seq,"ms":sent.elapsed().as_secs_f64()*1000.0}));}}}
-                else {log("message",m);}
+    web.add_WebMessageReceived(
+        &WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+            let (Some(state), Some(args)) = (weak.upgrade(), args) else { return Ok(()); };
+            let mut source = PWSTR::null();
+            args.Source(&mut source)?;
+            if !CoTaskMemPWSTR::from(source).to_string().starts_with("https://rove.local/") { return Ok(()); }
+            let mut raw = PWSTR::null();
+            args.WebMessageAsJson(&mut raw)?;
+            let text = CoTaskMemPWSTR::from(raw).to_string();
+            if text.len() > 65536 { return Ok(()); }
+            if let Ok(message) = serde_json::from_str::<Value>(&text) {
+                if message["version"] != 1 { return Ok(()); }
+                match message["type"].as_str() {
+                    Some("ready") => {
+                        state.borrow_mut().ready = true;
+                        log("ready", json!({"ms":start.elapsed().as_secs_f64()*1000.0,"documentScriptBlocked":message["documentScriptBlocked"],"localImageLoaded":message["localImageLoaded"]}));
+                    }
+                    Some("pong" | "themeApplied" | "scrollApplied") => {
+                        if let Some(seq) = message["seq"].as_u64() {
+                            if let Some(sent) = state.borrow_mut().pings.remove(&seq) {
+                                log("roundtrip", json!({"seq":seq,"kind":message["type"],"ms":sent.elapsed().as_secs_f64()*1000.0}));
+                            }
+                        }
+                    }
+                    _ => log("message", message),
+                }
             }
-        }Ok(())
-    })),&mut token)?;
+            Ok(())
+        })), &mut token)?;
     let weak = Rc::downgrade(state);
     controller.add_AcceleratorKeyPressed(
         &AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
@@ -283,7 +302,31 @@ unsafe fn configure(
         })),
         &mut token,
     )?;
-    let script = wide(include_str!("../assets/bridge.js"));
+    web.add_NavigationCompleted(
+        &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+            if let (Some(web), Some(args)) = (sender, args) {
+                let mut success = windows::core::BOOL::default();
+                args.IsSuccess(&mut success)?;
+                log("navigation_completed", json!({"success":success.as_bool()}));
+                let script = wide(include_str!("../assets/bridge.js"));
+                web.ExecuteScript(
+                    PCWSTR(script.as_ptr()),
+                    &ExecuteScriptCompletedHandler::create(Box::new(|result, value| {
+                        log(
+                            "execute_script",
+                            json!({"ok":result.is_ok(),"result":value}),
+                        );
+                        result
+                    })),
+                )?;
+            }
+            Ok(())
+        })),
+        &mut token,
+    )?;
+    let script = wide(
+        "window.__roveEarly = true; chrome.webview.postMessage({version:1,type:'earlyInjection'});",
+    );
     let navigation = web.clone();
     web.AddScriptToExecuteOnDocumentCreated(
         PCWSTR(script.as_ptr()),
@@ -415,10 +458,18 @@ impl Render for Spike {
                     let mut s = self.state.borrow_mut();
                     s.seq += 1;
                     let seq = s.seq;
+                    s.pings.retain(|_, sent| sent.elapsed().as_secs() < 5);
                     s.pings.insert(seq, Instant::now());
                     seq
                 };
-                let message = wide(&json!({"version":1,"type":"ping","seq":seq}).to_string());
+                let payload = if self.auto && seq % 120 == 60 {
+                    json!({"version":1,"type":"theme","seq":seq,"dark":(seq / 120) % 2 == 0})
+                } else if self.auto && seq % 3 == 0 {
+                    json!({"version":1,"type":"scroll","seq":seq,"y":(seq % 150)*20})
+                } else {
+                    json!({"version":1,"type":"ping","seq":seq})
+                };
+                let message = wide(&payload.to_string());
                 unsafe {
                     let _ = web.PostWebMessageAsJson(PCWSTR(message.as_ptr()));
                 }
@@ -430,7 +481,24 @@ impl Render for Spike {
         });
         window.request_animation_frame();
         div().size_full().bg(rgb(0x181b20)).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
-            .on_key_down(cx.listener(move |this,event: &gpui::KeyDownEvent,window,cx| {match event.keystroke.key.as_str(){"o"=>create(&this.state,hwnd),"h"=>{this.overlay=!this.overlay;this.mitigate=true;},"u"=>{this.overlay=!this.overlay;this.mitigate=false;},"x"=>close(&this.state),"escape"=>this.overlay=false,"t"=>{if let Some(w)=this.state.borrow().webview.as_ref(){let m=wide(&json!({"version":1,"type":"theme","dark":false,"seq":0}).to_string());unsafe{let _=w.PostWebMessageAsJson(PCWSTR(m.as_ptr()));}}},_=>{}}window.focus(&this.focus);cx.notify();}))
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "o" => create(&this.state, hwnd),
+                    "h" => { this.overlay = !this.overlay; this.mitigate = true; }
+                    "u" => { this.overlay = !this.overlay; this.mitigate = false; }
+                    "x" => close(&this.state),
+                    "escape" => this.overlay = false,
+                    "t" => {
+                        if let Some(web) = this.state.borrow().webview.as_ref() {
+                            let message = wide(&json!({"version":1,"type":"theme","dark":false,"seq":0}).to_string());
+                            unsafe { let _ = web.PostWebMessageAsJson(PCWSTR(message.as_ptr())); }
+                        }
+                    }
+                    _ => {}
+                }
+                window.focus(&this.focus);
+                cx.notify();
+            }))
             .child(div().p_6().w_1_2().child("Rove GPUI / fake editor").child(div().mt_4().child("O: open | H: mitigated popup | U: raw overlap | X: dispose | T: light theme")).child(div().mt_4().child(format!("Ready={ready}, creating={pending}, blocked={blocked}; {}",error.unwrap_or_default()))))
             .child(div().absolute().left(px(640.)).top(px(100.)).child(if ready{"Preview hidden while popup overlaps"}else{"Loading preview — skeleton"}))
             .when(self.overlay,|d|d.child(div().absolute().left(px(350.)).top(px(120.)).w(px(600.)).h(px(280.)).bg(rgb(0x334c65)).p_6().child("GPUI command palette / menu / hover / notification overlap fixture")))

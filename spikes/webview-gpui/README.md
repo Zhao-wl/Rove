@@ -26,3 +26,20 @@ checks a missing binary folder, not a truly uninstalled machine.
 
 The spike is outside the workspace and uses crates.io GPUI, independently of #5.
 Current acceptance and unverified items are listed in the report.
+
+## Script-policy comparison
+
+Default: document CSP `script-src 'none'` rejects inline/document scripts while the
+host injects its own packaged bridge through ExecuteScript. Set
+`ROVE_WEBVIEW_DISABLE_SCRIPT=1` only to reproduce the IsScriptEnabled(false)
+comparison: direct host injection runs, but event-based bridge replies were absent
+in this environment. Restore the variable after the comparison.
+
+Desktop capture may be unavailable (black screen/foreground denial). Never count
+a PrintWindow capture without child HWND contents as overlap proof. Raw JSON
+evidence is under `evidence/2026-11-09/`; visual and physical-key acceptance remains
+manual. Source and report explicitly distinguish these limits.
+
+After an auto run, execute `python spikes/webview-gpui/verify_run.py <events.jsonl>`
+to validate the runtime probes. This verifier deliberately does not mark manual
+overlap, keyboard or DPI requirements as passed.
