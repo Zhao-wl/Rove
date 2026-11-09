@@ -1,0 +1,4 @@
+# 允许依赖 gpui 的 crate（每行一个，# 开头为注释）。
+# 其余 workspace 成员一律视为核心层，由 .github/scripts/check-core-crates.ps1 检查不得依赖 gpui。
+rove-ui
+rove-app

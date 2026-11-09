@@ -1,0 +1,83 @@
+name: 任务
+description: 一个可独立验收的开发任务（功能、重构、基础设施）
+title: "[R__] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先读 [AGENTS.md](../AGENTS.md) 与 [docs/issues/README.md](../docs/issues/README.md) §0（拆分原则）。
+        任务要能被**一个会话**在一个 PR 里完成，并且有可自动或可人工核对的验收标准。
+        架构相关的内容不要写在这里，统一放到 `docs/ARCHITECTURE.md`。
+
+  - type: input
+    id: milestone
+    attributes:
+      label: 里程碑
+      description: 见 docs/PLAN.md
+      placeholder: M1 只读阅读器
+    validations:
+      required: true
+
+  - type: dropdown
+    id: difficulty
+    attributes:
+      label: 难度
+      options:
+        - "1 简单"
+        - "2 中等"
+        - "3 困难"
+        - "4 专家"
+    validations:
+      required: true
+
+  - type: input
+    id: dependencies
+    attributes:
+      label: 前置依赖
+      description: 列出 issue 编号；全部合并后才能开工。没有就写「无」。
+      placeholder: "#3、#7"
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: 为什么要做；不做的后果。链接相关文档章节（不要复述）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: goals
+    attributes:
+      label: 目标
+      description: 分节写清要交付什么。涉及接口的部分指出归属（#1 的契约）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: not-included
+    attributes:
+      label: 不包含
+      description: 明确划出边界，避免这个任务无限膨胀。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 逐条可核对，PR 描述里要逐条对照。
+      value: |
+        - [ ] 
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: 风险与提示
+      description: 已知的坑、性能敏感点、与并行会话的冲突面。
+    validations:
+      required: false
