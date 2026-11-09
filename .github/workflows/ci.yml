@@ -43,12 +43,14 @@ jobs:
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
+      # 放在 clippy 之前：一旦核心层误引入 gpui，先在这里失败，
+      # 不必等编译 gpui（clean build 实测 469 s）。
       - name: 核心层禁止依赖 gpui
         shell: pwsh
         run: pwsh -NoProfile -File .github/scripts/check-core-crates.ps1
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test
         # RUST_TEST_NOCAPTURE：让被跳过的 Unity 测试把「已跳过」写进 CI 日志。
