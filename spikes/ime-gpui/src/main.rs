@@ -45,7 +45,7 @@ fn epoch_ms() -> u128 {
         .as_millis()
 }
 
-fn stats(v: &mut Vec<f64>) -> (f64, f64, f64) {
+fn stats(v: &mut [f64]) -> (f64, f64, f64) {
     if v.is_empty() {
         return (0.0, 0.0, 0.0);
     }

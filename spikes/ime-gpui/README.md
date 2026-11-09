@@ -31,4 +31,4 @@ and abort when it differs. Manual testing requires no injection.
 
 Workspace currently has no GPUI consumer and #2 remains open. This spike proves
 only its own integration; workspace patch resolution and #2 E2E must be checked
-again after the skeleton is available. No runtime or build result is yet claimed.
+again after the skeleton is available. Release build, cargo check, strict clippy and cargo test passed on 2026-11-09. There are zero automated test cases; interactive acceptance remains pending. The executable was 6,481,408 bytes; dependency count stayed at 411 packages including the prototype. See ROVE_PATCHES.md for measurement limits.
