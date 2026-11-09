@@ -1,0 +1,5 @@
+# spikes are throwaway technical prototypes, not part of the workspace
+target/
+testdata/
+shots/
+*.log

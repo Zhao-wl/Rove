@@ -1,0 +1,12 @@
+[package]
+name = "rove-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rove"
+path = "src/main.rs"
+
+[dependencies]
+rove-ui.workspace = true

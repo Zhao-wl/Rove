@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+rove-buffer = { path = "crates/rove-buffer" }
+rove-syntax = { path = "crates/rove-syntax" }
+rove-workspace = { path = "crates/rove-workspace" }
+rove-lang-cs = { path = "crates/rove-lang-cs" }
+rove-docview = { path = "crates/rove-docview" }
+rove-ui = { path = "crates/rove-ui" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
