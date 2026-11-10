@@ -142,7 +142,10 @@ impl OpenDocuments for SingleEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton::{syntax::CSharp, text::FileDocuments};
+    use crate::skeleton::{
+        syntax::CSharp,
+        text::{default_settings, FileDocuments},
+    };
     use std::sync::Mutex;
 
     #[gpui::test]
@@ -151,7 +154,7 @@ mod tests {
         std::fs::write(root.path().join("a.cs"), "public class A {}\n").unwrap();
         std::fs::write(root.path().join("b.cs"), "public class B {}\n").unwrap();
         std::fs::write(root.path().join("bad.cs"), [0xff]).unwrap();
-        let loader = Arc::new(FileDocuments::new(root.path().into()));
+        let loader = Arc::new(FileDocuments::new(root.path().into(), default_settings()));
         let mut editor = SingleEditor::new(loader.clone(), Arc::new(CSharp));
         let events = Arc::new(Mutex::new(Vec::new()));
         let received = events.clone();

@@ -195,7 +195,7 @@ cargo test --workspace
 
 | 标记 | 最简实现与位置（相对 skeleton/） | 替换 issue |
 |---|---|---|
-| `buffer` | `text.rs`：UTF-8/BOM、不可变 TextSource、行与坐标转换 | #7 |
+| `buffer` | 已由 `rove-buffer` 实现：编码识别（BOM/自动/候选）、换行符、rope 快照与坐标转换；`text.rs` 只保留文档缓存与打开策略 | #7（已完成） |
 | `syntax` | `syntax.rs`：SyntaxService → tree-sitter C# → 逐行 scope | #9 |
 | `theme` | `appearance.rs`：ColorRegistry、Dark 2026 子集、Theme | #10 |
 | `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |
