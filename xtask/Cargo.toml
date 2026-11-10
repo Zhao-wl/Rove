@@ -23,6 +23,8 @@ rove-buffer.workspace = true
 rove-config.workspace = true
 rove-workspace.workspace = true
 rove-lang-cs.workspace = true
+rove-syntax.workspace = true
+futures-lite = "2"
 
 [[bench]]
 name = "text_source"
@@ -38,4 +40,8 @@ harness = false
 
 [[bench]]
 name = "scroll_unique"
+harness = false
+
+[[bench]]
+name = "syntax"
 harness = false

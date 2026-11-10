@@ -4656,8 +4656,18 @@ dependencies = [
 name = "rove-syntax"
 version = "0.0.1"
 dependencies = [
+ "futures-lite 2.6.1",
+ "globset",
  "rove-base",
  "rove-buffer",
+ "rove-config",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+ "tree-sitter-json",
+ "tree-sitter-md",
+ "tree-sitter-xml",
+ "tree-sitter-yaml",
 ]
 
 [[package]]
@@ -4687,8 +4697,6 @@ dependencies = [
  "rove-theme",
  "rove-workspace",
  "tempfile",
- "tree-sitter",
- "tree-sitter-c-sharp",
 ]
 
 [[package]]
@@ -6032,10 +6040,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-json"
+version = "0.24.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d727acca406c0020cffc6cf35516764f36c8e3dc4408e5ebe2cb35a947ec471"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-language"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0af592be68c579aa78a16846bd19422978c3c52e438523d45ff5d1bff1f9d4a"
+
+[[package]]
+name = "tree-sitter-md"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ed661bfe3c264961425f77cd89ad2998bf5d629e71ce8bab1e5d7e940d6246e"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-xml"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e670041f591d994f54d597ddcd8f4ebc930e282c4c76a42268743b71f0c8b6b3"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-yaml"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53c223db85f05e34794f065454843b0668ebc15d240ada63e2b5939f43ce7c97"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "try-lock"
@@ -7194,10 +7242,12 @@ name = "xtask"
 version = "0.0.1"
 dependencies = [
  "criterion",
+ "futures-lite 2.6.1",
  "rove-base",
  "rove-buffer",
  "rove-config",
  "rove-lang-cs",
+ "rove-syntax",
  "rove-workspace",
  "serde",
  "serde_json",

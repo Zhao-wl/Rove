@@ -2,7 +2,6 @@ use super::{
     appearance::{self, DarkTheme},
     commands::{Commands, StatusFeedback},
     editor::SingleEditor,
-    syntax::CSharp,
     text::{default_settings, FileDocuments},
     workspace::Folder,
 };
@@ -162,7 +161,7 @@ impl Workbench {
             tree: None,
             editor: SingleEditor::new(
                 Arc::new(FileDocuments::new(root.clone(), default_settings())),
-                Arc::new(CSharp),
+                Arc::new(rove_syntax::highlight::TreeSitterSyntax::default()),
             ),
             theme: Arc::new(DarkTheme::new().unwrap()),
             strings: appearance::strings().unwrap(),
@@ -783,7 +782,7 @@ mod tests {
                 .expect("first line painted");
             assert_eq!(line.text, "public class First {}");
             let keyword = line.spans.iter().find(|s| s.range == (0..6)).unwrap();
-            assert_eq!(keyword.scope.as_ref(), "keyword");
+            assert_eq!(keyword.scope.as_ref(), "storage.modifier.public.cs");
             assert_eq!(keyword.color, appearance::KEYWORD);
             assert_eq!(line.shape.len(), line.text.len());
             assert!(v.status().contains("UTF-8"));

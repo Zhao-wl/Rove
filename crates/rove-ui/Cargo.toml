@@ -17,8 +17,6 @@ rove-lang-cs.workspace = true
 rove-docview.workspace = true
 
 gpui.workspace = true
-tree-sitter.workspace = true
-tree-sitter-c-sharp.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

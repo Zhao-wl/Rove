@@ -3,7 +3,6 @@ pub mod appearance;
 mod commands;
 mod editor;
 mod events;
-mod syntax;
 mod text;
 mod workbench;
 mod workspace;

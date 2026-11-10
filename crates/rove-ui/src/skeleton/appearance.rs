@@ -45,7 +45,7 @@ impl Theme for DarkTheme {
     }
     fn token_style(&self, scopes: &[Arc<str>]) -> TokenStyle {
         let color = scopes.iter().rev().find_map(|s| match s.as_ref() {
-            "keyword" => Some(KEYWORD),
+            "keyword" | "storage.modifier.public.cs" => Some(KEYWORD),
             "comment" => Some(Color(0x8b, 0x94, 0x9e, 255)),
             "string" => Some(Color(0xa5, 0xd6, 0xff, 255)),
             "constant.numeric" => Some(Color(0x79, 0xc0, 0xff, 255)),

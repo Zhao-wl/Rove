@@ -27,7 +27,7 @@ struct BenchTarget {
     requires: &'static str,
 }
 
-const TARGETS: [BenchTarget; 4] = [
+const TARGETS: [BenchTarget; 5] = [
     BenchTarget {
         name: "text_source",
         requires: "",
@@ -43,6 +43,10 @@ const TARGETS: [BenchTarget; 4] = [
     BenchTarget {
         name: "scroll_unique",
         requires: "uniq.txt（先 cargo xtask gen-testdata --only uniq）",
+    },
+    BenchTarget {
+        name: "syntax",
+        requires: "",
     },
 ];
 
