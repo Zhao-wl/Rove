@@ -76,3 +76,9 @@ and parent-position notifications remain intentional benchmark instrumentation;
 measurements are not idle CPU/memory evidence. Event tokens are retained by kind
 and unsubscribed at Close. Async initialization/script strings are retained by
 completion closures. Physical-key and visible-overlap acceptance is still pending.
+
+Review reruns: `./spikes/webview-gpui/repeat-auto.ps1 -Runs 3` writes one build
+identity per log and executable SHA-256 in run manifests. Current versioned
+evidence lives under evidence/2026-11-10; older logs are explicitly historical.
+The verifier compares the exact current build-input fingerprint, so newer code
+cannot silently reuse older evidence.

@@ -7,6 +7,8 @@
 
 **当前集成判定：NO-GO（验收未齐，不等于否决 D5）。**
 
+最新版本化复跑见第8节：3次首Render有2次超过400ms，物理按键与视觉仍未验收。
+
 已实测：GPUI HWND 中异步创建 WebView2；虚拟域名页面加载；远程图片拦截；文档脚本禁止而可信桥接可用；主题/滚动消息往返；销毁后内存回落及重新创建；不存在的运行时目录可检测失败。
 
 尚不能解除 #16 的依赖：**缺少有效的重叠截图、真实键盘焦点路由与高 DPI 实测**。当前宿主无法把原型可靠置前，屏幕裁剪得到黑屏；PrintWindow 又没有包含 WebView2 子 HWND，均已排除，不能冒充视觉通过。
@@ -33,7 +35,9 @@
 - 通信探针每 ≥16ms 发送一条，滚动事件以 requestAnimationFrame 合并。该场景持续刷新，**不是静止空闲测量**。
 - `first_render` 是进程内 main→首次 Render 回调，不是外部进程启动→显示器首帧。controller 与 ready 时间从开始创建计时，彼此不能混用。
 
-## 3. 六次实测数据
+## 3. 历史六次实测数据（旧构建，非当前源码验收）
+
+这些日志来自开发过程中的早期二进制，未记录 commit/构建身份；缺少当前源码必写的 `localImageLoaded`/`kind` 字段，不能作为当前源码的验收证据，也不能用当前 `verify_run.py` 当作同一 schema 检查。原始文件保留不补字段。`final-communication.jsonl` 有 kind、缺 localImageLoaded；旧 acceptance.jsonl 虽有两者，仍缺构建身份。下表仅保留历史观察，最新版本化复跑见第8节。
 
 每行取该进程第一次创建；同进程第二次创建另见回收项。内存取 4–10 秒样本中位数。
 
@@ -46,7 +50,7 @@
 | 复用 2 | 304.43 | 252.64 | 2386.72 | 326.38 | 242.30 | 8 |
 | 复用 3 | 297.27 | 282.66 | 2444.86 | 323.92 | 241.45 | 8 |
 
-这六次首次 Render 均 <400ms，且 WebView2 到 1 秒才创建，证明原型采用了按需创建路径；**不能据此保证产品冷启动 <400ms**。其他烟雾运行出现过 748ms、2548ms 的首次 Render，宿主存在明显调度波动；最终应由 #4 用产品基准测量。
+这六次首次 Render 均 <400ms，且 WebView2 到 1 秒才创建，证明原型采用了按需创建路径；**不能据此保证产品冷启动 <400ms**。其他烟雾运行出现过 748ms、2548ms 的首次 Render，宿主存在明显调度波动；评审者另报告一次646ms首帧，不能隐藏在六次低值之外（未附原始日志，不混入本仓库样本）。最终应由 #4 用产品基准测量。
 
 ready 约 2.4–2.6 秒，骨架占位是必需项。controller→ready 之间约两秒的来源尚未归因，不应把 controller 时间当作可交互时间。
 
@@ -77,7 +81,7 @@ PrintWindow 截图只显示 GPUI 内容，缺失子 HWND，不能用来证明原
 
 ### 4.3 通信、主题和滚动
 
-六次性能试验各收到 261–271 个 ping 回复；各次 p50 为 **0.776–0.944ms**，p99 为 **1.733–2.342ms**。
+历史六次试验各收到 261–271 条未标注 kind 的往返回复，不能称为 ping-only，也不能与当前混合 pong/scrollApplied/themeApplied 总量混淆；各次 p50 为 **0.776–0.944ms**，p99 为 **1.733–2.342ms**。
 
 另一次包含真实样式变更和滚动的运行（`final-communication.jsonl`）：
 
@@ -89,7 +93,7 @@ PrintWindow 截图只显示 GPUI 内容，缺失子 HWND，不能用来证明原
 
 同时收到 55 条页面 scroll 事件；themeApplied 样本仅用于功能及单次延迟观察，不作稳定性结论。主题变更没有创建新 controller。滚动的布局误差与长文档源码行映射属于 #29，未在本 spike 实现。
 
-在此负载下约 60Hz 的小 JSON 通信可行；**不是证明频率上限**，也没有验证 120Hz 或满负载。推荐同帧合并、只保留最新滚动目标、不累计队列。页面回送应带 source/seq，避免双向回声循环。
+这些历史低延迟样本不能保证每次回复都在一帧内。评审者在当前版本复跑报告 405 次中 8 次超过16ms（约1.98%），p99约36ms、最大约114ms；该批原始日志未附在仓库，作为评审观测单列，不混入本次重跑统计。滚动同步必须允许跨多帧延迟：非阻塞投递、同帧合并、只保留最新目标、丢弃旧seq/旧documentId应答、禁止无界排队，页面回送加来源标记避免回声循环。60Hz只是发包探针速率，不是延迟保证或频率上限；120Hz和满负载尚未验证。
 
 协议草案：`{version:1,type,seq,...payload}`。宿主→页面：ping、theme、scroll；页面→宿主：ready、pong、themeApplied、scrollApplied、scroll。原型检查来源、版本和 64KiB 大小，超时清理未应答探针；产品还需 documentId/generation、字段 schema、过期文档丢弃和映射版本。
 
@@ -128,10 +132,53 @@ PrintWindow 截图只显示 GPUI 内容，缺失子 HWND，不能用来证明原
 
 未完成：有效重叠截图/录屏；四类真实弹出控件逐项验收；键盘与鼠标焦点实测；125%/150% 和跨屏；真正无运行时环境；OS 网络拦截；静止空闲预算；外部首帧时序；300 秒回收与长期循环；独立预览预算具体数值的制定（适用范围已确认）。
 
-## 7. 构建验证与官方依据
+## 7. 构建环境、选型与许可证
+
+2026-11-10 本机查询：Windows 11 Pro 10.0.22631；Intel Core i7-11700 @2.50GHz，8核16线程；物理内存51,247,124,480字节（约47.73GiB）；NVIDIA GTX1060 6GB（驱动27.21.14.6137）与Intel UHD750（32.0.101.7088），另有GameViewer虚拟显示驱动。虚拟显示存在不代表本次获得有效画面，DPI/截图验收仍待补齐。
+
+没有实作或测量 wry 子webview方案。本次直接选择 webview2-com 是为了在现有GPUI HWND上精确控制COM事件、资源拦截和生命周期，不能宣称“wry试过但失败”或存在实测性能优劣。
+
+构建必须使用 MSVC + Windows SDK，`where.exe fxc` 应成功；本机为 `D:\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe`。新的构建身份生成还需要Git在PATH中。CI应初始化VS开发者环境并检查这些前提；CI文件由F链负责，本PR未修改。
+
+直接依赖版本与许可记录以本原型Cargo.lock及上游包为准，见下方依赖表。WebView2运行时是系统独立组件，不能把Rust绑定的MIT许可当作运行时许可。完整传递依赖许可审计仍属发布流程。
+
+| 直接依赖 | 锁定版本 | 上游许可 |
+|---|---|---|
+| gpui | 0.2.2 | Apache-2.0 |
+| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 |
+| webview2-com | 0.38.2 | MIT |
+| windows | 0.61.3 | MIT OR Apache-2.0 |
+
+`img-src https:` 是有意的拦截测试夹具：让远程图片请求到达WebResourceRequested，验证403与计数，当前阻止远程图片依赖该拦截层，并非CSP本身禁止。产品应在净化/资源重写后收窄CSP，结合文档级放行机制；不直接照搬这个夹具策略。
+
+SetBounds/SetIsVisible已改为值变化时调用，事件token按类型保存并在Close前取消订阅，异步创建和脚本参数由完成回调保活。持续请求帧和父窗口位置通知仍是探针行为；不能把这些结果称为静止空闲测量。
+
+### 构建验证与官方依据
 
 workspace 与原型 fmt、严格 clippy（`-D warnings`）通过；workspace test 与原型 release test 通过，但当前是零测试用例，不能替代运行证据。未执行 #2 E2E，因为 #2 尚未提供。
 
 - [Windowed vs. Visual hosting](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/windowed-vs-visual-hosting)
 - [ICoreWebView2：注入与消息 API](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2)
 - [ICoreWebView2Settings：脚本设置语义](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2settings)
+
+
+## 8. 2026-11-10 评审复跑（当前源码自动验收子集）
+
+构建源码 commit `50c93cbbdf0f70484cd5e22a25f9af83447de013`，源码 Git-blob 指纹 `90a03d84e611e495e61e145ee12431d10a87fb22`，构建时间 `2026-11-10T01:59:51+00:00`，dirty=true（构建输入已提交，报告、验收脚本和证据目录仍有未提交更新）。可执行文件 SHA-256：`06951e78fcb5f8ccc83cf330d44860ef23d669fa07d8d52df19a3de419e2f65c`。日志及清单在 `spikes/webview-gpui/evidence/2026-11-10/`；上一轮保存在其 `earlier-eb3c41f/` 子目录。verify_run.py按当前构建输入重新计算源码指纹，拒绝不匹配证据；文档更新不影响该指纹。
+
+`repeat-auto.ps1 -Runs 3` 使用同一二进制、每次全新profile；不是OS冷缓存试验，也没有重测六次内存表。三次均通过脚本/资源阻止、本地图片、主题、双向滚动、创建与重建的运行校验。
+
+| 运行 | 首次Render ms | 总回复 | p99 ms | 最大 ms | >16ms 次数/比例 | key_route |
+|---|---:|---:|---:|---:|---:|---:|
+| auto-1 | 368.47 | 443 | 2.636 | 3.756 | 0 / 0.00% | 0 |
+| auto-2 | 408.80 | 430 | 2.707 | 3.911 | 0 / 0.00% | 0 |
+| auto-3 | 379.48 | 431 | 4.075 | 12.085 | 0 / 0.00% | 0 |
+
+总计1304次回复、>16ms为0次；这是本批观测，不表示评审报告的8/405次慢回复已被消除，更不能归因为本次减少SetBounds调用（没有受控A/B）。逐类型统计在summary.json，包含pong、scrollApplied和themeApplied，不把混合回复称为ping-only。主题每轮仅4样本，不据此推导稳定尾延迟。
+
+**三次首Render中1次超过400ms，不能宣布启动达标。** 该计时仍不是外部首帧；保留评审646ms及历史748/2548ms观测作为风险信息，不只展示低值。
+
+三次key_route全部为0：无人值守运行不提供物理按键证据；本次仍未获得有效重叠截图，遮挡/焦点阻塞未解除，PR保持Draft。
+
+构建：原型fmt、严格clippy、release build/test通过（Rust目标0用例）；Python统计回归3/3；运行验收3/3。这三种证据分开报告。#5的4项UTF-16测试属于另一个PR，不混入此处。

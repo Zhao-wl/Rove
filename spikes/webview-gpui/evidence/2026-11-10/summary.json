@@ -1,0 +1,188 @@
+[
+  {
+    "trial": "auto-1",
+    "provenance": {
+      "schema": 2,
+      "commit": "50c93cbbdf0f70484cd5e22a25f9af83447de013",
+      "source_git_blob": "90a03d84e611e495e61e145ee12431d10a87fb22",
+      "dirty": "true",
+      "built_unix_seconds": "1794275991",
+      "benchmark_mode": "continuous_frame_probe_not_idle"
+    },
+    "evidence_class": "versioned",
+    "first_render_ms": [
+      368.47249999999997
+    ],
+    "ready": [
+      {
+        "ms": 2473.2213,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      },
+      {
+        "ms": 2364.364,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      }
+    ],
+    "key_route_count": 0,
+    "all_replies": {
+      "count": 443,
+      "p50_ms": 0.5511,
+      "p99_ms": 2.6357,
+      "max_ms": 3.7559,
+      "over_16ms_count": 0,
+      "over_16ms_percent": 0.0
+    },
+    "by_kind": {
+      "pong": {
+        "count": 296,
+        "p50_ms": 0.4667,
+        "p99_ms": 2.1197,
+        "max_ms": 3.7559,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "scrollApplied": {
+        "count": 143,
+        "p50_ms": 0.865,
+        "p99_ms": 3.0196,
+        "max_ms": 3.1292,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "themeApplied": {
+        "count": 4,
+        "p50_ms": 1.3676000000000001,
+        "p99_ms": 2.2015,
+        "max_ms": 2.2015,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      }
+    }
+  },
+  {
+    "trial": "auto-2",
+    "provenance": {
+      "schema": 2,
+      "commit": "50c93cbbdf0f70484cd5e22a25f9af83447de013",
+      "source_git_blob": "90a03d84e611e495e61e145ee12431d10a87fb22",
+      "dirty": "true",
+      "built_unix_seconds": "1794275991",
+      "benchmark_mode": "continuous_frame_probe_not_idle"
+    },
+    "evidence_class": "versioned",
+    "first_render_ms": [
+      408.7962
+    ],
+    "ready": [
+      {
+        "ms": 2551.9148,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      },
+      {
+        "ms": 2494.6326,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      }
+    ],
+    "key_route_count": 0,
+    "all_replies": {
+      "count": 430,
+      "p50_ms": 0.6309,
+      "p99_ms": 2.7065,
+      "max_ms": 3.9114,
+      "over_16ms_count": 0,
+      "over_16ms_percent": 0.0
+    },
+    "by_kind": {
+      "pong": {
+        "count": 287,
+        "p50_ms": 0.5595,
+        "p99_ms": 2.1316,
+        "max_ms": 3.9114,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "scrollApplied": {
+        "count": 139,
+        "p50_ms": 0.8978,
+        "p99_ms": 2.7065,
+        "max_ms": 2.7453999999999996,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "themeApplied": {
+        "count": 4,
+        "p50_ms": 0.4103,
+        "p99_ms": 2.748,
+        "max_ms": 2.748,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      }
+    }
+  },
+  {
+    "trial": "auto-3",
+    "provenance": {
+      "schema": 2,
+      "commit": "50c93cbbdf0f70484cd5e22a25f9af83447de013",
+      "source_git_blob": "90a03d84e611e495e61e145ee12431d10a87fb22",
+      "dirty": "true",
+      "built_unix_seconds": "1794275991",
+      "benchmark_mode": "continuous_frame_probe_not_idle"
+    },
+    "evidence_class": "versioned",
+    "first_render_ms": [
+      379.4809
+    ],
+    "ready": [
+      {
+        "ms": 2595.0459,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      },
+      {
+        "ms": 2422.3549000000003,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      }
+    ],
+    "key_route_count": 0,
+    "all_replies": {
+      "count": 431,
+      "p50_ms": 0.5315,
+      "p99_ms": 4.0748,
+      "max_ms": 12.0854,
+      "over_16ms_count": 0,
+      "over_16ms_percent": 0.0
+    },
+    "by_kind": {
+      "pong": {
+        "count": 288,
+        "p50_ms": 0.49450000000000005,
+        "p99_ms": 4.0748,
+        "max_ms": 6.7437000000000005,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "scrollApplied": {
+        "count": 139,
+        "p50_ms": 0.6799,
+        "p99_ms": 8.839400000000001,
+        "max_ms": 12.0854,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "themeApplied": {
+        "count": 4,
+        "p50_ms": 0.4308,
+        "p99_ms": 0.9547,
+        "max_ms": 0.9547,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      }
+    }
+  }
+]

@@ -11,13 +11,23 @@ import re
 for field in ('commit', 'source_git_blob'):
     assert re.fullmatch(r'[0-9a-f]{40}', starts[0].get(field, '')), f'Missing build {field}'
 assert int(starts[0]['built_unix_seconds']) > 0
+# Match exact build inputs, not just a plausible commit-shaped string.
+import hashlib
+root = Path(__file__).resolve().parent
+payload = bytearray()
+for name in ('build.rs', 'Cargo.toml', 'Cargo.lock', 'src/main.rs', 'assets/bridge.js', 'assets/index.html', 'assets/local.svg'):
+    payload.extend(name.encode()); payload.append(0)
+    payload.extend((root / name).read_bytes()); payload.append(0)
+expected = hashlib.sha1(b'blob ' + str(len(payload)).encode() + b'\0' + payload).hexdigest()
+assert starts[0]['source_git_blob'] == expected, 'SOURCE MISMATCH: evidence was produced by different build inputs'
+
 ready = [e['data'] for e in events if e['event'] == 'ready']
 assert len(ready) == 2, 'Expected creation and recreation to become ready'
 assert all(e['documentScriptBlocked'] is True for e in ready), 'Document script executed'
 assert all(e.get('localImageLoaded') is True for e in ready), 'Local mapped image did not decode'
 assert sum(e['event'] == 'resource_blocked' for e in events) == 2, 'Missing blocked-resource evidence'
 assert sum(e['event'] == 'closed' for e in events) == 2, 'Missing lifecycle evidence'
-assert not any(e['event'] == 'error' for e in events), 'Runtime error'
+assert not any(e['event'] in ('error', 'layout_error') for e in events), 'Runtime error'
 for kind in ('pong', 'themeApplied', 'scrollApplied'):
     assert any(e['event'] == 'roundtrip' and e['data'].get('kind') == kind for e in events), f'Missing {kind}'
 assert any(e['event'] == 'message' and e['data'].get('type') == 'scroll' for e in events), 'Missing page-to-host scroll'
