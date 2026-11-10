@@ -89,7 +89,7 @@ Get-Content "$runDir\events.jsonl" | Select-String 'key_route|ready|controller|c
 - [ ] WV-5：125%或150%下重新启动，打开预览、拖动窗口尺寸、测试 WV-2～4 和 KEY-1～5；网页占右半区、无缝隙/越界，鼠标点击与内容对齐。
 - [ ] WV-6（有条件）：两个不同缩放显示器之间往返拖动窗口，重复上项；记录两屏比例。只有一屏就写未测。
 - [ ] WV-7：网页显示后返回宿主，按 `t`；应变成浅色，页面内容仍在，日志不新增 controller。`t` 仅切浅色，不是主题切换开关。
-- [ ] WV-8：返回宿主按 `x` 销毁，再按 `o` 重建，重复三次；网页可重新加载、没有遗留空白子窗口或崩溃。该操作是立即回收，不是300秒定时回收验收。
+- [ ] WV-8：返回宿主按 `d` 立即销毁（在下一帧执行，不在按键回调里），再按 `o` 重建，重复三次；网页可重新加载、没有遗留空白子窗口或崩溃。`x` 现在只隐藏并保留控制器，见文末“关闭保留与延迟回收”。
 
 ## 5. 不需要你现在勉强补测的项目
 
@@ -136,3 +136,16 @@ Hwnd已有100%/125%、双屏及Tab真实通过记录；Baseline是已确认不�
 3. 继续检查边缘命中、双屏与已通过按键以防回归；模式改变后的内存与300秒全释放不得沿用旧指标。
 
 最新复验已确认Transparent四态不透底、两模式混合DPI/主题/KEY-1～9通过。下一轮重点仅是Transparent125%原始短按的200ms X→O：先确认host_focus_restored.ok=true；host_key附native_focus，若没有o需保留原始输入发送记录和按键持续时间。不要只用更长按键替代首轮失败条件。
+
+## 关闭保留与延迟回收（f7e3cf6 之后）
+
+`x` 只隐藏预览并保留控制器，到 `ROVE_WEBVIEW_IDLE_MS`（默认 300000，对应 `rove.markdown.webviewIdleTimeout`）后才在渲染帧里真正 `Close()`；超时前按 `o` 直接重新显示，日志为 `dismissed` → `reshown`，不再有 `open_requested`/`ready`。`d` 请求立即销毁（同样在下一帧执行）。
+
+复验：
+1. Transparent 125%，调整尺寸、按 `t` 后，原始短按 `x`→约200ms→`o` 至少三轮：每轮应有 `dismissed`、`host_focus_restored.ok=true`、`host_key=o`、`reshown`，网页正文立刻可见；关闭期间右侧显示“Preview closed — controller retained until idle timeout”，不透底。
+2. `$env:ROVE_WEBVIEW_IDLE_MS='1000'` 后启动：`x` 后等 1.5 秒应出现 `dispose`/`closed`，再按 `o` 重建并 `ready`。
+3. 自动复现脚本 `shortpress.ps1`（每次注入前校验前台窗口是原型，否则中止）：
+
+```powershell
+./spikes/webview-gpui/shortpress.ps1 -Exe ./spikes/webview-gpui/target/release/webview-gpui.exe -Mode Transparent -Trials 30 -Prep -Out ./spikes/webview-gpui/runs/shortpress
+```
