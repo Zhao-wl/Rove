@@ -20,6 +20,7 @@ toml = "0.8"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 rove-base.workspace = true
 rove-buffer.workspace = true
+rove-config.workspace = true
 rove-workspace.workspace = true
 rove-lang-cs.workspace = true
 

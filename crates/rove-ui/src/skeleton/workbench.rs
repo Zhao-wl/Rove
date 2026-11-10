@@ -3,7 +3,7 @@ use super::{
     commands::{Commands, StatusFeedback},
     editor::SingleEditor,
     syntax::CSharp,
-    text::FileDocuments,
+    text::{default_settings, FileDocuments},
     workspace::Folder,
 };
 use crate::{
@@ -160,7 +160,10 @@ impl Workbench {
     pub fn new(root: PathBuf, started: Instant, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             tree: None,
-            editor: SingleEditor::new(Arc::new(FileDocuments::new(root.clone())), Arc::new(CSharp)),
+            editor: SingleEditor::new(
+                Arc::new(FileDocuments::new(root.clone(), default_settings())),
+                Arc::new(CSharp),
+            ),
             theme: Arc::new(DarkTheme::new().unwrap()),
             strings: appearance::strings().unwrap(),
             contributions: appearance::contributions().unwrap(),
