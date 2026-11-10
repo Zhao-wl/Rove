@@ -224,6 +224,6 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 2. **读取**：解析 JSONC（允许注释和尾逗号）。支持语言级覆盖（如 `"[csharp]": {...}`）。Rove 不支持的设置项静默忽略，不报错，不提示（因为同一个文件里本来就有大量 VS Code 专有的设置项）。
 3. **写入**：只有当用户在 Rove 中主动修改设置时才写入（例如切换主题、修改字号）。写入时**保留原有的注释、格式和键的顺序**，只修改目标键。写入前先备份到 `%LOCALAPPDATA%\Rove\settings-backup\`。
 4. **Rove 专有设置**：放在 `rove.*` 命名空间下（如 `rove.index.cacheDir`、`rove.largeFile.threshold`）。VS Code 会把它们当作未知设置并忽略，两边互不干扰。
-5. **默认值的差异**：如果 Rove 需要与 VS Code 不同的默认值（例如默认排除 Unity 的大目录），**只在用户没有设置该项时生效**，并且写成 `rove.*` 中的附加规则（如 `rove.files.extraExclude`），而不是改写用户的 VS Code 设置项。
+5. **默认值的差异**：如果 Rove 需要与 VS Code 不同的默认值（例如默认排除 Unity 的大目录），**只在用户没有设置该项时生效**，并且写成 `rove.*` 中的附加规则（如 `rove.files.extraExclude`），而不是改写用户的 VS Code 设置项。 **明确例外**（已确认，见 `compat/SETTINGS.md` §3）：`files.autoGuessEncoding`、`files.candidateGuessEncodings`、`workbench.editorAssociations`、`markdown.preview.doubleClickToSwitchToEditor` 可以直接使用 Rove 的缺省值，但只在用户未设置时生效，绝不自动写回共用文件；其他差异仍通过 `rove.*` 附加规则表达。
 6. **热加载**：监听这两个文件。VS Code 修改了设置时，Rove 实时生效，反之亦然。
 7. **键位**：`keybindings.json` 中的命令 ID 如果在 Rove 中不存在，就忽略；`when` 子句中 Rove 不认识的上下文键，一律视为 false。

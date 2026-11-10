@@ -8,3 +8,7 @@
 pub mod index;
 
 pub use index::{CsIndex, Location, Occurrence, Role, SymbolRecord};
+
+// Keep query contracts namespaced: storage exports above (notably Location) remain
+// separate from navigation targets and coordinate units; avoid wildcard re-exports.
+pub mod query;

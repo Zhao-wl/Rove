@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rove-base.workspace = true
+rove-syntax.workspace = true
 memmap2 = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
 
