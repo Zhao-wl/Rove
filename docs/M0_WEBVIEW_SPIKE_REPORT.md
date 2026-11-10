@@ -246,3 +246,5 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 焦点方向依据：[ICoreWebView2Controller::MoveFocus](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller)，NEXT进入首元素、PREVIOUS进入末元素。
 
 本轮自动回归：同一新构建分别在Baseline/Hwnd/Transparent模式运行，3/3严格校验通过。证据在 `evidence/2026-11-10-composition/`，各有模式字段、构建指纹、exe哈希及汇总。三模式均未操作物理按键，不能算KEY-5/9或可见性通过。桥接逻辑测试覆盖Tab/Shift+Tab以及非Tab/不可信事件拒绝；3项Rust阶段回归、3项Python统计回归通过；workspace fmt/clippy/test和原型严格clippy/release build/test通过。
+
+合入#2后再次rebase至main `d645fac`，workspace fmt/严格clippy与56项测试通过（2个环境相关doc-test忽略）。原型构建输入未因rebase改变，三模式证据继续通过当前源码指纹检查。
