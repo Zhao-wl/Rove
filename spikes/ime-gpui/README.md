@@ -52,3 +52,5 @@ the collapsed caret exclusion rectangle can be zero-width. Record screenshots or
 video plus `IME bounds_for_range` logs; logs alone do not prove candidate visibility.
 The updated mixed CJK/emoji probe now uses composition-relative UTF-16 offsets.
 This README is the self-contained #5 manual entrypoint; it does not require #81.
+
+回归测试单独运行：`cargo test --manifest-path spikes/ime-gpui/Cargo.toml`（workspace 测试不包含该原型）。

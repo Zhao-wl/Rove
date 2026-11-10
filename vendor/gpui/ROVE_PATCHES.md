@@ -41,7 +41,7 @@ Release build and prototype cargo check/clippy succeeded on 2026-11-09. The fres
 
 ### R46 UTF-16 integration requirement (second review)
 
-EntityInputHandler must interpret new_selected_range_utf16 relative to the replacement composition text, convert UTF-16 offsets inside that text to UTF-8 byte offsets, then add the replacement start. Do not convert against the full document: non-ASCII prefixes can produce out-of-bounds selections. See spikes/ime-gpui/src/ime_selection.rs and its four regression tests.
+EntityInputHandler must interpret new_selected_range (UTF-16) relative to the replacement composition text, convert UTF-16 offsets inside that text to UTF-8 byte offsets, then add the replacement start. Do not convert against the full document: non-ASCII prefixes can produce out-of-bounds selections. See spikes/ime-gpui/src/ime_selection.rs and its four regression tests.
 
 The spike is excluded from the workspace: cargo test --workspace does not execute these tests. Run cargo test --manifest-path spikes/ime-gpui/Cargo.toml separately.
 
