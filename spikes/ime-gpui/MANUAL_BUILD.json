@@ -1,0 +1,8 @@
+{
+  "sourceCommit": "a443093351b44a2d8fedf0fda501a28b856af965",
+  "exeSha256": "f9b5ee2dd28c5cd500f53b52d3ec7a0886ef95d59bada44eb33a4c82d32e3073",
+  "recordedUtc": "2026-11-10T06:05:53.8718827Z",
+  "build": "cargo build --manifest-path spikes/ime-gpui/Cargo.toml --release -j 2",
+  "tests": "4/4 release tests passed",
+  "scope": "New identified build for next manual comparison; does not establish provenance of earlier manual runs"
+}
