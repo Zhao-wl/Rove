@@ -141,7 +141,7 @@ Hwnd已有100%/125%、双屏及Tab真实通过记录；Baseline是已确认不�
 
 `x` 只隐藏预览并保留控制器，到 `ROVE_WEBVIEW_IDLE_MS`（默认 300000，对应 `rove.markdown.webviewIdleTimeout`）后才在渲染帧里真正 `Close()`；超时前按 `o` 直接重新显示，日志为 `dismissed` → `reshown`，不再有 `open_requested`/`ready`。`d` 请求立即销毁（同样在下一帧执行）。
 
-复验：
+复验（第 1 项 125% 物理短按已暂缓，不阻塞本 PR；需要时再执行）：
 1. Transparent 125%，调整尺寸、按 `t` 后，原始短按 `x`→约200ms→`o` 至少三轮：每轮应有 `dismissed`、`host_focus_restored.ok=true`、`host_key=o`、`reshown`，网页正文立刻可见；关闭期间右侧显示“Preview closed — controller retained until idle timeout”，不透底。
 2. `$env:ROVE_WEBVIEW_IDLE_MS='1000'` 后启动：`x` 后等 1.5 秒应出现 `dispose`/`closed`，再按 `o` 重建并 `ready`。
 3. 自动复现脚本 `shortpress.ps1`（每次注入前校验前台窗口是原型，否则中止）：
