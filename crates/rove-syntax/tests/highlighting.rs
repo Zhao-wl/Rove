@@ -354,6 +354,14 @@ fn settings_override_file_associations_and_highlighting_limits() {
     impl Settings for Overrides {
         fn read(&self, key: &str, scope: &Scope) -> Result<Value> {
             match key {
+                "[csharp]" => Ok(Value::Object(Arc::new(
+                    [(
+                        "editor.maxTokenizationLineLength".into(),
+                        Value::Number(2500.0),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ))),
                 "files.associations" => Ok(Value::Object(Arc::new(
                     [
                         ("*.asset".into(), Value::String("json".into())),
@@ -397,4 +405,31 @@ fn settings_override_file_associations_and_highlighting_limits() {
     let result = parse(&syntax, "json", &format!("true\n{}", " ".repeat(59)), 2);
     assert!(result.snapshot.tokens(Line(0)).unwrap().is_empty());
     assert!(result.snapshot.tokens(Line(1)).unwrap().is_empty());
+}
+
+#[test]
+fn invalid_edit_on_matching_version_falls_back_to_full_parse() {
+    let service = TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::ZERO)
+        .document();
+    parse(&service, "json", "[true, 1]", 1);
+    let edit = service.with_edit(replacement(1, 1, 4, "false"));
+    // The real snapshot changed a second token as well. The supplied edit cannot be reused.
+    let updated = parse(&edit, "json", "[false, 2]", 2);
+    assert_eq!(updated.snapshot.version(), Version(2));
+    assert_eq!(updated.previous, Some(Version(1)));
+    assert!(updated.changed_lines.is_none());
+}
+
+#[test]
+fn markdown_inline_regions_keep_paragraph_boundaries() {
+    let input = "*open\n\nclose*\n\n**bold**\n";
+    let result = parse(&TreeSitterSyntax::default(), "markdown", input, 1);
+    assert!(result.snapshot.tokens(Line(0)).unwrap().is_empty());
+    assert!(result.snapshot.tokens(Line(2)).unwrap().is_empty());
+    assert!(result.snapshot.tokens(Line(4)).unwrap().iter().any(|t| {
+        t.scopes
+            .iter()
+            .any(|s| s.as_ref() == "markup.bold.markdown")
+    }));
 }

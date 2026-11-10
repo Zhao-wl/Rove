@@ -12,7 +12,8 @@ use std::{
 };
 use tree_sitter::{InputEdit, Tree};
 
-pub(super) struct RowRanges(Vec<Range<usize>>);
+#[derive(Clone)]
+pub(super) struct RowRanges(Arc<[Range<usize>]>);
 
 impl RowRanges {
     pub fn new(text: &dyn TextSource, count: usize, work: &Work<'_>) -> Result<Self> {
@@ -24,7 +25,7 @@ impl RowRanges {
             let line = text.line_range(Line(row as u64))?;
             ranges.push(line.start().0 as usize..line.end().0 as usize);
         }
-        Ok(Self(ranges))
+        Ok(Self(ranges.into()))
     }
 
     pub fn len(&self) -> usize {

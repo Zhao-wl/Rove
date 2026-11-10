@@ -188,7 +188,11 @@ impl Grammar {
         output: &mut Vec<Capture>,
         work: &Work<'_>,
     ) -> Result<()> {
-        let highlighter = Highlighter { source, work };
+        let mut highlighter = Highlighter {
+            source,
+            work,
+            cursor: QueryCursor::new(),
+        };
         highlighter.highlight(self, tree.root_node(), scan, &[], 0, output)
     }
 }
@@ -213,11 +217,12 @@ fn parse(
 struct Highlighter<'a, 'b> {
     source: &'a [u8],
     work: &'a Work<'b>,
+    cursor: QueryCursor,
 }
 
 impl Highlighter<'_, '_> {
     fn highlight(
-        &self,
+        &mut self,
         grammar: Grammar,
         root: Node<'_>,
         scan: Range<usize>,
@@ -230,12 +235,12 @@ impl Highlighter<'_, '_> {
         }
         self.work.check()?;
         let highlights = grammar.highlight_query();
-        let mut cursor = QueryCursor::new();
-        cursor.set_byte_range(scan);
+        self.cursor.set_byte_range(scan);
         let mut stop = |_: &_| self.work.cancelled();
         let options = QueryCursorOptions::new().progress_callback(&mut stop);
         let mut matches =
-            cursor.matches_with_options(&highlights.query, root, self.source, options);
+            self.cursor
+                .matches_with_options(&highlights.query, root, self.source, options);
         while let Some(m) = matches.next() {
             for (index, c) in m.captures.iter().enumerate() {
                 let span = c.node.byte_range();
@@ -266,6 +271,7 @@ impl Highlighter<'_, '_> {
                 }
             }
         }
+        drop(matches);
         self.work.check()?;
         if grammar == Grammar::Markdown && depth < 16 {
             self.markdown_children(root, included, depth + 1, output)?;
@@ -274,7 +280,7 @@ impl Highlighter<'_, '_> {
     }
 
     fn markdown_children(
-        &self,
+        &mut self,
         root: Node<'_>,
         parent: &[TreeRange],
         depth: usize,

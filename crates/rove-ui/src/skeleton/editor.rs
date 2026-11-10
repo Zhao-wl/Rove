@@ -3,11 +3,15 @@ use super::events::EventBus;
 use crate::documents::*;
 use rove_base::*;
 use rove_buffer::{Document, Documents};
-use rove_syntax::{SyntaxService, SyntaxSnapshot};
+use rove_syntax::{
+    highlight::{DocumentSyntax, TreeSitterSyntax},
+    SyntaxService, SyntaxSnapshot,
+};
 use std::sync::Arc;
 pub struct Opened {
     pub document: Arc<Document>,
     pub syntax: Arc<dyn SyntaxSnapshot>,
+    syntax_session: DocumentSyntax,
     pub position: Option<Position>,
 }
 pub struct Pending {
@@ -18,14 +22,14 @@ pub struct SingleEditor {
     pub current: Option<Opened>,
     pub loading: bool,
     loader: Arc<dyn Documents>,
-    syntax: Arc<dyn SyntaxService>,
+    syntax: TreeSitterSyntax,
     pending: Option<Pending>,
     cancel: Cancellation,
     serial: u64,
     events: EventBus<OpenEvent>,
 }
 impl SingleEditor {
-    pub fn new(loader: Arc<dyn Documents>, syntax: Arc<dyn SyntaxService>) -> Self {
+    pub fn new(loader: Arc<dyn Documents>, syntax: TreeSitterSyntax) -> Self {
         Self {
             current: None,
             loading: false,
@@ -94,6 +98,10 @@ impl OpenDocuments for SingleEditor {
         let id = OpenRequestId(self.serial);
         let task = self.loader.open(r, cancel.clone());
         let syntax = self.syntax.clone();
+        let active = self
+            .current
+            .as_ref()
+            .map(|opened| (opened.document.id, opened.syntax_session.clone()));
         self.pending = Some(Pending {
             id,
             task: Box::pin(async move {
@@ -102,7 +110,10 @@ impl OpenDocuments for SingleEditor {
                 if let Some(p) = options.location {
                     document.text.offset(p)?;
                 }
-                let update = syntax
+                let session = active
+                    .filter(|(id, _)| *id == document.id)
+                    .map_or_else(|| syntax.document(), |(_, session)| session);
+                let update = session
                     .analyze(
                         document.text.clone(),
                         document.metadata.language.clone(),
@@ -113,6 +124,7 @@ impl OpenDocuments for SingleEditor {
                 Ok(Opened {
                     document,
                     syntax: update.snapshot,
+                    syntax_session: session,
                     position: options.location,
                 })
             }),
@@ -143,7 +155,6 @@ impl OpenDocuments for SingleEditor {
 mod tests {
     use super::*;
     use crate::skeleton::text::{default_settings, FileDocuments};
-    use rove_syntax::highlight::TreeSitterSyntax;
     use std::sync::Mutex;
 
     #[gpui::test]
@@ -153,7 +164,7 @@ mod tests {
         std::fs::write(root.path().join("b.cs"), "public class B {}\n").unwrap();
         std::fs::write(root.path().join("bad.cs"), [0xff]).unwrap();
         let loader = Arc::new(FileDocuments::new(root.path().into(), default_settings()));
-        let mut editor = SingleEditor::new(loader.clone(), Arc::new(TreeSitterSyntax::default()));
+        let mut editor = SingleEditor::new(loader.clone(), TreeSitterSyntax::default());
         let events = Arc::new(Mutex::new(Vec::new()));
         let received = events.clone();
         let subscription = editor
@@ -198,6 +209,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(loader.find(&alias).unwrap().id, alias_doc.id);
+        let previous = editor.current.as_ref().unwrap().syntax.clone();
+        editor
+            .open(alias, OpenOptions::default(), Cancellation::default())
+            .unwrap();
+        let reopen = editor.take_pending().unwrap();
+        assert!(editor.complete(reopen.id, reopen.task.await).unwrap());
+        assert!(Arc::ptr_eq(
+            &previous,
+            &editor.current.as_ref().unwrap().syntax
+        ));
         editor
             .open(
                 resource("bad.cs"),
@@ -222,6 +243,10 @@ mod tests {
             .unwrap();
         let recovery = editor.take_pending().unwrap();
         assert!(editor.complete(recovery.id, recovery.task.await).unwrap());
+        assert!(!Arc::ptr_eq(
+            &previous,
+            &editor.current.as_ref().unwrap().syntax
+        ));
         editor.ready(recovery.id);
         assert_eq!(
             events.lock().unwrap().len(),

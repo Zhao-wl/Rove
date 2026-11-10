@@ -31,8 +31,8 @@ impl TreeSitterSyntax {
         self
     }
 
-    /// Maximum time to wait for a refresh when a compatible previous snapshot exists.
-    /// The initial parse has no fallback and runs to completion or cancellation.
+    /// Time budget for a verified incremental edit. Full rebuilds run to completion
+    /// or cancellation so the baseline can recover after a skipped revision.
     pub fn with_refresh_budget(mut self, budget: Duration) -> Self {
         self.budget = Some(budget);
         self
@@ -104,23 +104,27 @@ impl SyntaxService for DocumentSyntax {
             let compatible = old
                 .as_deref()
                 .filter(|s| s.language == language && s.line_limit == line_limit);
-            // Budget only edits that extend the baseline. A fallback keeps the baseline, so the
-            // next edit mismatches it; that full rebuild must finish or highlighting never advances.
-            let incremental = compatible.filter(|s| {
-                service
-                    .edit
-                    .as_ref()
-                    .is_some_and(|edit| edit.version == s.version())
-            });
-            let deadline = incremental.and_then(|_| {
-                Instant::now()
-                    .checked_add(service.syntax.budget.unwrap_or(Duration::from_millis(50)))
-            });
+
+            let grammar = grammar.filter(|_| text.byte_len() < size_limit);
+            if let Some(snapshot) = old.as_ref().filter(|snapshot| {
+                compatible.is_some()
+                    && service.edit.is_none()
+                    && Arc::ptr_eq(&snapshot.text, &text)
+                    && snapshot.parsed.is_some() == grammar.is_some()
+            }) {
+                return Ok(SyntaxUpdate {
+                    snapshot: snapshot.clone(),
+                    previous: Some(version),
+                    changed_lines: Some(Arc::from([])),
+                });
+            }
+            let deadline = Instant::now()
+                .checked_add(service.syntax.budget.unwrap_or(Duration::from_millis(50)));
             let work = Work {
                 cancel: &cancel,
                 deadline,
             };
-            let result = if let Some(grammar) = grammar.filter(|_| text.byte_len() < size_limit) {
+            let result = if let Some(grammar) = grammar {
                 build(
                     text,
                     language,
@@ -235,7 +239,7 @@ fn build(
     edit: Option<&TextEdit>,
     work: &Work<'_>,
 ) -> Result<BuildResult> {
-    work.check()?;
+    work.cancel.check()?;
     let count = text.lines();
     if !count.complete {
         return Err(Error::NotReady);
@@ -244,12 +248,12 @@ fn build(
     text.visit_chunks(
         Span::new(ByteOffset(0), ByteOffset(text.byte_len()))?,
         &mut |s| {
-            if !work.cancelled() {
+            if work.cancel.check().is_ok() {
                 source.push_str(s);
             }
         },
     )?;
-    work.check()?;
+    work.cancel.check()?;
 
     let old_parse = old.and_then(|s| s.parsed.as_ref());
     let patch = edit
@@ -260,6 +264,13 @@ fn build(
                 .then(|| input_edit(&parsed.source, &source, edit))
                 .flatten()
         });
+    // Establish the edit before applying its budget. Invalid or missing edits take the
+    // full rebuild path and must advance the baseline even when the budget is exhausted.
+    let work = &Work {
+        cancel: work.cancel,
+        deadline: patch.and(work.deadline),
+    };
+    work.check()?;
     let baseline = patch.zip(old_parse);
     let (tree, edited_tree) = if let Some((patch, old)) = baseline {
         if grammar.reparse_unchanged_token(&old.tree, &old.source, &source, patch, work)? {
@@ -277,7 +288,18 @@ fn build(
     } else {
         (grammar.parse(source.as_bytes(), None, work)?, None)
     };
-    let ranges = RowRanges::new(text.as_ref(), count.known as usize, work)?;
+    // A same-width edit without line separators keeps every line range at the same offset.
+    let unchanged_ranges = baseline.filter(|(patch, old)| {
+        patch.old_end_byte == patch.new_end_byte
+            && old.ranges.len() as u64 == count.known
+            && !old.source[patch.start_byte..patch.old_end_byte].contains(['\r', '\n'])
+            && !source[patch.start_byte..patch.new_end_byte].contains(['\r', '\n'])
+    });
+    let ranges = if let Some((_, old)) = unchanged_ranges {
+        old.ranges.clone()
+    } else {
+        RowRanges::new(text.as_ref(), count.known as usize, work)?
+    };
     let incremental = baseline.map(|(patch, old)| {
         rows::Incremental::new(patch, old, edited_tree.as_ref(), &tree, &ranges)
     });

@@ -161,7 +161,7 @@ impl Workbench {
             tree: None,
             editor: SingleEditor::new(
                 Arc::new(FileDocuments::new(root.clone(), default_settings())),
-                Arc::new(rove_syntax::highlight::TreeSitterSyntax::default()),
+                rove_syntax::highlight::TreeSitterSyntax::default(),
             ),
             theme: Arc::new(DarkTheme::new().unwrap()),
             strings: appearance::strings().unwrap(),

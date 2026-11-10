@@ -58,27 +58,23 @@ pub fn register_settings(registry: &mut SettingRegistry) -> Result<()> {
 
 pub(super) fn limits(settings: Option<&dyn Settings>, language: Arc<str>) -> (u64, usize) {
     let settings = settings.unwrap_or(&*DEFAULTS);
-    let valid = |n: f64| (n >= 0.0).then_some(n as u64);
-    // Language-scoped defaults such as `[csharp]` take precedence over the global value.
-    let language_default = settings
-        .read(&format!("[{language}]"), &Scope::default())
-        .ok()
-        .and_then(|v| match v {
-            Value::Object(map) => match map.get(LINE_LENGTH.id) {
-                Some(&Value::Number(n)) => valid(n),
-                _ => None,
-            },
-            _ => None,
-        });
+    let fallback = if language.as_ref() == "csharp" {
+        CSHARP_LINE_LENGTH
+    } else {
+        DEFAULT_LINE_LENGTH
+    };
     let scope = Scope {
         language: Some(language),
     };
-    let read = |key: Key<f64>, scope: &Scope| key.read(settings, scope).ok().and_then(valid);
+    let read = |key: Key<f64>, scope: &Scope| {
+        key.read(settings, scope)
+            .ok()
+            .filter(|n| *n >= 0.0)
+            .map(|n| n as u64)
+    };
     (
         read(LARGE_FILE, &Scope::default()).unwrap_or(DEFAULT_LARGE_FILE),
-        language_default
-            .or_else(|| read(LINE_LENGTH, &scope))
-            .unwrap_or(DEFAULT_LINE_LENGTH as u64) as usize,
+        read(LINE_LENGTH, &scope).map_or(fallback, |limit| limit as usize),
     )
 }
 
