@@ -18,11 +18,11 @@ Rove 是用 Rust + GPUI 0.2.2 开发的高性能代码阅读编辑器，Windows 
 
 ## 2. crate 分层与依赖方向
 
-**核心层不得依赖 `gpui`。** 只有 `rove-ui`（UI 组件）与 `rove-app`（入口与组装）可以依赖它。CI 会逐 crate 检查 `cargo tree -p <crate> -i gpui` 必须为空。
+**核心层不得依赖 `gpui`。** 只有 `rove-ui`（UI 组件）与 `rove-app`（入口与组装）可以依赖它。CI 会逐 crate 检查 `cargo tree -p <crate> -i gpui --all-features --target all` 必须为空（`--all-features` 才能看到 optional 依赖，`--target all` 才能看到平台条件依赖）。
 
 - 允许依赖 `gpui` 的 crate 列在 [.github/ui-crates.txt](.github/ui-crates.txt)；
-- 其余 workspace 成员都是核心层，列在 [.github/core-crates.txt](.github/core-crates.txt)。新增 crate 后请追加到这个文件；检查脚本会把**未登记的 crate 也按核心层检查**（只给警告），所以漏登记不会让新 crate 逃过 `gpui` 检查；
-- crate 划分、职责与依赖方向以 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 为准（A 链 #1 维护）。**本文件不复述架构**：架构问题一律去那份文档，不要在这里加内容。
+- 判定采用**默认拒绝**：`cargo metadata` 里除 `ui-crates.txt` 之外的所有 workspace 成员都按核心层检查；[.github/core-crates.txt](.github/core-crates.txt) 是给人看的名册，漏登记只产生 `::warning::`，不会让新 crate 逃过检查；
+- crate 划分、职责与依赖方向以 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 为准（由 #78 提供，可能晚于本文件合并）。**本文件不复述架构**：架构问题一律去那份文档，不要在这里加内容。
 
 ## 3. 认领、分支与 PR
 
@@ -49,9 +49,9 @@ docs: 补充索引格式的元数据段说明
 ### 5.1 必做项
 
 - [ ] `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全部通过（与 CI 同参，见 §9）。
-- [ ] 替换掉自己负责的 `SKELETON(<键名>)` 标记，并同步更新 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 中的对照表。
-- [ ] 涉及性能的改动附基准数据，做法见 #4（性能基准与预算守护）合并后补充到本文件 §8。不允许只写"感觉更快了"。
-- [ ] 移植第三方代码或资产时，在 `THIRD_PARTY_NOTICES.md` 注明来源与许可。
+- [ ] 替换掉自己负责的 `SKELETON(<键名>)` 标记，并同步更新 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 中的对照表（该表由 #78 提供）。
+- [ ] 涉及性能的改动附基准数据，做法见 #4（性能基准与预算守护）：`cargo xtask bench` 与 `perf/README.md` 由 #4 提供，合并后把跑法补充到本文件 §8。不允许只写"感觉更快了"。
+- [ ] 移植第三方代码或资产时，在 `THIRD_PARTY_NOTICES.md` 注明来源与许可（该文件由 #80 建立）。
 - [ ] 自己的入口点有集成测试（见 5.2 第 3 条），且 PR 里写清怎么跑。
 - [ ] 不引入网络请求，不读取 `.gitignore`（§1 的两条硬约束）。
 - [ ] PR 描述里逐条引用 issue 的验收标准并说明如何验证。
@@ -99,6 +99,7 @@ docs: 补充索引格式的元数据段说明
 ## 9. 工具链与本地检查
 
 - **Rust 工具链固定 MSVC**：仓库里的 `rust-toolchain.toml` 指定 `stable-x86_64-pc-windows-msvc`。**gnu toolchain 编不过**（见 `M0_UI_SPIKE_REPORT` §2.2 坑 1），不要切换。
+- **构建 gpui 需要 Windows SDK**：`rove-ui` / `rove-app` 依赖 gpui，而 gpui 的着色器编译要调用 Windows SDK 的 `fxc.exe`，**它必须在 `PATH` 上**，否则 clean build 会失败（#80/#81 在普通 shell 上踩过；CI 接入 gpui 后同样要处理，见 `M0_UI_SPIKE_REPORT` §2.2）。
 - **.NET 9 SDK**：`tools/rove-indexer-cs` 是 C# 索引进程，改动后用 `dotnet build tools/rove-indexer-cs -c Release` 验证。
 - 本地等价于 CI 的命令：
 
@@ -128,7 +129,7 @@ CI 上不做绝对性能判定（托管机器波动大）；相对比较与预�
 
 ## 11. 相关文档
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：crate 划分、接口归属、依赖方向（架构问题的唯一依据）
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：crate 划分、接口归属、依赖方向（架构问题的唯一依据；由 #78 提供）
 - [docs/PROJECT_CHARTER.md](docs/PROJECT_CHARTER.md)：定位、不做清单、性能指标
 - [docs/FEATURES.md](docs/FEATURES.md)：功能判定与优先级
 - [docs/issues/README.md](docs/issues/README.md)：issue 拆分骨架、批次与依赖

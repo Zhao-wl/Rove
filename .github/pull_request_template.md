@@ -11,10 +11,10 @@ Closes #
 ## 完成标准（AGENTS.md §5）
 
 - [ ] `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 本地通过（CI 会再跑一遍）
-- [ ] 替换掉自己负责的 `SKELETON(<键名>)` 标记，并同步更新 `docs/ARCHITECTURE.md` 的对照表
+- [ ] 替换掉自己负责的 `SKELETON(<键名>)` 标记，并同步更新 `docs/ARCHITECTURE.md` 的对照表（该表由 #78 提供）
 - [ ] 为自己的入口点补了集成测试（写明怎么跑）
-- [ ] 涉及性能的改动附了基准数据（`cargo xtask bench`，见 #4 与 `perf/README.md`）
-- [ ] 移植第三方代码或资产时，在 `THIRD_PARTY_NOTICES.md` 注明了来源与许可
+- [ ] 涉及性能的改动附了基准数据（`cargo xtask bench`，由 #4 提供；采集口径见 `perf/README.md`）
+- [ ] 移植第三方代码或资产时，在 `THIRD_PARTY_NOTICES.md` 注明了来源与许可（该文件由 #80 建立）
 - [ ] 没有引入网络请求，没有读取 `.gitignore`
 
 ## 三条硬规则（AGENTS.md §5.2，评审时会逐条对照）

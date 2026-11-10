@@ -92,12 +92,17 @@ try {
     $violations = @()
     $checked = 0
     foreach ($crate in $coreCrates) {
-        # 通过 cmd 捕获 stderr：PS 5.1 会把原生命令的 stderr 当成 ErrorRecord，
-        # 在 $ErrorActionPreference='Stop' 下直接抛出，拿不到退出码。
-        $output = (& cmd /c "cargo tree --package $crate --invert gpui 2>&1") -join "`n"
+        # --all-features：否则 optional 依赖 + feature 的写法会让 cargo 报
+        #   "did not match any packages"，检查会静默放过。
+        # --target all：否则平台条件依赖（[target.'cfg(unix)'.dependencies]）
+        #   会打印空的依赖树，排查时容易误导。
+        $output = (& cmd /c "cargo tree --package $crate --invert gpui --all-features --target all 2>&1") -join "`n"
         $code = $LASTEXITCODE
         $checked++
         if ($code -eq 0) {
+            if ([string]::IsNullOrWhiteSpace($output)) {
+                $output = '（cargo tree 没有输出，无法定位依赖路径；请人工确认）'
+            }
             $violations += [pscustomobject]@{
                 Crate   = $crate
                 Summary = "核心层 crate `"$crate`" 依赖了 gpui"
