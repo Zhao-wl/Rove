@@ -1,0 +1,2 @@
+PASS: lifecycle, blocked document script/resource, local image, theme and bidirectional scroll/message probes
+NOT COVERED: visible overlap, physical keys, DPI, true absent runtime, OS network access, product budgets
