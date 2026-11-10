@@ -5,5 +5,4 @@ mod editor;
 mod events;
 mod text;
 mod workbench;
-mod workspace;
 pub use workbench::{launch, Workbench};

@@ -25,6 +25,7 @@ rove-workspace.workspace = true
 rove-lang-cs.workspace = true
 rove-syntax.workspace = true
 futures-lite = "2"
+rove-test-support.workspace = true
 
 [[bench]]
 name = "text_source"

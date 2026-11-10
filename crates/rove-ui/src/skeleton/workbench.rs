@@ -3,7 +3,6 @@ use super::{
     commands::{Commands, StatusFeedback},
     editor::{Pending, SingleEditor},
     text::{default_settings, FileDocuments},
-    workspace::Folder,
 };
 use crate::{
     contributions::ContributionRegistry,
@@ -270,7 +269,16 @@ impl Workbench {
         )
     }
     fn scan(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        let task = cx.background_executor().spawn(Folder::root(root));
+        // SKELETON: build the workspace through the #15 implementation. The explorer still waits
+        // for the initial snapshot before building its rows; streaming (root in the first frame)
+        // is available from `rove_workspace::Folder::start` and belongs to #23's explorer.
+        let task = cx.background_executor().spawn(async move {
+            let config = rove_workspace::WorkspaceConfig::from_settings(
+                &rove_workspace::default_settings(),
+            )?;
+            let folder = rove_workspace::Folder::scan_root(root, config)?;
+            Ok(folder as Arc<dyn Workspace>)
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {

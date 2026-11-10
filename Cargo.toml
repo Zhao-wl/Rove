@@ -41,6 +41,9 @@ tree-sitter-json = "0.24"
 tree-sitter-yaml = "0.7"
 tree-sitter-xml = "0.7"
 tree-sitter-md = "0.5"
+ignore = "0.4"
+notify = "8"
+globset = "0.4"
 
 [profile.release]
 lto = "thin"
