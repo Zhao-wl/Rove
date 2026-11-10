@@ -1,0 +1,9 @@
+dpi=120; screen={X=0,Y=0,Width=1920,Height=1080}; pid=61744
+input_indicator=托盘输入指示器 英语模式 单击右键以查看更多选项
+input_click=1717,1050; taskbar=True
+input_indicator_after_toggle=托盘输入指示器 中文模式 单击右键以查看更多选项
+input_indicator_focused=托盘输入指示器 中文模式 单击右键以查看更多选项
+input_indicator=托盘输入指示器 中文模式 单击右键以查看更多选项
+input_click=1717,1050; taskbar=True
+input_indicator_after_toggle=托盘输入指示器 英语模式 单击右键以查看更多选项
+input_indicator_focused=托盘输入指示器 英语模式 单击右键以查看更多选项

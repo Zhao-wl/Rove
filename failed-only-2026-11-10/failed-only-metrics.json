@@ -1,0 +1,242 @@
+{
+  "ime": {
+    "100": {
+      "run": "IME-162412",
+      "candidateIndicatorX": [
+        515,
+        515,
+        515,
+        515
+      ],
+      "sel": [
+        66,
+        65,
+        64,
+        65
+      ],
+      "build": {
+        "sourceCommit": "6eda4de445fae4afbc9a78af2a3e2c577db1d9e7",
+        "exeSha256": "b038fd9e11039dfe782c455705dfe2614c10fc8133d009d6fb80c4e9fab05c46",
+        "recordedUtc": "2026-11-10T07:25:21.4951204Z",
+        "build": "cargo build --manifest-path spikes/ime-gpui/Cargo.toml --release -j 2",
+        "tests": "workspace 56 passed; IME release 4 passed; 2 environment doc-tests ignored",
+        "scope": "New CFS_EXCLUDE caret/nonempty-rectangle build; manual arrow and edge retest pending"
+      }
+    },
+    "125": {
+      "run": "IME-162431",
+      "candidateIndicatorX": [
+        644,
+        644,
+        644,
+        644
+      ],
+      "sel": [
+        66,
+        65,
+        64,
+        65
+      ],
+      "build": {
+        "sourceCommit": "6eda4de445fae4afbc9a78af2a3e2c577db1d9e7",
+        "exeSha256": "b038fd9e11039dfe782c455705dfe2614c10fc8133d009d6fb80c4e9fab05c46",
+        "recordedUtc": "2026-11-10T07:25:21.4951204Z",
+        "build": "cargo build --manifest-path spikes/ime-gpui/Cargo.toml --release -j 2",
+        "tests": "workspace 56 passed; IME release 4 passed; 2 environment doc-tests ignored",
+        "scope": "New CFS_EXCLUDE caret/nonempty-rectangle build; manual arrow and edge retest pending"
+      }
+    }
+  },
+  "webview": {
+    "Transparent-162444": {
+      "run": {
+        "mode": "Transparent",
+        "exeSha256": "6839FDB2E788176277C5F282972D774BF385DF917F1937E424483D8A77BC0F02",
+        "startedUtc": "2026-11-10T08:24:44.1439150Z"
+      },
+      "build": {
+        "schema": 2,
+        "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f",
+        "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179",
+        "dirty": "true",
+        "built_unix_seconds": "1794298329",
+        "benchmark_mode": "continuous_frame_probe_not_idle",
+        "disable_direct_composition": false,
+        "transparent_preview": true
+      },
+      "dpi": 120,
+      "cases": [
+        {
+          "case": 1,
+          "status": "failed",
+          "timing": {
+            "dwellAdded": false,
+            "targetMs": 200.25,
+            "oDownMs": 201.0531,
+            "oUpMs": 201.9591,
+            "xHoldMs": 3.1662999999999997,
+            "oHoldMs": 0.9060000000000059,
+            "xDownMs": 0.6091,
+            "xUpMs": 3.7754,
+            "gapMs": 200.444
+          },
+          "focus": [
+            {
+              "ok": true,
+              "host": 22485556,
+              "actual": 22485556,
+              "set_focus_ok": true
+            }
+          ],
+          "o": [],
+          "events": [
+            {
+              "event": "closed",
+              "data": {}
+            }
+          ]
+        },
+        {
+          "case": 2,
+          "status": "ready",
+          "timing": {
+            "dwellAdded": false,
+            "targetMs": 200.25,
+            "oDownMs": 200.3884,
+            "oUpMs": 201.3399,
+            "xHoldMs": 0.8413,
+            "oHoldMs": 0.95150000000001,
+            "xDownMs": 0.0033,
+            "xUpMs": 0.8446,
+            "gapMs": 200.3851
+          },
+          "focus": [
+            {
+              "ok": true,
+              "host": 22485556,
+              "actual": 22485556,
+              "set_focus_ok": true
+            }
+          ],
+          "o": [
+            {
+              "key": "o",
+              "native_focus": 22485556,
+              "host": 22485556
+            }
+          ],
+          "events": [
+            {
+              "event": "closed",
+              "data": {}
+            },
+            {
+              "event": "open_requested",
+              "data": {
+                "generation": 3
+              }
+            },
+            {
+              "event": "environment_reused",
+              "data": {
+                "generation": 3
+              }
+            },
+            {
+              "event": "controller_requested",
+              "data": {
+                "generation": 3
+              }
+            },
+            {
+              "event": "controller_completed",
+              "data": {
+                "generation": 3,
+                "ok": true,
+                "present": true
+              }
+            },
+            {
+              "event": "ready",
+              "data": {
+                "ms": 2431.2945,
+                "documentScriptBlocked": true,
+                "localImageLoaded": true
+              }
+            }
+          ]
+        },
+        {
+          "case": 3,
+          "status": "ready",
+          "timing": {
+            "dwellAdded": false,
+            "targetMs": 200.25,
+            "oDownMs": 200.4702,
+            "oUpMs": 203.6398,
+            "xHoldMs": 0.809,
+            "oHoldMs": 3.1696000000000026,
+            "xDownMs": 0.0023,
+            "xUpMs": 0.8113,
+            "gapMs": 200.46790000000001
+          },
+          "focus": [
+            {
+              "ok": true,
+              "host": 22485556,
+              "actual": 22485556,
+              "set_focus_ok": true
+            }
+          ],
+          "o": [
+            {
+              "key": "o",
+              "native_focus": 22485556,
+              "host": 22485556
+            }
+          ],
+          "events": [
+            {
+              "event": "closed",
+              "data": {}
+            },
+            {
+              "event": "open_requested",
+              "data": {
+                "generation": 4
+              }
+            },
+            {
+              "event": "environment_reused",
+              "data": {
+                "generation": 4
+              }
+            },
+            {
+              "event": "controller_requested",
+              "data": {
+                "generation": 4
+              }
+            },
+            {
+              "event": "controller_completed",
+              "data": {
+                "generation": 4,
+                "ok": true,
+                "present": true
+              }
+            },
+            {
+              "event": "ready",
+              "data": {
+                "ms": 2484.0091,
+                "documentScriptBlocked": true,
+                "localImageLoaded": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
