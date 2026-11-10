@@ -211,7 +211,9 @@ impl Workbench {
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
-                Arc::new(FileDocuments::new(root.clone(), default_settings()).with_size_policy(size)),
+                Arc::new(
+                    FileDocuments::new(root.clone(), default_settings()).with_size_policy(size),
+                ),
                 Arc::new(rove_syntax::highlight::TreeSitterSyntax::default()),
                 settings,
                 schedule,

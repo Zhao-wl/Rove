@@ -102,7 +102,7 @@ impl Tab {
         Some(request.id)
     }
 
-    fn snapshot(&self) -> EditorTabSnapshot {
+    fn snapshot(&self, active: bool) -> EditorTabSnapshot {
         EditorTabSnapshot {
             id: EditorTabId(self.id),
             resource: self.resource.clone(),
@@ -112,6 +112,8 @@ impl Tab {
             },
             preview: self.preview,
             pinned: self.pinned,
+            dirty: self.dirty,
+            active,
             state: match &self.content {
                 Content::Loading => EditorTabState::Loading,
                 Content::Ready(opened) => EditorTabState::Ready(opened.document.clone()),
@@ -1109,11 +1111,26 @@ impl OpenDocuments for EditorService {
         Ok(CloseOutcome::Closed)
     }
 
+    fn close_tab(&mut self, tab: EditorTabId) -> Result<CloseOutcome> {
+        let Some(group) = self
+            .groups
+            .iter()
+            .find_map(|(&group, pane)| pane.tab(tab.0).is_some().then_some(group))
+        else {
+            return Ok(CloseOutcome::NotOpen);
+        };
+        Ok(EditorService::close_tab(self, group, tab.0))
+    }
+
     fn in_group(&self, group: EditorGroupId) -> Vec<EditorTabSnapshot> {
         self.groups
             .get(&group)
             .into_iter()
-            .flat_map(|pane| pane.tabs.iter().map(Tab::snapshot))
+            .flat_map(|pane| {
+                pane.tabs
+                    .iter()
+                    .map(move |tab| tab.snapshot(pane.active == Some(tab.id)))
+            })
             .collect()
     }
 

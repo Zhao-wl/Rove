@@ -1,6 +1,8 @@
 //! 文档加载走 `rove-buffer`（编码识别、BOM、换行符与 rope 快照）。
 use rove_base::*;
-use rove_buffer::{open_bytes, Document, Documents, LoadOptions, ReadOnlyReason, SizeClass, TextSource};
+use rove_buffer::{
+    open_bytes, Document, Documents, LoadOptions, ReadOnlyReason, SizeClass, TextSource,
+};
 use rove_config::{DefaultSettings, SettingRegistry, Settings};
 use std::{
     collections::BTreeMap,
