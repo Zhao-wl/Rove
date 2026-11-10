@@ -1,0 +1,235 @@
+[
+  {
+    "seconds": 0.5745441,
+    "processCount": 2,
+    "workingSetBytes": 47017984.0,
+    "privateBytes": 91992064.0,
+    "ids": [
+      110816,
+      54712
+    ]
+  },
+  {
+    "seconds": 1.4798076,
+    "processCount": 4,
+    "workingSetBytes": 146345984.0,
+    "privateBytes": 123322368.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488
+    ]
+  },
+  {
+    "seconds": 2.505912,
+    "processCount": 8,
+    "workingSetBytes": 303861760.0,
+    "privateBytes": 230731776.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 3.8281077,
+    "processCount": 8,
+    "workingSetBytes": 330412032.0,
+    "privateBytes": 249008128.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 4.9813439,
+    "processCount": 8,
+    "workingSetBytes": 334061568.0,
+    "privateBytes": 252985344.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 6.133381,
+    "processCount": 8,
+    "workingSetBytes": 348057600.0,
+    "privateBytes": 262602752.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 7.1285473,
+    "processCount": 8,
+    "workingSetBytes": 348704768.0,
+    "privateBytes": 266170368.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 8.1374941,
+    "processCount": 8,
+    "workingSetBytes": 348942336.0,
+    "privateBytes": 266231808.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 9.1670085,
+    "processCount": 8,
+    "workingSetBytes": 349458432.0,
+    "privateBytes": 266272768.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 10.2426032,
+    "processCount": 8,
+    "workingSetBytes": 349188096.0,
+    "privateBytes": 250810368.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020,
+      42952
+    ]
+  },
+  {
+    "seconds": 11.3628627,
+    "processCount": 7,
+    "workingSetBytes": 291442688.0,
+    "privateBytes": 220221440.0,
+    "ids": [
+      110816,
+      54712,
+      153628,
+      70488,
+      72596,
+      98248,
+      26020
+    ]
+  },
+  {
+    "seconds": 12.4265136,
+    "processCount": 2,
+    "workingSetBytes": 51994624.0,
+    "privateBytes": 90828800.0,
+    "ids": [
+      110816,
+      54712
+    ]
+  },
+  {
+    "seconds": 13.2478817,
+    "processCount": 2,
+    "workingSetBytes": 52097024.0,
+    "privateBytes": 90849280.0,
+    "ids": [
+      110816,
+      54712
+    ]
+  },
+  {
+    "seconds": 14.1948854,
+    "processCount": 8,
+    "workingSetBytes": 304480256.0,
+    "privateBytes": 226852864.0,
+    "ids": [
+      110816,
+      54712,
+      152328,
+      135488,
+      141668,
+      81284,
+      23236,
+      139252
+    ]
+  },
+  {
+    "seconds": 15.1648942,
+    "processCount": 8,
+    "workingSetBytes": 304443392.0,
+    "privateBytes": 226799616.0,
+    "ids": [
+      110816,
+      54712,
+      152328,
+      135488,
+      141668,
+      81284,
+      23236,
+      139252
+    ]
+  },
+  {
+    "seconds": 16.1396703,
+    "processCount": 8,
+    "workingSetBytes": 329773056.0,
+    "privateBytes": 255668224.0,
+    "ids": [
+      110816,
+      54712,
+      152328,
+      135488,
+      141668,
+      81284,
+      23236,
+      139252
+    ]
+  }
+]

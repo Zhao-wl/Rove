@@ -1,0 +1,17 @@
+[package]
+name = "ime-gpui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gpui = { version = "0.2.2", default-features = false, features = ["windows-manifest"] }
+memmap2 = "0.9"
+memchr = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[patch.crates-io]
+gpui = { path = "../../vendor/gpui" }
