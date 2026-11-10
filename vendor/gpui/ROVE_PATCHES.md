@@ -46,3 +46,9 @@ EntityInputHandler must interpret new_selected_range (UTF-16) relative to the re
 The spike is excluded from the workspace: cargo test --workspace does not execute these tests. Run cargo test --manifest-path spikes/ime-gpui/Cargo.toml separately.
 
 The historical spikes/ui-gpui prototype still contains the old conversion and may panic when copying a composition after a non-ASCII prefix. It is outside this chain's permitted edit scope; use spikes/ime-gpui for IME acceptance and do not copy the old implementation into R46.
+
+### Manual feedback 2026-11-10 (reported by reviewer)
+
+Windows 11 23H2 22631.6199, Microsoft Pinyin 10.0.22621.5840, 1920x1080, 100%/125%: edge flipping, composition interruption/window switching, Chinese/English switching and emoji-prefix selection passed. Long sentence committed correctly; candidate anchor moved between committed segments. At 125%, three screen-edge cases passed. Within unchanged composition text, moving the caret left changed reported bounds but the candidate popup stayed still. Compare the same action in Notepad/VS Code before classifying this as system behavior. First coordinate query can still reflect the previous frame; the next is current.
+
+Third-party IME untested. The manual run used an existing release executable without an embedded build identity; its precise commit cannot be proven retrospectively. Do not infer provenance from the current PR head or file timestamp. A new recorded run with an executable hash is required if identity cannot be established from the tester's build record. This remains a Draft gate, not a fabricated pass.
