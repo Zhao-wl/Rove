@@ -19,6 +19,12 @@
 //!   syntax; they are rejected.
 //! - `m` uses Rust's line terminators (`\n`) rather than ECMAScript's
 //!   (`\n`, `\r`, `\u2028`, `\u2029`); no shipped configuration passes `m`.
+//!
+//! Character classes follow ECMAScript where Rust differs: `[]` (never matches)
+//! and `[^]` (any character) are rewritten, and `&`, `~` and `[` are escaped
+//! because Rust would read `&&`/`~~` as set operations and `[` as a nested or
+//! POSIX class. `]` always closes the class, as in ECMAScript, so no member
+//! position exception exists.
 use super::{ConfigResult, LanguageConfigError};
 use crate::JsRegex;
 use fancy_regex::{Regex, RegexBuilder};
@@ -32,6 +38,10 @@ const JS_SPACE_CLASS: &str = "\\t\\n\\x0B\\f\\r \\u{00A0}\\u{1680}\\u{2000}-\\u{
 \\u{2028}\\u{2029}\\u{202F}\\u{205F}\\u{3000}\\u{FEFF}";
 /// ECMAScript `.` without the `s` flag: every code point except a line terminator.
 const JS_ANY_CHAR: &str = "[^\\n\\r\\u{2028}\\u{2029}]";
+/// Any character, including line terminators; ECMAScript `[^]`.
+const ANY_CHAR: &str = "(?s:.)";
+/// A pattern that never matches; ECMAScript `[]`.
+const NEVER_MATCH: &str = "(?!)";
 /// ASCII word boundary, built from look-around because `fancy-regex` rejects
 /// `(?-u:\b)` ("changing Unicode mode inline is not supported").
 const ASCII_WORD_BOUNDARY: &str = "(?:(?<![0-9A-Za-z_])(?=[0-9A-Za-z_])\
@@ -114,6 +124,15 @@ impl CompiledRegex {
             .is_match(text)
             .map_err(|_| Error::Unsupported)
     }
+    /// Whether capture group 1 participated in the first match; used by the
+    /// combined `(start)|(?:end)` folding-marker matcher.
+    pub(crate) fn captures_group1(&self, text: &str) -> Result<Option<bool>> {
+        match self.expression.captures(text) {
+            Ok(Some(captures)) => Ok(Some(captures.get(1).is_some())),
+            Ok(None) => Ok(None),
+            Err(_) => Err(Error::Unsupported),
+        }
+    }
     /// Byte range of the first match at or after byte `start`.
     pub fn find_from(&self, text: &str, start: usize) -> Result<Option<(usize, usize)>> {
         if start > text.len() || !text.is_char_boundary(start) {
@@ -167,38 +186,59 @@ fn translate(source: &str, flags: JsFlags, origin: &RegexOrigin) -> ConfigResult
     let mut out = String::with_capacity(source.len() + 16);
     let mut index = 0;
     let mut in_class = false;
-    // A `]` right after `[` or `[^` is a literal member, not the end of the class.
-    let mut class_start = false;
     while index < chars.len() {
         let current = chars[index];
         if current == '\\' {
             index = push_escape(&chars, index, &mut out, in_class, origin)?;
-            class_start = false;
             continue;
         }
         if in_class {
             match current {
-                ']' if !class_start => {
+                // ECMAScript ends the class at the first `]`; `[]` and `[^]` are
+                // handled before entering, so no member-position exception exists.
+                ']' => {
                     in_class = false;
                     out.push(']');
                 }
-                ']' => out.push_str("\\]"),
+                // Rust-only class syntax: `&&`/`~~` are set operations and `[`
+                // starts a nested class or POSIX class. ECMAScript has none of
+                // them, so escape the literal character.
+                '&' | '~' | '[' => {
+                    out.push('\\');
+                    out.push(current);
+                }
                 other => out.push(other),
             }
-            class_start = false;
             index += 1;
             continue;
         }
         match current {
-            '[' => {
-                out.push('[');
-                index += 1;
-                if chars.get(index) == Some(&'^') {
-                    out.push('^');
-                    index += 1;
+            '[' => match chars.get(index + 1) {
+                // ECMAScript: `[]` never matches (not an empty Rust class, which
+                // is a parse error), and `[^]` matches any character.
+                Some(']') => {
+                    out.push_str(NEVER_MATCH);
+                    index += 2;
                 }
-                in_class = true;
-                class_start = true;
+                Some('^') if chars.get(index + 2) == Some(&']') => {
+                    out.push_str(ANY_CHAR);
+                    index += 3;
+                }
+                _ => {
+                    out.push('[');
+                    index += 1;
+                    if chars.get(index) == Some(&'^') {
+                        out.push('^');
+                        index += 1;
+                    }
+                    in_class = true;
+                }
+            },
+            // A `]` outside a class is a literal in ECMAScript; escape it so the
+            // Rust parser cannot read it as a stray class delimiter.
+            ']' => {
+                out.push_str("\\]");
+                index += 1;
             }
             '.' if !flags.dot_all => {
                 out.push_str(JS_ANY_CHAR);
@@ -519,11 +559,33 @@ mod tests {
     }
 
     #[test]
-    fn json_configuration_regexes_compile() {
-        let source = r#"({+(?=((\\.|[^"\\])*"(\\.|[^"\\])*")*[^"}]*)$)"#;
-        assert!(compile(source).is_match("{").unwrap());
-        assert!(compile(r"^\s*[}\]],?\s*$").is_match("  ]").unwrap());
-        assert!(compile(r"^\s*[}\]],?\s*$").is_match("  },").unwrap());
+    fn character_classes_follow_ecmascript_rules() {
+        // `[]` never matches and `[^]` matches any character; Rust rejects the
+        // first and reads the second as "unterminated".
+        assert!(!compile(r"[]").is_match("x").unwrap());
+        assert!(!compile(r"[]x]").is_match("x]").unwrap());
+        assert!(compile(r"[^]").is_match("\n").unwrap());
+        assert!(compile(r"[^]").is_match("\u{1F600}").unwrap());
+        // `&&`, `~~` and `[` are literals in ECMAScript but set operations or
+        // nested classes in Rust.
+        let intersection = compile(r"[a&&b]");
+        for text in ["a", "b", "&"] {
+            assert!(
+                intersection.is_match(text).unwrap(),
+                "[a&&b] matches {text:?}"
+            );
+        }
+        assert!(!intersection.is_match("c").unwrap());
+        assert!(compile(r"[a[b]").is_match("[").unwrap());
+        // POSIX classes do not exist in ECMAScript: `[[:alpha:]]` is a class of
+        // `[ : a l p h` followed by a literal `]`.
+        assert!(compile(r"[[:alpha:]]").is_match("a]").unwrap());
+        assert!(!compile(r"[[:alpha:]]").is_match("b").unwrap());
+        // A `]` outside a class is a literal in both dialects.
+        assert!(compile(r"a]b").is_match("a]b").unwrap());
+        // `[^]]` is `[^]` (any character) followed by a literal `]`.
+        assert!(compile(r"[^]]").is_match("q]").unwrap());
+        assert!(!compile(r"[^]]").is_match("q").unwrap());
     }
 
     #[test]

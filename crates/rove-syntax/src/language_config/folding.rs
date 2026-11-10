@@ -23,16 +23,16 @@
 //!
 //! Not ported: the 5000-region folding limit and its reporting hook, and the
 //! `tabSize` source (callers pass the editor's value; VS Code's default is 4).
-use super::CompiledRegex;
+use super::{CompiledFoldingMarkers, MarkerKind};
 use crate::{Fold, FoldKind};
 use rove_base::{Line, LineRange, Result};
 
 /// Compute marker and indentation folds for `text`.
 ///
-/// `markers` are the compiled `folding.markers.start`/`end` pair, if the language
-/// has one. Ranges are ordered by start line, outermost first for equal starts.
+/// `markers` are the compiled `folding.markers`, if the language has them.
+/// Ranges are ordered by start line, outermost first for equal starts.
 pub fn fold_ranges(
-    markers: Option<(&CompiledRegex, &CompiledRegex)>,
+    markers: Option<&CompiledFoldingMarkers>,
     off_side: bool,
     text: &str,
     tab_size: usize,
@@ -58,12 +58,12 @@ pub fn fold_ranges(
             }
             continue;
         }
-        let (is_start, is_end) = match markers {
-            Some((start, end)) => marker_kind(start, end, content)?,
-            None => (false, false),
+        let marker = match markers {
+            Some(markers) => markers.kind(content)?,
+            None => None,
         };
-        if is_start || is_end {
-            if is_start {
+        match marker {
+            Some(MarkerKind::Start) => {
                 // Find the nearest marker region. Without one the line is
                 // ordinary text, exactly as in VS Code.
                 let mut index = regions.len() - 1;
@@ -83,7 +83,8 @@ pub fn fold_ranges(
                     previous.end_above = line;
                     continue;
                 }
-            } else {
+            }
+            Some(MarkerKind::End) => {
                 regions.push(PreviousRegion {
                     indent: -2,
                     end_above: line,
@@ -91,6 +92,7 @@ pub fn fold_ranges(
                 });
                 continue;
             }
+            None => {}
         }
         if regions.last().expect("sentinel").indent > indent {
             loop {
@@ -130,25 +132,6 @@ struct PreviousRegion {
     end_above: usize,
     /// Start line (1-based) of the region, used for marker regions.
     line: usize,
-}
-
-/// Which marker matched `content`. VS Code compiles `(start)|(?:end)`, so the
-/// leftmost match wins and `start` wins a tie.
-fn marker_kind(start: &CompiledRegex, end: &CompiledRegex, content: &str) -> Result<(bool, bool)> {
-    let start_match = start.find(content)?;
-    let end_match = end.find(content)?;
-    Ok(match (start_match, end_match) {
-        (Some((start_at, _)), Some((end_at, _))) => {
-            if start_at <= end_at {
-                (true, false)
-            } else {
-                (false, true)
-            }
-        }
-        (Some(_), None) => (true, false),
-        (None, Some(_)) => (false, true),
-        (None, None) => (false, false),
-    })
 }
 
 /// Leading whitespace width in columns; `-1` for a whitespace-only line, as in
@@ -199,7 +182,7 @@ fn split_lines(text: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::JsRegex;
+    use crate::{language_config::CompiledRegex, JsRegex};
 
     fn compiled(source: &str) -> CompiledRegex {
         CompiledRegex::compile(
@@ -215,8 +198,26 @@ mod tests {
         )
         .unwrap()
     }
-    fn csharp_markers() -> (CompiledRegex, CompiledRegex) {
-        (compiled(r"^\s*#region\b"), compiled(r"^\s*#endregion\b"))
+    fn csharp_markers() -> CompiledFoldingMarkers {
+        assembled(r"^\s*#region\b", r"^\s*#endregion\b")
+    }
+    fn assembled(start: &str, end: &str) -> CompiledFoldingMarkers {
+        let start_js = JsRegex {
+            source: start.into(),
+            flags: "".into(),
+        };
+        let end_js = JsRegex {
+            source: end.into(),
+            flags: "".into(),
+        };
+        CompiledFoldingMarkers::assemble(
+            "csharp",
+            "test/language-configuration.json",
+            compiled(start),
+            compiled(end),
+            (&start_js, &end_js),
+        )
+        .unwrap()
     }
     fn region_ranges(folds: &[Fold]) -> Vec<(u64, u64)> {
         folds
@@ -254,8 +255,8 @@ mod tests {
     fn markers_nest() {
         // Expected values from VS Code's computeRanges on the same input.
         let text = "#region Outer\nclass C\n{\n    #region Inner\n    void M() { }\n    #endregion\n}\n#endregion";
-        let (start, end) = csharp_markers();
-        let folds = fold_ranges(Some((&start, &end)), false, text, 4).unwrap();
+        let markers = csharp_markers();
+        let folds = fold_ranges(Some(&markers), false, text, 4).unwrap();
         assert_eq!(region_ranges(&folds), [(0, 8), (3, 6)]);
         assert_eq!(indent_ranges(&folds), [(2, 6)]);
     }
@@ -263,16 +264,16 @@ mod tests {
     #[test]
     fn unmatched_end_marker_is_ignored() {
         let text = "class C\n{\n}\n#endregion";
-        let (start, end) = csharp_markers();
-        let folds = fold_ranges(Some((&start, &end)), false, text, 4).unwrap();
+        let markers = csharp_markers();
+        let folds = fold_ranges(Some(&markers), false, text, 4).unwrap();
         assert!(region_ranges(&folds).is_empty());
     }
 
     #[test]
     fn unmatched_start_marker_is_ignored() {
         let text = "class C\n{\n    #region Inner\n    void M() { }\n}";
-        let (start, end) = csharp_markers();
-        let folds = fold_ranges(Some((&start, &end)), false, text, 4).unwrap();
+        let markers = csharp_markers();
+        let folds = fold_ranges(Some(&markers), false, text, 4).unwrap();
         assert!(region_ranges(&folds).is_empty());
         assert_eq!(indent_ranges(&folds), [(1, 4)]);
     }
@@ -280,17 +281,29 @@ mod tests {
     #[test]
     fn off_side_moves_blank_lines_to_the_next_block() {
         let text = "class C\n{\n    void M()\n    {\n    }\n\n}";
-        let (start, end) = csharp_markers();
-        let inside = fold_ranges(Some((&start, &end)), false, text, 4).unwrap();
+        let markers = csharp_markers();
+        let inside = fold_ranges(Some(&markers), false, text, 4).unwrap();
         assert_eq!(indent_ranges(&inside), [(1, 6)]);
-        let outside = fold_ranges(Some((&start, &end)), true, text, 4).unwrap();
+        let outside = fold_ranges(Some(&markers), true, text, 4).unwrap();
         assert_eq!(indent_ranges(&outside), [(1, 5)]);
     }
 
     #[test]
+    fn combined_matcher_scans_once_and_prefers_start() {
+        let markers = assembled("^x", "^x");
+        assert!(markers.is_combined());
+        assert_eq!(markers.kind("x").unwrap(), Some(MarkerKind::Start));
+        // A numbered backreference cannot be combined: the added group would
+        // renumber it.
+        let with_backref = assembled(r"(a)\1", "^end");
+        assert!(!with_backref.is_combined());
+        assert_eq!(with_backref.kind("aa").unwrap(), Some(MarkerKind::Start));
+    }
+
+    #[test]
     fn one_line_blocks_do_not_fold() {
-        let (start, end) = csharp_markers();
-        assert!(fold_ranges(Some((&start, &end)), false, "class C\n{\n}", 4)
+        let markers = csharp_markers();
+        assert!(fold_ranges(Some(&markers), false, "class C\n{\n}", 4)
             .unwrap()
             .is_empty());
     }

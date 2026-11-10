@@ -45,7 +45,12 @@ pub fn word_at(
         let Some((start, end)) = pattern.find_from(haystack, cursor)? else {
             break;
         };
-        if start <= position && end >= position {
+        // Matches are ordered by start: once one starts after the cursor no later
+        // match can contain it.
+        if start > position {
+            break;
+        }
+        if end >= position {
             return Ok(Some(ByteRange::new(
                 ByteOffset((base + start) as u64),
                 ByteOffset((base + end) as u64),

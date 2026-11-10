@@ -31,7 +31,11 @@
 //! - [`BuiltinLanguages::compiled`] returns the same data plus the regular
 //!   expressions compiled once, for consumers that match per keystroke or per
 //!   document (#20 code view, #45 edit model, #52 comment/indent/auto-close,
-//!   #26 outline for folding markers).
+//!   #26 outline for folding markers). [`BuiltinLanguages::shared`] is the
+//!   process-wide instance, so those consumers do not each re-parse and recompile.
+//! - [`BuiltinLanguages::load_partial`] keeps every language that loads and
+//!   returns the errors: one bad field disables only its own language, as in VS
+//!   Code. [`BuiltinLanguages::load`] is the all-or-nothing variant.
 //! - [`CompiledLanguageConfiguration::fold_ranges`] turns `folding.markers` and
 //!   `folding.offSide` into [`Fold`] ranges; `word_at` returns the word under a
 //!   byte offset using `wordPattern` or VS Code's default pattern.
@@ -42,7 +46,11 @@
 //! `Scope { language: Some(id) }` and keep them separate from language data.
 use crate::{Fold, IndentAction, JsRegex, LanguageConfiguration, LanguageConfigurations, Pair};
 use rove_base::{ByteOffset, ByteRange, Result as BaseResult};
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
 pub mod folding;
 pub mod js_regex;
@@ -60,17 +68,29 @@ pub const VSCODE_VERSION: &str = "1.145.2";
 pub const VSCODE_COMMIT: &str = "c4453f8ea430795f941c1b2ff6c9321135a74a02";
 
 /// VS Code's default `autoCloseBefore` for brackets, used when a configuration
-/// omits the property (none of the shipped files set it). VS Code keeps a second,
-/// narrower set for quotes (`';:.,=}])> \n\t'`); the contract exposes one string,
-/// so consumers that need the quote variant should use that literal.
+/// omits the property (none of the shipped files set it).
 pub const DEFAULT_AUTO_CLOSE_BEFORE: &str = "'\"`;:.,=}])> \n\t";
+/// VS Code's narrower default `autoCloseBefore` for quotes; use with
+/// [`auto_close_before_for`] when the caller closes a quote rather than a bracket.
+pub const DEFAULT_AUTO_CLOSE_BEFORE_QUOTES: &str = ";:.,=}])> \n\t";
 
-/// `autoCloseBefore` for a language, falling back to VS Code's default.
+/// `autoCloseBefore` for brackets, falling back to VS Code's bracket default.
 pub fn auto_close_before(configuration: &LanguageConfiguration) -> &str {
+    auto_close_before_for(configuration, false)
+}
+
+/// `autoCloseBefore` for a language. `quotes` selects VS Code's quote default
+/// rather than its bracket default when the configuration does not set the
+/// property; a configured value is returned unchanged for both.
+pub fn auto_close_before_for(configuration: &LanguageConfiguration, quotes: bool) -> &str {
     configuration
         .auto_close_before
         .as_deref()
-        .unwrap_or(DEFAULT_AUTO_CLOSE_BEFORE)
+        .unwrap_or(if quotes {
+            DEFAULT_AUTO_CLOSE_BEFORE_QUOTES
+        } else {
+            DEFAULT_AUTO_CLOSE_BEFORE
+        })
 }
 
 /// Bracket pairs used for colorization: `colorizedBracketPairs` when the
@@ -229,9 +249,106 @@ pub fn javascript_regexes(data: &LanguageConfiguration) -> Vec<(String, &JsRegex
 pub struct CompiledLanguageConfiguration {
     data: Arc<LanguageConfiguration>,
     word_pattern: CompiledRegex,
-    folding: Option<(CompiledRegex, CompiledRegex)>,
+    folding: Option<CompiledFoldingMarkers>,
     indentation: Option<CompiledIndentationRules>,
     on_enter: Vec<CompiledEnterRule>,
+}
+
+/// Compiled `folding.markers`. VS Code scans each line once with
+/// `(start)|(?:end)`; [`combined`](Self::is_combined) holds that matcher when both
+/// sources share their flags and contain no numbered backreference (the added
+/// group would renumber it).
+pub struct CompiledFoldingMarkers {
+    start: CompiledRegex,
+    end: CompiledRegex,
+    combined: Option<CompiledRegex>,
+}
+/// Which marker a line matched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkerKind {
+    Start,
+    End,
+}
+impl CompiledFoldingMarkers {
+    /// Assemble from already compiled handles plus the JavaScript sources.
+    pub(crate) fn assemble(
+        language: &str,
+        config: &str,
+        start: CompiledRegex,
+        end: CompiledRegex,
+        javascript: (&JsRegex, &JsRegex),
+    ) -> ConfigResult<Self> {
+        let combined = combine_markers(language, config, javascript.0, javascript.1)?;
+        Ok(Self {
+            start,
+            end,
+            combined,
+        })
+    }
+    /// Compiled `folding.markers.start`.
+    pub fn start(&self) -> &CompiledRegex {
+        &self.start
+    }
+    /// Compiled `folding.markers.end`.
+    pub fn end(&self) -> &CompiledRegex {
+        &self.end
+    }
+    /// Whether one combined matcher is used instead of two probes per line.
+    pub fn is_combined(&self) -> bool {
+        self.combined.is_some()
+    }
+    /// Which marker `text` matches; start wins a tie, as in VS Code.
+    pub(crate) fn kind(&self, text: &str) -> BaseResult<Option<MarkerKind>> {
+        if let Some(combined) = &self.combined {
+            return Ok(combined.captures_group1(text)?.map(|start| {
+                if start {
+                    MarkerKind::Start
+                } else {
+                    MarkerKind::End
+                }
+            }));
+        }
+        if self.start.find(text)?.is_some() {
+            return Ok(Some(MarkerKind::Start));
+        }
+        if self.end.find(text)?.is_some() {
+            return Ok(Some(MarkerKind::End));
+        }
+        Ok(None)
+    }
+}
+
+/// Build VS Code's `(start)|(?:end)` matcher when that is safe.
+fn combine_markers(
+    language: &str,
+    config: &str,
+    start: &JsRegex,
+    end: &JsRegex,
+) -> ConfigResult<Option<CompiledRegex>> {
+    if start.flags != end.flags
+        || has_numbered_backreference(&start.source)
+        || has_numbered_backreference(&end.source)
+    {
+        return Ok(None);
+    }
+    let javascript = JsRegex {
+        source: format!("({})|(?:{})", start.source, end.source).into(),
+        flags: start.flags.clone(),
+    };
+    compile_regex(
+        &javascript,
+        &RegexOrigin::new(language, config, "folding.markers"),
+    )
+    .map(Some)
+}
+
+/// `\1`-`\9` change meaning when the combined matcher adds a group; `\0` is
+/// treated conservatively as well.
+fn has_numbered_backreference(source: &str) -> bool {
+    source
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'\\' && pair[1].is_ascii_digit())
 }
 
 /// Compiled `indentationRules`; fields mirror [`IndentationRules`](crate::IndentationRules).
@@ -260,62 +377,79 @@ impl CompiledLanguageConfiguration {
         config: &str,
         data: Arc<LanguageConfiguration>,
     ) -> ConfigResult<Self> {
-        let compile = |field: &str, js: &JsRegex| {
-            compile_regex(js, &RegexOrigin::new(language, config, field))
+        let origin = |field: &str| RegexOrigin::new(language, config, field);
+        // The single enumeration: every field listed by `javascript_regexes` is
+        // compiled exactly once, and the typed views below take their handles
+        // from this map instead of listing the sources again.
+        let mut compiled: BTreeMap<String, CompiledRegex> = BTreeMap::new();
+        for (field, javascript) in javascript_regexes(&data) {
+            let handle = compile_regex(javascript, &origin(&field))?;
+            compiled.insert(field, handle);
+        }
+        let take = |compiled: &mut BTreeMap<String, CompiledRegex>, field: &str| {
+            compiled
+                .remove(field)
+                .expect("javascript_regexes enumerates every compiled field")
         };
-        let word_pattern = match &data.word_pattern {
-            Some(pattern) => compile("wordPattern.pattern", pattern)?,
-            None => compile(
-                "wordPattern.pattern",
+        let word_pattern = match compiled.remove("wordPattern.pattern") {
+            Some(pattern) => pattern,
+            None => compile_regex(
                 &JsRegex {
                     source: DEFAULT_WORD_PATTERN.into(),
                     flags: DEFAULT_WORD_PATTERN_FLAGS.into(),
                 },
+                &origin("wordPattern.pattern"),
             )?,
         };
         let folding = match &data.folding_markers {
-            Some((start, end)) => Some((
-                compile("folding.markers.start", start)?,
-                compile("folding.markers.end", end)?,
-            )),
+            Some((start, end)) => Some(CompiledFoldingMarkers::assemble(
+                language,
+                config,
+                take(&mut compiled, "folding.markers.start"),
+                take(&mut compiled, "folding.markers.end"),
+                (start, end),
+            )?),
             None => None,
         };
-        let indentation = match &data.indentation {
-            Some(rules) => Some(CompiledIndentationRules {
-                increase: compile("indentationRules.increaseIndentPattern", &rules.increase)?,
-                decrease: compile("indentationRules.decreaseIndentPattern", &rules.decrease)?,
+        let indentation = data
+            .indentation
+            .as_ref()
+            .map(|rules| CompiledIndentationRules {
+                increase: take(&mut compiled, "indentationRules.increaseIndentPattern"),
+                decrease: take(&mut compiled, "indentationRules.decreaseIndentPattern"),
                 indent_next: rules
                     .indent_next
                     .as_ref()
-                    .map(|js| compile("indentationRules.indentNextLinePattern", js))
-                    .transpose()?,
+                    .map(|_| take(&mut compiled, "indentationRules.indentNextLinePattern")),
                 unindented: rules
                     .unindented
                     .as_ref()
-                    .map(|js| compile("indentationRules.unIndentedLinePattern", js))
-                    .transpose()?,
-            }),
-            None => None,
-        };
+                    .map(|_| take(&mut compiled, "indentationRules.unIndentedLinePattern")),
+            });
         let mut on_enter = Vec::with_capacity(data.on_enter.len());
         for (index, rule) in data.on_enter.iter().enumerate() {
             on_enter.push(CompiledEnterRule {
-                before: compile(&format!("onEnterRules[{index}].beforeText"), &rule.before)?,
+                before: take(&mut compiled, &format!("onEnterRules[{index}].beforeText")),
                 after: rule
                     .after
                     .as_ref()
-                    .map(|js| compile(&format!("onEnterRules[{index}].afterText"), js))
-                    .transpose()?,
-                previous_line: rule
-                    .previous_line
-                    .as_ref()
-                    .map(|js| compile(&format!("onEnterRules[{index}].previousLineText"), js))
-                    .transpose()?,
+                    .map(|_| take(&mut compiled, &format!("onEnterRules[{index}].afterText"))),
+                previous_line: rule.previous_line.as_ref().map(|_| {
+                    take(
+                        &mut compiled,
+                        &format!("onEnterRules[{index}].previousLineText"),
+                    )
+                }),
                 indent: rule.indent.clone(),
                 append_text: rule.append_text.clone(),
                 remove_text: rule.remove_text,
             });
         }
+        debug_assert!(
+            compiled.is_empty(),
+            "unused compiled regexes: {:?}",
+            compiled.keys().collect::<Vec<_>>()
+        );
         Ok(Self {
             data,
             word_pattern,
@@ -333,8 +467,8 @@ impl CompiledLanguageConfiguration {
         &self.word_pattern
     }
     /// Compiled `folding.markers`, if the configuration defines both markers.
-    pub fn folding_markers(&self) -> Option<(&CompiledRegex, &CompiledRegex)> {
-        self.folding.as_ref().map(|(start, end)| (start, end))
+    pub fn folding_markers(&self) -> Option<&CompiledFoldingMarkers> {
+        self.folding.as_ref()
     }
     /// Compiled `indentationRules`, if the configuration defines them.
     pub fn indentation(&self) -> Option<&CompiledIndentationRules> {
@@ -356,7 +490,7 @@ impl CompiledLanguageConfiguration {
     /// Marker and indentation fold ranges from this configuration's rules.
     pub fn fold_ranges(&self, text: &str, tab_size: usize) -> BaseResult<Vec<Fold>> {
         fold_ranges(
-            self.folding.as_ref().map(|(start, end)| (start, end)),
+            self.folding.as_ref(),
             self.data.folding_off_side,
             text,
             tab_size,
@@ -366,34 +500,71 @@ impl CompiledLanguageConfiguration {
 
 /// Built-in language configurations for the M1 languages; built once and shared.
 pub struct BuiltinLanguages {
-    languages: BTreeMap<Arc<str>, CompiledLanguageConfiguration>,
+    languages: BTreeMap<Arc<str>, Arc<CompiledLanguageConfiguration>>,
 }
 impl BuiltinLanguages {
-    /// Load and compile every shipped configuration. Fails on the first
-    /// configuration whose JSONC or regular expressions are invalid, naming the
-    /// file and field.
+    /// Load and compile every shipped configuration, failing on the first error.
     pub fn load() -> ConfigResult<Self> {
-        let mut languages = BTreeMap::new();
-        let mut loaded: BTreeMap<usize, Arc<LanguageConfiguration>> = BTreeMap::new();
-        for (language, index) in LANGUAGE_IDS {
-            let source = SOURCE_FILES[index];
-            let data = match loaded.get(&index) {
-                Some(data) => data.clone(),
-                None => {
-                    let data = Arc::new(parse_language_configuration(
-                        language,
-                        source.config_path,
-                        source.text,
-                    )?);
-                    loaded.insert(index, data.clone());
-                    data
-                }
-            };
-            let compiled =
-                CompiledLanguageConfiguration::compile(language, source.config_path, data)?;
-            languages.insert(Arc::from(language), compiled);
+        let (languages, errors) = Self::load_partial();
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(languages),
         }
-        Ok(Self { languages })
+    }
+    /// Load every shipped configuration, keeping the languages that load: one
+    /// invalid field only disables its own language, as in VS Code. Errors name
+    /// the file and field, and are reported once per language ID sharing a file.
+    pub fn load_partial() -> (Self, Vec<LanguageConfigError>) {
+        let mut languages: BTreeMap<Arc<str>, Arc<CompiledLanguageConfiguration>> = BTreeMap::new();
+        let mut errors = Vec::new();
+        for (index, source) in SOURCE_FILES.iter().enumerate() {
+            let ids: Vec<&'static str> = LANGUAGE_IDS
+                .iter()
+                .filter(|(_, source_index)| *source_index == index)
+                .map(|(language, _)| *language)
+                .collect();
+            let primary = *ids
+                .first()
+                .expect("every configuration file has a language id");
+            let compiled = parse_language_configuration(primary, source.config_path, source.text)
+                .and_then(|data| {
+                    CompiledLanguageConfiguration::compile(
+                        primary,
+                        source.config_path,
+                        Arc::new(data),
+                    )
+                });
+            match compiled {
+                Ok(compiled) => {
+                    let compiled = Arc::new(compiled);
+                    // `json` and `jsonc` share one file, so they share one compilation.
+                    for language in ids {
+                        languages.insert(Arc::from(language), compiled.clone());
+                    }
+                }
+                Err(error) => {
+                    for language in ids {
+                        errors.push(LanguageConfigError {
+                            language: Arc::from(language),
+                            ..error.clone()
+                        });
+                    }
+                }
+            }
+        }
+        (Self { languages }, errors)
+    }
+    /// Process-wide instance compiled once for every consumer (#20/#26/#45/#52).
+    /// The errors are returned rather than hidden, so startup can log them while
+    /// the remaining languages stay usable.
+    pub fn shared() -> std::result::Result<&'static Self, &'static [LanguageConfigError]> {
+        static SHARED: OnceLock<(BuiltinLanguages, Vec<LanguageConfigError>)> = OnceLock::new();
+        let (languages, errors) = SHARED.get_or_init(Self::load_partial);
+        if errors.is_empty() {
+            Ok(languages)
+        } else {
+            Err(errors)
+        }
     }
     /// Served language IDs, sorted.
     pub fn languages(&self) -> impl Iterator<Item = &str> {
@@ -401,12 +572,16 @@ impl BuiltinLanguages {
     }
     /// Configuration plus compiled regular expressions.
     pub fn compiled(&self, language: &str) -> Option<&CompiledLanguageConfiguration> {
-        self.languages.get(language)
+        self.languages
+            .get(language)
+            .map(|compiled| compiled.as_ref())
     }
 }
 impl LanguageConfigurations for BuiltinLanguages {
     fn get(&self, language: &str) -> Option<Arc<LanguageConfiguration>> {
-        self.languages.get(language).map(|c| c.data.clone())
+        self.languages
+            .get(language)
+            .map(|compiled| compiled.data.clone())
     }
 }
 
@@ -507,5 +682,41 @@ mod tests {
             colorized_brackets(&LanguageConfiguration::default()).len(),
             0
         );
+    }
+
+    #[test]
+    fn auto_close_before_exports_the_quote_default() {
+        let configuration = LanguageConfiguration::default();
+        assert_eq!(auto_close_before(&configuration), DEFAULT_AUTO_CLOSE_BEFORE);
+        assert_eq!(
+            auto_close_before_for(&configuration, true),
+            DEFAULT_AUTO_CLOSE_BEFORE_QUOTES
+        );
+        assert_ne!(
+            DEFAULT_AUTO_CLOSE_BEFORE_QUOTES, DEFAULT_AUTO_CLOSE_BEFORE,
+            "quotes and brackets use different defaults"
+        );
+        let configured = LanguageConfiguration {
+            auto_close_before: Some("xyz".into()),
+            ..LanguageConfiguration::default()
+        };
+        assert_eq!(auto_close_before_for(&configured, true), "xyz");
+        assert_eq!(auto_close_before_for(&configured, false), "xyz");
+    }
+
+    #[test]
+    fn partial_load_reports_errors_without_hiding_good_languages() {
+        let (languages, errors) = BuiltinLanguages::load_partial();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(languages.languages().count(), 6);
+        assert!(languages.compiled("jsonc").is_some());
+    }
+
+    #[test]
+    fn shared_instance_is_compiled_once() {
+        let first = BuiltinLanguages::shared().expect("all shipped configurations load");
+        let second = BuiltinLanguages::shared().expect("shared");
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(first.languages().count(), 6);
     }
 }

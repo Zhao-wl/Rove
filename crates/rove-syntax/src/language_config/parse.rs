@@ -16,7 +16,9 @@
 //! - `comments.lineComment` may be a string or `{"comment": ..., "noIndent": ...}`.
 //! - `indentationRules.unIndentedLinePattern` (VS Code's spelling) maps to
 //!   [`IndentationRules::unindented`].
-//! - `wordPattern` may be `{"pattern": ..., "flags": ...}` or a bare string.
+//! - Every regular-expression property (`wordPattern`, `folding.markers`,
+//!   `indentationRules.*`, `onEnterRules.*`) may be a bare source string or
+//!   `{"pattern": ..., "flags": ...}`, as in VS Code.
 //! - Unknown properties are ignored, as in VS Code, so a configuration update
 //!   never breaks loading.
 use super::{ConfigResult, LanguageConfigError};
@@ -112,29 +114,7 @@ pub fn parse_language_configuration(
     }
 
     if let Some(pattern) = member(root, "wordPattern") {
-        configuration.word_pattern = Some(match pattern {
-            Value::String(source) => JsRegex {
-                source: Arc::from(source.as_str()),
-                flags: Arc::from(""),
-            },
-            Value::Object(_) => {
-                let pattern = document.object(pattern, "wordPattern")?;
-                let source =
-                    required(member(pattern, "pattern"), &document, "wordPattern.pattern")?;
-                let source = document.string(source, "wordPattern.pattern")?;
-                let flags = match member(pattern, "flags") {
-                    Some(flags) => document.string(flags, "wordPattern.flags")?,
-                    None => Arc::from(""),
-                };
-                JsRegex { source, flags }
-            }
-            _ => {
-                return Err(document.error(
-                    "wordPattern",
-                    "expected a string or an object with `pattern` and optional `flags`",
-                ));
-            }
-        });
+        configuration.word_pattern = Some(parse_regex(&document, pattern, "wordPattern")?);
     }
 
     if let Some(rules) = member(root, "indentationRules") {
@@ -306,13 +286,32 @@ fn required<'v>(
     value.ok_or_else(|| document.error(field, "missing field"))
 }
 
+/// Parse a regular-expression-valued property. VS Code's `_parseRegex` accepts
+/// either a source string (`new RegExp(source)`) or `{pattern, flags}`, and that
+/// applies to `wordPattern`, `folding.markers`, `indentationRules` and
+/// `onEnterRules` alike.
 fn parse_regex(document: &Doc<'_>, value: &Value, field: &str) -> ConfigResult<JsRegex> {
-    Ok(JsRegex {
-        source: document.string(value, field)?,
-        // Configurations never carry flags for these fields; VS Code compiles
-        // them with `new RegExp(source)`.
-        flags: Arc::from(""),
-    })
+    match value {
+        Value::String(source) => Ok(JsRegex {
+            source: Arc::from(source.as_str()),
+            flags: Arc::from(""),
+        }),
+        Value::Object(object) => {
+            let pattern_field = format!("{field}.pattern");
+            let pattern = required(member(object, "pattern"), document, &pattern_field)?;
+            Ok(JsRegex {
+                source: document.string(pattern, &pattern_field)?,
+                flags: match member(object, "flags") {
+                    Some(flags) => document.string(flags, &format!("{field}.flags"))?,
+                    None => Arc::from(""),
+                },
+            })
+        }
+        _ => Err(document.error(
+            field,
+            "expected a regular expression source or an object with `pattern` and optional `flags`",
+        )),
+    }
 }
 
 fn parse_pair(document: &Doc<'_>, value: &Value, field: &str) -> ConfigResult<Pair> {
@@ -527,5 +526,52 @@ mod tests {
         let configuration =
             parse(r#"{"comments": {"lineComment": "//", "futureField": 1}, "newTopLevel": {}}"#);
         assert_eq!(configuration.line_comment.as_deref(), Some("//"));
+    }
+
+    #[test]
+    fn every_regex_property_accepts_pattern_and_flags() {
+        let configuration = parse(
+            r#"{
+                "folding": {"markers": {
+                    "start": {"pattern": "^#region", "flags": "i"},
+                    "end": {"pattern": "^#endregion", "flags": "i"}
+                }},
+                "indentationRules": {
+                    "increaseIndentPattern": {"pattern": "\\{$", "flags": "m"},
+                    "decreaseIndentPattern": {"pattern": "^\\}"}
+                },
+                "onEnterRules": [{
+                    "beforeText": {"pattern": "^//", "flags": "i"},
+                    "afterText": "x",
+                    "action": {"indent": "none"}
+                }]
+            }"#,
+        );
+        let (start, end) = configuration.folding_markers.as_ref().unwrap();
+        assert_eq!(start.source.as_ref(), "^#region");
+        assert_eq!(start.flags.as_ref(), "i");
+        assert_eq!(end.flags.as_ref(), "i");
+        let rules = configuration.indentation.as_ref().unwrap();
+        assert_eq!(rules.increase.source.as_ref(), "\\{$");
+        assert_eq!(rules.increase.flags.as_ref(), "m");
+        assert_eq!(rules.decrease.source.as_ref(), "^\\}");
+        assert_eq!(rules.decrease.flags.as_ref(), "");
+        assert_eq!(configuration.on_enter[0].before.flags.as_ref(), "i");
+        assert_eq!(
+            configuration.on_enter[0]
+                .after
+                .as_ref()
+                .unwrap()
+                .source
+                .as_ref(),
+            "x"
+        );
+    }
+
+    #[test]
+    fn regex_object_without_pattern_names_the_nested_field() {
+        let error = error(r#"{"folding": {"markers": {"start": {"flags": "i"}, "end": "x"}}}"#);
+        assert_eq!(error.field.as_ref(), "folding.markers.start.pattern");
+        assert_eq!(error.reason.as_ref(), "missing field");
     }
 }

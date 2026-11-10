@@ -1,12 +1,26 @@
 //! Integration tests for the M1 language configurations (#12).
 //!
-//! Fixtures ending in `.json` are read from `data/vscode-extensions/` by walking
-//! the directory instead of naming files, so adding a configuration fails here
-//! until it is registered in the built-in catalog and its regular expressions
-//! compile. Expected values for words and folds were generated with a direct port
-//! of VS Code 1.145.2 `src/vs/editor/common/core/wordHelper.ts` (`getWordAtText`)
-//! and `src/vs/editor/contrib/folding/browser/indentRangeProvider.ts`
-//! (`computeRanges`), both MIT; the fixtures below are byte-for-byte those inputs.
+//! Fixtures ending in `.json` are found by walking `data/vscode-extensions/`
+//! instead of naming files, so a configuration that is added or replaced is
+//! parsed and compiled without editing the test (registration in the catalog is
+//! still asserted, because language IDs must be mapped explicitly).
+//!
+//! Expected values are not produced by the Rust implementation:
+//!
+//! - Words: samples are hand-constructed; expected ranges come from running
+//!   VS Code 1.145.2's own `src/vs/editor/common/core/wordHelper.ts`
+//!   (`getWordAtText`, MIT) in Node.js 22 on the same inputs. VS Code has no unit
+//!   test for that function, so its source is the reference.
+//! - Folds: samples are hand-constructed around the same shape as VS Code's
+//!   `src/vs/editor/contrib/folding/test/browser/foldingModel.test.ts`
+//!   (nested markers, offSide blank lines); expected ranges come from running
+//!   VS Code 1.145.2's `indentRangeProvider.ts` (`computeRanges`, MIT) in
+//!   Node.js 22 on the same inputs.
+//! - Regular expressions: samples are hand-constructed to include the
+//!   JavaScript-vs-Rust differences that matter (`\d`, `\w` and `\b` are ASCII,
+//!   `\s` includes U+FEFF, `.` excludes `\r`, `[]`/`[^]`); expected outcomes are
+//!   `new RegExp(source, flags)` results from Node.js 22, the ECMAScript engine
+//!   VS Code runs.
 use rove_base::ByteOffset;
 use rove_syntax::language_config::{
     self, BuiltinLanguages, CompiledLanguageConfiguration, DEFAULT_AUTO_CLOSE_BEFORE,
@@ -19,16 +33,25 @@ use std::{
     sync::Arc,
 };
 
+/// (text, cursor byte offset, expected range) for `word_at`.
+type WordCase = (&'static str, u64, Option<(u64, u64)>);
 /// (language, text, cursor byte offset, expected range, expected word).
-type WordCase = (
+type WordAtCase = (
     &'static str,
     &'static str,
     u64,
     Option<(u64, u64)>,
     &'static str,
 );
-/// (text, cursor byte offset, expected range) for the default word pattern.
-type DefaultWordCase = (&'static str, u64, Option<(u64, u64)>);
+/// (language, field, text, does the regular expression match anywhere?).
+type RegexCase = (&'static str, &'static str, &'static str, bool);
+/// (language, field, text, expected first match of `wordPattern`).
+type WordPatternCase = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+);
 
 fn data_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("data/vscode-extensions")
@@ -54,22 +77,21 @@ fn configuration_files() -> Vec<String> {
     found
 }
 
-/// Language ID for a data directory, mirroring the catalog's extension names.
-fn language_for(relative_path: &str) -> &'static str {
-    match relative_path.split('/').next().expect("directory") {
-        "csharp" => "csharp",
-        "json" => "json",
-        "markdown-basics" => "markdown",
-        "xml" => "xml",
-        "yaml" => "yaml",
-        other => panic!("unregistered configuration directory {other:?}"),
-    }
+/// Language ID that the catalog maps to `relative_path`, if any.
+fn registered_language(relative_path: &str) -> Option<&'static str> {
+    let config_path = format!("extensions/{relative_path}");
+    language_config::builtin_languages()
+        .find(|(_, path)| *path == config_path)
+        .map(|(language, _)| language)
 }
 
+/// Parse and compile one configuration file; an unregistered file is compiled
+/// under its directory name so the walk still covers it.
 fn load_configuration(relative_path: &str) -> CompiledLanguageConfiguration {
+    let language = registered_language(relative_path)
+        .unwrap_or_else(|| relative_path.split('/').next().expect("directory"));
     let path = data_root().join(relative_path);
     let text = std::fs::read_to_string(&path).expect("read configuration");
-    let language = language_for(relative_path);
     let config_path = format!("extensions/{relative_path}");
     let data = language_config::parse_language_configuration(language, &config_path, &text)
         .unwrap_or_else(|error| panic!("{relative_path}: {error}"));
@@ -268,51 +290,664 @@ fn field_level_assertions_match_the_vscode_files() {
 #[test]
 fn every_regex_in_every_configuration_compiles() {
     let files = configuration_files();
-    assert_eq!(files.len(), 5, "M1 ships five files: {files:?}");
-    let registered: BTreeSet<String> = language_config::builtin_sources()
-        .map(|source| source.relative_path.to_string())
+    assert!(!files.is_empty(), "no configuration files found");
+    let registered: BTreeSet<&str> = language_config::builtin_sources()
+        .map(|source| source.relative_path)
         .collect();
-    let mut regex_counts = BTreeSet::new();
-    for relative_path in &files {
+    // Every catalog entry must exist on disk, and every file must compile.
+    for source in &registered {
         assert!(
-            registered.contains(relative_path),
-            "{relative_path} is not in the built-in catalog"
+            files.iter().any(|file| file == source),
+            "catalog entry {source} is missing on disk"
         );
+    }
+    let mut unregistered = Vec::new();
+    for relative_path in &files {
+        if registered_language(relative_path).is_none() {
+            unregistered.push(relative_path.clone());
+        }
         let compiled = load_configuration(relative_path);
         let regexes = language_config::javascript_regexes(compiled.data());
         assert!(
             !regexes.is_empty(),
             "{relative_path} declares no regular expressions"
         );
-        // Compilation already validated every field; record the fields so a
-        // removed field is visible too.
         for (field, js) in &regexes {
             assert!(!js.source.is_empty(), "{relative_path} {field} is empty");
         }
-        regex_counts.insert((relative_path.clone(), regexes.len()));
     }
-    let counts: Vec<(&str, usize)> = regex_counts
-        .iter()
-        .map(|(path, count)| (path.as_str(), *count))
-        .collect();
-    assert_eq!(
-        counts,
-        [
-            ("csharp/language-configuration.json", 5),
-            ("json/language-configuration.json", 6),
-            ("markdown-basics/language-configuration.json", 3),
-            ("xml/xml.language-configuration.json", 3),
-            ("yaml/language-configuration.json", 4),
-        ]
+    assert!(
+        unregistered.is_empty(),
+        "add these files to the built-in catalog: {unregistered:?}"
     );
+    assert_eq!(files.len(), registered.len());
+}
+
+#[test]
+fn every_language_regex_matches_javascript_samples() {
+    // See the module docs for how the expected column was produced.
+    const REGEX_SAMPLES: &[RegexCase] = &[
+        ("csharp", "folding.markers.start", "#region", true),
+        ("csharp", "folding.markers.start", "    #region Outer", true),
+        ("csharp", "folding.markers.start", "#regionX", false),
+        ("csharp", "folding.markers.start", "#region\u{E9}", true),
+        ("csharp", "folding.markers.start", "/// #region", false),
+        ("csharp", "folding.markers.start", "#endregion", false),
+        ("csharp", "folding.markers.start", "<!-- #region -->", false),
+        ("csharp", "folding.markers.start", "<!--#region-->", false),
+        (
+            "csharp",
+            "folding.markers.start",
+            "  <!-- region -->",
+            false,
+        ),
+        (
+            "csharp",
+            "folding.markers.start",
+            "<!-- #endregion -->",
+            false,
+        ),
+        (
+            "csharp",
+            "folding.markers.start",
+            "<!-- #regionX -->",
+            false,
+        ),
+        ("csharp", "folding.markers.start", "// #region", false),
+        ("csharp", "folding.markers.start", "//#region", false),
+        ("csharp", "folding.markers.start", "   //   region", false),
+        ("csharp", "folding.markers.start", "   //#region", false),
+        ("csharp", "folding.markers.start", "// #endregion", false),
+        ("csharp", "folding.markers.start", "# region", false),
+        ("csharp", "folding.markers.start", "  #  region", false),
+        ("csharp", "folding.markers.end", "#endregion", true),
+        ("csharp", "folding.markers.end", "\t#endregion", true),
+        ("csharp", "folding.markers.end", "#endregionx", false),
+        ("csharp", "folding.markers.end", "#region", false),
+        (
+            "csharp",
+            "folding.markers.end",
+            "<!-- #endregion -->",
+            false,
+        ),
+        ("csharp", "folding.markers.end", "<!--#endregion-->", false),
+        ("csharp", "folding.markers.end", "// #endregion", false),
+        ("csharp", "folding.markers.end", "//#endregion", false),
+        ("csharp", "folding.markers.end", "// #region", false),
+        ("csharp", "folding.markers.end", "# endregion", false),
+        ("csharp", "folding.markers.end", "  #endregion", true),
+        (
+            "csharp",
+            "onEnterRules[0].beforeText",
+            "/// <summary>",
+            true,
+        ),
+        ("csharp", "onEnterRules[0].beforeText", "    /// text", true),
+        ("csharp", "onEnterRules[0].beforeText", "    // text", false),
+        ("csharp", "onEnterRules[0].beforeText", "//", false),
+        (
+            "csharp",
+            "onEnterRules[0].beforeText",
+            "text /// here",
+            false,
+        ),
+        ("csharp", "onEnterRules[0].beforeText", "// x", false),
+        ("csharp", "onEnterRules[0].beforeText", "x // y", false),
+        ("csharp", "onEnterRules[1].beforeText", "// x", true),
+        ("csharp", "onEnterRules[1].beforeText", "   //x", true),
+        ("csharp", "onEnterRules[1].beforeText", "x // y", true),
+        ("csharp", "onEnterRules[1].beforeText", "//", false),
+        ("csharp", "onEnterRules[1].beforeText", "    //", false),
+        ("csharp", "onEnterRules[1].beforeText", "http://x", false),
+        ("csharp", "onEnterRules[1].beforeText", "/// doc", true),
+        ("csharp", "onEnterRules[1].afterText", "", false),
+        ("csharp", "onEnterRules[1].afterText", "   ", false),
+        ("csharp", "onEnterRules[1].afterText", "x", true),
+        ("csharp", "onEnterRules[1].afterText", "  }", true),
+        ("csharp", "onEnterRules[1].afterText", "\t", false),
+        ("json", "folding.markers.start", "#region", false),
+        ("json", "folding.markers.start", "    #region Outer", false),
+        ("json", "folding.markers.start", "#regionX", false),
+        ("json", "folding.markers.start", "#region\u{E9}", false),
+        ("json", "folding.markers.start", "/// #region", false),
+        ("json", "folding.markers.start", "#endregion", false),
+        ("json", "folding.markers.start", "<!-- #region -->", false),
+        ("json", "folding.markers.start", "<!--#region-->", false),
+        ("json", "folding.markers.start", "  <!-- region -->", false),
+        (
+            "json",
+            "folding.markers.start",
+            "<!-- #endregion -->",
+            false,
+        ),
+        ("json", "folding.markers.start", "<!-- #regionX -->", false),
+        ("json", "folding.markers.start", "// #region", true),
+        ("json", "folding.markers.start", "//#region", true),
+        ("json", "folding.markers.start", "   //   region", true),
+        ("json", "folding.markers.start", "   //#region", true),
+        ("json", "folding.markers.start", "// #endregion", false),
+        ("json", "folding.markers.start", "# region", false),
+        ("json", "folding.markers.start", "  #  region", false),
+        ("json", "folding.markers.end", "#endregion", false),
+        ("json", "folding.markers.end", "\t#endregion", false),
+        ("json", "folding.markers.end", "#endregionx", false),
+        ("json", "folding.markers.end", "#region", false),
+        ("json", "folding.markers.end", "<!-- #endregion -->", false),
+        ("json", "folding.markers.end", "<!--#endregion-->", false),
+        ("json", "folding.markers.end", "// #endregion", true),
+        ("json", "folding.markers.end", "//#endregion", true),
+        ("json", "folding.markers.end", "// #region", false),
+        ("json", "folding.markers.end", "# endregion", false),
+        ("json", "folding.markers.end", "  #endregion", false),
+        ("json", "indentationRules.increaseIndentPattern", "{", true),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "  {",
+            true,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "{\"a\": 1",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "{\"a\": \"b\"",
+            false,
+        ),
+        ("json", "indentationRules.increaseIndentPattern", "}", false),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "{\"",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "{\"a\":",
+            false,
+        ),
+        ("json", "indentationRules.increaseIndentPattern", "[{", true),
+        ("json", "indentationRules.increaseIndentPattern", "x{", true),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "key:",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "key: value",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "  - item",
+            false,
+        ),
+        ("json", "indentationRules.increaseIndentPattern", "-", false),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "key: {",
+            true,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "key: {'a'",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "a: &amp;b",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.increaseIndentPattern",
+            "&amp;x",
+            false,
+        ),
+        ("json", "indentationRules.decreaseIndentPattern", "}", true),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "  ]",
+            true,
+        ),
+        ("json", "indentationRules.decreaseIndentPattern", "},", true),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "  ], ",
+            true,
+        ),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "x}",
+            false,
+        ),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "{}",
+            false,
+        ),
+        ("json", "indentationRules.decreaseIndentPattern", "", false),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "  }",
+            true,
+        ),
+        ("json", "indentationRules.decreaseIndentPattern", " }", true),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "\t}",
+            true,
+        ),
+        (
+            "json",
+            "indentationRules.decreaseIndentPattern",
+            "  } ",
+            true,
+        ),
+        ("json", "onEnterRules[0].beforeText", "/// <summary>", true),
+        ("json", "onEnterRules[0].beforeText", "    /// text", true),
+        ("json", "onEnterRules[0].beforeText", "    // text", true),
+        ("json", "onEnterRules[0].beforeText", "//", false),
+        ("json", "onEnterRules[0].beforeText", "text /// here", false),
+        ("json", "onEnterRules[0].beforeText", "// x", true),
+        ("json", "onEnterRules[0].beforeText", "x // y", true),
+        ("json", "onEnterRules[0].afterText", "", false),
+        ("json", "onEnterRules[0].afterText", "   ", false),
+        ("json", "onEnterRules[0].afterText", "x", true),
+        ("json", "onEnterRules[0].afterText", "  }", true),
+        ("json", "onEnterRules[0].afterText", "\t", false),
+        ("markdown", "folding.markers.start", "#region", false),
+        (
+            "markdown",
+            "folding.markers.start",
+            "    #region Outer",
+            false,
+        ),
+        ("markdown", "folding.markers.start", "#regionX", false),
+        ("markdown", "folding.markers.start", "#region\u{E9}", false),
+        ("markdown", "folding.markers.start", "/// #region", false),
+        ("markdown", "folding.markers.start", "#endregion", false),
+        (
+            "markdown",
+            "folding.markers.start",
+            "<!-- #region -->",
+            true,
+        ),
+        ("markdown", "folding.markers.start", "<!--#region-->", true),
+        (
+            "markdown",
+            "folding.markers.start",
+            "  <!-- region -->",
+            true,
+        ),
+        (
+            "markdown",
+            "folding.markers.start",
+            "<!-- #endregion -->",
+            false,
+        ),
+        (
+            "markdown",
+            "folding.markers.start",
+            "<!-- #regionX -->",
+            false,
+        ),
+        ("markdown", "folding.markers.start", "// #region", false),
+        ("markdown", "folding.markers.start", "//#region", false),
+        ("markdown", "folding.markers.start", "   //   region", false),
+        ("markdown", "folding.markers.start", "   //#region", false),
+        ("markdown", "folding.markers.start", "// #endregion", false),
+        ("markdown", "folding.markers.start", "# region", false),
+        ("markdown", "folding.markers.start", "  #  region", false),
+        ("markdown", "folding.markers.end", "#endregion", false),
+        ("markdown", "folding.markers.end", "\t#endregion", false),
+        ("markdown", "folding.markers.end", "#endregionx", false),
+        ("markdown", "folding.markers.end", "#region", false),
+        (
+            "markdown",
+            "folding.markers.end",
+            "<!-- #endregion -->",
+            true,
+        ),
+        ("markdown", "folding.markers.end", "<!--#endregion-->", true),
+        ("markdown", "folding.markers.end", "// #endregion", false),
+        ("markdown", "folding.markers.end", "//#endregion", false),
+        ("markdown", "folding.markers.end", "// #region", false),
+        ("markdown", "folding.markers.end", "# endregion", false),
+        ("markdown", "folding.markers.end", "  #endregion", false),
+        ("xml", "folding.markers.start", "#region", false),
+        ("xml", "folding.markers.start", "    #region Outer", false),
+        ("xml", "folding.markers.start", "#regionX", false),
+        ("xml", "folding.markers.start", "#region\u{E9}", false),
+        ("xml", "folding.markers.start", "/// #region", false),
+        ("xml", "folding.markers.start", "#endregion", false),
+        ("xml", "folding.markers.start", "<!-- #region -->", true),
+        ("xml", "folding.markers.start", "<!--#region-->", true),
+        ("xml", "folding.markers.start", "  <!-- region -->", false),
+        ("xml", "folding.markers.start", "<!-- #endregion -->", false),
+        ("xml", "folding.markers.start", "<!-- #regionX -->", false),
+        ("xml", "folding.markers.start", "// #region", false),
+        ("xml", "folding.markers.start", "//#region", false),
+        ("xml", "folding.markers.start", "   //   region", false),
+        ("xml", "folding.markers.start", "   //#region", false),
+        ("xml", "folding.markers.start", "// #endregion", false),
+        ("xml", "folding.markers.start", "# region", false),
+        ("xml", "folding.markers.start", "  #  region", false),
+        ("xml", "folding.markers.end", "#endregion", false),
+        ("xml", "folding.markers.end", "\t#endregion", false),
+        ("xml", "folding.markers.end", "#endregionx", false),
+        ("xml", "folding.markers.end", "#region", false),
+        ("xml", "folding.markers.end", "<!-- #endregion -->", true),
+        ("xml", "folding.markers.end", "<!--#endregion-->", true),
+        ("xml", "folding.markers.end", "// #endregion", false),
+        ("xml", "folding.markers.end", "//#endregion", false),
+        ("xml", "folding.markers.end", "// #region", false),
+        ("xml", "folding.markers.end", "# endregion", false),
+        ("xml", "folding.markers.end", "  #endregion", false),
+        ("yaml", "folding.markers.start", "#region", true),
+        ("yaml", "folding.markers.start", "    #region Outer", true),
+        ("yaml", "folding.markers.start", "#regionX", false),
+        ("yaml", "folding.markers.start", "#region\u{E9}", true),
+        ("yaml", "folding.markers.start", "/// #region", false),
+        ("yaml", "folding.markers.start", "#endregion", false),
+        ("yaml", "folding.markers.start", "<!-- #region -->", false),
+        ("yaml", "folding.markers.start", "<!--#region-->", false),
+        ("yaml", "folding.markers.start", "  <!-- region -->", false),
+        (
+            "yaml",
+            "folding.markers.start",
+            "<!-- #endregion -->",
+            false,
+        ),
+        ("yaml", "folding.markers.start", "<!-- #regionX -->", false),
+        ("yaml", "folding.markers.start", "// #region", false),
+        ("yaml", "folding.markers.start", "//#region", false),
+        ("yaml", "folding.markers.start", "   //   region", false),
+        ("yaml", "folding.markers.start", "   //#region", false),
+        ("yaml", "folding.markers.start", "// #endregion", false),
+        ("yaml", "folding.markers.start", "# region", true),
+        ("yaml", "folding.markers.start", "  #  region", true),
+        ("yaml", "folding.markers.end", "#endregion", true),
+        ("yaml", "folding.markers.end", "\t#endregion", true),
+        ("yaml", "folding.markers.end", "#endregionx", false),
+        ("yaml", "folding.markers.end", "#region", false),
+        ("yaml", "folding.markers.end", "<!-- #endregion -->", false),
+        ("yaml", "folding.markers.end", "<!--#endregion-->", false),
+        ("yaml", "folding.markers.end", "// #endregion", false),
+        ("yaml", "folding.markers.end", "//#endregion", false),
+        ("yaml", "folding.markers.end", "// #region", false),
+        ("yaml", "folding.markers.end", "# endregion", true),
+        ("yaml", "folding.markers.end", "  #endregion", true),
+        ("yaml", "indentationRules.increaseIndentPattern", "{", false),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "  {",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "{\"a\": 1",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "{\"a\": \"b\"",
+            false,
+        ),
+        ("yaml", "indentationRules.increaseIndentPattern", "}", false),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "{\"",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "{\"a\":",
+            true,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "[{",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "x{",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "key:",
+            true,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "key: value",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "  - item",
+            false,
+        ),
+        ("yaml", "indentationRules.increaseIndentPattern", "-", true),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "key: {",
+            true,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "key: {'a'",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "a: &amp;b",
+            true,
+        ),
+        (
+            "yaml",
+            "indentationRules.increaseIndentPattern",
+            "&amp;x",
+            false,
+        ),
+        ("yaml", "indentationRules.decreaseIndentPattern", "}", false),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "  ]",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "},",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "  ], ",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "x}",
+            false,
+        ),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "{}",
+            false,
+        ),
+        ("yaml", "indentationRules.decreaseIndentPattern", "", false),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "  }",
+            true,
+        ),
+        ("yaml", "indentationRules.decreaseIndentPattern", " }", true),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "\t}",
+            true,
+        ),
+        (
+            "yaml",
+            "indentationRules.decreaseIndentPattern",
+            "  } ",
+            false,
+        ),
+    ];
+    const WORD_PATTERN_SAMPLES: &[WordPatternCase] = &[
+        (
+            "markdown",
+            "wordPattern.pattern",
+            "hello **bold** world",
+            Some("hello"),
+        ),
+        (
+            "markdown",
+            "wordPattern.pattern",
+            "\u{4E2D}\u{6587} words",
+            Some("\u{4E2D}\u{6587}"),
+        ),
+        (
+            "markdown",
+            "wordPattern.pattern",
+            "e\u{301} vowel",
+            Some("e\u{301}"),
+        ),
+        ("markdown", "wordPattern.pattern", "**", None),
+        ("markdown", "wordPattern.pattern", "_x", Some("x")),
+        ("markdown", "wordPattern.pattern", "3.14", Some("3")),
+        ("markdown", "wordPattern.pattern", "foo-bar", Some("foo")),
+        ("markdown", "wordPattern.pattern", "<b>hello</b>", Some("b")),
+        ("markdown", "wordPattern.pattern", "   ", None),
+        (
+            "xml",
+            "wordPattern.pattern",
+            "hello **bold** world",
+            Some("hello"),
+        ),
+        (
+            "xml",
+            "wordPattern.pattern",
+            "\u{4E2D}\u{6587} words",
+            Some("\u{4E2D}\u{6587}"),
+        ),
+        (
+            "xml",
+            "wordPattern.pattern",
+            "e\u{301} vowel",
+            Some("e\u{301}"),
+        ),
+        ("xml", "wordPattern.pattern", "**", None),
+        ("xml", "wordPattern.pattern", "_x", Some("_x")),
+        ("xml", "wordPattern.pattern", "3.14", Some("3.14")),
+        ("xml", "wordPattern.pattern", "foo-bar", Some("foo-bar")),
+        ("xml", "wordPattern.pattern", "<b>hello</b>", Some("b")),
+        ("xml", "wordPattern.pattern", "   ", None),
+    ];
+    let builtins = BuiltinLanguages::load().unwrap();
+    for (language, field, text, expected) in REGEX_SAMPLES {
+        let configuration = builtins
+            .compiled(language)
+            .unwrap_or_else(|| panic!("{language} is served"));
+        let compiled = language_config::javascript_regexes(configuration.data())
+            .into_iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, js)| js)
+            .unwrap_or_else(|| panic!("{language} has no {field}"));
+        let actual = language_config::compile_regex(
+            compiled,
+            &language_config::RegexOrigin::new(*language, "test", *field),
+        )
+        .unwrap_or_else(|error| panic!("{language} {field}: {error}"))
+        .is_match(text)
+        .unwrap();
+        assert_eq!(actual, *expected, "{language} {field} on {text:?}");
+    }
+    for (language, field, text, expected) in WORD_PATTERN_SAMPLES {
+        let configuration = builtins.compiled(language).expect("served");
+        let found = configuration
+            .word_pattern()
+            .find(text)
+            .unwrap()
+            .map(|(start, end)| &text[start..end]);
+        assert_eq!(found, *expected, "{language} {field} on {text:?}");
+    }
+
+    // Every regular expression in every shipped configuration has samples.
+    let mut covered: BTreeSet<(String, String)> = BTreeSet::new();
+    for (language, field, _, _) in REGEX_SAMPLES {
+        covered.insert((language.to_string(), field.to_string()));
+    }
+    for (language, field, _, _) in WORD_PATTERN_SAMPLES {
+        covered.insert((language.to_string(), field.to_string()));
+    }
+    // `json` and `jsonc` share one file, so a sample under either ID covers both.
+    for source in language_config::builtin_sources() {
+        let languages: Vec<&str> = language_config::builtin_languages()
+            .filter(|(_, path)| *path == source.config_path)
+            .map(|(language, _)| language)
+            .collect();
+        let configuration = builtins
+            .compiled(languages.first().expect("shared configuration has an ID"))
+            .expect("served");
+        for (field, _) in language_config::javascript_regexes(configuration.data()) {
+            assert!(
+                languages
+                    .iter()
+                    .any(|language| covered.contains(&(language.to_string(), field.clone()))),
+                "{languages:?} {field} has no JavaScript comparison sample"
+            );
+        }
+    }
 }
 
 #[test]
 fn word_pattern_agrees_with_vscode_for_markdown_and_xml() {
     // (language, text, cursor byte offset, expected word byte range, expected word)
-    // from VS Code's getWordAtText; non-ASCII offsets are converted from UTF-16
+    // from VS Code's getWordAtText. Non-ASCII offsets are converted from UTF-16
     // columns to the UTF-8 byte offsets the Rove contract uses.
-    let cases: &[WordCase] = &[
+    let cases: &[WordAtCase] = &[
         (
             "markdown",
             "hello **bold** world",
@@ -392,6 +1027,21 @@ fn word_pattern_agrees_with_vscode_for_markdown_and_xml() {
             );
         }
     }
+
+    // Longer than the 1000-byte window: the word still resolves. Expected values
+    // are hand-derived: "x" * 600 + " cursor " puts "cursor" at bytes 601..607.
+    let mut long = "x".repeat(600);
+    long.push_str(" cursor ");
+    long.push_str(&"y".repeat(600));
+    let range = markdown
+        .word_at(&long, ByteOffset(603))
+        .unwrap()
+        .expect("word in a long line");
+    assert_eq!(
+        (range.start().0, range.end().0),
+        (601, 607),
+        "long lines use a 1000-byte window"
+    );
 }
 
 #[test]
@@ -407,7 +1057,7 @@ fn languages_without_word_pattern_use_the_vscode_default() {
         );
     }
     let csharp = builtins.compiled("csharp").unwrap();
-    let cases: &[DefaultWordCase] = &[
+    let cases: &[WordCase] = &[
         ("var x = 1.5 + y;", 8, Some((8, 11))),
         ("System.Console.WriteLine", 8, Some((7, 14))),
         ("snake_case", 3, Some((0, 10))),
@@ -444,12 +1094,35 @@ fn region_markers_nest_and_unpaired_markers_do_not_fold() {
 }
 
 #[test]
+fn compiled_markers_use_one_combined_scan() {
+    let builtins = BuiltinLanguages::load().unwrap();
+    for language in ["csharp", "json", "jsonc", "markdown", "xml", "yaml"] {
+        let markers = builtins
+            .compiled(language)
+            .unwrap()
+            .folding_markers()
+            .unwrap_or_else(|| panic!("{language} has folding markers"));
+        assert!(markers.is_combined(), "{language} scans markers once");
+    }
+}
+
+#[test]
 fn off_side_blank_lines_belong_to_the_next_block() {
     let builtins = BuiltinLanguages::load().unwrap();
     // Expected values from VS Code's computeRanges with offSide on/off.
     for (language, text, on, off) in [
-        ("yaml", "top:\n  child: 1\n\nother: 2", (0, 2), (0, 3)),
-        ("markdown", "- item\n  - nested\n\nend", (0, 2), (0, 3)),
+        (
+            "yaml",
+            "top:\n  child: 1\n\nother: 2",
+            (0u64, 2u64),
+            (0u64, 3u64),
+        ),
+        (
+            "markdown",
+            "- item\n  - nested\n\nend",
+            (0u64, 2u64),
+            (0u64, 3u64),
+        ),
     ] {
         let configuration = builtins.compiled(language).unwrap();
         assert!(
@@ -636,6 +1309,11 @@ fn builtins_are_send_sync_and_share_data() {
     let first = builtins.get("json").unwrap();
     let second = builtins.get("jsonc").unwrap();
     assert!(Arc::ptr_eq(&first, &second));
+    // The compiled view is shared too: json/jsonc compile their regexes once.
+    assert!(std::ptr::eq(
+        builtins.compiled("json").unwrap(),
+        builtins.compiled("jsonc").unwrap()
+    ));
     let handle = std::thread::spawn(move || {
         let languages: Arc<dyn LanguageConfigurations> = Arc::new(builtins);
         languages.get("yaml").is_some()
