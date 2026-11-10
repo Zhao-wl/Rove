@@ -200,3 +200,20 @@ workspace 与原型 fmt、严格 clippy（`-D warnings`）通过；workspace tes
 构建支持有Git检出的离线环境（依赖需预先缓存），但不支持缺Git或不含.git的源码tarball；这是证据原型的明确前提，不是产品分发方案。dirty仅覆盖spike目录。修改任一构建输入后必须重建、重新录制验收证据；旧数据仍可用summarize.py作历史统计，不能拿来通过当前校验。
 
 第三轮修复已将布局参数读取与COM调用分离，调用期间不持有State借用。此前RefCell可变借用跨越COM调用的同步重入panic风险已修复。产品集成必须先复制调用参数、释放借用，再调用COM，成功后按controller/generation核对并更新缓存；本轮仅登记原型限制，不将其认定为产品可复用实现。
+
+## 10. 第三轮修复与当前构建内存补测
+
+基于main `5f6f780`，构建身份：`{"schema": 2, "commit": "b00ce0a5034ed294f921f0f9420b71858dd7603b", "source_git_blob": "3e9f59c12723e4642c7ecf715cae51abd83f9010", "dirty": "false", "built_unix_seconds": "1794280355", "benchmark_mode": "continuous_frame_probe_not_idle"}`。exe SHA-256随run.json保存，原始日志、内存采样和逐轮校验输出在 `spikes/webview-gpui/evidence/2026-11-10-review3/`。
+
+| 运行 | 首Render ms | 峰值工作集 MiB | 峰值私有提交 MiB | >16ms/回复 | 运行校验 |
+|---|---|---:|---:|---:|---|
+| fresh-profile-1 | [426.76279999999997] | 346.8 | 262.3 | 4/393 | PASS |
+| fresh-profile-2 | [369.3961] | 331.3 | 244.8 | 4/81 | FAIL |
+| fresh-profile-3 | [599.7845000000001] | 339.9 | 245.2 | 0/29 | FAIL |
+| reused-profile-1 | [343.274] | 327.3 | 254.0 | 0/418 | PASS |
+| reused-profile-2 | [348.48639999999995] | 333.3 | 253.9 | 0/448 | PASS |
+| reused-profile-3 | [366.0081] | 329.8 | 256.4 | 0/432 | PASS |
+
+严格校验4/6通过；失败轮次未完成两次ready，不能标记生命周期通过。采样工具增加负载的可能性存在，但未做受控A/B，不能归因；失败原始日志全部保留。峰值为全运行采样最大值，忽略进程退出后的空值，不是静止空闲预算或Close后稳定值。此为全新/复用profile测试，不是真正OS冷启动外部首帧。key_route仍为0，视觉/焦点阻断不变。
+
+COM布局调用期间不再持有State借用；验收断言已改为明确错误提示。两分支workspace fmt/clippy及43项测试通过；IME另4项通过。WebView原型fmt/clippy/release build/test通过（Rust目标0用例），Python3项通过。Git checkout仍为证据构建前提，无Git/tarball支持未实现；离线缓存构建为预期、未实测。
