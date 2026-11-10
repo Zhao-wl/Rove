@@ -1094,7 +1094,7 @@ fn region_markers_nest_and_unpaired_markers_do_not_fold() {
 }
 
 #[test]
-fn compiled_markers_use_one_combined_scan() {
+fn compiled_markers_use_the_combined_matcher() {
     let builtins = BuiltinLanguages::load().unwrap();
     for language in ["csharp", "json", "jsonc", "markdown", "xml", "yaml"] {
         let markers = builtins
@@ -1102,7 +1102,12 @@ fn compiled_markers_use_one_combined_scan() {
             .unwrap()
             .folding_markers()
             .unwrap_or_else(|| panic!("{language} has folding markers"));
-        assert!(markers.is_combined(), "{language} scans markers once");
+        // The combined matcher mirrors VS Code's `(start)|(?:end)`; the two-probe
+        // fallback is covered by the unit tests.
+        assert!(
+            markers.is_combined(),
+            "{language} uses the combined matcher"
+        );
     }
 }
 

@@ -217,7 +217,6 @@ mod tests {
             compiled(end),
             (&start_js, &end_js),
         )
-        .unwrap()
     }
     fn region_ranges(folds: &[Fold]) -> Vec<(u64, u64)> {
         folds

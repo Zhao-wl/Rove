@@ -21,10 +21,17 @@
 //!   (`\n`, `\r`, `\u2028`, `\u2029`); no shipped configuration passes `m`.
 //!
 //! Character classes follow ECMAScript where Rust differs: `[]` (never matches)
-//! and `[^]` (any character) are rewritten, and `&`, `~` and `[` are escaped
-//! because Rust would read `&&`/`~~` as set operations and `[` as a nested or
-//! POSIX class. `]` always closes the class, as in ECMAScript, so no member
-//! position exception exists.
+//! and `[^]` (any character) are rewritten, `&`, `~` and `[` are escaped because
+//! Rust would read `&&`/`~~` as set operations and `[` as a nested or POSIX
+//! class, and `]` always closes the class. A `-` is kept as a range only between
+//! single-character atoms; next to a set escape (`\d`, `\w`, `\s`, `\p{...}`) it
+//! is escaped, because ECMAScript treats it as a literal there.
+//!
+//! `\p{...}` and `\u{...}` are Unicode-mode escapes: with the `u` flag they are
+//! compiled as property/code-point escapes, and without it they are the identity
+//! escape plus literal braces, which is what ECMAScript matches. Identity escapes
+//! of letters (e.g. `\A`) are accepted in both modes even though `u` mode would
+//! reject them; the shipped configurations only use valid escapes.
 use super::{ConfigResult, LanguageConfigError};
 use crate::JsRegex;
 use fancy_regex::{Regex, RegexBuilder};
@@ -157,6 +164,9 @@ struct JsFlags {
     case_insensitive: bool,
     multi_line: bool,
     dot_all: bool,
+    /// `u`: enables `\p{...}` and `\u{...}`. Without it those are identity
+    /// escapes, because ECMAScript only defines them in Unicode mode.
+    unicode: bool,
 }
 impl JsFlags {
     fn parse(flags: &str, origin: &RegexOrigin) -> ConfigResult<Self> {
@@ -166,10 +176,10 @@ impl JsFlags {
                 'i' => parsed.case_insensitive = true,
                 'm' => parsed.multi_line = true,
                 's' => parsed.dot_all = true,
+                'u' => parsed.unicode = true,
                 // `g` only makes a JavaScript regexp stateful; callers iterate
-                // explicitly. `u` changes escapes such as `\p{...}` but not the
-                // ASCII `\d`/`\w` semantics handled below.
-                'g' | 'u' => {}
+                // explicitly.
+                'g' => {}
                 other => {
                     return Err(origin.error(format!(
                         "unsupported JavaScript regular expression flag '{other}'"
@@ -186,10 +196,16 @@ fn translate(source: &str, flags: JsFlags, origin: &RegexOrigin) -> ConfigResult
     let mut out = String::with_capacity(source.len() + 16);
     let mut index = 0;
     let mut in_class = false;
+    // The previous in-class atom expanded to a set (`\d`, `\w`, `\s`, `\p{...}`).
+    // A `-` next to such an atom is a literal in ECMAScript, never a range.
+    let mut previous_was_set = false;
     while index < chars.len() {
         let current = chars[index];
         if current == '\\' {
-            index = push_escape(&chars, index, &mut out, in_class, origin)?;
+            let (next, expansion_is_set) =
+                push_escape(&chars, index, &mut out, in_class, flags.unicode, origin)?;
+            previous_was_set = in_class && expansion_is_set;
+            index = next;
             continue;
         }
         if in_class {
@@ -200,6 +216,16 @@ fn translate(source: &str, flags: JsFlags, origin: &RegexOrigin) -> ConfigResult
                     in_class = false;
                     out.push(']');
                 }
+                // A range needs single-character atoms on both sides. Next to a
+                // set escape the `-` is a literal, and Rust would read the
+                // expansion's trailing characters as a range bound.
+                '-' => {
+                    if previous_was_set || next_escape_is_set(&chars, index + 1, flags.unicode) {
+                        out.push_str("\\-");
+                    } else {
+                        out.push('-');
+                    }
+                }
                 // Rust-only class syntax: `&&`/`~~` are set operations and `[`
                 // starts a nested class or POSIX class. ECMAScript has none of
                 // them, so escape the literal character.
@@ -209,6 +235,7 @@ fn translate(source: &str, flags: JsFlags, origin: &RegexOrigin) -> ConfigResult
                 }
                 other => out.push(other),
             }
+            previous_was_set = false;
             index += 1;
             continue;
         }
@@ -240,6 +267,19 @@ fn translate(source: &str, flags: JsFlags, origin: &RegexOrigin) -> ConfigResult
                 out.push_str("\\]");
                 index += 1;
             }
+            // ECMAScript treats a `{` that cannot start a quantifier as a literal
+            // (in non-Unicode mode); Rust rejects it. A real quantifier is copied
+            // verbatim.
+            '{' => match quantifier_end(&chars, index) {
+                Some(end) => {
+                    out.extend(chars[index..=end].iter().copied());
+                    index = end + 1;
+                }
+                None => {
+                    out.push_str("\\{");
+                    index += 1;
+                }
+            },
             '.' if !flags.dot_all => {
                 out.push_str(JS_ANY_CHAR);
                 index += 1;
@@ -255,15 +295,49 @@ fn translate(source: &str, flags: JsFlags, origin: &RegexOrigin) -> ConfigResult
     }
     Ok(out)
 }
+
+/// Whether the atom starting at `index` (just after a class `-`) expands to a set,
+/// which would make that `-` a literal in ECMAScript.
+fn next_escape_is_set(chars: &[char], index: usize, unicode: bool) -> bool {
+    if chars.get(index) != Some(&'\\') {
+        return false;
+    }
+    match chars.get(index + 1) {
+        Some('d' | 'D' | 'w' | 'W' | 's' | 'S') => true,
+        Some('p' | 'P') => unicode && chars.get(index + 2) == Some(&'{'),
+        _ => false,
+    }
+}
+
+/// End index of a `{n}`, `{n,}` or `{n,m}` quantifier starting at `index`, if any.
+fn quantifier_end(chars: &[char], index: usize) -> Option<usize> {
+    let mut cursor = index + 1;
+    let digits = cursor;
+    while chars.get(cursor).is_some_and(char::is_ascii_digit) {
+        cursor += 1;
+    }
+    if cursor == digits {
+        return None;
+    }
+    if chars.get(cursor) == Some(&',') {
+        cursor += 1;
+        while chars.get(cursor).is_some_and(char::is_ascii_digit) {
+            cursor += 1;
+        }
+    }
+    (chars.get(cursor) == Some(&'}')).then_some(cursor)
+}
+
 /// Append the translation of the escape at `index` (which points at `\`) and
-/// return the index just past the escape.
+/// return the index just past it, plus whether it expanded to a character set.
 fn push_escape(
     chars: &[char],
     index: usize,
     out: &mut String,
     in_class: bool,
+    unicode: bool,
     origin: &RegexOrigin,
-) -> ConfigResult<usize> {
+) -> ConfigResult<(usize, bool)> {
     let escape = match chars.get(index + 1) {
         Some(&escape) => escape,
         None => return Err(origin.error("regular expression ends with a backslash")),
@@ -271,7 +345,7 @@ fn push_escape(
     match escape {
         'd' => {
             out.push_str(if in_class { "0-9" } else { "[0-9]" });
-            Ok(index + 2)
+            Ok((index + 2, true))
         }
         'D' => {
             if in_class {
@@ -280,7 +354,7 @@ fn push_escape(
                 ));
             }
             out.push_str("[^0-9]");
-            Ok(index + 2)
+            Ok((index + 2, true))
         }
         'w' => {
             out.push_str(if in_class {
@@ -288,7 +362,7 @@ fn push_escape(
             } else {
                 "[0-9A-Za-z_]"
             });
-            Ok(index + 2)
+            Ok((index + 2, true))
         }
         'W' => {
             if in_class {
@@ -297,7 +371,7 @@ fn push_escape(
                 ));
             }
             out.push_str("[^0-9A-Za-z_]");
-            Ok(index + 2)
+            Ok((index + 2, true))
         }
         's' => {
             if in_class {
@@ -307,7 +381,7 @@ fn push_escape(
                 out.push_str(JS_SPACE_CLASS);
                 out.push(']');
             }
-            Ok(index + 2)
+            Ok((index + 2, true))
         }
         'S' => {
             if in_class {
@@ -318,7 +392,7 @@ fn push_escape(
             out.push_str("[^");
             out.push_str(JS_SPACE_CLASS);
             out.push(']');
-            Ok(index + 2)
+            Ok((index + 2, true))
         }
         'b' => {
             if in_class {
@@ -327,7 +401,7 @@ fn push_escape(
             } else {
                 out.push_str(ASCII_WORD_BOUNDARY);
             }
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         'B' => {
             if in_class {
@@ -336,7 +410,7 @@ fn push_escape(
                 ));
             }
             out.push_str(ASCII_NON_WORD_BOUNDARY);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         'c' => {
             let letter = match chars.get(index + 2).copied() {
@@ -347,7 +421,7 @@ fn push_escape(
                 }
             };
             out.push_str(&format!("\\x{{{:X}}}", (letter as u32) % 32));
-            Ok(index + 3)
+            Ok((index + 3, false))
         }
         '0' => {
             if chars.get(index + 2).is_some_and(char::is_ascii_digit) {
@@ -356,50 +430,66 @@ fn push_escape(
                 );
             }
             out.push_str("\\x00");
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         '1'..='9' => {
             // Backreference; `fancy-regex` supports numbered backreferences.
             out.push('\\');
             out.push(escape);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         'p' | 'P' if chars.get(index + 2) == Some(&'{') => {
-            copy_braced(chars, index, out, origin, "Unicode property escape")
+            if unicode {
+                // Property escapes only exist with the `u` flag; without it `\p`
+                // is the identity escape `p` followed by literal braces.
+                copy_braced(chars, index, out, origin, "Unicode property escape")
+                    .map(|end| (end, true))
+            } else {
+                out.push(escape);
+                Ok((index + 2, false))
+            }
         }
         'p' | 'P' | 'k' if chars.get(index + 2) != Some(&'<') => {
             // Without its delimiter the escape is an ECMAScript identity escape,
             // not a `fancy-regex` assertion.
             out.push(escape);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
-        'k' => copy_delimited(chars, index, out, origin, '<', '>'),
+        'k' => copy_delimited(chars, index, out, origin, '<', '>').map(|end| (end, false)),
         'u' if chars.get(index + 2) == Some(&'{') => {
-            copy_braced(chars, index, out, origin, "code point escape")
+            if unicode {
+                copy_braced(chars, index, out, origin, "code point escape").map(|end| (end, false))
+            } else {
+                // Without `u`, `\u{...}` is the identity escape `u` followed by
+                // literal braces rather than a code point escape.
+                out.push('u');
+                Ok((index + 2, false))
+            }
         }
         'n' | 'r' | 't' | 'f' | 'v' | 'x' | 'u' => {
             out.push('\\');
             out.push(escape);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         other if other.is_ascii_alphabetic() => {
             // Other letter escapes are identity escapes in non-Unicode mode;
             // emitting the bare letter keeps them literal instead of letting the
             // engine read e.g. `\A` as "start of text".
             out.push(other);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         other if other.is_ascii() => {
             out.push('\\');
             out.push(other);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
         other => {
             out.push(other);
-            Ok(index + 2)
+            Ok((index + 2, false))
         }
     }
 }
+
 fn copy_braced(
     chars: &[char],
     index: usize,
@@ -413,6 +503,7 @@ fn copy_braced(
     out.extend(chars[index..=close].iter().copied());
     Ok(close + 1)
 }
+
 fn copy_delimited(
     chars: &[char],
     index: usize,
@@ -427,6 +518,7 @@ fn copy_delimited(
     out.extend(chars[index..=end].iter().copied());
     Ok(end + 1)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,8 +637,54 @@ mod tests {
         assert!(!compile(r"^\A$").is_match("B").unwrap());
         assert!(compile(r"\x41").is_match("A").unwrap());
         assert!(compile(r"\u0041").is_match("A").unwrap());
-        assert!(compile(r"\u{1F600}").is_match("\u{1F600}").unwrap());
-        assert!(compile(r"\p{Alphabetic}+").is_match("hello").unwrap());
+    }
+
+    #[test]
+    fn unicode_escapes_require_the_u_flag() {
+        // With `u`: property and code point escapes.
+        assert!(compile_with(r"\p{Alphabetic}+", "u")
+            .is_match("hello")
+            .unwrap());
+        assert!(compile_with(r"\u{1F600}", "u")
+            .is_match("\u{1F600}")
+            .unwrap());
+        // Without `u` ECMAScript reads both as an identity escape plus literal
+        // braces; Node 22 matches "p{Alphabetic}" and "u{1F600}".
+        let property = compile(r"\p{Alphabetic}");
+        assert!(property.is_match("p{Alphabetic}").unwrap());
+        assert!(!property.is_match("abc").unwrap());
+        let code_point = compile(r"\u{1F600}");
+        assert!(code_point.is_match("u{1F600}").unwrap());
+        assert!(!code_point.is_match("\u{1F600}").unwrap());
+    }
+
+    #[test]
+    fn dash_is_a_range_only_between_single_character_atoms() {
+        // `\w` expands to several characters; the following `-` must stay a
+        // literal instead of becoming a Rust range bound.
+        let word_dash = compile(r"[\w\-.]");
+        for text in ["-", ".", "_", "a", "0"] {
+            assert!(word_dash.is_match(text).unwrap(), "matches {text:?}");
+        }
+        assert!(!word_dash.is_match(" ").unwrap());
+        // `-` before or after a set escape is literal in ECMAScript.
+        let dash_before_set = compile(r"[a-\d]");
+        for text in ["a", "-", "5"] {
+            assert!(dash_before_set.is_match(text).unwrap(), "matches {text:?}");
+        }
+        let set_before_dash = compile(r"[\d-a]");
+        for text in ["0", "-", "a"] {
+            assert!(set_before_dash.is_match(text).unwrap(), "matches {text:?}");
+        }
+        // A range followed by `-` (valid ECMAScript) stays parseable in Rust.
+        let chained = compile(r"[a-b-c]");
+        for text in ["-", "b", "c"] {
+            assert!(chained.is_match(text).unwrap(), "matches {text:?}");
+        }
+        assert!(!chained.is_match("d").unwrap());
+        // Explicitly escaped `-` and ranges with single-character escapes.
+        assert!(compile(r"[\w\-.]").is_match("-").unwrap());
+        assert!(compile(r"[\x41-\x5A]").is_match("M").unwrap());
     }
 
     #[test]

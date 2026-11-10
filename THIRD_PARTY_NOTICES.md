@@ -36,6 +36,7 @@ Source: https://crates.io/crates/gpui/0.2.2 (Zed Industries).
 License: Apache License, Version 2.0. The original license is retained in
 `vendor/gpui/LICENSE-APACHE`. Rove modifications and reapplication instructions
 are recorded in `vendor/gpui/ROVE_PATCHES.md`.
+
 ## VS Code 语言配置（`language-configuration.json`）
 
 `crates/rove-syntax/data/vscode-extensions/` 下的五个语言配置文件原样取自 Microsoft VS Code
