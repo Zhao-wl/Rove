@@ -5,9 +5,10 @@
 
 use rove_base::{Events, WorkspacePath};
 use rove_workspace::{
-    default_settings, wait_until_complete, FileEvent, FileEvents, Folder, Workspace,
+    default_settings, wait_until_complete, FileEvent, FileEvents, Folder, RuleSet, Workspace,
     WorkspaceConfig,
 };
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,41 @@ fn file_paths(folder: &Folder) -> Vec<String> {
 
 fn write(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).expect("write fixture");
+}
+
+/// Every file below `root`, as sorted workspace-relative `/` paths. The disk is the ground truth
+/// in the convergence tests.
+fn disk_files(root: &Path) -> Vec<String> {
+    fn walk(directory: &Path, root: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                walk(&path, root, out);
+            } else if let Ok(relative) = path.strip_prefix(root) {
+                out.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+fn watcher_exclude(patterns: &[(&str, bool)]) -> RuleSet {
+    RuleSet::from_value(&rove_base::Value::Object(Arc::new(
+        patterns
+            .iter()
+            .map(|(pattern, enabled)| (pattern.to_string(), rove_base::Value::Bool(*enabled)))
+            .collect(),
+    )))
+    .expect("valid rule object")
 }
 
 #[test]
@@ -152,29 +188,51 @@ fn a_thousand_created_and_deleted_files_converge() {
     assert!(wait_until_complete(&folder, Duration::from_secs(15)));
     assert!(wait_watching(&folder, Duration::from_secs(15)));
 
+    // The burst must stay inside one second (the acceptance criterion) and the snapshot must
+    // converge within a bounded time afterwards (10 s, not "eventually").
+    let burst_started = Instant::now();
     for index in 0..1000 {
         write(
             &dir.path().join(format!("Batch{index:04}.cs")),
             "class A {}\n",
         );
     }
+    let burst = burst_started.elapsed();
     assert!(
-        wait_until(Duration::from_secs(30), || {
+        burst < Duration::from_secs(1),
+        "creating 1000 files took {burst:?}, the burst must fit in one second"
+    );
+    let convergence_started = Instant::now();
+    assert!(
+        wait_until(Duration::from_secs(10), || {
             folder.files(0..usize::MAX).expect("files").items.len() == 1000
         }),
         "snapshot must converge after a 1000-file burst, saw {}",
         folder.files(0..usize::MAX).expect("files").items.len()
     );
+    eprintln!(
+        "1000-file create burst {:?}, converged in {:?}",
+        burst,
+        convergence_started.elapsed()
+    );
 
+    let burst_started = Instant::now();
     for index in 0..1000 {
         std::fs::remove_file(dir.path().join(format!("Batch{index:04}.cs"))).expect("remove");
     }
+    let delete_burst = burst_started.elapsed();
+    let convergence_started = Instant::now();
     assert!(
-        wait_until(Duration::from_secs(30), || {
+        wait_until(Duration::from_secs(10), || {
             folder.files(0..usize::MAX).expect("files").items.is_empty()
         }),
         "snapshot must converge after a 1000-file delete, saw {:?}",
         file_paths(&folder)
+    );
+    eprintln!(
+        "1000-file delete burst {:?}, converged in {:?}",
+        delete_burst,
+        convergence_started.elapsed()
     );
 }
 
@@ -332,6 +390,167 @@ fn re_including_library_exposes_the_extra_read_only_default() {
         "unexpected reasons: {:?}",
         rules.read_only
     );
+}
+
+/// True when the event mentions a path under `prefix`.
+fn mentions(event: &FileEvent, prefix: &str) -> bool {
+    match event {
+        FileEvent::Created(path) | FileEvent::Changed(path) | FileEvent::Removed(path) => {
+            path.as_str().starts_with(prefix)
+        }
+        FileEvent::Renamed { from, to } => {
+            from.as_str().starts_with(prefix) || to.as_str().starts_with(prefix)
+        }
+        FileEvent::RescanRequired => false,
+    }
+}
+
+#[test]
+fn a_watcher_excluded_directory_produces_no_events() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("Watched")).expect("mkdir");
+    std::fs::create_dir_all(dir.path().join("Ignored")).expect("mkdir");
+    let mut config = default_config();
+    config.watcher_exclude = watcher_exclude(&[("**/Ignored", true)]);
+    let folder = Folder::start(dir.path(), config).expect("start workspace");
+    assert!(wait_until_complete(&folder, Duration::from_secs(15)));
+    assert!(wait_watching(&folder, Duration::from_secs(15)));
+
+    let log = subscribe(&folder);
+    write(&dir.path().join("Ignored/A.cs"), "class A {}\n");
+    write(&dir.path().join("Watched/B.cs"), "class B {}\n");
+    // Wait for the watched directory to prove the watcher is alive and processing this window.
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            log.any(|event| {
+                matches!(event, FileEvent::Created(path) if path.as_str() == "Watched/B.cs")
+            })
+        }),
+        "expected the watched directory to report its file, got {:?}",
+        log.snapshot()
+    );
+    // `Ignored` is excluded from watching, so no event may ever mention it (registration-time
+    // exclusion, not post-hoc filtering).
+    std::thread::sleep(Duration::from_millis(400));
+    let events = log.snapshot();
+    assert!(
+        !events.iter().any(|event| mentions(event, "Ignored/")),
+        "watcher-excluded directory produced events: {events:?}"
+    );
+    assert!(
+        !file_paths(&folder)
+            .iter()
+            .any(|path| path.starts_with("Ignored/")),
+        "watcher-excluded content must not leak into the snapshot: {:?}",
+        file_paths(&folder)
+    );
+}
+
+#[test]
+fn a_directory_rename_moves_its_subtree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("Assets/Scripts")).expect("mkdir");
+    write(&dir.path().join("Assets/Scripts/A.cs"), "class A {}\n");
+    write(&dir.path().join("Assets/Scripts/B.cs"), "class B {}\n");
+    let folder = Folder::start(dir.path(), default_config()).expect("start workspace");
+    assert!(wait_until_complete(&folder, Duration::from_secs(15)));
+    assert!(wait_watching(&folder, Duration::from_secs(15)));
+
+    let log = subscribe(&folder);
+    std::fs::rename(
+        dir.path().join("Assets/Scripts"),
+        dir.path().join("Assets/Core"),
+    )
+    .expect("rename directory");
+
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            log.any(|event| {
+                matches!(
+                    event,
+                    FileEvent::Renamed { from, to }
+                        if from.as_str() == "Assets/Scripts" && to.as_str() == "Assets/Core"
+                )
+            })
+        }),
+        "expected one directory Renamed event, got {:?}",
+        log.snapshot()
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            file_paths(&folder) == ["Assets/Core/A.cs", "Assets/Core/B.cs"]
+        }),
+        "snapshot must show the moved subtree: {:?}",
+        file_paths(&folder)
+    );
+
+    let events = log.snapshot();
+    let renamed: Vec<&FileEvent> = events
+        .iter()
+        .filter(|event| {
+            matches!(event, FileEvent::Renamed { from, .. } if from.as_str() == "Assets/Scripts")
+        })
+        .collect();
+    assert_eq!(renamed.len(), 1, "one rename pair expected: {events:?}");
+    // The old subtree must be reported as removed; otherwise indexes and open buffers keep paths
+    // that no longer exist.
+    for child in ["Assets/Scripts/A.cs", "Assets/Scripts/B.cs"] {
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, FileEvent::Removed(path) if path.as_str() == child)),
+            "missing Removed for {child}: {events:?}"
+        );
+    }
+    for child in ["Assets/Core/A.cs", "Assets/Core/B.cs"] {
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, FileEvent::Created(path) if path.as_str() == child)),
+            "missing Created for {child}: {events:?}"
+        );
+    }
+}
+
+#[test]
+fn changes_during_the_initial_scan_converge() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for group in 0..20 {
+        let group_dir = dir.path().join(format!("Group{group:02}"));
+        std::fs::create_dir_all(&group_dir).expect("mkdir");
+        for file in 0..40 {
+            write(&group_dir.join(format!("F{file:03}.cs")), "class F {}\n");
+        }
+    }
+
+    let folder = Folder::start(dir.path(), default_config()).expect("start workspace");
+    // Do not wait for the scan: change the tree while the walker is running. The watcher is
+    // registered before the walk and a reconciliation runs before `complete` is published, so
+    // the final snapshot must match the disk.
+    let doomed = dir.path().join("Group00/F000.cs");
+    let removed_existed = std::fs::remove_file(&doomed).is_ok();
+    write(&dir.path().join("Group00/Late.cs"), "class Late {}\n");
+    write(&dir.path().join("LateRoot.cs"), "class LateRoot {}\n");
+
+    assert!(
+        wait_until_complete(&folder, Duration::from_secs(30)),
+        "initial scan must finish"
+    );
+    assert!(wait_watching(&folder, Duration::from_secs(30)));
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            file_paths(&folder) == disk_files(dir.path())
+        }),
+        "snapshot must match the disk after scan-time changes: snapshot={:?} disk={:?}",
+        file_paths(&folder),
+        disk_files(dir.path())
+    );
+    let paths = file_paths(&folder);
+    assert!(paths.iter().any(|path| path == "Group00/Late.cs"));
+    assert!(paths.iter().any(|path| path == "LateRoot.cs"));
+    if removed_existed {
+        assert!(!paths.iter().any(|path| path == "Group00/F000.cs"));
+    }
 }
 
 /// Settings implementation that serves the registered defaults plus one explicit override, i.e.

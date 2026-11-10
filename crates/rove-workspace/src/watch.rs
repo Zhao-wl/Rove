@@ -15,7 +15,7 @@
 use crate::folder::Folder;
 use notify::event::{Flag, ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher as _};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -37,7 +37,11 @@ pub(crate) enum WatchChange {
 }
 
 pub(crate) enum WatchCommand {
-    WatchDirs(Vec<PathBuf>),
+    /// Register the directories, then optionally acknowledge on `done`.
+    WatchDirs {
+        dirs: Vec<PathBuf>,
+        done: Option<Sender<()>>,
+    },
 }
 
 pub(crate) struct WatcherHandle {
@@ -47,8 +51,10 @@ pub(crate) struct WatcherHandle {
 }
 
 impl WatcherHandle {
-    pub(crate) fn add_dirs(&self, dirs: Vec<PathBuf>) {
-        let _ = self.commands.send(WatchCommand::WatchDirs(dirs));
+    /// Cloneable command channel. Callers must not hold the folder's watcher mutex while waiting
+    /// for an acknowledgement, or the watcher thread could block on the same mutex.
+    pub(crate) fn commands(&self) -> Sender<WatchCommand> {
+        self.commands.clone()
     }
 }
 
@@ -57,7 +63,10 @@ impl Drop for WatcherHandle {
         // The thread polls with a short timeout, so joining is bounded and keeps the process
         // from leaking one thread per closed workspace.
         self.stop.store(true, Ordering::Release);
-        let _ = self.commands.send(WatchCommand::WatchDirs(Vec::new()));
+        let _ = self.commands.send(WatchCommand::WatchDirs {
+            dirs: Vec::new(),
+            done: None,
+        });
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -111,9 +120,12 @@ fn run(
         }
         while let Ok(command) = commands.try_recv() {
             match command {
-                WatchCommand::WatchDirs(dirs) => {
+                WatchCommand::WatchDirs { dirs, done } => {
                     for dir in dirs {
                         let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
+                    }
+                    if let Some(done) = done {
+                        let _ = done.send(());
                     }
                 }
             }
@@ -127,8 +139,12 @@ fn run(
                 deadline = Some(Instant::now() + DEBOUNCE);
             }
             // A backend error (for example an unreadable directory) is treated like an
-            // overflow: the retained snapshot may be stale, so re-scan.
-            Ok(Err(_)) => pending.push(rescan_event()),
+            // overflow: the retained snapshot may be stale, so re-scan immediately instead of
+            // waiting for a quiet window that would never come (the error is not a file event).
+            Ok(Err(_)) => {
+                pending.push(rescan_event());
+                deadline = Some(Instant::now());
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -153,14 +169,16 @@ fn rescan_event() -> Event {
 /// Turns a raw debounced batch into ordered structural changes.
 ///
 /// Order: renames, removals, creations, then content changes. A path that appears in more than
-/// one list keeps its strongest meaning (rename > create > remove > changed), which is what makes
-/// "write twice" collapse into one `Changed` and "rename" never look like delete + create.
+/// one list keeps its strongest meaning (rename > create/remove > changed). A path that was both
+/// removed and created inside one window becomes `Changed`: it existed before and exists now, and
+/// the snapshot layer decides from the live snapshot whether that is a `Changed` or a `Created`
+/// (so "write twice" collapses to one event and "delete + recreate" is never silently dropped).
 pub(crate) fn parse(events: &[Event]) -> Vec<WatchChange> {
     let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut created: BTreeSet<PathBuf> = BTreeSet::new();
     let mut removed: BTreeSet<PathBuf> = BTreeSet::new();
     let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut pending_from: Vec<PathBuf> = Vec::new();
+    let mut pending_from: VecDeque<PathBuf> = VecDeque::new();
 
     for event in events {
         match event.kind {
@@ -175,7 +193,7 @@ pub(crate) fn parse(events: &[Event]) -> Vec<WatchChange> {
                 RenameMode::From => pending_from.extend(event.paths.iter().cloned()),
                 RenameMode::To => {
                     for path in &event.paths {
-                        match pending_from.pop() {
+                        match pending_from.pop_front() {
                             Some(from) => renames.push((from, path.clone())),
                             None => {
                                 created.insert(path.clone());
@@ -203,8 +221,18 @@ pub(crate) fn parse(events: &[Event]) -> Vec<WatchChange> {
         removed.remove(path);
         changed.remove(path);
     }
+    let recreated: Vec<PathBuf> = created
+        .iter()
+        .filter(|path| removed.contains(*path))
+        .cloned()
+        .collect();
+    for path in recreated {
+        // Existed before the window and exists after it: a content change, not delete+create.
+        removed.remove(&path);
+        created.remove(&path);
+        changed.insert(path);
+    }
     for path in &created {
-        removed.remove(path);
         changed.remove(path);
     }
     for path in &removed {
@@ -311,12 +339,44 @@ mod tests {
     }
 
     #[test]
-    fn a_recreated_path_is_reported_as_created() {
+    fn a_recreated_path_is_reported_as_changed_not_dropped() {
         let events = [
             event(EventKind::Remove(RemoveKind::File), &["A.cs"]),
             event(EventKind::Create(CreateKind::File), &["A.cs"]),
         ];
-        assert_eq!(parse(&events), vec![WatchChange::Created("A.cs".into())]);
+        // The path existed before the window and exists after it. `Changed` lets the snapshot
+        // layer decide (Changed for a known path, Created for an unknown one) instead of
+        // dropping the event because `add()` would be a no-op.
+        assert_eq!(parse(&events), vec![WatchChange::Changed("A.cs".into())]);
+    }
+
+    #[test]
+    fn a_rename_pair_is_paired_first_in_first_out() {
+        let events = [
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                &["a.cs"],
+            ),
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                &["b.cs"],
+            ),
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                &["x.cs"],
+            ),
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                &["y.cs"],
+            ),
+        ];
+        assert_eq!(
+            parse(&events),
+            vec![
+                WatchChange::Renamed("a.cs".into(), "x.cs".into()),
+                WatchChange::Renamed("b.cs".into(), "y.cs".into()),
+            ]
+        );
     }
 
     #[test]

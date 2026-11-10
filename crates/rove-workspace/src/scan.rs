@@ -7,16 +7,20 @@
 //!
 //! One unreadable directory or one non-UTF-8 name must not fail the scan: walk errors and names
 //! that cannot be represented as a [`WorkspacePath`] are counted and skipped.
+//!
+//! The walker feeds a bounded channel (`sync_channel`), so a slow snapshot publisher exerts
+//! backpressure instead of growing an unbounded queue.
 
 use crate::contracts::EntryKind;
 use crate::folder::Folder;
 use crate::glob::RuleSet;
 use crate::path::relative_str;
+use crate::snapshot::Snapshot;
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use rove_base::{Cancellation, Error, Result, WorkspacePath};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,6 +29,7 @@ pub(crate) type ScanEntry = (WorkspacePath, EntryKind, bool);
 
 const FLUSH_ENTRIES: usize = 4096;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(25);
+const QUEUE_CAPACITY: usize = 8192;
 
 /// Full scan of the folder's root, publishing batches as they arrive.
 ///
@@ -34,9 +39,8 @@ pub(crate) fn full(folder: Arc<Folder>, cancel: Cancellation, emit_events: bool)
     let exclude = folder.config().exclude.clone();
     let threads = folder.config().threads;
     let track_permissions = folder.config().readonly.from_permissions;
-    let skipped = Arc::new(AtomicU64::new(0));
 
-    let (sender, receiver) = mpsc::channel::<ScanEntry>();
+    let (sender, receiver) = mpsc::sync_channel::<ScanEntry>(QUEUE_CAPACITY);
     let publisher_folder = Arc::clone(&folder);
     let publisher = std::thread::Builder::new()
         .name("rove-workspace-publish".into())
@@ -55,23 +59,83 @@ pub(crate) fn full(folder: Arc<Folder>, cancel: Cancellation, emit_events: bool)
             }
         })?;
 
-    let mut builder = base_builder(&root);
+    let skipped = walk(&root, &exclude, &cancel, threads, track_permissions, sender);
+    if publisher.join().is_err() {
+        return Err(Error::Unsupported);
+    }
+    folder.note_skipped(skipped);
+    cancel.check()?;
+    Ok(())
+}
+
+/// Scans the whole tree into a fresh [`Snapshot`] without touching the live one.
+///
+/// Used by overflow recovery: the replacement is built off-lock and swapped in atomically.
+pub(crate) fn collect(folder: &Folder, cancel: &Cancellation) -> Result<Snapshot> {
+    let root = folder.root().to_path_buf();
+    let exclude = folder.config().exclude.clone();
+    let threads = folder.config().threads;
+    let track_permissions = folder.config().readonly.from_permissions;
+
+    let (sender, receiver) = mpsc::sync_channel::<ScanEntry>(QUEUE_CAPACITY);
+    let walker_cancel = cancel.clone();
+    let walker = std::thread::Builder::new()
+        .name("rove-workspace-rescan".into())
+        .spawn(move || {
+            walk(
+                &root,
+                &exclude,
+                &walker_cancel,
+                threads,
+                track_permissions,
+                sender,
+            )
+        })?;
+
+    let mut snapshot = Snapshot::new();
+    for (path, kind, read_only) in receiver {
+        snapshot.add(path.clone(), kind);
+        if read_only {
+            snapshot.set_permission_read_only(&path, true);
+        }
+    }
+    let skipped = walker.join().map_err(|_| Error::Unsupported)?;
+    folder.note_skipped(skipped);
+    cancel.check()?;
+    snapshot.finish();
+    Ok(snapshot)
+}
+
+/// Runs the parallel walker and sends every visible entry through `sender`.
+///
+/// Returns the number of entries skipped because they were unreadable or could not be represented
+/// as a [`WorkspacePath`]; a skipped entry never aborts the scan.
+fn walk(
+    root: &Path,
+    exclude: &RuleSet,
+    cancel: &Cancellation,
+    threads: usize,
+    track_permissions: bool,
+    sender: SyncSender<ScanEntry>,
+) -> u64 {
+    let skipped = Arc::new(AtomicU64::new(0));
+
+    let mut builder = base_builder(root);
     if threads > 0 {
         builder.threads(threads);
     }
     {
-        let root = root.clone();
+        let root = root.to_path_buf();
         let exclude = exclude.clone();
         let cancel = cancel.clone();
         builder.filter_entry(move |entry| should_visit(&root, &exclude, &cancel, entry));
     }
 
-    let root_for_visitor = root.clone();
+    let root_for_visitor = root.to_path_buf();
     let cancel_for_visitor = cancel.clone();
     let skipped_for_visitor = Arc::clone(&skipped);
-    let sender_for_visitor = sender;
     builder.build_parallel().run(move || {
-        let sender = sender_for_visitor.clone();
+        let sender = sender.clone();
         let skipped = Arc::clone(&skipped_for_visitor);
         let cancel = cancel_for_visitor.clone();
         let root = root_for_visitor.clone();
@@ -113,14 +177,7 @@ pub(crate) fn full(folder: Arc<Folder>, cancel: Cancellation, emit_events: bool)
         )
     });
 
-    // Dropping the visitor factory inside `run` closes the publisher loop; join it afterwards.
-    let _ = builder;
-    if publisher.join().is_err() {
-        return Err(Error::Unsupported);
-    }
-    folder.note_skipped(skipped.load(Ordering::Relaxed));
-    cancel.check()?;
-    Ok(())
+    skipped.load(Ordering::Relaxed)
 }
 
 /// Scans one directory subtree serially and returns the visible entries below it plus the
@@ -387,5 +444,48 @@ mod tests {
             .unwrap();
         assert!(excluded.excluded);
         assert!(excluded.read_only.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_directory_junction_is_not_followed() {
+        use std::os::windows::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Real")).unwrap();
+        std::fs::write(dir.path().join("Real/A.cs"), "class A {}\n").unwrap();
+        let link = dir.path().join("Link");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(dir.path().join("Real"))
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status();
+        let Ok(status) = status else {
+            eprintln!("已跳过：无法运行 mklink（{status:?}）");
+            return;
+        };
+        if !status.success() {
+            eprintln!("已跳过：当前环境不允许创建目录 junction");
+            return;
+        }
+        // A junction that points back at its own parent must not make the scan loop forever.
+        let cycle = dir.path().join("Real/Cycle");
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&cycle)
+            .arg(dir.path())
+            .creation_flags(0x0800_0000)
+            .status();
+
+        let folder =
+            Folder::scan_root(dir.path(), WorkspaceConfig::default().without_watching()).unwrap();
+        let paths: Vec<String> = folder
+            .files(0..100)
+            .unwrap()
+            .items
+            .iter()
+            .map(|entry| entry.path.as_str().to_string())
+            .collect();
+        assert_eq!(paths, ["Real/A.cs"], "junctions must be skipped: {paths:?}");
     }
 }

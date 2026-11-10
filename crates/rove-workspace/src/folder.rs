@@ -10,16 +10,23 @@
 //!   the initial snapshot is complete (used by the skeleton workbench and by benchmarks).
 //!
 //! Both paths share one scanner, so streaming behaviour is not a separate code path.
+//!
+//! # Locking discipline
+//!
+//! The snapshot write lock only guards in-memory mutation. Every filesystem call (`read_dir`,
+//! `symlink_metadata`, subtree walks) happens in a planning phase *before* the lock is taken, so a
+//! copied-in directory tree or a git branch switch never blocks `files()`/`children()`/`rules()`.
 
 use crate::contracts::{Entries, FileEvent, FileEvents, FileRules, Workspace};
 use crate::events::EventSource;
 use crate::io::read_shared;
-use crate::path::{canonical_root, relative_str};
+use crate::path::{canonical_root, identity_key, relative_str};
 use crate::rules::WorkspaceConfig;
 use crate::scan::{self, ScanEntry};
 use crate::snapshot::Snapshot;
 use crate::watch::{self, WatchChange, WatcherHandle};
 use rove_base::{Cancellation, Error, Events, Result, Version, WorkspacePath};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -34,6 +41,9 @@ pub struct Folder {
     skipped: AtomicU64,
     cancel: Cancellation,
     watcher: Mutex<Option<WatcherHandle>>,
+    /// Directories the backend already watches, so rescans/reconciles never register the same
+    /// directory twice (a duplicate `ReadDirectoryChangesW` handle would duplicate every event).
+    registered_dirs: Mutex<BTreeSet<PathBuf>>,
 }
 
 impl Folder {
@@ -89,6 +99,7 @@ impl Folder {
             skipped: AtomicU64::new(0),
             cancel,
             watcher: Mutex::new(None),
+            registered_dirs: Mutex::new(BTreeSet::new()),
         });
         // The root listing is synchronous: this is the "root visible in the first frame" part of
         // the streaming contract, and it is one readdir call.
@@ -97,7 +108,24 @@ impl Folder {
     }
 
     fn scan_initial(self: &Arc<Self>) -> Result<()> {
+        // Register watchers *before* walking. The walker and the watcher would otherwise race:
+        // a file created after the walker passed its directory and before the watcher was
+        // registered could be lost forever (and a file deleted in that window would stay).
+        if self.config.watch {
+            self.start_watcher();
+        }
         let result = scan::full(Arc::clone(self), self.cancel.clone(), true);
+        if self.config.watch {
+            // The watcher only knew the root while the walk ran; register every discovered
+            // directory and then verify all of them against the disk exactly once. This closes
+            // the scan/watcher race for changes made after the walker passed a directory.
+            //
+            // Both steps happen *before* `complete` is published: a caller that observes
+            // `complete == true` must be able to write a file and see the event, so registration
+            // is acknowledged by the watcher thread before we continue.
+            self.register_dirs_blocking(self.watched_dirs());
+            self.reconcile_all();
+        }
         // Even a cancelled or partially failed scan must stop reporting `complete == false`
         // forever; what was found is a valid (if partial) snapshot.
         let revision = {
@@ -108,9 +136,6 @@ impl Folder {
             revision,
             events: Arc::from([]),
         });
-        if self.config.watch {
-            self.start_watcher();
-        }
         result
     }
 
@@ -178,7 +203,7 @@ impl Folder {
     ///
     /// The callback returns the events it produced plus whether the snapshot actually changed; the
     /// revision advances when either is true, so consumers polling `revision()` see progress even
-    /// when nobody is subscribed to events.
+    /// when nobody is subscribed to events. The callback must not perform filesystem I/O.
     fn commit<R>(&self, mutate: impl FnOnce(&mut Snapshot) -> (Vec<FileEvent>, bool, R)) -> R {
         let (events, revision, result) = {
             let mut snapshot = self.write();
@@ -237,9 +262,8 @@ impl Folder {
         } else {
             return None;
         };
-        let read_only = self.config.readonly.from_permissions
-            && matches!(kind, crate::contracts::EntryKind::File)
-            && scan::is_read_only_attribute(&entry.path());
+        let read_only = self.permission_flag(&entry.path()).unwrap_or(false)
+            && matches!(kind, crate::contracts::EntryKind::File);
         Some((path, kind, read_only))
     }
 
@@ -266,6 +290,7 @@ impl Folder {
 
     fn start_watcher(self: &Arc<Self>) {
         let dirs = self.watched_dirs();
+        self.mark_registered(&dirs);
         let handle = watch::spawn(self, dirs);
         match self.watcher.lock() {
             Ok(mut slot) => *slot = handle,
@@ -288,20 +313,74 @@ impl Folder {
     }
 
     fn register_dirs(&self, dirs: Vec<PathBuf>) {
-        if dirs.is_empty() {
+        let fresh = self.filter_new_dirs(dirs);
+        if fresh.is_empty() {
             return;
         }
+        if let Some(commands) = self.watcher_commands() {
+            let _ = commands.send(watch::WatchCommand::WatchDirs {
+                dirs: fresh,
+                done: None,
+            });
+        }
+    }
+
+    /// Registers directories and waits (bounded) for the backend acknowledgement.
+    ///
+    /// The folder mutex is not held while waiting: the watcher thread takes it when it registers
+    /// directories created by an event batch, so holding it here would deadlock.
+    fn register_dirs_blocking(&self, dirs: Vec<PathBuf>) {
+        let fresh = self.filter_new_dirs(dirs);
+        if fresh.is_empty() {
+            return;
+        }
+        let Some(commands) = self.watcher_commands() else {
+            return;
+        };
+        let (done, wait) = std::sync::mpsc::channel();
+        if commands
+            .send(watch::WatchCommand::WatchDirs {
+                dirs: fresh,
+                done: Some(done),
+            })
+            .is_ok()
+        {
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        }
+    }
+
+    fn filter_new_dirs(&self, dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut registered = match self.registered_dirs.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        dirs.into_iter()
+            .filter(|dir| registered.insert(dir.clone()))
+            .collect()
+    }
+
+    fn mark_registered(&self, dirs: &[PathBuf]) {
+        match self.registered_dirs.lock() {
+            Ok(mut registered) => registered.extend(dirs.iter().cloned()),
+            Err(poisoned) => poisoned.into_inner().extend(dirs.iter().cloned()),
+        }
+    }
+
+    /// Forgets watched directories that no longer exist, so a re-created directory is watched
+    /// again.
+    fn forget_registered(&self, absolute: &Path) {
+        match self.registered_dirs.lock() {
+            Ok(mut registered) => registered.retain(|dir| !dir.starts_with(absolute)),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .retain(|dir| !dir.starts_with(absolute)),
+        }
+    }
+
+    fn watcher_commands(&self) -> Option<std::sync::mpsc::Sender<watch::WatchCommand>> {
         match self.watcher.lock() {
-            Ok(slot) => {
-                if let Some(handle) = slot.as_ref() {
-                    handle.add_dirs(dirs);
-                }
-            }
-            Err(poisoned) => {
-                if let Some(handle) = poisoned.into_inner().as_ref() {
-                    handle.add_dirs(dirs);
-                }
-            }
+            Ok(slot) => slot.as_ref().map(WatcherHandle::commands),
+            Err(poisoned) => poisoned.into_inner().as_ref().map(WatcherHandle::commands),
         }
     }
 
@@ -309,6 +388,40 @@ impl Folder {
     pub(crate) fn is_ignored_change(&self, path: &WorkspacePath) -> bool {
         self.config.exclude.is_excluded(path.as_str())
     }
+
+    /// Read-only attribute of a file, or `None` when `files.readonlyFromPermissions` is off.
+    fn permission_flag(&self, absolute: &Path) -> Option<bool> {
+        self.config
+            .readonly
+            .from_permissions
+            .then(|| scan::is_read_only_attribute(absolute))
+    }
+
+    fn relative(&self, absolute: &Path) -> Option<WorkspacePath> {
+        relative_str(&self.root, absolute).and_then(|relative| WorkspacePath::new(&relative).ok())
+    }
+
+    fn push_watch_dirs(
+        &self,
+        dirs_to_watch: &mut Vec<PathBuf>,
+        directory: &WorkspacePath,
+        subdirectories: &[WorkspacePath],
+    ) {
+        if !self.config.watcher_exclude.is_excluded(directory.as_str()) {
+            dirs_to_watch.push(self.absolute(directory));
+        }
+        for subdirectory in subdirectories {
+            if !self
+                .config
+                .watcher_exclude
+                .is_excluded(subdirectory.as_str())
+            {
+                dirs_to_watch.push(self.absolute(subdirectory));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- watcher events
 
     /// Applies a debounced watcher batch.
     ///
@@ -327,8 +440,24 @@ impl Folder {
         // Directories touched by this batch. Re-listing them after applying the events makes the
         // snapshot converge even when the OS dropped part of the batch (Windows buffers are
         // 16 KiB per watched directory and notify does not surface every overflow).
-        let mut dirty: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-        for event in &events {
+        let dirty = self.dirty_dirs(&events);
+        // Phase 1: all filesystem I/O (stat + subtree walks) happens here, without the lock.
+        let plans = self.plan_changes(changes);
+        // Phase 2: in-memory mutation under the write lock.
+        let mut dirs_to_watch = Vec::new();
+        self.commit(|snapshot| {
+            let mut emitted = Vec::new();
+            self.apply_plans(snapshot, plans, &mut emitted, &mut dirs_to_watch);
+            let changed = !emitted.is_empty();
+            (emitted, changed, ())
+        });
+        self.reconcile_dirs(dirty);
+        self.register_dirs(dirs_to_watch);
+    }
+
+    fn dirty_dirs(&self, events: &[notify::Event]) -> BTreeSet<PathBuf> {
+        let mut dirty = BTreeSet::new();
+        for event in events {
             for path in &event.paths {
                 if let Some(parent) = path.parent() {
                     if parent.starts_with(&self.root) {
@@ -337,28 +466,299 @@ impl Folder {
                 }
             }
         }
-        let mut dirs_to_watch = Vec::new();
-        self.commit(|snapshot| {
-            let mut emitted = Vec::new();
-            for change in changes {
-                self.apply_change(snapshot, change, &mut emitted, &mut dirs_to_watch);
+        dirty
+    }
+
+    /// Turns structural changes into a mutation plan, resolving every filesystem question
+    /// (existence, kind, read-only attribute, new subtree contents) without holding the lock.
+    fn plan_changes(&self, changes: Vec<WatchChange>) -> Vec<Plan> {
+        let mut plans = Vec::with_capacity(changes.len());
+        for change in changes {
+            match change {
+                WatchChange::Created(absolute) => {
+                    let Some(path) = self.relative(&absolute) else {
+                        continue;
+                    };
+                    if self.is_ignored_change(&path) {
+                        continue;
+                    }
+                    match std::fs::symlink_metadata(&absolute) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {}
+                        Ok(metadata) if metadata.is_dir() => {
+                            let (entries, subdirectories) = scan::subtree(self, &absolute);
+                            plans.push(Plan::CreateDir {
+                                path,
+                                entries,
+                                subdirectories,
+                            });
+                        }
+                        Ok(_) => plans.push(Plan::CreateFile {
+                            path,
+                            read_only: self.permission_flag(&absolute),
+                        }),
+                        // The file disappeared between the event and now: nothing to add.
+                        Err(_) => {}
+                    }
+                }
+                WatchChange::Changed(absolute) => {
+                    let Some(path) = self.relative(&absolute) else {
+                        continue;
+                    };
+                    if self.is_ignored_change(&path) {
+                        continue;
+                    }
+                    match std::fs::symlink_metadata(&absolute) {
+                        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {}
+                        Ok(_) => plans.push(Plan::Changed {
+                            path,
+                            read_only: self.permission_flag(&absolute),
+                            exists: true,
+                        }),
+                        // The file was deleted before we got here.
+                        Err(_) => plans.push(Plan::Removed { path }),
+                    }
+                }
+                WatchChange::Removed(absolute) => {
+                    let Some(path) = self.relative(&absolute) else {
+                        continue;
+                    };
+                    if self.is_ignored_change(&path) {
+                        continue;
+                    }
+                    // The disk is the truth: the path may already have been re-created.
+                    match std::fs::symlink_metadata(&absolute) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {}
+                        Ok(metadata) if metadata.is_dir() => {
+                            let (entries, subdirectories) = scan::subtree(self, &absolute);
+                            plans.push(Plan::CreateDir {
+                                path,
+                                entries,
+                                subdirectories,
+                            });
+                        }
+                        Ok(_) => plans.push(Plan::Changed {
+                            path,
+                            read_only: self.permission_flag(&absolute),
+                            exists: true,
+                        }),
+                        Err(_) => plans.push(Plan::Removed { path }),
+                    }
+                }
+                WatchChange::Renamed(from_absolute, to_absolute) => {
+                    let (Some(from), Some(to)) =
+                        (self.relative(&from_absolute), self.relative(&to_absolute))
+                    else {
+                        continue;
+                    };
+                    if self.is_ignored_change(&from) || self.is_ignored_change(&to) {
+                        continue;
+                    }
+                    match std::fs::symlink_metadata(&to_absolute) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {
+                            plans.push(Plan::Removed { path: from });
+                        }
+                        Ok(metadata) if metadata.is_dir() => {
+                            let (entries, subdirectories) = scan::subtree(self, &to_absolute);
+                            plans.push(Plan::RenameDir {
+                                from,
+                                to,
+                                entries,
+                                subdirectories,
+                            });
+                        }
+                        Ok(_) => plans.push(Plan::RenameFile {
+                            from,
+                            to,
+                            read_only: self.permission_flag(&to_absolute),
+                        }),
+                        // The target vanished again; only the source is gone from the tree.
+                        Err(_) => plans.push(Plan::Removed { path: from }),
+                    }
+                }
             }
-            let changed = !emitted.is_empty();
-            (emitted, changed, ())
-        });
-        self.reconcile_dirs(dirty);
-        self.register_dirs(dirs_to_watch);
+        }
+        plans
+    }
+
+    /// Applies a plan under the snapshot lock. No filesystem access happens here.
+    fn apply_plans(
+        &self,
+        snapshot: &mut Snapshot,
+        plans: Vec<Plan>,
+        emitted: &mut Vec<FileEvent>,
+        dirs_to_watch: &mut Vec<PathBuf>,
+    ) {
+        // Batch removals: one pass for ordinary removals and one for rename sources.
+        let plain_removals: Vec<WorkspacePath> = plans
+            .iter()
+            .filter_map(|plan| match plan {
+                Plan::Removed { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        let rename_sources: Vec<WorkspacePath> = plans
+            .iter()
+            .filter_map(|plan| match plan {
+                Plan::RenameFile { from, .. } | Plan::RenameDir { from, .. } => Some(from.clone()),
+                _ => None,
+            })
+            .collect();
+        let removed_plain = snapshot.remove_many(&plain_removals);
+        let removed_by_rename = snapshot.remove_many(&rename_sources);
+        let rename_source_keys: BTreeSet<String> = rename_sources
+            .iter()
+            .map(|path| identity_key(path.as_str()))
+            .collect();
+        // Directories that disappeared must be watchable again if they are re-created later.
+        for plan in &plans {
+            match plan {
+                Plan::Removed { path } => {
+                    if matches!(
+                        snapshot.kind(path),
+                        None | Some(crate::contracts::EntryKind::Directory)
+                    ) {
+                        self.forget_registered(&self.absolute(path));
+                    }
+                }
+                Plan::RenameDir { from, .. } => self.forget_registered(&self.absolute(from)),
+                _ => {}
+            }
+        }
+
+        // Renames first: one `Renamed` per pair, plus the old/new subtree entries.
+        for plan in &plans {
+            match plan {
+                Plan::RenameFile {
+                    from,
+                    to,
+                    read_only,
+                } => {
+                    if snapshot.add(to.clone(), crate::contracts::EntryKind::File) {
+                        if let Some(read_only) = read_only {
+                            snapshot.set_permission_read_only(to, *read_only);
+                        }
+                    }
+                    emitted.push(FileEvent::Renamed {
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                }
+                Plan::RenameDir {
+                    from,
+                    to,
+                    entries,
+                    subdirectories,
+                } => {
+                    snapshot.add(to.clone(), crate::contracts::EntryKind::Directory);
+                    emitted.push(FileEvent::Renamed {
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                    self.add_scan_entries(snapshot, entries, emitted);
+                    self.push_watch_dirs(dirs_to_watch, to, subdirectories);
+                }
+                _ => {}
+            }
+        }
+
+        // Old subtree entries of directory renames: consumers must drop them, while the renamed
+        // directory itself is already covered by `Renamed`.
+        for removed in removed_by_rename {
+            if rename_source_keys.contains(&identity_key(removed.as_str())) {
+                continue;
+            }
+            emitted.push(FileEvent::Removed(removed));
+        }
+        for removed in removed_plain {
+            emitted.push(FileEvent::Removed(removed));
+        }
+
+        // Creations and content changes.
+        for plan in plans {
+            match plan {
+                Plan::CreateFile { path, read_only } => {
+                    if snapshot.add(path.clone(), crate::contracts::EntryKind::File) {
+                        emitted.push(FileEvent::Created(path.clone()));
+                    }
+                    if let Some(read_only) = read_only {
+                        snapshot.set_permission_read_only(&path, read_only);
+                    }
+                }
+                Plan::CreateDir {
+                    path,
+                    entries,
+                    subdirectories,
+                } => {
+                    if snapshot.add(path.clone(), crate::contracts::EntryKind::Directory) {
+                        emitted.push(FileEvent::Created(path.clone()));
+                    }
+                    self.add_scan_entries(snapshot, &entries, emitted);
+                    self.push_watch_dirs(dirs_to_watch, &path, &subdirectories);
+                }
+                Plan::Changed {
+                    path,
+                    read_only,
+                    exists,
+                } => {
+                    if snapshot.contains(&path) {
+                        if let Some(read_only) = read_only {
+                            snapshot.set_permission_read_only(&path, read_only);
+                        }
+                        emitted.push(FileEvent::Changed(path));
+                    } else if exists
+                        && snapshot.add(path.clone(), crate::contracts::EntryKind::File)
+                    {
+                        if let Some(read_only) = read_only {
+                            snapshot.set_permission_read_only(&path, read_only);
+                        }
+                        emitted.push(FileEvent::Created(path));
+                    }
+                }
+                Plan::Removed { .. } | Plan::RenameFile { .. } | Plan::RenameDir { .. } => {}
+            }
+        }
+    }
+
+    fn add_scan_entries(
+        &self,
+        snapshot: &mut Snapshot,
+        entries: &[ScanEntry],
+        emitted: &mut Vec<FileEvent>,
+    ) {
+        for (path, kind, read_only) in entries {
+            if snapshot.add(path.clone(), kind.clone()) {
+                emitted.push(FileEvent::Created(path.clone()));
+            }
+            if *read_only {
+                snapshot.set_permission_read_only(path, true);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reconciliation
+
+    /// Re-lists every known directory and makes the snapshot match the disk.
+    fn reconcile_all(&self) {
+        let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        dirs.insert(self.root.clone());
+        {
+            let snapshot = self.read();
+            for path in snapshot.dir_paths() {
+                dirs.insert(self.absolute(&path));
+            }
+        }
+        self.reconcile_dirs(dirs);
     }
 
     /// Re-lists the given directories and makes the snapshot match them exactly.
     ///
-    /// This is the safety net for lost events; it only touches the listed directory, not the
-    /// whole tree.
-    fn reconcile_dirs(&self, dirs: std::collections::BTreeSet<PathBuf>) {
+    /// This is the safety net for lost events and for the scan/watcher race; it only touches the
+    /// listed directories, not the whole tree. All disk reads happen before the write lock.
+    fn reconcile_dirs(&self, dirs: BTreeSet<PathBuf>) {
         if dirs.is_empty() {
             return;
         }
-        // Phase 1: read the disk outside the snapshot lock.
+        // Phase 1: read the disk listings (no lock).
         let mut listings: Vec<(String, Vec<ScanEntry>)> = Vec::new();
         let mut skipped = 0u64;
         for dir in dirs {
@@ -389,37 +789,70 @@ impl Folder {
         if listings.is_empty() {
             return;
         }
-        // Phase 2: diff each listing against the snapshot.
+        // Phase 2: one read pass to learn which children are known and which directories are new.
+        let mut known: Vec<ChildIndex> = Vec::with_capacity(listings.len());
+        let mut new_directories: Vec<WorkspacePath> = Vec::new();
+        {
+            let snapshot = self.read();
+            for (relative, listing) in &listings {
+                let children = snapshot.children_keys(&identity_key(relative));
+                let keys: BTreeSet<String> = children.iter().map(|(key, _)| key.clone()).collect();
+                for (path, kind, _) in listing {
+                    if matches!(kind, crate::contracts::EntryKind::Directory)
+                        && !keys.contains(&identity_key(path.as_str()))
+                    {
+                        new_directories.push(path.clone());
+                    }
+                }
+                known.push((keys, children));
+            }
+        }
+        // Phase 3: pre-scan subtrees of directories that appeared since the last reading.
+        let mut subtrees: Vec<(WorkspacePath, Vec<ScanEntry>, Vec<WorkspacePath>)> = Vec::new();
+        for directory in new_directories {
+            let absolute = self.absolute(&directory);
+            let (entries, subdirectories) = scan::subtree(self, &absolute);
+            subtrees.push((directory, entries, subdirectories));
+        }
+        // Phase 4: diff and apply under the lock, batching every removal into one pass.
         let mut dirs_to_watch = Vec::new();
         self.commit(|snapshot| {
             let mut emitted = Vec::new();
-            for (relative, found) in listings {
-                let parent_key = crate::path::identity_key(&relative);
-                let expected: std::collections::BTreeSet<String> = found
-                    .iter()
-                    .map(|(path, _, _)| crate::path::identity_key(path.as_str()))
-                    .collect();
-                for (key, display) in snapshot.children_keys(&parent_key) {
-                    if !expected.contains(&key) {
-                        for removed in snapshot.remove(&display) {
-                            emitted.push(FileEvent::Removed(removed));
+            let removals: Vec<WorkspacePath> = listings
+                .iter()
+                .zip(&known)
+                .flat_map(|((_, listing), (keys, children))| {
+                    let expected: BTreeSet<String> = listing
+                        .iter()
+                        .map(|(path, _, _)| identity_key(path.as_str()))
+                        .collect();
+                    children
+                        .iter()
+                        .filter(|(key, _)| keys.contains(key) && !expected.contains(key))
+                        .map(|(_, display)| display.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            for removed in snapshot.remove_many(&removals) {
+                emitted.push(FileEvent::Removed(removed));
+            }
+            for (relative, listing) in listings {
+                for (path, kind, read_only) in listing {
+                    if snapshot.add(path.clone(), kind.clone()) {
+                        emitted.push(FileEvent::Created(path.clone()));
+                        if matches!(kind, crate::contracts::EntryKind::Directory) {
+                            self.push_watch_dirs(&mut dirs_to_watch, &path, &[]);
                         }
                     }
-                }
-                for (path, kind, read_only) in found {
-                    if snapshot.contains(&path) {
-                        continue;
-                    }
-                    snapshot.add(path.clone(), kind.clone());
-                    emitted.push(FileEvent::Created(path.clone()));
                     if read_only {
                         snapshot.set_permission_read_only(&path, true);
                     }
-                    if matches!(kind, crate::contracts::EntryKind::Directory) {
-                        let absolute = self.absolute(&path);
-                        self.add_subtree(snapshot, &absolute, &mut emitted, &mut dirs_to_watch);
-                    }
                 }
+                let _ = relative;
+            }
+            for (directory, entries, subdirectories) in subtrees {
+                self.add_scan_entries(snapshot, &entries, &mut emitted);
+                self.push_watch_dirs(&mut dirs_to_watch, &directory, &subdirectories);
             }
             let changed = !emitted.is_empty();
             (emitted, changed, ())
@@ -427,152 +860,75 @@ impl Folder {
         self.register_dirs(dirs_to_watch);
     }
 
-    fn apply_change(
-        &self,
-        snapshot: &mut Snapshot,
-        change: WatchChange,
-        emitted: &mut Vec<FileEvent>,
-        dirs_to_watch: &mut Vec<PathBuf>,
-    ) {
-        match change {
-            WatchChange::Created(absolute) => {
-                let Some(path) = self.relative(&absolute) else {
-                    return;
-                };
-                if self.is_ignored_change(&path) {
-                    return;
-                }
-                match std::fs::symlink_metadata(&absolute) {
-                    Ok(metadata) if metadata.is_dir() => {
-                        if snapshot.add(path.clone(), crate::contracts::EntryKind::Directory) {
-                            emitted.push(FileEvent::Created(path.clone()));
-                        }
-                        self.add_subtree(snapshot, &absolute, emitted, dirs_to_watch);
-                    }
-                    Ok(_) => {
-                        let read_only = self.config.readonly.from_permissions
-                            && scan::is_read_only_attribute(&absolute);
-                        if snapshot.add(path.clone(), crate::contracts::EntryKind::File) {
-                            emitted.push(FileEvent::Created(path.clone()));
-                        }
-                        if read_only {
-                            snapshot.set_permission_read_only(&path, true);
-                        }
-                    }
-                    // The file disappeared between the event and now: nothing to add.
-                    Err(_) => {}
-                }
-            }
-            WatchChange::Changed(absolute) => {
-                let Some(path) = self.relative(&absolute) else {
-                    return;
-                };
-                if self.is_ignored_change(&path) {
-                    return;
-                }
-                if snapshot.contains(&path) {
-                    emitted.push(FileEvent::Changed(path));
-                } else if absolute.exists() {
-                    // A missed creation: report it as such instead of losing the file.
-                    self.apply_change(
-                        snapshot,
-                        WatchChange::Created(absolute),
-                        emitted,
-                        dirs_to_watch,
-                    );
-                }
-            }
-            WatchChange::Removed(absolute) => {
-                let Some(path) = self.relative(&absolute) else {
-                    return;
-                };
-                if self.is_ignored_change(&path) {
-                    return;
-                }
-                for removed in snapshot.remove(&path) {
-                    emitted.push(FileEvent::Removed(removed));
-                }
-            }
-            WatchChange::Renamed(from, to) => {
-                let (Some(from_path), Some(to_path)) = (self.relative(&from), self.relative(&to))
-                else {
-                    return;
-                };
-                if self.is_ignored_change(&from_path) || self.is_ignored_change(&to_path) {
-                    return;
-                }
-                snapshot.remove(&from_path);
-                match std::fs::symlink_metadata(&to) {
-                    Ok(metadata) if metadata.is_dir() => {
-                        snapshot.add(to_path.clone(), crate::contracts::EntryKind::Directory);
-                        self.add_subtree(snapshot, &to, emitted, dirs_to_watch);
-                    }
-                    Ok(_) => {
-                        snapshot.add(to_path.clone(), crate::contracts::EntryKind::File);
-                    }
-                    Err(_) => {}
-                }
-                emitted.push(FileEvent::Renamed {
-                    from: from_path,
-                    to: to_path,
-                });
-            }
-        }
-    }
-
-    /// Adds every visible entry below `absolute_dir` to the snapshot; new directories are
-    /// returned so the watcher can start watching them.
-    fn add_subtree(
-        &self,
-        snapshot: &mut Snapshot,
-        absolute_dir: &Path,
-        emitted: &mut Vec<FileEvent>,
-        dirs_to_watch: &mut Vec<PathBuf>,
-    ) {
-        let (entries, subdirectories) = scan::subtree(self, absolute_dir);
-        for (path, kind, read_only) in entries {
-            if read_only {
-                snapshot.set_permission_read_only(&path, true);
-            }
-            if snapshot.add(path.clone(), kind) {
-                emitted.push(FileEvent::Created(path));
-            }
-        }
-        dirs_to_watch.push(absolute_dir.to_path_buf());
-        for path in subdirectories {
-            if !self.config.watcher_exclude.is_excluded(path.as_str()) {
-                dirs_to_watch.push(self.absolute(&path));
-            }
-        }
-    }
-
-    fn relative(&self, absolute: &Path) -> Option<WorkspacePath> {
-        relative_str(&self.root, absolute).and_then(|relative| WorkspacePath::new(&relative).ok())
-    }
+    // ---------------------------------------------------------------- rescan
 
     /// Full re-scan after an event overflow; reports [`FileEvent::RescanRequired`] once the
     /// snapshot matches the disk again.
+    ///
+    /// The replacement snapshot is built off-lock and swapped in atomically, so observers never
+    /// see an empty workspace while the rescan runs, and a failed rescan leaves the old snapshot
+    /// untouched instead of claiming a complete (but empty) tree.
     fn rescan_and_report(self: &Arc<Self>) {
-        {
-            let mut snapshot = self.write();
-            snapshot.clear();
-        }
-        // Suppress per-entry events: the single RescanRequired below is the contract, and a
-        // flood of Created events would defeat the point of recovering from a flood.
-        let scanned = scan::full(Arc::clone(self), self.cancel.clone(), false);
+        let Ok(replacement) = scan::collect(self, &self.cancel) else {
+            return;
+        };
         let revision = {
             let mut snapshot = self.write();
-            snapshot.finish()
+            let revision = Version(snapshot.revision().0.wrapping_add(1));
+            let mut replacement = replacement;
+            replacement.set_revision(revision);
+            *snapshot = replacement;
+            revision
         };
-        if scanned.is_ok() {
-            self.events.emit(FileEvents {
-                revision,
-                events: Arc::from([FileEvent::RescanRequired]),
-            });
-            let dirs = self.watched_dirs();
-            self.register_dirs(dirs);
+        self.events.emit(FileEvents {
+            revision,
+            events: Arc::from([FileEvent::RescanRequired]),
+        });
+        // Watches for directories that no longer exist are dead (Windows drops them); forget them
+        // so a re-created directory is watched again, then register everything that is missing.
+        let dirs = self.watched_dirs();
+        let live: BTreeSet<PathBuf> = dirs.iter().cloned().collect();
+        match self.registered_dirs.lock() {
+            Ok(mut registered) => registered.retain(|dir| live.contains(dir)),
+            Err(poisoned) => poisoned.into_inner().retain(|dir| live.contains(dir)),
         }
+        self.register_dirs(dirs);
     }
+}
+
+/// Known direct children of one directory: their identity keys and display paths.
+type ChildIndex = (BTreeSet<String>, Vec<(String, WorkspacePath)>);
+
+/// One planned mutation, resolved from the disk before the snapshot lock is taken.
+enum Plan {
+    CreateFile {
+        path: WorkspacePath,
+        read_only: Option<bool>,
+    },
+    CreateDir {
+        path: WorkspacePath,
+        entries: Vec<ScanEntry>,
+        subdirectories: Vec<WorkspacePath>,
+    },
+    Changed {
+        path: WorkspacePath,
+        read_only: Option<bool>,
+        exists: bool,
+    },
+    Removed {
+        path: WorkspacePath,
+    },
+    RenameFile {
+        from: WorkspacePath,
+        to: WorkspacePath,
+        read_only: Option<bool>,
+    },
+    RenameDir {
+        from: WorkspacePath,
+        to: WorkspacePath,
+        entries: Vec<ScanEntry>,
+        subdirectories: Vec<WorkspacePath>,
+    },
 }
 
 impl Workspace for Folder {
@@ -671,6 +1027,7 @@ mod tests {
         std::fs::write(dir.path().join("A.cs"), "class A {}\n").unwrap();
         let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
         let (log, _subscription) = collect(&folder);
+        let before = folder.revision();
 
         // Simulate events that were lost: the disk changed while the watcher was not listening.
         std::fs::write(dir.path().join("B.cs"), "class B {}\n").unwrap();
@@ -693,6 +1050,10 @@ mod tests {
             "snapshot must match the disk after a rescan"
         );
         assert!(page.complete);
+        assert!(
+            folder.revision() > before,
+            "the rescan must advance the revision"
+        );
     }
 
     #[test]
@@ -713,6 +1074,25 @@ mod tests {
             .iter()
             .any(|event| matches!(event, FileEvent::RescanRequired)));
         assert_eq!(folder.files(0..100).unwrap().items.len(), 2);
+    }
+
+    #[test]
+    fn a_removal_for_a_recreated_file_does_not_lose_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("A.cs"), "class A {}\n").unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        // Delete and immediately re-create: the queued Removed event is stale by the time it is
+        // applied, so the disk must win.
+        std::fs::write(dir.path().join("A.cs"), "class A { int X; }\n").unwrap();
+        let event = notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File))
+            .add_path(folder.root().join("A.cs"));
+        folder.apply_watch_events(vec![event], false);
+        let page = folder.files(0..10).unwrap();
+        assert_eq!(
+            page.items.len(),
+            1,
+            "re-created file must stay in the snapshot"
+        );
     }
 
     #[test]

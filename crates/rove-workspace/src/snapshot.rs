@@ -5,9 +5,9 @@
 //! stale work. `files`/`children` never touch the disk.
 
 use crate::contracts::{Entries, Entry, EntryKind};
-use crate::path::{identity_cmp, identity_key, parent_key};
+use crate::path::{identity_key, parent_key};
 use rove_base::{Error, Result, Version, WorkspacePath};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 pub(crate) struct Snapshot {
@@ -15,7 +15,9 @@ pub(crate) struct Snapshot {
     complete: bool,
     /// Flat file list. Arrival order while `complete == false`, sorted by identity afterwards.
     files: Vec<Entry>,
-    /// Children by parent identity key; the root key is `""`.
+    /// Children by parent identity key; the root key is `""`. Every known directory owns a
+    /// bucket, including empty directories, so `children()` can distinguish "empty" from
+    /// "missing" as the contract requires.
     dirs: BTreeMap<String, Vec<Entry>>,
     /// Identity key -> (display path, kind) for every known file and directory. Keeping the
     /// display path here is what lets events report the on-disk case instead of the folded key.
@@ -49,6 +51,10 @@ impl Snapshot {
         self.revision
     }
 
+    pub(crate) fn set_revision(&mut self, revision: Version) {
+        self.revision = revision;
+    }
+
     pub(crate) fn bump(&mut self) -> Version {
         self.revision = Version(self.revision.0.wrapping_add(1));
         self.revision
@@ -62,12 +68,15 @@ impl Snapshot {
             return false;
         }
         self.ensure_parents(path.as_str());
-        let parent = identity_key(parent_key(path.as_str()).to_string().as_str());
+        let parent = identity_key(parent_key(path.as_str()));
         self.dirs.entry(parent).or_default().push(Entry {
             path: path.clone(),
             kind: kind.clone(),
         });
-        if matches!(kind, EntryKind::File) {
+        if matches!(kind, EntryKind::Directory) {
+            // Empty directories still need their own bucket (children() => empty, not NotFound).
+            self.dirs.entry(key.clone()).or_default();
+        } else {
             self.files.push(Entry {
                 path: path.clone(),
                 kind: kind.clone(),
@@ -104,6 +113,7 @@ impl Snapshot {
                     path: path.clone(),
                     kind: EntryKind::Directory,
                 });
+            self.dirs.entry(key.clone()).or_default();
             self.existing.insert(key, (path, EntryKind::Directory));
             if grandparent.is_empty() {
                 break;
@@ -131,38 +141,73 @@ impl Snapshot {
     ///
     /// Returns the display paths that disappeared, so the watcher can emit one `Removed` per
     /// stale entry. A path that was never known returns an empty list.
+    #[cfg(test)]
     pub(crate) fn remove(&mut self, path: &WorkspacePath) -> Vec<WorkspacePath> {
-        let key = identity_key(path.as_str());
-        let prefix = format!("{key}/");
-        let stale: Vec<(String, WorkspacePath)> = self
-            .existing
-            .iter()
-            .filter(|(candidate, _)| **candidate == key || candidate.starts_with(&prefix))
-            .map(|(candidate, (display, _))| (candidate.clone(), display.clone()))
-            .collect();
-        let stale_keys: BTreeSet<String> = stale.iter().map(|(key, _)| key.clone()).collect();
-        for stale_key in &stale_keys {
-            self.existing.remove(stale_key);
-            self.permission_read_only.remove(stale_key);
+        self.remove_many(std::slice::from_ref(path))
+    }
+
+    /// Removes many paths in one pass.
+    ///
+    /// Descendants are found by walking the `dirs` buckets (O(removed subtree)), and the global
+    /// containers are filtered once per call instead of once per path. That keeps a burst delete
+    /// of 1000 files linear in the snapshot size, not quadratic.
+    pub(crate) fn remove_many(&mut self, paths: &[WorkspacePath]) -> Vec<WorkspacePath> {
+        if paths.is_empty() {
+            return Vec::new();
         }
-        // Children vectors: drop stale entries and stale directory buckets.
+        let mut stale: BTreeSet<String> = BTreeSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        for path in paths {
+            let key = identity_key(path.as_str());
+            if self.existing.contains_key(&key) {
+                queue.push_back(key);
+            }
+        }
+        while let Some(current) = queue.pop_front() {
+            if !stale.insert(current.clone()) {
+                continue;
+            }
+            let Some(children) = self.dirs.get(&current) else {
+                continue;
+            };
+            for child in children {
+                let child_key = identity_key(child.path.as_str());
+                if matches!(child.kind, EntryKind::Directory) {
+                    queue.push_back(child_key);
+                } else {
+                    stale.insert(child_key);
+                }
+            }
+        }
+        if stale.is_empty() {
+            return Vec::new();
+        }
+
+        let mut removed = Vec::with_capacity(stale.len());
+        for key in &stale {
+            if let Some((display, _)) = self.existing.remove(key) {
+                removed.push(display);
+            }
+            self.permission_read_only.remove(key);
+        }
         for entries in self.dirs.values_mut() {
-            entries.retain(|entry| {
-                let entry_key = identity_key(entry.path.as_str());
-                !stale_keys.contains(&entry_key)
-            });
+            entries.retain(|entry| !stale.contains(&identity_key(entry.path.as_str())));
         }
-        self.dirs
-            .retain(|bucket, _| bucket.is_empty() || !stale_keys.contains(bucket));
-        self.files.retain(|entry| {
-            let entry_key = identity_key(entry.path.as_str());
-            !stale_keys.contains(&entry_key)
-        });
-        stale.into_iter().map(|(_, display)| display).collect()
+        self.dirs.retain(|bucket, _| !stale.contains(bucket));
+        self.files
+            .retain(|entry| !stale.contains(&identity_key(entry.path.as_str())));
+        removed
     }
 
     pub(crate) fn contains(&self, path: &WorkspacePath) -> bool {
         self.existing.contains_key(&identity_key(path.as_str()))
+    }
+
+    /// Kind of a known path, if any.
+    pub(crate) fn kind(&self, path: &WorkspacePath) -> Option<EntryKind> {
+        self.existing
+            .get(&identity_key(path.as_str()))
+            .map(|(_, kind)| kind.clone())
     }
 
     /// Input for `Workspace::files`: paged flat file list.
@@ -224,16 +269,6 @@ impl Snapshot {
         self.complete = true;
         self.bump()
     }
-
-    /// Clears everything for a full re-scan; the revision keeps increasing.
-    pub(crate) fn clear(&mut self) {
-        self.files.clear();
-        self.dirs.clear();
-        self.dirs.insert(String::new(), Vec::new());
-        self.existing.clear();
-        self.permission_read_only.clear();
-        self.complete = false;
-    }
 }
 
 fn page(entries: &[Entry], range: std::ops::Range<usize>, complete: bool) -> Result<Entries> {
@@ -248,6 +283,8 @@ fn page(entries: &[Entry], range: std::ops::Range<usize>, complete: bool) -> Res
         complete,
     })
 }
+
+use crate::path::identity_cmp;
 
 #[cfg(test)]
 mod tests {
@@ -276,6 +313,19 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_directory_has_an_empty_child_page_not_not_found() {
+        let mut snapshot = Snapshot::new();
+        assert!(snapshot.add(path("Empty"), EntryKind::Directory));
+        let page = snapshot
+            .children_page(Some(&path("Empty")), 0..16)
+            .expect("empty directory must not be NotFound");
+        assert!(page.items.is_empty());
+        assert!(snapshot
+            .children_page(Some(&path("Missing")), 0..16)
+            .is_err());
+    }
+
+    #[test]
     fn partial_snapshots_report_complete_false() {
         let mut snapshot = Snapshot::new();
         snapshot.add(path("A.cs"), EntryKind::File);
@@ -299,6 +349,33 @@ mod tests {
         assert!(snapshot
             .children_page(Some(&path("Assets")), 0..16)
             .is_err());
+    }
+
+    #[test]
+    fn remove_many_covers_files_and_subtrees_in_one_pass() {
+        let mut snapshot = Snapshot::new();
+        for index in 0..1000 {
+            snapshot.add(path(&format!("Burst/F{index:04}.cs")), EntryKind::File);
+        }
+        snapshot.add(path("Keep.cs"), EntryKind::File);
+        snapshot.add(path("Other/Gone.cs"), EntryKind::File);
+        let paths: Vec<WorkspacePath> = (0..1000)
+            .map(|index| path(&format!("Burst/F{index:04}.cs")))
+            .chain(std::iter::once(path("Other")))
+            .collect();
+        let removed = snapshot.remove_many(&paths);
+        assert_eq!(removed.len(), 1002); // 1000 files + Other + Other/Gone.cs
+        assert_eq!(snapshot.file_count(), 1);
+        assert!(snapshot.children_page(Some(&path("Burst")), 0..16).is_ok());
+        assert!(snapshot.children_page(Some(&path("Other")), 0..16).is_err());
+    }
+
+    #[test]
+    fn removing_an_unknown_path_is_a_no_op() {
+        let mut snapshot = Snapshot::new();
+        snapshot.add(path("A.cs"), EntryKind::File);
+        assert!(snapshot.remove(&path("Missing")).is_empty());
+        assert_eq!(snapshot.file_count(), 1);
     }
 
     #[test]
