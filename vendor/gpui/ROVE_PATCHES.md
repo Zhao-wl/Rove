@@ -72,3 +72,15 @@ The rebuilt exclusion patch was manually tested with hash b038fd9e11039dfe782c45
 Full sentence commit, screen-edge flipping, input-mode switching, emoji/UTF-16 and mixed-DPI 120→96→120 movement passed the identified retest. Composition-click remains explicitly deferred to the product editor per user scope. Third-party IME, VS Code control and product GUI E2E remain untested. Evidence: https://github.com/Zhao-wl/Rove/tree/441136a0763b3866eb000ca2411ce126f9561337/retest-2026-11-10/pr-80 . Keep Draft until the owner accepts the system-parity interpretation and remaining product acceptance scope; do not fabricate literal arrow-follow success.
 
 Latest documentation-only parity update rebased on main e3a93c9: workspace fmt/strict clippy/56 tests and IME release 4 tests passed; two environment-dependent doc tests ignored. No IME source change was made in this retest round.
+
+### Product `rove.exe` before/after vendoring (2026-11-10)
+
+Both sides measured on the same machine with `cargo build --release -p rove-app` into an empty `CARGO_TARGET_DIR`, dependencies already in the local registry (no download time). "Before" is `main` e3a93c9 (crates.io gpui 0.2.2); "after" is this branch rebased on e3a93c9 with `[patch.crates-io] gpui = { path = "vendor/gpui" }`. Package count: `cargo tree -p rove-app -e normal,build --prefix none --target all`, deduplicated by name+version.
+
+| | before (crates.io) | after (vendor) |
+|---|---:|---:|
+| packages | 584 | 584 |
+| clean release build | 521 s (8m41s) | 623 s (10m23s) |
+| `rove.exe` bytes | 13,664,768 | 13,661,696 (−3,072) |
+
+The build-time difference is **not** attributable to the patch: other sessions were compiling concurrently on the same 16-core machine during both runs (cargo reported waiting on the package-cache lock; a first "after" attempt hit a rustc `STATUS_STACK_BUFFER_OVERRUN` in the unmodified `windows` crate and was rerun). The patch changes only `platform/windows/{events,window}.rs`, so the dependency graph is identical and size differs by 3 KB. The historical 411 packages / 469 s / 6.2 MB baseline was the M0 standalone prototype, not today's `rove-app`, so it is not directly comparable; CI's size-guard job reports the PR's `rove.exe` against the 6.2 MB budget baseline.
