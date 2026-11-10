@@ -30,20 +30,28 @@ fn text_source() -> RopeText {
 }
 
 /// 10 MB 的测试文件，只生成一次（`ROVE_PERF_TESTDATA` 或系统临时目录）。
+///
+/// 基准自己在 `target/perf-testdata` 下生成这份数据（不碰 `gen-testdata` 的
+/// M0 对照文件）；每次运行都校验长度，并且先写临时文件再原子改名，
+/// 避免被中断后留下的不完整文件被当成有效数据参与测量。
 fn ten_megabyte_file() -> PathBuf {
     let directory = std::env::var_os("ROVE_PERF_TESTDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("rove-perf-testdata"));
     std::fs::create_dir_all(&directory).expect("创建基准数据目录");
     let path = directory.join("open10mb.txt");
-    if !path.is_file() {
-        // 混合 CRLF/LF、含中文，覆盖解码与换行符统计；约 10 MiB。
-        let line = "public class Row0000 { public int Value = 12345; } // 中文注释\r\n";
-        let mut text = String::with_capacity(OPEN_10MB_BYTES + line.len());
-        while text.len() < OPEN_10MB_BYTES {
-            text.push_str(line);
-        }
-        std::fs::write(&path, text).expect("写 10 MB 基准文件");
+    // 混合 CRLF/LF、含中文，覆盖解码与换行符统计；约 10 MiB。
+    let line = "public class Row0000 { public int Value = 12345; } // 中文注释\r\n";
+    let mut text = String::with_capacity(OPEN_10MB_BYTES + line.len());
+    while text.len() < OPEN_10MB_BYTES {
+        text.push_str(line);
+    }
+    let expected_length = text.len() as u64;
+    let valid = std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() == expected_length);
+    if !valid {
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, text).expect("写 10 MB 基准文件");
+        std::fs::rename(&temporary, &path).expect("替换 10 MB 基准文件");
     }
     path
 }

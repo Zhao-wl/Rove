@@ -4,30 +4,41 @@
 //! 行终止符是 LF、CRLF 与单独的 CR（与 VS Code 一致）；行内文本不含终止符，
 //! NEL / LS / PS 不当作换行（`ropey` 的 `unicode_lines` feature 已关闭）。
 //!
-//! 线程：`Rope` 是 `Send + Sync`，快照创建后不再变化；坐标转换 O(log n + 行内字符)。
+//! 线程：`Rope` 是 `Send + Sync`，快照创建后不再变化；行与坐标转换都是
+//! O(log n)（不逐字符扫描整行）。
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::contracts::{LineCount, TextSource};
 use ropey::Rope;
 use rove_base::*;
 
+/// 进程级版本发号。版本只要求在同一文档内单调，全局唯一只会更安全：
+/// 重新加载同一文件时不会复用旧版本号，缓存不会把旧快照误判成当前快照。
+static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
+
 /// 一个不可变的文本快照。构造后内容与版本都不再变化。
 #[derive(Debug)]
 pub struct RopeText {
     rope: Rope,
+    version: Version,
 }
 
 impl RopeText {
     /// 从已解码的 UTF-8 文本建立快照；会复制一次全文。
     pub fn new(text: String) -> Self {
-        Self {
-            rope: Rope::from(text),
-        }
+        Self::from_rope(Rope::from(text))
     }
 
     /// 从借用的 UTF-8 文本建立快照；会复制一次全文。
     pub fn from_text(text: &str) -> Self {
+        Self::from_rope(Rope::from_str(text))
+    }
+
+    fn from_rope(rope: Rope) -> Self {
         Self {
-            rope: Rope::from_str(text),
+            rope,
+            version: Version(NEXT_VERSION.fetch_add(1, Ordering::Relaxed)),
         }
     }
 
@@ -68,7 +79,7 @@ impl RopeText {
 
 impl TextSource for RopeText {
     fn version(&self) -> Version {
-        Version(0)
+        self.version
     }
 
     fn byte_len(&self) -> u64 {
@@ -138,46 +149,37 @@ impl TextSource for RopeText {
 
     fn utf16_to_utf8(&self, line: Line, column: Utf16Column) -> Result<Utf8Column> {
         let line = usize::try_from(line.0).map_err(|_| Error::OutOfBounds)?;
+        let column = usize::try_from(column.0).map_err(|_| Error::OutOfBounds)?;
         let (start, end) = self.line_bytes(line)?;
-        let mut units = 0u64;
-        let mut byte = start;
-        for ch in self.rope.byte_slice(start..end).chars() {
-            if units == column.0 {
-                return Ok(Utf8Column((byte - start) as u64));
-            }
-            units += ch.len_utf16() as u64;
-            byte += ch.len_utf8();
+        let char_start = self.rope.byte_to_char(start);
+        let char_end = self.rope.byte_to_char(end);
+        let unit_start = self.rope.char_to_utf16_cu(char_start);
+        let unit_end = self.rope.char_to_utf16_cu(char_end);
+        let target = unit_start.checked_add(column).ok_or(Error::OutOfBounds)?;
+        if target > unit_end {
+            return Err(Error::OutOfBounds);
         }
-        if units == column.0 {
-            Ok(Utf8Column((end - start) as u64))
-        } else {
-            // 落在代理对中间，或超出行尾。
-            Err(Error::OutOfBounds)
+        let char_index = self.rope.utf16_cu_to_char(target);
+        // 落在代理对中间时 ropey 会取整到所属字符；这里必须拒绝。
+        if char_index > char_end || self.rope.char_to_utf16_cu(char_index) != target {
+            return Err(Error::OutOfBounds);
         }
+        Ok(Utf8Column(
+            (self.rope.char_to_byte(char_index) - start) as u64,
+        ))
     }
 
     fn utf8_to_utf16(&self, line: Line, column: Utf8Column) -> Result<Utf16Column> {
         let line = usize::try_from(line.0).map_err(|_| Error::OutOfBounds)?;
-        let target = usize::try_from(column.0).map_err(|_| Error::OutOfBounds)?;
+        let column = usize::try_from(column.0).map_err(|_| Error::OutOfBounds)?;
         let (start, end) = self.line_bytes(line)?;
-        let mut byte = 0usize;
-        let mut units = 0u64;
-        for ch in self.rope.byte_slice(start..end).chars() {
-            if byte == target {
-                return Ok(Utf16Column(units));
-            }
-            byte += ch.len_utf8();
-            if byte > target {
-                // 列落在 UTF-8 字符中间。
-                return Err(Error::OutOfBounds);
-            }
-            units += ch.len_utf16() as u64;
+        let byte = start.checked_add(column).ok_or(Error::OutOfBounds)?;
+        if byte > end || !self.at_char_boundary(byte) {
+            return Err(Error::OutOfBounds);
         }
-        if byte == target {
-            Ok(Utf16Column(units))
-        } else {
-            Err(Error::OutOfBounds)
-        }
+        let unit_start = self.rope.char_to_utf16_cu(self.rope.byte_to_char(start));
+        let unit = self.rope.char_to_utf16_cu(self.rope.byte_to_char(byte));
+        Ok(Utf16Column((unit - unit_start) as u64))
     }
 }
 
@@ -293,6 +295,51 @@ mod tests {
         // 落在 UTF-8 字符中间或超出行内容末尾。
         assert!(text.utf8_to_utf16(Line(0), Utf8Column(2)).is_err());
         assert!(text.utf8_to_utf16(Line(0), Utf8Column(12)).is_err());
+    }
+
+    #[test]
+    fn utf16_columns_on_a_long_single_line() {
+        // 5000 个 "a😀"：每 5 字节 / 3 个 UTF-16 码元，共 25000 字节 / 15000 码元。
+        // 旧实现逐字符扫整行，这里同时验证边界与代理对中间被拒绝。
+        let text = RopeText::from_text(&"a😀".repeat(5000));
+        assert_eq!(
+            text.utf16_to_utf8(Line(0), Utf16Column(14_997)).unwrap(),
+            Utf8Column(24_995)
+        );
+        assert_eq!(
+            text.utf16_to_utf8(Line(0), Utf16Column(14_998)).unwrap(),
+            Utf8Column(24_996)
+        );
+        // 代理对的第二个码元。
+        assert!(text.utf16_to_utf8(Line(0), Utf16Column(14_999)).is_err());
+        assert_eq!(
+            text.utf16_to_utf8(Line(0), Utf16Column(15_000)).unwrap(),
+            Utf8Column(25_000)
+        );
+        assert!(text.utf16_to_utf8(Line(0), Utf16Column(15_001)).is_err());
+
+        assert_eq!(
+            text.utf8_to_utf16(Line(0), Utf8Column(24_995)).unwrap(),
+            Utf16Column(14_997)
+        );
+        assert_eq!(
+            text.utf8_to_utf16(Line(0), Utf8Column(24_996)).unwrap(),
+            Utf16Column(14_998)
+        );
+        assert!(text.utf8_to_utf16(Line(0), Utf8Column(24_997)).is_err());
+        assert_eq!(
+            text.utf8_to_utf16(Line(0), Utf8Column(25_000)).unwrap(),
+            Utf16Column(15_000)
+        );
+        assert!(text.utf8_to_utf16(Line(0), Utf8Column(25_001)).is_err());
+    }
+
+    #[test]
+    fn every_snapshot_gets_a_fresh_version() {
+        let first = RopeText::new("first".into());
+        let second = RopeText::new("second".into());
+        assert!(first.version().0 >= 1);
+        assert_ne!(first.version(), second.version());
     }
 
     #[test]

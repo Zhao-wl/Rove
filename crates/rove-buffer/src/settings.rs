@@ -110,13 +110,13 @@ pub fn rs_encoding(encoding: &Encoding) -> Option<&'static RsEncoding> {
 
 /// `encoding_rs` 的编码 → 文档元信息里的编码。未覆盖的编码保留 `encoding_rs` 的名字。
 pub fn metadata_encoding(encoding: &'static RsEncoding) -> Encoding {
-    if encoding.name() == UTF_8.name() {
+    if encoding == UTF_8 {
         Encoding::Utf8
-    } else if encoding.name() == UTF_16LE.name() {
+    } else if encoding == UTF_16LE {
         Encoding::Utf16Le
-    } else if encoding.name() == UTF_16BE.name() {
+    } else if encoding == UTF_16BE {
         Encoding::Utf16Be
-    } else if encoding.name() == GBK.name() {
+    } else if encoding == GBK {
         Encoding::Gbk
     } else {
         Encoding::Other(Arc::from(encoding.name()))

@@ -54,7 +54,8 @@ fn encode(encoding: &Encoding, text: &str) -> Vec<u8> {
         Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
         Encoding::Gbk => {
             let mut encoder = encoding_rs::GBK.new_encoder();
-            let mut out = Vec::with_capacity(text.len() * 2);
+            // encoding_rs 为数字字符引用预留 10 字节，容量不足会误报 OutputFull。
+            let mut out = Vec::with_capacity(text.len() * 2 + 32);
             let (result, read, had_errors) = encoder.encode_from_utf8_to_vec(text, &mut out, true);
             assert_eq!(result, encoding_rs::CoderResult::InputEmpty);
             assert_eq!(read, text.len());
@@ -64,7 +65,7 @@ fn encode(encoding: &Encoding, text: &str) -> Vec<u8> {
         Encoding::Other(name) => {
             let encoding = RsEncoding::for_label(name.as_bytes()).unwrap();
             let mut encoder = encoding.new_encoder();
-            let mut out = Vec::with_capacity(text.len() * 2);
+            let mut out = Vec::with_capacity(text.len() * 2 + 32);
             let (result, _, had_errors) = encoder.encode_from_utf8_to_vec(text, &mut out, true);
             assert_eq!(result, encoding_rs::CoderResult::InputEmpty);
             assert!(!had_errors);

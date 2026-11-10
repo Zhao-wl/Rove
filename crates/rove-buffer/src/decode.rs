@@ -7,6 +7,9 @@
 //!    `chardetng` 推断，并只接受 `files.candidateGuessEncodings` 里的编码；
 //! 4. 以上都不成立时遵循 `files.encoding`。
 //!
+//! 无 BOM 的 UTF-16 不做自动推断（`chardetng` 不返回 UTF-16）：按 `files.encoding`
+//! 处理，没有显式指定时会被 NUL/解码失败检测当成二进制。
+//!
 //! 猜测一定会误判，遵循 issue #7 的取舍：**不确定就回落到 `files.encoding`**，
 //! 不给出“看起来对”的编码。
 //!
@@ -152,18 +155,21 @@ fn sniff_bom(bytes: &[u8]) -> Option<(&'static RsEncoding, usize)> {
 }
 
 fn matching_bom_len(bytes: &[u8], encoding: &'static RsEncoding) -> usize {
-    if encoding.name() == UTF_8.name() && bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        3
-    } else if (encoding.name() == UTF_16LE.name() && bytes.starts_with(&[0xFF, 0xFE]))
-        || (encoding.name() == UTF_16BE.name() && bytes.starts_with(&[0xFE, 0xFF]))
-    {
-        2
-    } else {
-        0
+    match sniff_bom(bytes) {
+        Some((bom_encoding, length)) if bom_encoding == encoding => length,
+        _ => 0,
     }
 }
 
-/// 用 `chardetng` 推断，并按 `files.candidateGuessEncodings` 的语义筛选。
+/// 用 `chardetng` 推断，并只在推断结果位于 `files.candidateGuessEncodings` 中时采纳。
+///
+/// 不按“能无错解码”去尝试候选编码：很多单字节编码与 GBK 互相都能解码成功，
+/// 那样会在推断结果被候选列表排除时把 `files.encoding` 也盖掉，静默显示乱码
+/// （例如 windows-1251 的俄文被当成 GBK）。推断不可信或不在候选列表里时返回
+/// `None`，由调用方回落到 `files.encoding`。
+///
+/// 无 BOM 的 UTF-16 不在推断范围内：`chardetng` 不会返回 UTF-16，这类文件按
+/// `files.encoding` 处理；没有显式指定时会被 NUL/解码失败检测当成二进制。
 fn guess(bytes: &[u8], preferences: &Preferences) -> Option<&'static RsEncoding> {
     if bytes.len() < MIN_GUESS_BYTES {
         return None;
@@ -175,35 +181,11 @@ fn guess(bytes: &[u8], preferences: &Preferences) -> Option<&'static RsEncoding>
         // 推断本身不可信时宁可回落到 files.encoding（issue #7 的风险提示）。
         return None;
     }
-    // 无 BOM 的 UTF-16 在候选列表之外也要接受：它由 NUL 的奇偶分布识别，
-    // 真正的二进制文件会随后被 NUL / 解码失败判定拦下。
-    if is_utf16(detected) && !decode_has_nul(bytes, detected) {
-        return Some(detected);
-    }
-    if preferences
-        .candidates
-        .iter()
-        .any(|candidate| candidate.name() == detected.name())
-    {
-        return Some(detected);
-    }
     preferences
         .candidates
         .iter()
         .copied()
-        .find(|candidate| decodes_cleanly(bytes, candidate))
-}
-
-fn is_utf16(encoding: &'static RsEncoding) -> bool {
-    encoding.name() == UTF_16LE.name() || encoding.name() == UTF_16BE.name()
-}
-
-fn decodes_cleanly(bytes: &[u8], encoding: &'static RsEncoding) -> bool {
-    !encoding.decode_without_bom_handling(bytes).1
-}
-
-fn decode_has_nul(bytes: &[u8], encoding: &'static RsEncoding) -> bool {
-    encoding.decode_without_bom_handling(bytes).0.contains('\0')
+        .find(|candidate| *candidate == detected)
 }
 
 fn decode_encoding<'a>(encoding: &'static RsEncoding, bytes: &'a [u8]) -> (Cow<'a, str>, bool) {
@@ -291,7 +273,8 @@ mod tests {
             "UTF-16BE" => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
             _ => {
                 let mut encoder = encoding.new_encoder();
-                let mut out = Vec::with_capacity(text.len() * 2);
+                // encoding_rs 会为数字字符引用预留 NCR_EXTRA(10) 字节，容量太小会误报 OutputFull。
+                let mut out = Vec::with_capacity(text.len() * 2 + 32);
                 let (result, read, had_errors) =
                     encoder.encode_from_utf8_to_vec(text, &mut out, true);
                 assert_eq!(result, encoding_rs::CoderResult::InputEmpty);
@@ -382,17 +365,60 @@ mod tests {
 
     #[test]
     fn explicit_encoding_wins_over_bom() {
-        // 用 GBK 重新打开一个带 UTF-8 BOM 的文件：BOM 字节属于内容。
-        let decoded = decode(
-            b"// hello\r\n",
-            &preferences(true, "utf8"),
-            Some("gbk"),
-            false,
-        )
-        .unwrap();
+        // 用 GBK 重新打开一个**确实带 UTF-8 BOM** 的文件：BOM 字节属于内容，不会被剥掉。
+        let bytes = [&[0xEF, 0xBB, 0xBF][..], b"abc"].concat();
+        let decoded = decode(&bytes, &preferences(true, "utf8"), Some("gbk"), false).unwrap();
         assert_eq!(decoded.detection.encoding, Encoding::Gbk);
         assert!(!decoded.detection.bom);
         assert!(!decoded.detection.guessed);
+        assert!(
+            decoded.text.ends_with("bc"),
+            "BOM 之后的内容仍然保留（BOM 的第三个字节会与 'a' 组成 GBK 双字节）"
+        );
+        assert_ne!(
+            decoded.text, "abc",
+            "显式 GBK 时 BOM 字节必须作为内容解码，而不是被剥离"
+        );
+        // BOM 字节作为内容重新编码后与原始字节完全一致，证明没有被丢弃。
+        assert_eq!(encode_with(encoding_rs::GBK, &decoded.text), bytes);
+
+        // 显式指定 UTF-8 时才能识别并剥离 BOM。
+        let decoded = decode(&bytes, &preferences(true, "utf8"), Some("utf8"), false).unwrap();
+        assert_eq!(decoded.text, "abc");
+        assert!(decoded.detection.bom);
+    }
+
+    #[test]
+    fn detected_encoding_outside_candidates_falls_back_to_files_encoding() {
+        // windows-1251 的俄文：旧逻辑会退而求其次用候选 GBK“无错解码”，
+        // 掩盖检测结果与 files.encoding，显示成乱码。现在必须回落到 files.encoding。
+        let text = "Привет, мир! Это тестовый файл на русском языке.\r\n";
+        let bytes = encode_with(encoding_rs::WINDOWS_1251, text);
+        let decoded = decode(&bytes, &preferences(true, "windows1251"), None, true).unwrap();
+        assert!(
+            !decoded.detection.guessed,
+            "检测结果不在候选列表里时不能标记为自动识别"
+        );
+        assert_eq!(
+            decoded.detection.encoding,
+            Encoding::Other(Arc::from("windows-1251"))
+        );
+        assert_eq!(decoded.text, text);
+    }
+
+    #[test]
+    fn auto_guessed_encoding_must_be_a_registered_candidate() {
+        // 同一份 windows-1251 字节，若用户把 windows1251 放进候选列表才允许猜。
+        let text = "Привет, мир! Это тестовый файл на русском языке.\r\n";
+        let bytes = encode_with(encoding_rs::WINDOWS_1251, text);
+        let preferences = Preferences {
+            auto_guess: true,
+            candidates: vec![encoding_rs::WINDOWS_1251],
+            fallback: UTF_8,
+        };
+        let decoded = decode(&bytes, &preferences, None, true).unwrap();
+        assert!(decoded.detection.guessed);
+        assert_eq!(decoded.text, text);
     }
 
     #[test]
