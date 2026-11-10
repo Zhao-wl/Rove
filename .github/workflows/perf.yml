@@ -79,34 +79,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          $runId = "${{ inputs.baseline_run_id }}"
-          if (-not $runId) {
-            $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml --branch main `
-              --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+
+          # 候选运行：手动指定的优先，然后 main 的最近几次，再是同分支的最近几次。
+          # 只取「确实上传过 perf-baseline artifact」的那一次，绝不拿别的分支当基线。
+          $candidates = @()
+          $explicit = "${{ inputs.baseline_run_id }}"
+          if ($explicit) { $candidates += $explicit }
+          $candidates += @(gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml `
+            --branch main --status success --limit 5 --json databaseId --jq '.[].databaseId')
+          $headRef = "${{ github.head_ref }}"
+          if ($headRef) {
+            $candidates += @(gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml `
+              --branch $headRef --status success --limit 5 --json databaseId --jq '.[].databaseId')
           }
-          if (-not $runId) {
-            # 还没有 main 基线（perf.yml 刚引入）：退而用同一个 PR 上一次成功的 perf 运行，
-            # 只用于验证对比流程，绝不拿别的分支当基线。
-            $headRef = "${{ github.head_ref }}"
-            if ($headRef) {
-              $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml --branch $headRef `
-                --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-              if ($runId) {
-                Write-Host "没有 main 基线，退回本分支上一次 perf 运行：$runId（仅用于验证对比流程）"
-              }
+          $candidates = @($candidates | Where-Object { $_ } | Select-Object -Unique)
+
+          foreach ($runId in $candidates) {
+            if ($explicit -and $runId -eq $explicit) {
+              Write-Host "使用手动指定的基线运行：$runId"
             }
+            gh run download $runId --repo $env:GITHUB_REPOSITORY -n perf-baseline -D baseline 2>$null
+            if ($LASTEXITCODE -eq 0 -and (Test-Path 'baseline/bench.json')) {
+              Write-Host "基线运行：$runId"
+              "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+              exit 0
+            }
+            if (Test-Path 'baseline') { Remove-Item -Path 'baseline' -Recurse -Force -ErrorAction SilentlyContinue }
           }
-          if (-not $runId) {
-            Write-Host '没有可用的基线，本次运行会顺便建立基线'
-            exit 0
-          }
-          Write-Host "基线运行：$runId"
-          gh run download $runId --repo $env:GITHUB_REPOSITORY -n perf-baseline -D baseline
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host '下载基线失败（该运行可能没有 perf-baseline artifact），本次运行会顺便建立基线'
-            exit 0
-          }
-          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host '没有可用的基线（候选运行都没有 perf-baseline artifact），本次运行会顺便建立基线'
 
       - name: 跑基准并校验预算
         shell: pwsh
