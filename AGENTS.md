@@ -18,7 +18,7 @@ Rove 是用 Rust + GPUI 0.2.2 开发的高性能代码阅读编辑器，Windows 
 
 ## 2. crate 分层与依赖方向
 
-**核心层不得依赖 `gpui`。** 只有 `rove-ui`（UI 组件）与 `rove-app`（入口与组装）可以依赖它。CI 会逐 crate 检查 `cargo tree -p <crate> -i gpui --all-features --target all` 必须为空（`--all-features` 才能看到 optional 依赖，`--target all` 才能看到平台条件依赖）。
+**核心层不得依赖 `gpui`。** 只有 `rove-ui`（UI 组件）与 `rove-app`（入口与组装）可以依赖它。CI 会逐 crate 检查 `cargo tree -p <crate> -i gpui --all-features --target all` 必须为空（`--all-features` 才能看到 optional 依赖，`--target all` 才能看到平台条件依赖；`dev-dependencies` 也算）。
 
 - 允许依赖 `gpui` 的 crate 列在 [.github/ui-crates.txt](.github/ui-crates.txt)；
 - 判定采用**默认拒绝**：`cargo metadata` 里除 `ui-crates.txt` 之外的所有 workspace 成员都按核心层检查；[.github/core-crates.txt](.github/core-crates.txt) 是给人看的名册，漏登记只产生 `::warning::`，不会让新 crate 逃过检查；
@@ -101,6 +101,7 @@ docs: 补充索引格式的元数据段说明
 - **Rust 工具链固定 MSVC**：仓库里的 `rust-toolchain.toml` 指定 `stable-x86_64-pc-windows-msvc`。**gnu toolchain 编不过**（见 `M0_UI_SPIKE_REPORT` §2.2 坑 1），不要切换。
 - **构建 gpui 需要 Windows SDK**：`rove-ui` / `rove-app` 依赖 gpui，而 gpui 的着色器编译要调用 Windows SDK 的 `fxc.exe`，**它必须在 `PATH` 上**，否则 clean build 会失败（#80/#81 在普通 shell 上踩过；CI 接入 gpui 后同样要处理，见 `M0_UI_SPIKE_REPORT` §2.2）。
 - **.NET 9 SDK**：`tools/rove-indexer-cs` 是 C# 索引进程，改动后用 `dotnet build tools/rove-indexer-cs -c Release` 验证。
+- **PowerShell**：CI 用 GitHub 托管的 `pwsh` 7；仓库里的检查脚本同时兼容 Windows PowerShell 5.1（脚本内部会把控制台输出编码临时切成 UTF-8，所以在中文代码页 CP936 下也不会因为 cargo 的 UTF-8 输出而报错）。本地命令示例统一写成 `pwsh`，在只装了 5.1 的机器上把 `pwsh` 换成 `powershell` 即可。
 - 本地等价于 CI 的命令：
 
 ```powershell
