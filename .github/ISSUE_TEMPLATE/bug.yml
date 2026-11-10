@@ -1,0 +1,62 @@
+name: 缺陷
+description: 与文档约定不一致的行为、崩溃、性能退化
+title: "[bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        缺陷也要能被一个会话在一个 PR 里修完。如果它需要改 #1 的契约，先拆出一个契约 PR。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 实际看到什么；涉及哪份文档/哪个 issue 的约定。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望
+      description: 按 CHARTER / FEATURES / UX_SPEC / ARCHITECTURE 的哪一条应该是怎样。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 设置 ROVE_TEST_UNITY_MEDIUM=…（需要真实项目时）
+        2. cargo run -p rove-app
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      description: Windows 版本、显示器缩放、是否需要特定测试项目；不要写真实项目路径。
+      placeholder: Windows 11 24H2 / 150% 缩放 / 双显示器
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 日志、截图、基准数据（写明测量口径与机器）。
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 修复的验收标准
+      value: |
+        - [ ] 有一条能复现该缺陷的测试，修复后通过
+    validations:
+      required: true

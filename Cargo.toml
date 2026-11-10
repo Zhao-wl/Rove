@@ -15,6 +15,7 @@ rove-workspace = { path = "crates/rove-workspace" }
 rove-lang-cs = { path = "crates/rove-lang-cs" }
 rove-docview = { path = "crates/rove-docview" }
 rove-ui = { path = "crates/rove-ui" }
+rove-test-support = { path = "crates/rove-test-support" }
 
 rove-base = { path = "crates/rove-base" }
 rove-theme = { path = "crates/rove-theme" }

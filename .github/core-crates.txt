@@ -1,0 +1,11 @@
+# 核心层 crate 名单（每行一个，# 开头为注释）。
+# 这些 crate 不得依赖 gpui；允许依赖 gpui 的 crate 见 .github/ui-crates.txt。
+#
+# 新增 crate 后在这里追加一行。检查脚本也会自动把"未登记"的 crate 按核心层检查
+# （并给出 ::warning:: 提示），所以漏登记不会让新 crate 逃过 gpui 检查。
+rove-buffer
+rove-docview
+rove-lang-cs
+rove-syntax
+rove-test-support
+rove-workspace

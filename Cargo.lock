@@ -139,6 +139,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-test-support"
+version = "0.0.1"
+
+[[package]]
 name = "rove-ui"
 version = "0.0.1"
 dependencies = [

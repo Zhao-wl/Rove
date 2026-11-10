@@ -1,0 +1,8 @@
+[package]
+name = "rove-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "测试环境辅助：需要真实 Unity 项目的测试在环境变量缺失时跳过而不是失败"
+
+[dependencies]
