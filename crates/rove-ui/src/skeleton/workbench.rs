@@ -20,8 +20,7 @@ use gpui::{
     Style, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rove_base::{
-    ByteOffset, Cancellation, Error, Line, Resource, Result as CoreResult, Span, Value, Version,
-    WorkspacePath,
+    Cancellation, Error, Line, Resource, Result as CoreResult, Value, Version, WorkspacePath,
 };
 use rove_commands::{CommandExecutor, Invocation};
 use rove_i18n::{Message, StringTable, Strings};
@@ -30,7 +29,6 @@ use rove_workspace::{EntryKind, Workspace};
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
 const LINE_HEIGHT: f32 = 22.0;
 const FONT_SIZE: f32 = 14.0;
-const MAX_LINE_BYTES: u64 = 16384;
 fn color(c: Color) -> Hsla {
     rgba(((c.0 as u32) << 24) | ((c.1 as u32) << 16) | ((c.2 as u32) << 8) | c.3 as u32).into()
 }
@@ -41,6 +39,7 @@ struct FileTree {
     workspace: Arc<dyn Workspace>,
     rows: Vec<Row>,
     expanded: BTreeSet<ItemId>,
+    revision: Version,
 }
 impl FileTree {
     fn new(workspace: Arc<dyn Workspace>) -> CoreResult<Self> {
@@ -48,6 +47,7 @@ impl FileTree {
             workspace,
             rows: vec![],
             expanded: BTreeSet::new(),
+            revision: Version(0),
         };
         t.rebuild()?;
         Ok(t)
@@ -79,7 +79,7 @@ impl FileTree {
 }
 impl ListModel for FileTree {
     fn revision(&self) -> Version {
-        self.workspace.revision()
+        self.revision
     }
     fn count(&self) -> usize {
         self.rows.len()
@@ -110,6 +110,7 @@ impl ListController for FileTree {
         } else {
             self.expanded.remove(id);
         }
+        self.revision.0 += 1;
         self.rebuild()
     }
 }
@@ -369,26 +370,9 @@ impl Workbench {
         };
         let default = self.theme.color("editor.foreground")?.unwrap();
         for line in first..(first + visible).min(text.lines().known as usize) {
-            let whole = text.line_range(Line(line as u64))?;
-            let mut range = whole.clone();
+            let range = text.line_range(Line(line as u64))?;
             let mut value = String::new();
-            let truncated = range.end().0 - range.start().0 > MAX_LINE_BYTES;
-            if truncated {
-                let mut end = range.start().0 + MAX_LINE_BYTES;
-                loop {
-                    range = Span::new(range.start(), ByteOffset(end))?;
-                    if text
-                        .visit_chunks(range.clone(), &mut |s| value.push_str(s))
-                        .is_ok()
-                    {
-                        break;
-                    }
-                    value.clear();
-                    end -= 1;
-                }
-            } else {
-                text.visit_chunks(range.clone(), &mut |s| value.push_str(s))?;
-            }
+            text.visit_chunks(range.clone(), &mut |s| value.push_str(s))?;
             #[cfg(test)]
             let mut spans = vec![];
             let mut runs = vec![];
@@ -430,9 +414,6 @@ impl Workbench {
                 });
                 consumed = end;
             }
-            if truncated {
-                value.push_str(&self.label("workbench.truncated", &[]));
-            }
             if consumed < value.len() {
                 runs.push(TextRun {
                     len: value.len() - consumed,
@@ -473,6 +454,7 @@ impl Workbench {
         }
         Ok(())
     }
+    // SKELETON(status): fixed filename/line-count/encoding content; replaced by #27.
     fn status(&self) -> String {
         if let Some(m) = self.feedback.message.as_ref() {
             return self.strings.text(m).unwrap();
@@ -850,6 +832,28 @@ mod tests {
             assert_eq!(v.painted.first().unwrap().text, "public class B {}");
             assert_eq!(v.scroll, 0.0);
             assert!(v.status().contains("b.cs"));
+        });
+    }
+    #[gpui::test]
+    fn registered_key_shows_temporary_status(cx: &mut TestAppContext) {
+        let folder = tempfile::tempdir().unwrap();
+        let (view, cx) =
+            cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            cx.bind_keys([KeyBinding::new("ctrl-p", QuickOpen, None)]);
+            window.focus(&view.read(cx).focus);
+        });
+        cx.simulate_keystrokes("ctrl-p");
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.status(), v.label("commands.quickOpen", &[]))
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(3));
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.status(), v.label("workbench.empty", &[]))
         });
     }
 }

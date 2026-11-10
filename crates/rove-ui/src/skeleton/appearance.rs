@@ -77,7 +77,6 @@ pub fn strings() -> Result<StringTable> {
         ("encoding.utf8", "UTF-8"),
         ("commands.quickOpen", "快速打开（尚未实现）"),
         ("commands.palette", "命令面板（尚未实现）"),
-        ("workbench.truncated", "…（已截断）"),
         ("tree.open", "▾ {name}"),
         ("tree.closed", "▸ {name}"),
         ("line.number", "{line}"),

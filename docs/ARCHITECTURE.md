@@ -206,7 +206,7 @@ cargo test --workspace
 | `code-view` | `workbench.rs`：自定义 Element、可见行缓存、f64 行滚动 | #19 |
 | `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到 TextRun 的投影 | #20 |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace | #23 |
-| `status` | `appearance.rs`：状态栏贡献条目与文件名/行数/编码 | #27 |
+| `status` | `appearance.rs`、`workbench.rs`：状态栏贡献条目与文件名/行数/编码 | #27 |
 
 数据链路：后台扫描返回 `Arc<dyn Workspace>`，文件树通过列表契约激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -217,7 +217,7 @@ SyntaxSnapshot、Theme，paint/layout 不读取文件、不解析、不整形。
 
 最小边界：只读、整个 UTF-8 文件、单编辑区、C# 少量 scope、纯文本回退、无监听。
 不跟随符号链接或 Windows reparse point，避免递归环；这不实现正式的忽略规则。
-单行最多准备 16 KiB UTF-8 后显示登记的截断提示；不承诺大文件、水平滚动或完整 TextMate 匹配。
+不承诺大文件、长行优化、水平滚动或完整 TextMate 匹配。
 
 保留入口测试 `walking_skeleton_opens_csharp_through_real_window`：GPUI TestAppContext
 中建立窗口、点击文件，检查文档、已绘制首行、keyword scope 与 Dark 2026 颜色。
