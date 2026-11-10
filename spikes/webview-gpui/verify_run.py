@@ -26,6 +26,11 @@ expected = hashlib.sha1(b'blob ' + str(len(payload)).encode() + b'\0' + payload)
 if starts[0]['source_git_blob'] != expected:
     raise SystemExit('SOURCE MISMATCH: rebuild and record new evidence after changing build inputs; use summarize.py for historical logs')
 
+stages = [e['data'] for e in events if e['event'] == 'auto_stage']
+require([s.get('stage') for s in stages] == list(range(1, 9)), 'Automatic lifecycle skipped or did not finish a stage')
+require(all(s.get('ready') is True for s in stages if s['stage'] in (2, 7)), 'Advanced before ready')
+require(stages[-1]['previous_stage_ms'] >= 3000, 'Rebuilt page observation was cut short')
+
 ready = [e['data'] for e in events if e['event'] == 'ready']
 require(len(ready) == 2, 'Expected creation and recreation to become ready')
 require(all((e['documentScriptBlocked'] is True for e in ready)), 'Document script executed')

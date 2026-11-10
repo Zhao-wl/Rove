@@ -217,3 +217,22 @@ workspace 与原型 fmt、严格 clippy（`-D warnings`）通过；workspace tes
 严格校验4/6通过；失败轮次未完成两次ready，不能标记生命周期通过。采样工具增加负载的可能性存在，但未做受控A/B，不能归因；失败原始日志全部保留。峰值为全运行采样最大值，忽略进程退出后的空值，不是静止空闲预算或Close后稳定值。此为全新/复用profile测试，不是真正OS冷启动外部首帧。key_route仍为0，视觉/焦点阻断不变。
 
 COM布局调用期间不再持有State借用；验收断言已改为明确错误提示。两分支workspace fmt/clippy及43项测试通过；IME另4项通过。WebView原型fmt/clippy/release build/test通过（Rust目标0用例），Python3项通过。Git checkout仍为证据构建前提，无Git/tarball支持未实现；离线缓存构建为预期、未实测。
+
+## 11. 重建未ready的根因与修复
+
+§10失败批次的自动脚本按进程启动绝对时间推进：第13秒创建第二个实例，第16秒退出，留给重建的时间最多约3秒；不检查ready，并且长帧可能直接跳过阶段。fresh-profile-2首次ready已达6254ms，第二次controller创建耗时1839ms，随后在ready前被关闭；fresh-profile-3第二次连controller完成日志都没来得及出现。这证明原测试流程能截断仍在进行的初始化，不是“已完成但没记录”。不能由此断言初始化本身已优化或慢启动已消失。
+
+修复改为逐阶段状态机，每次创建等待ready后才开始观察计时，重建ready后至少观察3秒才退出；每次ready等待上限20秒，超时记录error并失败。外层90秒只作失控进程保护，不是性能预算。阶段日志与严格校验要求1–8顺序完整、两次ready后推进及最后观察期完整。新增3个纯逻辑回归覆盖慢ready、长帧不跳步、重建观察时间。
+
+修复后以同一内存采样脚本复跑3次全新profile、3次复用profile，严格运行校验 **6/6通过**。身份：`{"schema": 2, "commit": "746373c91835e12543b73c60a6b18108664a7749", "source_git_blob": "25c8656b6f9a53bea0376b59e43b314ed7c23a45", "dirty": "false", "built_unix_seconds": "1794280960", "benchmark_mode": "continuous_frame_probe_not_idle"}`。日志、exe哈希、内存采样及校验输出见 `evidence/2026-11-10-ready-fix/`。
+
+| 运行 | 第一次ready ms | 重建ready ms | 重建ready后观察 ms | 校验 |
+|---|---:|---:|---:|---|
+| fresh-profile-1 | 2523.46 | 2437.61 | 3008.52 | PASS |
+| fresh-profile-2 | 2536.60 | 2399.92 | 3000.47 | PASS |
+| fresh-profile-3 | 2478.71 | 2516.79 | 3003.37 | PASS |
+| reused-profile-1 | 2442.35 | 2463.94 | 3000.62 | PASS |
+| reused-profile-2 | 2484.91 | 2522.78 | 3000.46 | PASS |
+| reused-profile-3 | 2595.43 | 2411.46 | 3007.49 | PASS |
+
+两次ready、完整阶段序列、双向通信、本地图片、脚本/资源拦截及两次close均通过。原失败批次仍保留，不以新结果覆盖。3项阶段回归与3项Python统计测试通过；workspace fmt/clippy/test通过（43项，2个环境相关doc-test忽略）；原型fmt/严格clippy/release build/test通过。未宣称性能变快，也不解除视觉/按键及真正冷启动的待验项。

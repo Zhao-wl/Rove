@@ -84,3 +84,5 @@ The verifier compares the exact current build-input fingerprint, so newer code
 cannot silently reuse older evidence.
 
 Changing any build input requires a rebuild and new acceptance recordings. Historical logs remain usable with summarize.py only. Git and a .git checkout are required; source tarballs without Git metadata are unsupported. Offline builds are expected to work with cached dependencies, but have not been tested. The dirty flag covers only this spike directory.
+
+Auto lifecycle now advances one stage at a time. Each creation waits up to 20 seconds for ready, then starts its observation period; recreation gets at least 3 seconds of communication before exit. A ready timeout emits an error and fails verification. The external runners allow 90 seconds; this is a safety bound, not a startup performance budget. auto_stage logs record transitions and wait durations.
