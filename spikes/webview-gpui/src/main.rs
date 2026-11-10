@@ -12,7 +12,7 @@ use windows::{
     Win32::{
         Foundation::{HWND, RECT},
         UI::{
-            Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_SHIFT},
+            Input::KeyboardAndMouse::{GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_SHIFT},
             WindowsAndMessaging::GetClientRect,
         },
     },
@@ -87,6 +87,18 @@ fn close(state: &Rc<RefCell<State>>) {
         }
     }
     log("closed", json!({}));
+}
+// Closing a child HWND can change Win32 focus independently of GPUI's focus handle.
+fn close_to_host(state: &Rc<RefCell<State>>, hwnd: HWND) {
+    close(state);
+    unsafe {
+        let previous = SetFocus(Some(hwnd));
+        let focused = GetFocus();
+        log(
+            "host_focus_restored",
+            json!({"ok":focused == hwnd,"host":hwnd.0 as usize,"actual":focused.0 as usize,"set_focus_ok":previous.is_ok()}),
+        );
+    }
 }
 fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
     {
@@ -474,7 +486,8 @@ impl Render for Spike {
                     }
                     5 => {
                         self.overlay = false;
-                        close(&self.state);
+                        close_to_host(&self.state, hwnd);
+                        window.focus(&self.focus);
                     }
                     6 => create(&self.state, hwnd),
                     8 => cx.quit(),
@@ -567,7 +580,7 @@ impl Render for Spike {
         window.request_animation_frame();
         div().size_full().when(auto_flow::paint_background(std::env::var_os("ROVE_TRANSPARENT_PREVIEW").is_some(), ready, self.overlay && self.mitigate), |d| d.bg(rgb(0x181b20))).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                log("host_key", json!({"key":event.keystroke.key}));
+                log("host_key", json!({"key":event.keystroke.key,"native_focus":unsafe { GetFocus().0 as usize },"host":hwnd.0 as usize}));
                 match event.keystroke.key.as_str() {
                     "tab" => {
                         let controller = this.state.borrow().controller.clone();
@@ -579,7 +592,7 @@ impl Render for Spike {
                     "o" => create(&this.state, hwnd),
                     "h" => { this.overlay = !this.overlay; this.mitigate = true; }
                     "u" => { this.overlay = !this.overlay; this.mitigate = false; }
-                    "x" => close(&this.state),
+                    "x" => close_to_host(&this.state, hwnd),
                     "escape" => this.overlay = false,
                     "t" => {
                         if let Some(web) = this.state.borrow().webview.as_ref() {

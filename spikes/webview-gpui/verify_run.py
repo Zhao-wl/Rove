@@ -36,6 +36,9 @@ require(sum(e['event'] == 'environment_reused' for e in events) == 1, 'Recreatio
 require(sum(e['event'] == 'controller_requested' for e in events) == 2, 'Missing controller requests')
 require(sum(e['event'] == 'controller_completed' for e in events) == 2, 'Missing controller completions')
 
+focus = [e['data'] for e in events if e['event'] == 'host_focus_restored']
+require(len(focus) == 1 and focus[0].get('ok') is True, 'Native host focus not restored after close')
+
 ready = [e['data'] for e in events if e['event'] == 'ready']
 require(len(ready) == 2, 'Expected creation and recreation to become ready')
 require(all((e['documentScriptBlocked'] is True for e in ready)), 'Document script executed')
