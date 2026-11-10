@@ -132,15 +132,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-test-support"
+version = "0.0.1"
+
+[[package]]
 name = "rove-theme"
 version = "0.0.1"
 dependencies = [
  "rove-base",
 ]
-
-[[package]]
-name = "rove-test-support"
-version = "0.0.1"
 
 [[package]]
 name = "rove-ui"
