@@ -30,7 +30,6 @@ Vendored crates.io `gpui` **0.2.2**, copied from the local Cargo registry packag
 
 Release build and prototype cargo check/clippy succeeded on 2026-11-09. The fresh release target took 9m51s with dependencies cached, while other work was running; this is not a controlled comparison against the historical 469s baseline. The prototype executable is 6,481,408 bytes. cargo tree resolves gpui to this vendor directory. Root Cargo.lock correctly records patch.unused because the current main UI crate has no GPUI dependency yet. Workspace fmt passed after rebase onto baseline fix 8e2a91b; workspace strict clippy (`--all-targets -- -D warnings`) and test passed after rebase. Prototype strict clippy and test also passed; that 2026-11-09 run contained zero automated tests, so these commands are compile/integration checks, not IME behavior coverage. Dependency counts (Windows target, package identities deduplicated) are 411 including the prototype root before and after patching. Interactive acceptance is not yet confirmed. See `spikes/ime-gpui/README.md`; no manual acceptance item is claimed as passed.
 
-
 ## Integration requirements and outstanding review items (2026-11-10)
 
 - WM_IME_COMPOSITION updates text before querying geometry, but `bounds_for_range` may still read the previous frame's layout. The synchronous update alone can lag one frame. **R46 must call `Window::invalidate_character_coordinates()` when caret/layout changes**, so positioning is refreshed after the new layout. The IME prototype does this in TextInput::render; its correctness must not be attributed to the vendor event hook alone. Repeat after scroll, resize, caret movement and DPI changes.
@@ -39,3 +38,11 @@ Release build and prototype cargo check/clippy succeeded on 2026-11-09. The fres
 - Track upstream float-literal compatibility warnings in `src/taffy.rs:312` and proc-macro-error2 future incompatibility separately. Do not silently broaden this Windows patch.
 - `patch.unused` remains until a workspace GPUI consumer exists; do not add a dummy dependency just to silence it. Upstream examples/assets remain intact for provenance, including approximately 4.6 MB of images.
 - The prototype intentionally keeps the M0 viewer for before/after comparison; it is not a new minimal editor. Its composition-relative UTF-16 selection bug is fixed with four regression tests in `spikes/ime-gpui/src/ime_selection.rs`.
+
+### R46 UTF-16 integration requirement (second review)
+
+EntityInputHandler must interpret new_selected_range_utf16 relative to the replacement composition text, convert UTF-16 offsets inside that text to UTF-8 byte offsets, then add the replacement start. Do not convert against the full document: non-ASCII prefixes can produce out-of-bounds selections. See spikes/ime-gpui/src/ime_selection.rs and its four regression tests.
+
+The spike is excluded from the workspace: cargo test --workspace does not execute these tests. Run cargo test --manifest-path spikes/ime-gpui/Cargo.toml separately.
+
+The historical spikes/ui-gpui prototype still contains the old conversion and may panic when copying a composition after a non-ASCII prefix. It is outside this chain's permitted edit scope; use spikes/ime-gpui for IME acceptance and do not copy the old implementation into R46.
