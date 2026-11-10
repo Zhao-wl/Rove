@@ -47,3 +47,32 @@ manual. Source and report explicitly distinguish these limits.
 After an auto run, execute `python spikes/webview-gpui/verify_run.py <events.jsonl>`
 to validate the runtime probes. This verifier deliberately does not mark manual
 overlap, keyboard or DPI requirements as passed.
+
+## Build and evidence prerequisites (review follow-up)
+
+Use MSVC Developer PowerShell with the Windows SDK. Both `where.exe fxc` and
+`git --version` must succeed before Cargo: GPUI build.rs needs fxc.exe; this spike
+uses Git to embed provenance. CI owners must initialize that environment; this PR
+does not modify .github/. No wry prototype was tested: direct COM was selected to
+control the existing HWND without introducing another event-loop integration.
+
+Every new run starts with schema 2 `run_start`: Git commit, source Git-blob
+fingerprint, dirty flag and build Unix timestamp. Commit source before producing
+release acceptance evidence; the run manifest must retain executable SHA-256.
+The fingerprint covers build.rs, manifest/lock, main.rs and packaged assets.
+Historical 2026-11-09 logs are unversioned intermediate-build measurements, not
+proof of the current binary. Do not run the current strict verifier on them as if
+they shared its schema. summarize.py labels missing response kinds as unknown,
+and reports total/per-kind p99, maximum and >16ms count/percentage.
+
+The image CSP intentionally allows HTTPS in this spike so that the remote-image
+fixture reaches WebResourceRequested and exercises the 403/counting path. It is
+not a production defense-in-depth CSP: the interceptor is the remote-image gate.
+Product integration must combine sanitized local resources, a narrower CSP and
+explicit per-document allow policy; do not copy the fixture policy unchanged.
+
+Bounds and visibility are applied only when changed. Continuous frame requests
+and parent-position notifications remain intentional benchmark instrumentation;
+measurements are not idle CPU/memory evidence. Event tokens are retained by kind
+and unsubscribed at Close. Async initialization/script strings are retained by
+completion closures. Physical-key and visible-overlap acceptance is still pending.

@@ -18,9 +18,21 @@ use windows::{
 };
 
 #[derive(Default)]
+struct EventTokens {
+    navigation_starting: i64,
+    new_window: i64,
+    resource: i64,
+    message: i64,
+    accelerator: i64,
+    navigation_completed: i64,
+}
+#[derive(Default)]
 struct State {
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
+    tokens: Option<EventTokens>,
+    last_bounds: Option<RECT>,
+    last_visible: Option<bool>,
     pending: bool,
     generation: u64,
     ready: bool,
@@ -49,6 +61,20 @@ fn close(state: &Rc<RefCell<State>>) {
         s.generation += 1;
         s.ready = false;
         s.pending = false;
+        if let (Some(web), Some(controller), Some(tokens)) = (&s.webview, &s.controller, &s.tokens)
+        {
+            unsafe {
+                let _ = web.remove_NavigationStarting(tokens.navigation_starting);
+                let _ = web.remove_NewWindowRequested(tokens.new_window);
+                let _ = web.remove_WebResourceRequested(tokens.resource);
+                let _ = web.remove_WebMessageReceived(tokens.message);
+                let _ = controller.remove_AcceleratorKeyPressed(tokens.accelerator);
+                let _ = web.remove_NavigationCompleted(tokens.navigation_completed);
+            }
+        }
+        s.tokens = None;
+        s.last_bounds = None;
+        s.last_visible = None;
         s.webview = None;
         s.pings.clear();
         s.controller.take()
@@ -74,9 +100,14 @@ fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
     let weak = Rc::downgrade(state);
     let profile = std::env::var("ROVE_WEBVIEW_PROFILE")
         .unwrap_or_else(|_| format!("{}/runs/profile", env!("CARGO_MANIFEST_DIR")));
-    let profile = wide(&profile);
+    let profile = Rc::new(wide(&profile));
+    let browser = std::env::var("ROVE_WEBVIEW_BROWSER_FOLDER")
+        .ok()
+        .map(|s| Rc::new(wide(&s)));
+    let retained_arguments = (profile.clone(), browser.clone());
     let callback =
         CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |result, env| {
+            let _arguments_alive_until_callback = &retained_arguments;
             let Some(state) = weak.upgrade() else {
                 return Ok(());
             };
@@ -137,9 +168,6 @@ fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
             }
             Ok(())
         }));
-    let browser = std::env::var("ROVE_WEBVIEW_BROWSER_FOLDER")
-        .ok()
-        .map(|s| wide(&s));
     let result = unsafe {
         CreateCoreWebView2EnvironmentWithOptions(
             browser
@@ -177,7 +205,7 @@ unsafe fn configure(
             PCWSTR(assets.as_ptr()),
             COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
         )?;
-    let mut token = 0;
+    let mut tokens = EventTokens::default();
     web.add_NavigationStarting(
         &NavigationStartingEventHandler::create(Box::new(move |_, args| {
             if let Some(a) = args {
@@ -191,7 +219,7 @@ unsafe fn configure(
             }
             Ok(())
         })),
-        &mut token,
+        &mut tokens.navigation_starting,
     )?;
     web.add_NewWindowRequested(
         &NewWindowRequestedEventHandler::create(Box::new(|_, args| {
@@ -200,7 +228,7 @@ unsafe fn configure(
             }
             Ok(())
         })),
-        &mut token,
+        &mut tokens.new_window,
     )?;
     web.AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)?;
     let weak = Rc::downgrade(state);
@@ -230,7 +258,7 @@ unsafe fn configure(
             }
             Ok(())
         })),
-        &mut token,
+        &mut tokens.resource,
     )?;
     let weak = Rc::downgrade(state);
     web.add_WebMessageReceived(
@@ -261,7 +289,7 @@ unsafe fn configure(
                 }
             }
             Ok(())
-        })), &mut token)?;
+        })), &mut tokens.message)?;
     let weak = Rc::downgrade(state);
     controller.add_AcceleratorKeyPressed(
         &AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
@@ -300,7 +328,7 @@ unsafe fn configure(
             }
             Ok(())
         })),
-        &mut token,
+        &mut tokens.accelerator,
     )?;
     web.add_NavigationCompleted(
         &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
@@ -308,10 +336,12 @@ unsafe fn configure(
                 let mut success = windows::core::BOOL::default();
                 args.IsSuccess(&mut success)?;
                 log("navigation_completed", json!({"success":success.as_bool()}));
-                let script = wide(include_str!("../assets/bridge.js"));
+                let script = Rc::new(wide(include_str!("../assets/bridge.js")));
+                let retained_script = script.clone();
                 web.ExecuteScript(
                     PCWSTR(script.as_ptr()),
-                    &ExecuteScriptCompletedHandler::create(Box::new(|result, value| {
+                    &ExecuteScriptCompletedHandler::create(Box::new(move |result, value| {
+                        let _script_alive_until_callback = &retained_script;
                         log(
                             "execute_script",
                             json!({"ok":result.is_ok(),"result":value}),
@@ -322,15 +352,17 @@ unsafe fn configure(
             }
             Ok(())
         })),
-        &mut token,
+        &mut tokens.navigation_completed,
     )?;
-    let script = wide(
+    let script = Rc::new(wide(
         "window.__roveEarly = true; chrome.webview.postMessage({version:1,type:'earlyInjection'});",
-    );
+    ));
+    let retained_script = script.clone();
     let navigation = web.clone();
     web.AddScriptToExecuteOnDocumentCreated(
         PCWSTR(script.as_ptr()),
         &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |result, _| {
+            let _script_alive_until_callback = &retained_script;
             result?;
             navigation.Navigate(w!("https://rove.local/index.html"))?;
             Ok(())
@@ -341,6 +373,8 @@ unsafe fn configure(
     s.controller = Some(controller.clone());
     s.webview = Some(web);
     s.pending = false;
+    s.tokens = Some(tokens);
+    s.last_visible = Some(true);
     log(
         "controller",
         json!({"ms":start.elapsed().as_secs_f64()*1000.0,"hwnd":hwnd.0 as usize}),
@@ -446,9 +480,24 @@ impl Render for Spike {
                 let mut r = RECT::default();
                 let _ = GetClientRect(hwnd, &mut r);
                 r.left = r.right / 2;
-                let _ = c.SetBounds(r);
+                let mut state = self.state.borrow_mut();
+                if state.last_bounds != Some(r) {
+                    if let Err(error) = c.SetBounds(r) {
+                        log("layout_error", json!(error.to_string()));
+                    } else {
+                        state.last_bounds = Some(r);
+                    }
+                }
+                let visible = !(self.overlay && self.mitigate);
+                if state.last_visible != Some(visible) {
+                    if let Err(error) = c.SetIsVisible(visible) {
+                        log("layout_error", json!(error.to_string()));
+                    } else {
+                        state.last_visible = Some(visible);
+                    }
+                }
+                // Parent movement can occur without a client-size change.
                 let _ = c.NotifyParentWindowPositionChanged();
-                let _ = c.SetIsVisible(!(self.overlay && self.mitigate));
             }
         }
         if ready && self.last_ping.elapsed().as_millis() >= 16 {
@@ -506,6 +555,14 @@ impl Render for Spike {
 }
 fn main() {
     let start = Instant::now();
+    log(
+        "run_start",
+        json!({
+            "schema":2,"commit":env!("ROVE_BUILD_COMMIT"),"source_git_blob":env!("ROVE_SOURCE_GIT_BLOB"),
+            "dirty":env!("ROVE_BUILD_DIRTY"),"built_unix_seconds":env!("ROVE_BUILD_UNIX_SECONDS"),
+            "benchmark_mode":"continuous_frame_probe_not_idle"
+        }),
+    );
     let auto = std::env::args().any(|a| a == "--auto");
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);

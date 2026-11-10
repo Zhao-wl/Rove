@@ -4,6 +4,13 @@ import sys
 from pathlib import Path
 
 events = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding='utf-8-sig').splitlines()]
+starts = [e['data'] for e in events if e['event'] == 'run_start']
+if len(starts) != 1 or starts[0].get('schema') != 2:
+    raise SystemExit('LEGACY/UNVERSIONED: not current acceptance evidence; use summarize.py for historical metrics only')
+import re
+for field in ('commit', 'source_git_blob'):
+    assert re.fullmatch(r'[0-9a-f]{40}', starts[0].get(field, '')), f'Missing build {field}'
+assert int(starts[0]['built_unix_seconds']) > 0
 ready = [e['data'] for e in events if e['event'] == 'ready']
 assert len(ready) == 2, 'Expected creation and recreation to become ready'
 assert all(e['documentScriptBlocked'] is True for e in ready), 'Document script executed'
