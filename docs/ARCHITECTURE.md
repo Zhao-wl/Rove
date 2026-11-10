@@ -168,8 +168,17 @@ M0 的热缓存查询结果不能证明冷 mmap 安全：冷 HDD 查询曾达 2.
 ```text
 cargo fmt --check
 cargo build --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
 另检查各核心 crate 的依赖闭包没有 gpui：存在 gpui 时可用 `cargo tree -p <crate> -i gpui`；本阶段整个 workspace 尚无 gpui，Cargo 对该反向查询报告 package ID 不匹配，故以 cargo metadata 的依赖闭包为确切证据，不将命令失败本身当作通过。最终运行结果见 PR，任何既有基线阻断必须如实记录，不能用 lint allow 或删掉测试规避。
+
+### 2026-11-10 合并前反馈修订
+
+- Error::Io 保留 std::io::ErrorKind 和诊断文字，并支持从 std::io::Error 转换；调用方可区分文件不存在和无权限。
+- Value::Object 使用 Arc<BTreeMap<...>>，与字符串和数组一样共享不可变数据，克隆不复制整张对象表。
+- 字符串模板支持 `{name}`、字面量括号 `{{` / `}}`；不匹配括号、空或嵌套占位符、缺少参数返回 InvalidInput，参数值不递归解析。
+- 四项默认值例外已同步到 FEATURES §13.5。
+- 已只读核对 PR #79 的 AGENTS.md：§2 覆盖核心禁 GPUI 和架构归属，§5.2 覆盖登记/独立契约 PR/集成测试，§5.1 与 §7 覆盖 SKELETON 清理。#79 尚未合并，本 PR 不修改该文件。
+- 当前核心层无 GPUI 是现有依赖图的静态检查结果；尚未验证真实 UI 接入后的依赖隔离。GPUI 引入后必须重新运行核心依赖检查，不能以本次结果代替。

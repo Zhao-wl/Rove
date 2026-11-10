@@ -29,7 +29,11 @@ pub enum Error {
     NotFound,
     Duplicate(String),
     Unsupported,
-    Io(String),
+    /// Filesystem failure with machine-readable category and diagnostic text.
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
     Stale,
 }
 impl std::fmt::Display for Error {
@@ -38,6 +42,14 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+}
 pub type Result<T> = std::result::Result<T, Error>;
 /// Executor-neutral background operation. Poll outside paint/layout; cancellation is explicit.
 pub type Task<T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'static>>;
@@ -212,7 +224,8 @@ pub enum Value {
     Number(f64),
     String(Arc<str>),
     Array(Arc<[Value]>),
-    Object(BTreeMap<String, Value>),
+    /// Shared immutable object; cloning does not copy the table or nested values.
+    Object(Arc<BTreeMap<String, Value>>),
 }
 #[cfg(test)]
 mod tests {
@@ -228,6 +241,34 @@ mod tests {
         let c = Cancellation::default();
         c.clone().cancel();
         assert_eq!(c.check(), Err(Error::Cancelled));
+    }
+    #[test]
+    fn io_consumers_can_branch_on_error_kind() {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            let error: Error = std::io::Error::new(kind, "fixture").into();
+            assert_eq!(
+                error,
+                Error::Io {
+                    kind,
+                    message: "fixture".into()
+                }
+            );
+        }
+    }
+    #[test]
+    fn object_snapshots_share_the_same_table() {
+        let original = Value::Object(Arc::new(BTreeMap::from([(
+            "enabled".into(),
+            Value::Bool(true),
+        )])));
+        let cloned = original.clone();
+        let (Value::Object(a), Value::Object(b)) = (original, cloned) else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(&a, &b));
     }
     #[test]
     fn registration_never_overwrites() {

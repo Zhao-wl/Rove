@@ -17,8 +17,10 @@ impl Message {
         }
     }
 }
-/// Lookup is UI-safe, O(log keys + template length + arguments), no I/O. Missing keys or missing
-/// named placeholders return errors; substitutions are literal and never recursively interpreted.
+/// Lookup is UI-safe, O(log keys + template bytes + placeholders * arguments + output bytes),
+/// no I/O. `{name}` substitutes a named argument; `{{` and `}}` emit literal braces.
+/// Missing keys return NotFound. Missing arguments, empty/nested placeholders and unmatched braces
+/// return InvalidInput. Substituted values are literal and never recursively interpreted.
 pub trait Strings: Send + Sync {
     fn text(&self, message: &Message) -> Result<String>;
 }
@@ -26,21 +28,37 @@ impl Strings for StringTable {
     fn text(&self, message: &Message) -> Result<String> {
         let template = self.get(&message.key).ok_or(Error::NotFound)?;
         let mut out = String::new();
-        let mut rest = template.as_ref();
-        while let Some(start) = rest.find('{') {
-            out.push_str(&rest[..start]);
-            let tail = &rest[start + 1..];
-            let end = tail.find('}').ok_or(Error::InvalidInput)?;
-            let key = &tail[..end];
-            let (_, value) = message
-                .args
-                .iter()
-                .find(|(k, _)| k.as_ref() == key)
-                .ok_or(Error::InvalidInput)?;
-            out.push_str(value);
-            rest = &tail[end + 1..];
+        let mut chars = template.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '{' if chars.peek() == Some(&'{') => {
+                    chars.next();
+                    out.push('{');
+                }
+                '}' if chars.peek() == Some(&'}') => {
+                    chars.next();
+                    out.push('}');
+                }
+                '{' => {
+                    let mut key = String::new();
+                    loop {
+                        match chars.next() {
+                            Some('}') if !key.is_empty() => break,
+                            Some('{') | Some('}') | None => return Err(Error::InvalidInput),
+                            Some(c) => key.push(c),
+                        }
+                    }
+                    let (_, value) = message
+                        .args
+                        .iter()
+                        .find(|(k, _)| k.as_ref() == key)
+                        .ok_or(Error::InvalidInput)?;
+                    out.push_str(value);
+                }
+                '}' => return Err(Error::InvalidInput),
+                c => out.push(c),
+            }
         }
-        out.push_str(rest);
         Ok(out)
     }
 }
@@ -73,5 +91,39 @@ mod tests {
         };
         assert_eq!(tr!(&t, &m).unwrap(), "已找到 3 处");
         assert!(tr!(&t, &Message::key("missing")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+    #[test]
+    fn escaped_braces_and_substitutions_are_literal() {
+        let mut table = StringTable::default();
+        table
+            .register("example", Arc::from("中文 {{配置}}：{{{value}}} / {value}"))
+            .unwrap();
+        let message = Message {
+            key: "example".into(),
+            args: Arc::from([("value".into(), "😀{raw}".into())]),
+        };
+        assert_eq!(
+            tr!(&table, &message).unwrap(),
+            "中文 {配置}：{😀{raw}} / 😀{raw}"
+        );
+        table.register("braces", Arc::from("{{}}")).unwrap();
+        assert_eq!(tr!(&table, &Message::key("braces")).unwrap(), "{}");
+    }
+    #[test]
+    fn malformed_templates_and_missing_arguments_fail() {
+        for template in ["{", "}", "{}", "{name", "{a{b}", "{missing}", "{{}"] {
+            let mut table = StringTable::default();
+            table.register("example", Arc::from(template)).unwrap();
+            assert_eq!(
+                tr!(&table, &Message::key("example")),
+                Err(Error::InvalidInput),
+                "{template}"
+            );
+        }
     }
 }

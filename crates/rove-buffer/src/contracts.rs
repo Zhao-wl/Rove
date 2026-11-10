@@ -73,11 +73,12 @@ impl TextSource for EmptyText {
         }
     }
     fn utf16_to_utf8(&self, l: Line, c: Utf16Column) -> Result<Utf8Column> {
-        self.offset(Position {
-            line: l,
-            column: Utf8Column(c.0),
-        })?;
-        Ok(Utf8Column(0))
+        // Only the empty line's origin exists; this is not a general unit conversion.
+        if l == Line(0) && c == Utf16Column(0) {
+            Ok(Utf8Column(0))
+        } else {
+            Err(Error::OutOfBounds)
+        }
     }
     fn utf8_to_utf16(&self, l: Line, c: Utf8Column) -> Result<Utf16Column> {
         self.offset(Position { line: l, column: c })?;
@@ -175,6 +176,19 @@ mod tests {
             text.utf8_to_utf16(Line(0), Utf8Column(0)).unwrap(),
             Utf16Column(0)
         );
+    }
+    #[test]
+    fn empty_text_rejects_nonzero_conversion_coordinates() {
+        for (line, column) in [(0, 1), (1, 0), (u64::MAX, u64::MAX)] {
+            assert_eq!(
+                EmptyText.utf16_to_utf8(Line(line), Utf16Column(column)),
+                Err(Error::OutOfBounds)
+            );
+            assert_eq!(
+                EmptyText.utf8_to_utf16(Line(line), Utf8Column(column)),
+                Err(Error::OutOfBounds)
+            );
+        }
     }
     #[test]
     fn consumer_finds_no_document() {

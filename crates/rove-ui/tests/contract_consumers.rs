@@ -8,17 +8,13 @@ use rove_syntax::{EmptySyntaxService, SyntaxService};
 use rove_ui::contributions::{Contribution, ContributionRegistry, Placement};
 use std::{
     sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
 
-struct NoopWake;
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
 /// Fixed providers are immediately ready. This is not an executor for production tasks.
 fn ready<T>(mut task: Task<T>) -> Result<T> {
-    let waker = Waker::from(Arc::new(NoopWake));
-    match task.as_mut().poll(&mut Context::from_waker(&waker)) {
+    let waker = Waker::noop();
+    match task.as_mut().poll(&mut Context::from_waker(waker)) {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("fixed provider unexpectedly pending"),
     }
@@ -142,6 +138,9 @@ fn core_objects_can_cross_worker_boundaries() {
     shareable::<Arc<dyn rove_workspace::Workspace>>();
     shareable::<Arc<dyn rove_config::Settings>>();
     shareable::<Arc<dyn rove_theme::Theme>>();
+    shareable::<Arc<dyn Documents>>();
+    shareable::<Arc<dyn SyntaxService>>();
+    shareable::<Arc<dyn CommandExecutor>>();
     shareable::<Cancellation>();
     shareable::<Subscription>();
 }
