@@ -4,6 +4,7 @@ $root = $PSScriptRoot
 $exe = Join-Path $root 'target/release/webview-gpui.exe'
 $runRoot = Join-Path $root ('runs/' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory $runRoot -Force | Out-Null
+$exeHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
 $previousProfile = $env:ROVE_WEBVIEW_PROFILE
 try {
   foreach ($mode in @('fresh-profile','reused-profile')) {
@@ -34,7 +35,7 @@ try {
       }
       if (-not $p.HasExited) { $p.Kill(); throw "Prototype exceeded timeout: $name" }
       $samples | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $runRoot "$name.memory.json")
-      [pscustomobject]@{name=$name;exitCode=$p.ExitCode;seconds=$watch.Elapsed.TotalSeconds;profile=$profile} | ConvertTo-Json | Set-Content (Join-Path $runRoot "$name.run.json")
+      [pscustomobject]@{name=$name;exeSha256=$exeHash;exitCode=$p.ExitCode;seconds=$watch.Elapsed.TotalSeconds;profile=$profile} | ConvertTo-Json | Set-Content (Join-Path $runRoot "$name.run.json")
       Start-Sleep -Seconds 2
     }
   }
