@@ -50,7 +50,7 @@ docs: 补充索引格式的元数据段说明
 
 - [ ] `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全部通过（与 CI 同参，见 §9）。
 - [ ] 替换掉自己负责的 `SKELETON(<键名>)` 标记，并同步更新 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 中的对照表（该表由 #78 提供）。
-- [ ] 涉及性能的改动附基准数据，做法见 #4（性能基准与预算守护）：`cargo xtask bench` 与 `perf/README.md` 由 #4 提供，合并后把跑法补充到本文件 §8。不允许只写"感觉更快了"。
+- [ ] 涉及性能的改动附基准数据，做法见 §8.1（`cargo xtask bench` / `perf/budgets.toml` / `perf/README.md`，由 #4 提供）。不允许只写"感觉更快了"。
 - [ ] 移植第三方代码或资产时，在 `THIRD_PARTY_NOTICES.md` 注明来源与许可（该文件由 #80 建立）。
 - [ ] 自己的入口点有集成测试（见 5.2 第 3 条），且 PR 里写清怎么跑。
 - [ ] 不引入网络请求，不读取 `.gitignore`（§1 的两条硬约束）。
@@ -93,8 +93,30 @@ docs: 补充索引格式的元数据段说明
   - 「已跳过」的原因打到 stderr；cargo 默认只在失败时显示，想看到就加 `-- --nocapture` 或设 `RUST_TEST_NOCAPTURE=1`（CI 的 test 任务就是这么跑的，日志里能直接搜到「已跳过」）。
 - 每个 issue 为自己的入口点补一个集成测试（5.2 第 3 条）；UI 相关入口用 #2 的端到端测试框架。
 
+### 8.1 涉及性能的改动必须附基准数据（#4）
+
+只写"感觉更快了"不算完成。做法：
+
+1. `cargo xtask gen-testdata`（默认写到 `target/perf-testdata`，已 gitignore；**CI 上不要生成 `big1g.txt`**）
+2. 改之前先存一份基线：`cargo xtask bench --save target/bench-before.json`
+3. 改完再跑并比较：`cargo xtask bench --baseline target/bench-before.json --check-budgets`
+   - 退化超过 15% 会输出 `::warning::`（只报警，不失败：托管机器波动比 15% 大）
+   - `--check-budgets` 按 `perf/budgets.toml` 判定，超预算以非零码退出
+4. 涉及 `rove.exe` 的改动附 `cargo xtask check-size` 的输出（相对 M0 6.2 MB 基线的变化）
+5. 有 C# 索引文件时可以加 `--cs-index <idx>` 一起测导航查询（没有索引就整组跳过）
+
+规则：
+
+- 预算与采集口径见 `perf/budgets.toml` 与 `perf/README.md`；**不允许为了让 CI 绿改大预算数值**，
+  要改走 `PROJECT_CHARTER` 的修订流程并留下记录。
+- 基准只允许调用 #1 定义的公开接口，不要为了测量绕开接口或在接口上开后门。
+- 新增基准：在 `xtask/benches/` 加文件、在 `xtask/Cargo.toml` 加 `[[bench]]`、在
+  `xtask/src/bench.rs` 的 `TARGETS` 登记；要被预算判定的，在 `budgets.toml` 里把 `bench`
+  指向 `<组>/<用例>`。
+- CI：`perf.yml` 在 `main` 的 push 上保存基线 artifact，手动触发时与最近一次 `main` 比较；
+  `ci.yml` 的「体积守护」任务每个 PR 都报告体积。
+
 <!-- #39 追加：nav_check 用法 -->
-<!-- #4 追加：基准与预算的跑法 -->
 
 ## 9. 工具链与本地检查
 
@@ -125,6 +147,10 @@ dotnet build tools/rove-indexer-cs -c Release
 | 核心层禁 `gpui`（`.github/scripts/check-core-crates.ps1`） | 核心层 crate 引入了 `gpui`（新 crate 漏登记只警告，不失败，但也会被检查） |
 | 行尾检查（`.github/scripts/check-eol.ps1`） | 提交的文件行尾与 `.gitattributes` 不一致（默认 LF，`.ps1` 为 CRLF） |
 | `dotnet build tools/rove-indexer-cs -c Release` | 索引进程编不过 |
+| 体积守护（`size` 任务：`cargo xtask check-size`） | `rove.exe` 超过 `perf/budgets.toml` 的 `[size].budget_bytes`；每个 PR 都会报告体积与相对 6.2 MB 基线的变化 |
+
+另有 `.github/workflows/perf.yml`：`main` 的 push 上跑基准并保存基线 artifact；手动触发时与最近一次
+`main` 比较，退化超过 15% 输出 `::warning::`（**只报警、不失败**，托管机器波动大）。
 
 CI 上不做绝对性能判定（托管机器波动大）；相对比较与预算由 #4 负责。
 

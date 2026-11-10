@@ -14,3 +14,4 @@ rove-commands
 rove-config
 rove-i18n
 rove-theme
+xtask

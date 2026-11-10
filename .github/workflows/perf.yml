@@ -1,0 +1,112 @@
+name: Perf
+
+# 性能基准与预算（issue #4）。
+#
+# - `main` 的 push：跑一遍基准，把结果作为基线 artifact 保存（保留 90 天）；
+# - 手动触发（workflow_dispatch）：下载最近一次 main 的基线，逐项比较，
+#   退化超过 15% **报警**（::warning::），不失败。
+#
+# 不做绝对判定：托管机器的波动比 15% 还大。绝对指标在本地参考设备上测量并记入报告。
+# CI 不生成 big1g.txt（1 GiB），只跑 small.txt / uniq.txt 级别的用例。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: '用作基线的运行 ID（留空则取最近一次 main 的成功运行）'
+        required: false
+        default: ''
+      publish_baseline:
+        description: '把本次结果当作基线上传（仅用于验证对比流程）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ROVE_PERF_MACHINE_NOTE: GitHub Actions windows-latest
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: 基准与预算
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具链组件
+        shell: pwsh
+        run: |
+          rustup show
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: perf
+          cache-on-failure: true
+
+      - name: 生成测试数据（不生成 big1g.txt）
+        shell: pwsh
+        run: |
+          cargo xtask gen-testdata --only small
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo xtask gen-testdata --only uniq
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 下载基线（仅手动触发）
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $runId = "${{ inputs.baseline_run_id }}"
+          if (-not $runId) {
+            $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml --branch main `
+              --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          }
+          if (-not $runId) {
+            Write-Host '没有可用的 main 基线，本次只采集数据'
+            exit 0
+          }
+          Write-Host "基线运行：$runId"
+          gh run download $runId --repo $env:GITHUB_REPOSITORY -n perf-baseline -D baseline
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '下载基线失败（可能还没有 main 的基线 artifact），本次只采集数据'
+            exit 0
+          }
+
+      - name: 跑基准并校验预算
+        shell: pwsh
+        run: |
+          $arguments = @('bench', '--quick', '--save', 'target/perf-results/bench.json', '--check-budgets')
+          if (Test-Path 'baseline/bench.json') {
+            $arguments += @('--baseline', 'baseline/bench.json')
+          }
+          cargo xtask @arguments 2>&1 | Tee-Object -FilePath target/perf-report.txt
+          $code = $LASTEXITCODE
+          Get-Content target/perf-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($code -ne 0) { exit $code }
+
+      - name: 准备基线 artifact（main 或显式要求）
+        if: github.ref == 'refs/heads/main' || inputs.publish_baseline
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force baseline-out | Out-Null
+          Copy-Item target/perf-results/bench.json baseline-out/bench.json
+
+      - name: 上传基线
+        if: github.ref == 'refs/heads/main' || inputs.publish_baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline
+          path: baseline-out/bench.json
+          retention-days: 90

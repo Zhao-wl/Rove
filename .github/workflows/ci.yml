@@ -92,3 +92,53 @@ jobs:
 
       - name: dotnet build -c Release
         run: dotnet build -c Release --nologo
+
+  # 体积守护（issue #4）：每个 PR 都报告 rove.exe 的体积及相对基线（M0 6.2 MB）的变化。
+  size:
+    name: 体积守护（rove.exe）
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具链组件
+        shell: pwsh
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+
+      # 单独一个 cache key：release 构建与 debug 构建的产物不能混用。
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: size
+          cache-on-failure: true
+
+      # gpui 的着色器编译要调用 Windows SDK 的 fxc.exe；托管 runner 上不一定在 PATH 里。
+      - name: 确保 fxc.exe 在 PATH 上
+        shell: pwsh
+        run: |
+          if (Get-Command fxc.exe -ErrorAction SilentlyContinue) {
+            Write-Host 'fxc.exe 已在 PATH 上'
+            exit 0
+          }
+          $globs = @()
+          if (${env:ProgramFiles(x86)}) { $globs += (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\fxc.exe') }
+          if ($env:ProgramFiles) { $globs += (Join-Path $env:ProgramFiles 'Windows Kits\10\bin\*\x64\fxc.exe') }
+          $globs += 'D:\Windows Kits\10\bin\*\x64\fxc.exe'
+          $fxc = Get-ChildItem -Path $globs -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { Write-Error '找不到 fxc.exe；gpui 无法编译着色器'; exit 1 }
+          Write-Host "使用 $($fxc.FullName)"
+          $fxc.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: cargo build --release -p rove-app
+        run: cargo build --release -p rove-app
+
+      - name: 报告体积并检查预算
+        shell: pwsh
+        run: |
+          cargo xtask check-size 2>&1 | Tee-Object -FilePath size-report.txt
+          $code = $LASTEXITCODE
+          Get-Content size-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($code -ne 0) { exit $code }
