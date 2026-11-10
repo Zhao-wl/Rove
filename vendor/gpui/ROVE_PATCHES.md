@@ -54,3 +54,11 @@ Windows 11 23H2 22631.6199, Microsoft Pinyin 10.0.22621.5840, 1920x1080, 100%/12
 Third-party IME untested. The manual run used an existing release executable without an embedded build identity; its precise commit cannot be proven retrospectively. Do not infer provenance from the current PR head or file timestamp. A new recorded run with an executable hash is required if identity cannot be established from the tester's build record. This remains a Draft gate, not a fabricated pass.
 
 After rebasing onto main d645fac (#2 skeleton), cargo build, workspace fmt, strict clippy and 56 workspace tests passed (two environment-dependent doc tests ignored). cargo tree confirms rove-app and rove-ui resolve GPUI to vendor/gpui. The release IME prototype was rebuilt and all four selection tests passed; MANUAL_BUILD.json records its identity for the next manual comparison, not the earlier session. These checks do not substitute for GUI end-to-end acceptance.
+
+### Follow-up: non-empty IMM exclusion and correct point (2026-11-10)
+
+Manual evidence now has verified executable identity (f9b5ee2..., source a443093). It confirms edge/mixed-text behavior but composition-internal arrows do not move the popup despite changing reported coordinates. This is unresolved; no Notepad/VS Code control has been measured.
+
+Corrected events.rs update_ime_position: CFS_EXCLUDE ptCurrentPos is the caret position (previous code used the bottom edge); rcArea now has at least one physical pixel of width even for a collapsed selection. This repairs a definite empty exclusion rectangle/API semantics defect, but does not prove that Microsoft Pinyin will reposition on unchanged composition text. Retest both arrow movement and edge flipping. Source: https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-candidateform .
+
+The input spike has no mouse-down handler on TextInput, so its composition-click observation cannot be attributed to this platform patch. Desired composition-click behavior is awaiting user clarification; no silent commit/cancel behavior is introduced.

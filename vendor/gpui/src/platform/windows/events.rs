@@ -653,14 +653,14 @@ impl WindowsWindowInner {
             ImmSetCompositionWindow(ctx, &composition).ok().log_err();
             let candidate = CANDIDATEFORM {
                 dwStyle: CFS_EXCLUDE,
-                ptCurrentPos: POINT {
-                    x: caret.x,
-                    y: bottom,
-                },
+                // CFS_EXCLUDE expects the caret, not the candidate origin.
+                ptCurrentPos: caret,
                 rcArea: RECT {
                     left: caret.x,
                     top: caret.y,
-                    right: ((bounds.origin.x.0 + bounds.size.width.0) * scale).round() as i32,
+                    // A collapsed selection still needs a non-empty exclusion area.
+                    right: (((bounds.origin.x.0 + bounds.size.width.0) * scale).round() as i32)
+                        .max(caret.x.saturating_add(1)),
                     bottom,
                 },
                 ..Default::default()
