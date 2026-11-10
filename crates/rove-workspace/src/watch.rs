@@ -48,6 +48,8 @@ pub(crate) struct WatcherHandle {
     commands: Sender<WatchCommand>,
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
+    /// Id of the watcher thread, used to avoid joining ourselves (see `Drop`).
+    thread_id: Option<std::thread::ThreadId>,
 }
 
 impl WatcherHandle {
@@ -60,13 +62,19 @@ impl WatcherHandle {
 
 impl Drop for WatcherHandle {
     fn drop(&mut self) {
-        // The thread polls with a short timeout, so joining is bounded and keeps the process
-        // from leaking one thread per closed workspace.
         self.stop.store(true, Ordering::Release);
         let _ = self.commands.send(WatchCommand::WatchDirs {
             dirs: Vec::new(),
             done: None,
         });
+        // The watcher thread upgrades a temporary `Arc<Folder>` on every batch. If the last
+        // external reference is dropped at that moment, `Folder` is destroyed *on the watcher
+        // thread*, which drops this handle; joining ourselves would deadlock or panic. In that
+        // case just detach: the thread is already stopping and will unwind on its own.
+        if self.thread_id == Some(std::thread::current().id()) {
+            let _ = self.join.take();
+            return;
+        }
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -87,11 +95,13 @@ pub(crate) fn spawn(folder: &Arc<Folder>, dirs: Vec<PathBuf>) -> Option<WatcherH
         .name("rove-workspace-watch".into())
         .spawn(move || run(weak, command_receiver, thread_stop, dirs, ready_sender))
         .ok()?;
+    let thread_id = Some(join.thread().id());
     let _ = ready_receiver.recv_timeout(Duration::from_secs(2));
     Some(WatcherHandle {
         commands,
         stop,
         join: Some(join),
+        thread_id,
     })
 }
 
@@ -156,10 +166,36 @@ fn run(
         let overflow = pending.len() > folder.event_queue_limit();
         if due || overflow {
             let events = std::mem::take(&mut pending);
-            folder.apply_watch_events(events, overflow);
+            let wanted = folder.apply_watch_events(events, overflow);
+            let watched = register_new_dirs(&mut watcher, &folder, wanted);
+            if !watched.is_empty() {
+                // A directory that was just registered may have received writes while it was not
+                // yet watched (the first event only sees a partial subtree). Re-list it once now
+                // that the OS is delivering events for it.
+                folder.reconcile_dirs(watched.into_iter().collect());
+            }
             deadline = None;
         }
     }
+}
+
+/// Watches directories that are not registered yet and reports which calls succeeded.
+///
+/// Only a successful `watch` marks the directory as registered, so a backend failure does not
+/// permanently hide the directory from later registration attempts.
+fn register_new_dirs(
+    watcher: &mut impl notify::Watcher,
+    folder: &Folder,
+    dirs: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut watched = Vec::new();
+    for dir in folder.new_watch_dirs(dirs) {
+        if watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+            folder.mark_registered(std::slice::from_ref(&dir));
+            watched.push(dir);
+        }
+    }
+    watched
 }
 
 fn rescan_event() -> Event {

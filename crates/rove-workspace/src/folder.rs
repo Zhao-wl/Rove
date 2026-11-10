@@ -119,12 +119,14 @@ impl Folder {
             // The watcher only knew the root while the walk ran; register every discovered
             // directory and then verify all of them against the disk exactly once. This closes
             // the scan/watcher race for changes made after the walker passed a directory.
-            //
-            // Both steps happen *before* `complete` is published: a caller that observes
-            // `complete == true` must be able to write a file and see the event, so registration
-            // is acknowledged by the watcher thread before we continue.
             self.register_dirs_blocking(self.watched_dirs());
-            self.reconcile_all();
+            let discovered = self.reconcile_all();
+            if !discovered.is_empty() {
+                // Directories found by the reconcile itself were never walked; register them
+                // synchronously and check them once more before publishing `complete`.
+                self.register_dirs_blocking(discovered.clone());
+                self.reconcile_dirs(discovered.into_iter().collect());
+            }
         }
         // Even a cancelled or partially failed scan must stop reporting `complete == false`
         // forever; what was found is a valid (if partial) snapshot.
@@ -312,23 +314,6 @@ impl Folder {
         dirs
     }
 
-    fn register_dirs(&self, dirs: Vec<PathBuf>) {
-        let fresh = self.filter_new_dirs(dirs);
-        if fresh.is_empty() {
-            return;
-        }
-        if let Some(commands) = self.watcher_commands() {
-            let _ = commands.send(watch::WatchCommand::WatchDirs {
-                dirs: fresh,
-                done: None,
-            });
-        }
-    }
-
-    /// Registers directories and waits (bounded) for the backend acknowledgement.
-    ///
-    /// The folder mutex is not held while waiting: the watcher thread takes it when it registers
-    /// directories created by an event batch, so holding it here would deadlock.
     fn register_dirs_blocking(&self, dirs: Vec<PathBuf>) {
         let fresh = self.filter_new_dirs(dirs);
         if fresh.is_empty() {
@@ -349,6 +334,25 @@ impl Folder {
         }
     }
 
+    /// Directories that are not registered yet, without marking them.
+    ///
+    /// Used by the watcher thread, which owns the backend: it can only mark a directory as
+    /// registered after `watch` succeeded.
+    pub(crate) fn new_watch_dirs(&self, dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+        match self.registered_dirs.lock() {
+            Ok(registered) => dirs
+                .into_iter()
+                .filter(|dir| !registered.contains(dir))
+                .collect(),
+            Err(poisoned) => {
+                let registered = poisoned.into_inner();
+                dirs.into_iter()
+                    .filter(|dir| !registered.contains(dir))
+                    .collect()
+            }
+        }
+    }
+
     fn filter_new_dirs(&self, dirs: Vec<PathBuf>) -> Vec<PathBuf> {
         let mut registered = match self.registered_dirs.lock() {
             Ok(guard) => guard,
@@ -359,7 +363,7 @@ impl Folder {
             .collect()
     }
 
-    fn mark_registered(&self, dirs: &[PathBuf]) {
+    pub(crate) fn mark_registered(&self, dirs: &[PathBuf]) {
         match self.registered_dirs.lock() {
             Ok(mut registered) => registered.extend(dirs.iter().cloned()),
             Err(poisoned) => poisoned.into_inner().extend(dirs.iter().cloned()),
@@ -368,12 +372,22 @@ impl Folder {
 
     /// Forgets watched directories that no longer exist, so a re-created directory is watched
     /// again.
-    fn forget_registered(&self, absolute: &Path) {
+    fn forget_registered_all(&self, directories: &[PathBuf]) {
+        if directories.is_empty() {
+            return;
+        }
         match self.registered_dirs.lock() {
-            Ok(mut registered) => registered.retain(|dir| !dir.starts_with(absolute)),
-            Err(poisoned) => poisoned
-                .into_inner()
-                .retain(|dir| !dir.starts_with(absolute)),
+            Ok(mut registered) => {
+                for directory in directories {
+                    registered.retain(|dir| !dir.starts_with(directory));
+                }
+            }
+            Err(poisoned) => {
+                let mut registered = poisoned.into_inner();
+                for directory in directories {
+                    registered.retain(|dir| !dir.starts_with(directory));
+                }
+            }
         }
     }
 
@@ -423,19 +437,26 @@ impl Folder {
 
     // ---------------------------------------------------------------- watcher events
 
-    /// Applies a debounced watcher batch.
+    /// Applies a debounced watcher batch and returns the directories that must be watched next.
     ///
     /// `overflow` means the pending queue exceeded [`WorkspaceConfig::event_queue_limit`] (or the
-    /// backend asked for a rescan): pending events are discarded, the snapshot is rebuilt from
-    /// disk and [`FileEvent::RescanRequired`] is reported.
-    pub(crate) fn apply_watch_events(self: &Arc<Self>, events: Vec<notify::Event>, overflow: bool) {
+    /// backend asked for a rescan): pending events are discarded, the snapshot is rebuilt off-lock
+    /// and [`FileEvent::RescanRequired`] is reported.
+    ///
+    /// The caller (the watcher thread) owns the `notify::Watcher`, so registration happens there;
+    /// passing the directories back instead of registering here is what lets the watcher thread
+    /// acknowledge registration synchronously and then re-list the new directories.
+    pub(crate) fn apply_watch_events(
+        self: &Arc<Self>,
+        events: Vec<notify::Event>,
+        overflow: bool,
+    ) -> Vec<PathBuf> {
         if overflow || watch::needs_rescan(&events) {
-            self.rescan_and_report();
-            return;
+            return self.rescan_and_report();
         }
         let changes = watch::parse(&events);
         if changes.is_empty() {
-            return;
+            return Vec::new();
         }
         // Directories touched by this batch. Re-listing them after applying the events makes the
         // snapshot converge even when the OS dropped part of the batch (Windows buffers are
@@ -445,14 +466,17 @@ impl Folder {
         let plans = self.plan_changes(changes);
         // Phase 2: in-memory mutation under the write lock.
         let mut dirs_to_watch = Vec::new();
-        self.commit(|snapshot| {
+        let removed_directories = self.commit(|snapshot| {
             let mut emitted = Vec::new();
-            self.apply_plans(snapshot, plans, &mut emitted, &mut dirs_to_watch);
+            let removed = self.apply_plans(snapshot, plans, &mut emitted, &mut dirs_to_watch);
             let changed = !emitted.is_empty();
-            (emitted, changed, ())
+            (emitted, changed, removed)
         });
-        self.reconcile_dirs(dirty);
-        self.register_dirs(dirs_to_watch);
+        // `registered_dirs` is a different mutex; forgetting removed directories must happen
+        // outside the snapshot write lock so a burst delete does not hold it.
+        self.forget_registered_all(&removed_directories);
+        dirs_to_watch.extend(self.reconcile_dirs(dirty));
+        dirs_to_watch
     }
 
     fn dirty_dirs(&self, events: &[notify::Event]) -> BTreeSet<PathBuf> {
@@ -581,13 +605,16 @@ impl Folder {
     }
 
     /// Applies a plan under the snapshot lock. No filesystem access happens here.
+    ///
+    /// Returns the absolute directories that no longer exist, so the caller can forget their
+    /// watcher registrations outside the lock.
     fn apply_plans(
         &self,
         snapshot: &mut Snapshot,
         plans: Vec<Plan>,
         emitted: &mut Vec<FileEvent>,
         dirs_to_watch: &mut Vec<PathBuf>,
-    ) {
+    ) -> Vec<PathBuf> {
         // Batch removals: one pass for ordinary removals and one for rename sources.
         let plain_removals: Vec<WorkspacePath> = plans
             .iter()
@@ -603,27 +630,26 @@ impl Folder {
                 _ => None,
             })
             .collect();
+        // Resolve the kinds *before* removing: after `remove_many` the snapshot no longer knows
+        // them. Directories that disappeared must be watchable again if re-created later.
+        let removed_directories: Vec<PathBuf> = plans
+            .iter()
+            .filter_map(|plan| match plan {
+                Plan::Removed { path } => matches!(
+                    snapshot.kind(path),
+                    Some(crate::contracts::EntryKind::Directory)
+                )
+                .then(|| self.absolute(path)),
+                Plan::RenameDir { from, .. } => Some(self.absolute(from)),
+                _ => None,
+            })
+            .collect();
         let removed_plain = snapshot.remove_many(&plain_removals);
         let removed_by_rename = snapshot.remove_many(&rename_sources);
         let rename_source_keys: BTreeSet<String> = rename_sources
             .iter()
             .map(|path| identity_key(path.as_str()))
             .collect();
-        // Directories that disappeared must be watchable again if they are re-created later.
-        for plan in &plans {
-            match plan {
-                Plan::Removed { path } => {
-                    if matches!(
-                        snapshot.kind(path),
-                        None | Some(crate::contracts::EntryKind::Directory)
-                    ) {
-                        self.forget_registered(&self.absolute(path));
-                    }
-                }
-                Plan::RenameDir { from, .. } => self.forget_registered(&self.absolute(from)),
-                _ => {}
-            }
-        }
 
         // Renames first: one `Renamed` per pair, plus the old/new subtree entries.
         for plan in &plans {
@@ -717,6 +743,7 @@ impl Folder {
                 Plan::Removed { .. } | Plan::RenameFile { .. } | Plan::RenameDir { .. } => {}
             }
         }
+        removed_directories
     }
 
     fn add_scan_entries(
@@ -738,7 +765,10 @@ impl Folder {
     // ---------------------------------------------------------------- reconciliation
 
     /// Re-lists every known directory and makes the snapshot match the disk.
-    fn reconcile_all(&self) {
+    ///
+    /// Returns the directories discovered by the reconcile itself, so the caller can register and
+    /// re-check them (files may have been written between discovery and registration).
+    fn reconcile_all(&self) -> Vec<PathBuf> {
         let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
         dirs.insert(self.root.clone());
         {
@@ -747,16 +777,18 @@ impl Folder {
                 dirs.insert(self.absolute(&path));
             }
         }
-        self.reconcile_dirs(dirs);
+        self.reconcile_dirs(dirs)
     }
 
     /// Re-lists the given directories and makes the snapshot match them exactly.
     ///
     /// This is the safety net for lost events and for the scan/watcher race; it only touches the
     /// listed directories, not the whole tree. All disk reads happen before the write lock.
-    fn reconcile_dirs(&self, dirs: BTreeSet<PathBuf>) {
+    /// Returns the directories that need a watcher and were not visible when the caller last
+    /// registered; the caller registers them and may call this again for them.
+    pub(crate) fn reconcile_dirs(&self, dirs: BTreeSet<PathBuf>) -> Vec<PathBuf> {
         if dirs.is_empty() {
-            return;
+            return Vec::new();
         }
         // Phase 1: read the disk listings (no lock).
         let mut listings: Vec<(String, Vec<ScanEntry>)> = Vec::new();
@@ -787,7 +819,7 @@ impl Folder {
         }
         self.note_skipped(skipped);
         if listings.is_empty() {
-            return;
+            return Vec::new();
         }
         // Phase 2: one read pass to learn which children are known and which directories are new.
         let mut known: Vec<ChildIndex> = Vec::with_capacity(listings.len());
@@ -857,7 +889,7 @@ impl Folder {
             let changed = !emitted.is_empty();
             (emitted, changed, ())
         });
-        self.register_dirs(dirs_to_watch);
+        dirs_to_watch
     }
 
     // ---------------------------------------------------------------- rescan
@@ -867,10 +899,24 @@ impl Folder {
     ///
     /// The replacement snapshot is built off-lock and swapped in atomically, so observers never
     /// see an empty workspace while the rescan runs, and a failed rescan leaves the old snapshot
-    /// untouched instead of claiming a complete (but empty) tree.
-    fn rescan_and_report(self: &Arc<Self>) {
-        let Ok(replacement) = scan::collect(self, &self.cancel) else {
-            return;
+    /// untouched instead of claiming a complete (but empty) tree. A failed rescan still emits
+    /// `RescanRequired`: the events that triggered it were dropped, so consumers must treat their
+    /// view as stale. Returns the directories the caller has to watch.
+    fn rescan_and_report(self: &Arc<Self>) -> Vec<PathBuf> {
+        // One retry: a transient sharing/permission failure during the walk is common (an editor
+        // or antivirus holding a file) and the second pass usually succeeds.
+        let replacement =
+            scan::collect(self, &self.cancel).or_else(|_| scan::collect(self, &self.cancel));
+        let Ok(replacement) = replacement else {
+            let revision = {
+                let mut snapshot = self.write();
+                snapshot.bump()
+            };
+            self.events.emit(FileEvents {
+                revision,
+                events: Arc::from([FileEvent::RescanRequired]),
+            });
+            return Vec::new();
         };
         let revision = {
             let mut snapshot = self.write();
@@ -892,7 +938,7 @@ impl Folder {
             Ok(mut registered) => registered.retain(|dir| live.contains(dir)),
             Err(poisoned) => poisoned.into_inner().retain(|dir| live.contains(dir)),
         }
-        self.register_dirs(dirs);
+        dirs
     }
 }
 
@@ -1093,6 +1139,32 @@ mod tests {
             1,
             "re-created file must stay in the snapshot"
         );
+    }
+
+    #[test]
+    fn a_new_directory_is_returned_for_registration_and_reconciled() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        std::fs::create_dir_all(dir.path().join("Assets/Copied")).unwrap();
+        // First visible state: one file, as if the subtree scan ran while a copy was in flight.
+        std::fs::write(dir.path().join("Assets/Copied/First.cs"), "class F {}\n").unwrap();
+        let event =
+            notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Folder))
+                .add_path(folder.root().join("Assets/Copied"));
+        let to_watch = folder.apply_watch_events(vec![event], false);
+        assert!(
+            to_watch.iter().any(|path| path.ends_with("Copied")),
+            "new directory must be reported for registration: {to_watch:?}"
+        );
+
+        // Files written between the first scan and the watch registration produce no events; the
+        // reconcile that follows registration (what the watcher thread does) must pick them up.
+        std::fs::write(dir.path().join("Assets/Copied/Late.cs"), "class L {}\n").unwrap();
+        folder.reconcile_dirs(to_watch.into_iter().collect());
+
+        let page = folder.files(0..100).unwrap();
+        let paths: Vec<&str> = page.items.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(paths, ["Assets/Copied/First.cs", "Assets/Copied/Late.cs"]);
     }
 
     #[test]
