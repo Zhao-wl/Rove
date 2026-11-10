@@ -63,9 +63,16 @@ fn main() {
         "cargo:rerun-if-changed={}",
         git(&["rev-parse", "--git-path", "HEAD"])
     );
-    let branch = git(&["symbolic-ref", "HEAD"]);
-    println!(
-        "cargo:rerun-if-changed={}",
-        git(&["rev-parse", "--git-path", &branch])
-    );
+    // CI commonly checks out a detached HEAD; provenance must still build there.
+    let branch = Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        .unwrap();
+    if branch.status.success() {
+        let branch = String::from_utf8(branch.stdout).unwrap();
+        println!(
+            "cargo:rerun-if-changed={}",
+            git(&["rev-parse", "--git-path", branch.trim()])
+        );
+    }
 }
