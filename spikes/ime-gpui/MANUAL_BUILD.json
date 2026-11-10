@@ -1,8 +1,8 @@
 {
-  "sourceCommit": "a443093351b44a2d8fedf0fda501a28b856af965",
-  "exeSha256": "f9b5ee2dd28c5cd500f53b52d3ec7a0886ef95d59bada44eb33a4c82d32e3073",
-  "recordedUtc": "2026-11-10T06:05:53.8718827Z",
+  "sourceCommit": "6eda4de445fae4afbc9a78af2a3e2c577db1d9e7",
+  "exeSha256": "b038fd9e11039dfe782c455705dfe2614c10fc8133d009d6fb80c4e9fab05c46",
+  "recordedUtc": "2026-11-10T07:25:21.4951204Z",
   "build": "cargo build --manifest-path spikes/ime-gpui/Cargo.toml --release -j 2",
-  "tests": "4/4 release tests passed",
-  "scope": "New identified build for next manual comparison; does not establish provenance of earlier manual runs"
+  "tests": "workspace 56 passed; IME release 4 passed; 2 environment doc-tests ignored",
+  "scope": "New CFS_EXCLUDE caret/nonempty-rectangle build; manual arrow and edge retest pending"
 }
