@@ -185,3 +185,44 @@ cargo test --workspace
 另检查各核心 crate 的依赖闭包没有 gpui：存在 gpui 时可用 `cargo tree -p <crate> -i gpui`；本阶段整个 workspace 尚无 gpui，Cargo 对该反向查询报告 package ID 不匹配，故以 cargo metadata 的依赖闭包为确切证据，不将命令失败本身当作通过。最终运行结果见 PR，任何既有基线阻断必须如实记录，不能用 lint allow 或删掉测试规避。
 
 当前核心层无 GPUI 是已有依赖图的静态结果；真实 GPUI 接入后必须重新检查依赖隔离，不能以本次结果代替。
+
+
+## 10. 行走骨架与替换责任（#2）
+
+骨架的临时实现集中在 `crates/rove-ui/src/skeleton/`；核心 crate 继续只提供冻结的接口。
+`rove-app` 负责参数与 GPUI 启动。后续负责人将实现迁入所属 crate 后，在装配处替换服务，
+删除自己的标记并更新本表，不要删除其他 issue 的并列标记。
+
+| 标记 | 最简实现与位置（相对 skeleton/） | 替换 issue |
+|---|---|---|
+| `buffer` | `text.rs`：UTF-8/BOM、不可变 TextSource、行与坐标转换 | #7 |
+| `syntax` | `syntax.rs`：SyntaxService → tree-sitter C# → 逐行 scope | #9 |
+| `theme` | `appearance.rs`：ColorRegistry、Dark 2026 子集、Theme | #10 |
+| `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |
+| `workspace` | `workspace.rs`：Workspace 快照、递归扫描，排除 .git/Library/Temp | #15 |
+| `workbench` | `appearance.rs`、`commands.rs`、`workbench.rs`：贡献点装配、固定容器、状态反馈 | #16 |
+| `editors` | `editor.rs`、`text.rs`：OpenDocuments、单编辑区替换与文档身份缓存 | #17 |
+| `lists` | `workbench.rs`：ListModel/ListController、通用虚拟文件列表 | #18 |
+| `code-view` | `workbench.rs`：自定义 Element、可见行缓存、f64 行滚动 | #19 |
+| `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到 TextRun 的投影 | #20 |
+| `explorer` | `workbench.rs`：可展开的文件树消费 Workspace | #23 |
+| `status` | `appearance.rs`：状态栏贡献条目与文件名/行数/编码 | #27 |
+
+数据链路：后台扫描返回 `Arc<dyn Workspace>`，文件树通过列表契约激活资源；
+`OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
+应用位置后发出 Ready。代码 Element 只绘制缓存；绘制外的延迟回调准备可见行并调用 TextSource、
+SyntaxSnapshot、Theme，paint/layout 不读取文件、不解析、不整形。
+命令走 CommandExecutor，提示走 FeedbackService，所有固定文字走 Strings/Message；
+视图和状态贡献登记时不做 IO，装配校验 factory_key、placement 与标题引用。
+
+最小边界：只读、整个 UTF-8 文件、单编辑区、C# 少量 scope、纯文本回退、无监听。
+不跟随符号链接或 Windows reparse point，避免递归环；这不实现正式的忽略规则。
+单行最多准备 16 KiB UTF-8 后显示登记的截断提示；不承诺大文件、水平滚动或完整 TextMate 匹配。
+
+保留入口测试 `walking_skeleton_opens_csharp_through_real_window`：GPUI TestAppContext
+中建立窗口、点击文件，检查文档、已绘制首行、keyword scope 与 Dark 2026 颜色。
+它是 `cargo test --workspace` 的普通测试；后续替换必须保留此链路。
+实际窗口验收使用 `cargo run -p rove-app -- <ROVE_TEST_UNITY_MEDIUM>`，路径只来自本地环境。
+日志 `MAIN_EPOCH_MS` 为 main 入口时间，`FIRSTFRAME_SINCE_PROCESS_MS` 为 Windows 进程创建至首次帧回调；
+通过 GetProcessTimes 纳入加载时间。系统时钟读取失败时输出 PROCESS_CLOCK_UNAVAILABLE 并回退至 main。
+帧回调是 GPUI 首次绘制完成的近似点，不代表显示器扫描输出；#4 可补充外部采样。
