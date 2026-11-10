@@ -36,6 +36,39 @@ mod tests {
 pub fn paint_background(transparent: bool, ready: bool, hidden: bool) -> bool {
     !transparent || !ready || hidden
 }
+/// What `o` does: a dismissed-but-retained controller is reshown instead of rebuilt.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reopen {
+    Reshow,
+    Create,
+}
+pub fn reopen_action(has_controller: bool, dismissed: bool) -> Reopen {
+    if has_controller && dismissed {
+        Reopen::Reshow
+    } else {
+        Reopen::Create
+    }
+}
+/// Dispose only after the idle window, never from inside an input handler.
+pub fn dispose_due(dismissed_ms: f64, idle_ms: u64) -> bool {
+    dismissed_ms >= idle_ms as f64
+}
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn quick_reopen_reuses_retained_controller() {
+        assert_eq!(reopen_action(true, true), Reopen::Reshow);
+        assert_eq!(reopen_action(false, true), Reopen::Create);
+        assert_eq!(reopen_action(false, false), Reopen::Create);
+    }
+    #[test]
+    fn dispose_waits_for_idle_window() {
+        assert!(!dispose_due(199.0, 300_000));
+        assert!(dispose_due(300_000.0, 300_000));
+        assert!(dispose_due(0.0, 0));
+    }
+}
 #[cfg(test)]
 mod presentation_tests {
     use super::*;

@@ -10,10 +10,14 @@ use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
 use windows::{
     core::{w, Interface, PCWSTR, PWSTR},
     Win32::{
-        Foundation::{HWND, RECT},
+        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+        System::Threading::GetCurrentThreadId,
         UI::{
             Input::KeyboardAndMouse::{GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_SHIFT},
-            WindowsAndMessaging::GetClientRect,
+            WindowsAndMessaging::{
+                CallNextHookEx, GetClientRect, GetForegroundWindow, SetWindowsHookExW, MSG,
+                PM_REMOVE, WH_GETMESSAGE, WM_KEYDOWN, WM_KEYUP,
+            },
         },
     },
 };
@@ -43,12 +47,39 @@ struct State {
     route: Option<String>,
     seq: u64,
     pings: HashMap<u64, Instant>,
+    /// User dismissed the preview: controller kept hidden until the idle timeout.
+    dismissed_at: Option<Instant>,
+    dispose_requested: bool,
 }
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
+static PROCESS_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+thread_local! {
+    // Set while a GPUI key listener runs, so the message hook can spot nested pumping.
+    static IN_HOST_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 fn log(kind: &str, data: Value) {
-    println!("{}", json!({"event":kind,"data":data}));
+    let t = PROCESS_START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0;
+    println!("{}", json!({"event":kind,"t":t,"data":data}));
+}
+// Thread-local WH_GETMESSAGE hook: records every keyboard message this UI thread retrieves,
+// whether or not GPUI later dispatches it, to tell "never delivered" from "dropped by host".
+unsafe extern "system" fn key_trace_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && wparam.0 == PM_REMOVE.0 as usize {
+        let msg = &*(lparam.0 as *const MSG);
+        if matches!(msg.message, WM_KEYDOWN | WM_KEYUP) {
+            log(
+                "msg_key",
+                json!({"msg":msg.message,"vk":msg.wParam.0,"hwnd":msg.hwnd.0 as usize,"focus":GetFocus().0 as usize,"foreground":GetForegroundWindow().0 as usize,"nested":IN_HOST_KEY.with(|f| f.get())}),
+            );
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
 }
 fn fail(state: &Rc<RefCell<State>>, error: impl std::fmt::Display) {
     let message = error.to_string();
@@ -79,18 +110,27 @@ fn close(state: &Rc<RefCell<State>>) {
         s.last_visible = None;
         s.webview = None;
         s.pings.clear();
+        s.dismissed_at = None;
+        s.dispose_requested = false;
         s.controller.take()
     };
+    let close_started = Instant::now();
     if let Some(c) = controller {
         unsafe {
             let _ = c.Close();
         }
     }
-    log("closed", json!({}));
+    log(
+        "closed",
+        json!({"close_ms":close_started.elapsed().as_secs_f64()*1000.0}),
+    );
 }
 // Closing a child HWND can change Win32 focus independently of GPUI's focus handle.
 fn close_to_host(state: &Rc<RefCell<State>>, hwnd: HWND) {
     close(state);
+    restore_host_focus(hwnd);
+}
+fn restore_host_focus(hwnd: HWND) {
     unsafe {
         let previous = SetFocus(Some(hwnd));
         let focused = GetFocus();
@@ -99,6 +139,44 @@ fn close_to_host(state: &Rc<RefCell<State>>, hwnd: HWND) {
             json!({"ok":focused == hwnd,"host":hwnd.0 as usize,"actual":focused.0 as usize,"set_focus_ok":previous.is_ok()}),
         );
     }
+}
+// `x`: hide only. Controller.Close() is synchronous (measured 29–459 ms) and must not run
+// inside a key handler; it runs from render once the idle window expires or `d` asks for it.
+fn dismiss(state: &Rc<RefCell<State>>, hwnd: HWND) {
+    let mut s = state.borrow_mut();
+    if s.controller.is_none() {
+        s.generation += 1; // cancel an in-flight creation
+        s.pending = false;
+        drop(s);
+        log("dismissed", json!({"retained":false}));
+    } else {
+        s.dismissed_at.get_or_insert_with(Instant::now);
+        drop(s);
+        log("dismissed", json!({"retained":true}));
+    }
+    restore_host_focus(hwnd);
+}
+fn reopen(state: &Rc<RefCell<State>>, hwnd: HWND) {
+    let (has_controller, dismissed) = {
+        let s = state.borrow();
+        (s.controller.is_some(), s.dismissed_at.is_some())
+    };
+    match auto_flow::reopen_action(has_controller, dismissed) {
+        auto_flow::Reopen::Reshow => {
+            let since = state.borrow_mut().dismissed_at.take().unwrap();
+            log(
+                "reshown",
+                json!({"dismissed_ms":since.elapsed().as_secs_f64()*1000.0}),
+            );
+        }
+        auto_flow::Reopen::Create => create(state, hwnd),
+    }
+}
+fn idle_ms() -> u64 {
+    std::env::var("ROVE_WEBVIEW_IDLE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300_000)
 }
 fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
     {
@@ -495,6 +573,20 @@ impl Render for Spike {
                 }
             }
         }
+        let dispose = {
+            let s = self.state.borrow();
+            s.dispose_requested
+                || s.dismissed_at.is_some_and(|t| {
+                    auto_flow::dispose_due(t.elapsed().as_secs_f64() * 1000.0, idle_ms())
+                })
+        };
+        if dispose {
+            log(
+                "dispose",
+                json!({"requested":self.state.borrow().dispose_requested}),
+            );
+            close_to_host(&self.state, hwnd);
+        }
         let route = self.state.borrow_mut().route.take();
         if let Some(route) = route {
             match route.as_str() {
@@ -510,7 +602,7 @@ impl Render for Spike {
                 window.focus(&self.focus);
             }
         }
-        let (controller, web, ready, pending, blocked, error) = {
+        let (controller, web, ready, pending, blocked, error, dismissed) = {
             let s = self.state.borrow();
             (
                 s.controller.clone(),
@@ -519,8 +611,10 @@ impl Render for Spike {
                 s.pending,
                 s.blocked,
                 s.error.clone(),
+                s.dismissed_at.is_some(),
             )
         };
+        let ready = ready && !dismissed;
         if let Some(c) = controller {
             unsafe {
                 let mut r = RECT::default();
@@ -537,7 +631,7 @@ impl Render for Spike {
                         self.state.borrow_mut().last_bounds = Some(r);
                     }
                 }
-                let visible = !(self.overlay && self.mitigate);
+                let visible = !dismissed && !(self.overlay && self.mitigate);
                 if last_visible != Some(visible) {
                     if let Err(error) = c.SetIsVisible(visible) {
                         log("layout_error", json!(error.to_string()));
@@ -580,6 +674,8 @@ impl Render for Spike {
         window.request_animation_frame();
         div().size_full().when(auto_flow::paint_background(std::env::var_os("ROVE_TRANSPARENT_PREVIEW").is_some(), ready, self.overlay && self.mitigate), |d| d.bg(rgb(0x181b20))).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                IN_HOST_KEY.with(|f| f.set(true));
+                let _clear = ClearOnDrop;
                 log("host_key", json!({"key":event.keystroke.key,"native_focus":unsafe { GetFocus().0 as usize },"host":hwnd.0 as usize}));
                 match event.keystroke.key.as_str() {
                     "tab" => {
@@ -589,10 +685,11 @@ impl Render for Spike {
                             unsafe { if controller.MoveFocus(reason).is_ok() { log("key_route",json!({"key":9,"route":"webview","shift":event.keystroke.modifiers.shift,"source":"host"})); return; } }
                         }
                     }
-                    "o" => create(&this.state, hwnd),
+                    "o" => reopen(&this.state, hwnd),
                     "h" => { this.overlay = !this.overlay; this.mitigate = true; }
                     "u" => { this.overlay = !this.overlay; this.mitigate = false; }
-                    "x" => close_to_host(&this.state, hwnd),
+                    "x" => dismiss(&this.state, hwnd),
+                    "d" => this.state.borrow_mut().dispose_requested = true,
                     "escape" => this.overlay = false,
                     "t" => {
                         if let Some(web) = this.state.borrow().webview.as_ref() {
@@ -605,13 +702,28 @@ impl Render for Spike {
                 window.focus(&this.focus);
                 cx.notify();
             }))
-            .child(div().h_full().bg(rgb(0x181b20)).p_6().w_1_2().child("Rove GPUI / fake editor").child(div().mt_4().child("O: open | H: mitigated popup | U: raw overlap | X: dispose | T: light theme")).child(div().mt_4().child(format!("Ready={ready}, creating={pending}, blocked={blocked}; {}",error.unwrap_or_default()))))
-            .when(!ready || (self.overlay && self.mitigate), |d| d.child(div().absolute().left(px(640.)).top(px(100.)).child(if ready{"Preview hidden while popup overlaps"}else{"Loading preview — skeleton"})))
+            .child(div().h_full().bg(rgb(0x181b20)).p_6().w_1_2().child("Rove GPUI / fake editor").child(div().mt_4().child("O: open | H: mitigated popup | U: raw overlap | X: close (retain) | D: dispose | T: light theme")).child(div().mt_4().child(format!("Ready={ready}, creating={pending}, blocked={blocked}; {}",error.unwrap_or_default()))))
+            .when(!ready || (self.overlay && self.mitigate), |d| d.child(div().absolute().left(px(640.)).top(px(100.)).child(if ready{"Preview hidden while popup overlaps"}else if dismissed{"Preview closed — controller retained until idle timeout"}else{"Loading preview — skeleton"})))
             .when(self.overlay,|d|d.child(div().absolute().left(px(350.)).top(px(120.)).w(px(600.)).h(px(280.)).bg(rgb(0x334c65)).p_6().child("GPUI command palette / menu / hover / notification overlap fixture")))
     }
 }
+struct ClearOnDrop;
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        IN_HOST_KEY.with(|f| f.set(false));
+    }
+}
 fn main() {
-    let start = Instant::now();
+    let start = *PROCESS_START.get_or_init(Instant::now);
+    // Installed for the whole process lifetime; never unhooked.
+    let _ = unsafe {
+        SetWindowsHookExW(
+            WH_GETMESSAGE,
+            Some(key_trace_hook),
+            None,
+            GetCurrentThreadId(),
+        )
+    };
     log(
         "run_start",
         json!({
