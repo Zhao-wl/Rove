@@ -4,9 +4,10 @@
 //! visible lines only, mouse-wheel scrolling, caret placement by click, plus a
 //! one-line editable buffer used to exercise the IME (preedit / candidate window).
 //!
-//! Usage: ui-gpui <file> [--bench-scroll N] [--quit-after-ms N]
+//! Usage: ime-gpui <file> [--bench-scroll N]
 
 mod doc;
+mod ime_selection;
 
 use std::ops::Range;
 use std::sync::atomic::Ordering;
@@ -561,11 +562,7 @@ impl EntityInputHandler for TextInput {
         self.content =
             (self.content[..r.start].to_owned() + new_text + &self.content[r.end..]).into();
         self.marked_range = (!new_text.is_empty()).then(|| r.start..r.start + new_text.len());
-        self.selected_range = new_sel
-            .as_ref()
-            .map(|s| self.ru16(s))
-            .map(|s| s.start + r.start..s.end + r.start)
-            .unwrap_or_else(|| r.start + new_text.len()..r.start + new_text.len());
+        self.selected_range = ime_selection::composition_selection(r.start, new_text, new_sel);
         self.ime_events += 1;
         println!(
             "IME preedit: {:?}  marked={:?}  sel={:?}",
@@ -797,7 +794,7 @@ fn main() {
         }
     }
     let path = path.unwrap_or_else(|| {
-        eprintln!("usage: ui-gpui <file> [--bench-scroll N]");
+        eprintln!("usage: ime-gpui <file> [--bench-scroll N]");
         std::process::exit(2)
     });
     let doc = Arc::new(Doc::open(std::path::Path::new(&path)).expect("open file"));

@@ -31,4 +31,24 @@ and abort when it differs. Manual testing requires no injection.
 
 Workspace currently has no GPUI consumer and #2 remains open. This spike proves
 only its own integration; workspace patch resolution and #2 E2E must be checked
-again after the skeleton is available. Release build, cargo check, strict clippy and cargo test passed on 2026-11-09. There are zero automated test cases; interactive acceptance remains pending. The executable was 6,481,408 bytes; dependency count stayed at 411 packages including the prototype. See ROVE_PATCHES.md for measurement limits.
+again after the skeleton is available. Release build, cargo check, strict clippy and cargo test passed on 2026-11-09. The 2026-11-09 run had zero automated cases. Review follow-up now adds four composition-selection regression tests; interactive acceptance remains pending. The executable was 6,481,408 bytes; dependency count stayed at 411 packages including the prototype. See ROVE_PATCHES.md for measurement limits.
+
+## Build prerequisites and manual evidence
+
+Use a Visual Studio Developer PowerShell with the Windows SDK installed. Run
+`where.exe fxc` before Cargo: GPUI build.rs requires fxc.exe on PATH; an ordinary
+shell without it can exit 101. CI must use the same developer environment (owned
+by the CI chain, not changed here).
+
+PowerShell, from this worktree root, with stdout retained:
+
+```powershell
+New-Item -ItemType Directory spikes/ime-gpui/runs -Force | Out-Null
+& ./spikes/ime-gpui/target/release/ime-gpui.exe ./docs/UX_SPEC.md 2>&1 | Tee-Object spikes/ime-gpui/runs/manual-ime.log
+```
+
+Follow the five manual steps above. Give screen-edge flipping special attention:
+the collapsed caret exclusion rectangle can be zero-width. Record screenshots or
+video plus `IME bounds_for_range` logs; logs alone do not prove candidate visibility.
+The updated mixed CJK/emoji probe now uses composition-relative UTF-16 offsets.
+This README is the self-contained #5 manual entrypoint; it does not require #81.
