@@ -23,6 +23,11 @@ rove-config = { path = "crates/rove-config" }
 rove-commands = { path = "crates/rove-commands" }
 rove-i18n = { path = "crates/rove-i18n" }
 
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+tree-sitter = "0.25"
+tree-sitter-c-sharp = "0.23"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
