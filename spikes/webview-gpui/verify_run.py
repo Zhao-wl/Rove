@@ -19,7 +19,8 @@ for name in ('build.rs', 'Cargo.toml', 'Cargo.lock', 'src/main.rs', 'assets/brid
     payload.extend(name.encode()); payload.append(0)
     payload.extend((root / name).read_bytes()); payload.append(0)
 expected = hashlib.sha1(b'blob ' + str(len(payload)).encode() + b'\0' + payload).hexdigest()
-assert starts[0]['source_git_blob'] == expected, 'SOURCE MISMATCH: evidence was produced by different build inputs'
+if starts[0]['source_git_blob'] != expected:
+    raise SystemExit('SOURCE MISMATCH: rebuild and record new evidence after changing build inputs; use summarize.py for historical logs')
 
 ready = [e['data'] for e in events if e['event'] == 'ready']
 assert len(ready) == 2, 'Expected creation and recreation to become ready'

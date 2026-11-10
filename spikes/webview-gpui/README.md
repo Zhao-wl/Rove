@@ -82,3 +82,5 @@ identity per log and executable SHA-256 in run manifests. Current versioned
 evidence lives under evidence/2026-11-10; older logs are explicitly historical.
 The verifier compares the exact current build-input fingerprint, so newer code
 cannot silently reuse older evidence.
+
+Changing any build input requires a rebuild and new acceptance recordings. Historical logs remain usable with summarize.py only. Git and a .git checkout are required; source tarballs without Git metadata are unsupported. Offline builds work with cached dependencies. The dirty flag covers only this spike directory.
