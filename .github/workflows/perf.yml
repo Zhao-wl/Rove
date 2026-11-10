@@ -1,0 +1,142 @@
+name: Perf
+
+# 性能基准与预算（issue #4）。
+#
+# 触发方式：
+# - `main` 的 push：跑基准并把结果作为基线 artifact 保存（保留 90 天）；
+# - 给 PR 打 `perf` 标签：跑基准，并与最近一次 main 的基线比较，退化超过 15% **报警**；
+#   如果还没有任何基线（perf.yml 刚引入），这次运行会顺便把结果存成基线；
+# - 手动触发（workflow_dispatch）：可指定基线运行 ID，也可以强制上传基线。
+#
+# 不做绝对判定：托管机器的波动比 15% 还大。绝对指标在本地参考设备上测量并记入报告。
+# CI 不生成 big1g.txt（1 GiB），只跑 small.txt / uniq.txt 级别的用例。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # labeled：打 perf 标签时跑一次；synchronize：之后每次推送也重跑（仍然只在带 perf 标签时）。
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: '用作基线的运行 ID（留空则取最近一次 main 的成功运行）'
+        required: false
+        default: ''
+      publish_baseline:
+        description: '把本次结果当作基线上传（仅用于验证对比流程）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ROVE_PERF_MACHINE_NOTE: GitHub Actions windows-latest
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: 基准与预算
+    runs-on: windows-latest
+    timeout-minutes: 40
+    # main 的 push、手动触发，或 PR 上打了 perf 标签时才跑。
+    if: |
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'perf')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具链组件
+        shell: pwsh
+        run: |
+          rustup show
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: perf
+          cache-on-failure: true
+
+      - name: 生成测试数据（不生成 big1g.txt）
+        shell: pwsh
+        run: |
+          cargo xtask gen-testdata --only small
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo xtask gen-testdata --only uniq
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 下载基线
+        id: baseline
+        if: github.ref != 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          # 候选运行：手动指定的优先，然后 main 的最近几次，再是同分支的最近几次。
+          # 只取「确实上传过 perf-baseline artifact」的那一次，绝不拿别的分支当基线。
+          $candidates = @()
+          $explicit = "${{ inputs.baseline_run_id }}"
+          if ($explicit) { $candidates += $explicit }
+          $candidates += @(gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml `
+            --branch main --status success --limit 5 --json databaseId --jq '.[].databaseId')
+          $headRef = "${{ github.head_ref }}"
+          if ($headRef) {
+            $candidates += @(gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml `
+              --branch $headRef --status success --limit 5 --json databaseId --jq '.[].databaseId')
+          }
+          $candidates = @($candidates | Where-Object { $_ } | Select-Object -Unique)
+
+          foreach ($runId in $candidates) {
+            if ($explicit -and $runId -eq $explicit) {
+              Write-Host "使用手动指定的基线运行：$runId"
+            }
+            gh run download $runId --repo $env:GITHUB_REPOSITORY -n perf-baseline -D baseline 2>$null
+            if ($LASTEXITCODE -eq 0 -and (Test-Path 'baseline/bench.json')) {
+              Write-Host "基线运行：$runId"
+              "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+              exit 0
+            }
+            if (Test-Path 'baseline') { Remove-Item -Path 'baseline' -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          Write-Host '没有可用的基线（候选运行都没有 perf-baseline artifact），本次运行会顺便建立基线'
+
+      - name: 跑基准并校验预算
+        shell: pwsh
+        run: |
+          $arguments = @('bench', '--quick', '--save', 'target/perf-results/bench.json', '--check-budgets')
+          if (Test-Path 'baseline/bench.json') {
+            $arguments += @('--baseline', 'baseline/bench.json')
+          }
+          cargo xtask @arguments 2>&1 | Tee-Object -FilePath target/perf-report.txt
+          $code = $LASTEXITCODE
+          Get-Content target/perf-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($code -ne 0) { exit $code }
+
+      - name: 准备基线 artifact
+        if: |
+          github.ref == 'refs/heads/main' ||
+          inputs.publish_baseline ||
+          steps.baseline.outputs.found != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force baseline-out | Out-Null
+          Copy-Item target/perf-results/bench.json baseline-out/bench.json
+
+      - name: 上传基线
+        if: |
+          github.ref == 'refs/heads/main' ||
+          inputs.publish_baseline ||
+          steps.baseline.outputs.found != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline
+          path: baseline-out/bench.json
+          retention-days: 90

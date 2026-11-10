@@ -1,0 +1,3 @@
+# 让 `cargo xtask` 等价于 `cargo run --package xtask --`（issue #4）。
+[alias]
+xtask = "run --package xtask --"

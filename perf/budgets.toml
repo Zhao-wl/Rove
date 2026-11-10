@@ -1,0 +1,135 @@
+# Rove 性能预算（issue #4）
+#
+# 来源：docs/PROJECT_CHARTER.md §6；采集口径见 perf/README.md。
+#
+# 规则：
+# - 每条预算必须写清「由哪个 issue 负责达标」（owner）；
+# - 暂时达不到的标 status = "pending" 并写明 reason，**不允许静默降低数值**；
+# - 要改数值只能走 PROJECT_CHARTER 的修订流程（像冷启动从 150 ms 改到 400 ms 那样留下记录），
+#   不能直接改这个文件；
+# - `cargo xtask bench --check-budgets` 只判定 status = "enforced" 且有测量值的条目，
+#   pending 的条目会被打印出来提醒，不参与判定。
+
+schema = 1
+updated = "2026-11-10"
+source = "docs/PROJECT_CHARTER.md §6"
+
+# 体积守护（cargo xtask check-size）。发布包的完整组成到 #75 才确定，
+# 届时由 #75 把检查对象扩展到整个发布包；现在只检查 rove.exe。
+[size]
+# CHARTER §6：发布包体积（不含 C# 索引组件）< 30 MB。这里按十进制 30 MB 保守取 30,000,000 B。
+budget_bytes = 30_000_000
+# M0 实测 6.2 MB，作为「相对基线变化」的比较值（不是门槛）。
+baseline_bytes = 6_200_000
+owner = "#75"
+status = "enforced"
+reason = "先把 rove.exe 纳入守护；发布包（含资源、WebView2 依赖等）到 #75 扩展"
+
+# ---------------------------------------------------------------- 启动
+
+[[budget]]
+id = "cold_start_interactive"
+metric = "冷启动到可交互"
+value = 400
+unit = "ms"
+owner = "#16"
+status = "pending"
+reason = "「可交互」= 首帧已呈现 + 第一个输入事件在一帧内得到响应；输入注入与重绘完成的埋点还没做，留给 #16 的启动预算。首帧已经有实测（见下一条），M0 实测 396 ms 也只是首帧口径"
+
+[[budget]]
+id = "cold_start_first_frame"
+metric = "冷启动到首帧"
+value = 0
+unit = "ms"
+owner = "#16"
+status = "recorded"
+bench = "startup/first_frame"
+reason = "CHARTER §6：单独记录，不设门槛。实测来自 `cargo xtask startup`（或 `cargo xtask bench` 的启动阶段）：启动 release 版 rove.exe，读它打印的 FIRSTFRAME_SINCE_PROCESS_MS（#84 加的）"
+
+# ---------------------------------------------------------------- 内存
+
+[[budget]]
+id = "empty_window_memory"
+metric = "空窗口常驻内存"
+value = 60
+unit = "MB"
+owner = "#16"
+status = "pending"
+reason = "M0 的 GPUI 原型工作集 47.7 MB，但 M1 工作台（标题栏 / 活动栏 / 侧边栏 / 状态栏 / 面板）还没实现，等 #16 落地后按工作集与私有提交分别记录"
+
+# ---------------------------------------------------------------- 大文件
+
+[[budget]]
+id = "open_1gb_text"
+metric = "打开 1 GB 文本文件（到可滚动）"
+value = 1000
+unit = "ms"
+owner = "#8"
+status = "pending"
+reason = "M0 首屏 444 ms 只到首帧；要等 #7 文本源与 #8 分块行索引、增量索引实现后才能按要求的口径测（工作集含 mmap 文件页，需分开记录）"
+
+# ---------------------------------------------------------------- 输入与帧
+
+[[budget]]
+id = "key_to_paint"
+metric = "按键到上屏延迟"
+value = 8
+unit = "ms"
+owner = "#46"
+status = "pending"
+reason = "只读场景先由 #19 保证输入响应；编辑链路的按键到上屏要等 M3 的 #46 编辑交互实现"
+
+[[budget]]
+id = "frame_cpu_cache_hit"
+metric = "连续滚动时每帧 CPU（整形缓存命中）"
+value = 1
+unit = "ms"
+owner = "#19"
+status = "pending"
+reason = "M0 的 GPUI 原型在 small.txt 上 823 µs；要 #19 的代码视图 Element（整形缓存 + 预取）把整形移出绘制关键路径"
+
+[[budget]]
+id = "frame_cpu_cache_miss"
+metric = "连续滚动时帧间隔 p99（整形缓存全未命中，uniq.txt）"
+value = 12.5
+unit = "ms"
+owner = "#19"
+status = "pending"
+reason = "CHARTER §6：缓存全未命中时帧间隔 p99 ≤ 1.5 倍刷新间隔（1.5 × 8.33 ms ≈ 12.5 ms）。M0 实测 16.83 ms，两条路线都漏 vsync；等 #19 落地后由 scroll_unique 用例接管"
+
+# ---------------------------------------------------------------- 语言导航
+# 这两条在语义索引就绪时才可测：cargo xtask bench --cs-index <idx>
+# 没有索引时 bench 会整组跳过，check-budgets 会打印「未测量」，不算失败。
+
+[[budget]]
+id = "goto_definition"
+metric = "定义跳转响应（语义索引就绪时）"
+value = 16
+unit = "ms"
+owner = "#38"
+status = "enforced"
+bench = "cs_index/goto_definition"
+aggregate = "p99"
+reason = "按 p99 判定（M0 也用 p99，平均值会掩盖尾延迟）。M0 实测 2.1 µs（中型）/ 3.5 µs（大型），远低于目标；#38 引入查询路由后要重新测"
+
+[[budget]]
+id = "find_references"
+metric = "查找引用响应（语义索引就绪时）"
+value = 50
+unit = "ms"
+owner = "#38"
+status = "enforced"
+bench = "cs_index/find_references"
+aggregate = "p99"
+reason = "按 p99 判定。M0 实测 p99 1.4 ms / 3.4 ms；注意最重的符号有 28,671 处引用，仍要求在一帧左右"
+
+# ---------------------------------------------------------------- 导航界面
+
+[[budget]]
+id = "nav_end_to_end"
+metric = "导航界面端到端（按下 F12 到目标位置绘制完成，目标文件已打开）"
+value = 50
+unit = "ms"
+owner = "#40"
+status = "pending"
+reason = "界面侧端到端要等 #40 的导航交互与 #41 的速览窗口实现；与上面两条「索引查询本身」的耗时分开记录"

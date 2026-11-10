@@ -2,3 +2,6 @@
 # 其余 workspace 成员一律视为核心层，由 .github/scripts/check-core-crates.ps1 检查不得依赖 gpui。
 rove-ui
 rove-app
+# xtask 是开发工具，不是 UI 层；它放这里是因为 scroll_unique 基准（等 #19）要驱动
+# 「取可见行 → 整形」的 UI 接口，届时必然依赖 gpui。除基准外它不参与产品构建。
+xtask
