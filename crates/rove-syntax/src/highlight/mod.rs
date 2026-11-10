@@ -1,5 +1,6 @@
 //! Tree-sitter highlighting behind the frozen syntax contracts.
 
+mod csharp_parts;
 mod grammar;
 mod rows;
 mod settings;
@@ -190,11 +191,45 @@ struct Snapshot {
 
 struct Parsed {
     source: String,
-    tree: Tree,
+    trees: ParseTrees,
     ranges: RowRanges,
     lines: Vec<LineTokens>,
     /// Lines reused from an older snapshot keep old offsets; rebase each once per snapshot.
     rebased: Vec<OnceLock<Arc<[Token]>>>,
+}
+
+#[derive(Clone)]
+enum ParseTrees {
+    Whole(Tree),
+    Csharp(Arc<[csharp_parts::Part]>),
+}
+
+impl ParseTrees {
+    fn full(grammar: Grammar, source: &str, work: &Work<'_>) -> Result<Self> {
+        if grammar == Grammar::Csharp {
+            if let Some(parts) = csharp_parts::try_parse(source, work)? {
+                return Ok(Self::Csharp(parts.into()));
+            }
+        }
+        Ok(Self::Whole(grammar.parse(source.as_bytes(), None, work)?))
+    }
+
+    fn whole(&self) -> Option<&Tree> {
+        match self {
+            Self::Whole(tree) => Some(tree),
+            Self::Csharp(_) => None,
+        }
+    }
+
+    fn at(&self, offset: usize) -> Option<&Tree> {
+        match self {
+            Self::Whole(tree) => Some(tree),
+            Self::Csharp(parts) => parts
+                .iter()
+                .find(|part| part.contains(offset))
+                .map(|part| &part.tree),
+        }
+    }
 }
 
 impl SyntaxSnapshot for Snapshot {
@@ -272,21 +307,28 @@ fn build(
     };
     work.check()?;
     let baseline = patch.zip(old_parse);
-    let (tree, edited_tree) = if let Some((patch, old)) = baseline {
-        if grammar.reparse_unchanged_token(&old.tree, &old.source, &source, patch, work)? {
-            // The re-lexed leaf has the same kind, width and surrounding token boundaries.
-            // Tree-sitter nodes store positions and kinds, so this tree also describes the new text.
-            (old.tree.clone(), None)
-        } else {
-            let mut edited = old.tree.clone();
+    let (trees, edited_whole, scan_all) = if let Some((patch, old)) = baseline {
+        let reuse = match old.trees.at(patch.start_byte) {
+            Some(tree) => {
+                grammar.reparse_unchanged_token(tree, &old.source, &source, patch, work)?
+            }
+            None => false,
+        };
+        if reuse {
+            // The re-lexed leaf has the same kind, width and token boundaries.
+            (old.trees.clone(), None, false)
+        } else if let Some(tree) = old.trees.whole() {
+            let mut edited = tree.clone();
             edited.edit(&patch);
-            (
-                grammar.parse(source.as_bytes(), Some(&edited), work)?,
-                Some(edited),
-            )
+            let updated = grammar.parse(source.as_bytes(), Some(&edited), work)?;
+            (ParseTrees::Whole(updated), Some(edited), false)
+        } else {
+            // Independent member trees cannot be passed as a whole-tree baseline.
+            // Compare the new tokens against the previous snapshot across every row.
+            (ParseTrees::full(grammar, &source, work)?, None, true)
         }
     } else {
-        (grammar.parse(source.as_bytes(), None, work)?, None)
+        (ParseTrees::full(grammar, &source, work)?, None, true)
     };
     // A same-width edit without line separators keeps every line range at the same offset.
     let unchanged_ranges = baseline.filter(|(patch, old)| {
@@ -301,21 +343,27 @@ fn build(
         RowRanges::new(text.as_ref(), count.known as usize, work)?
     };
     let incremental = baseline.map(|(patch, old)| {
-        rows::Incremental::new(patch, old, edited_tree.as_ref(), &tree, &ranges)
+        rows::Incremental::new(
+            patch,
+            old,
+            edited_whole.as_ref().zip(trees.whole()),
+            &ranges,
+        )
     });
-
     let scan = match &incremental {
-        Some(update) if grammar != Grammar::Markdown => update.scan.clone(),
+        Some(update) if !scan_all && grammar != Grammar::Markdown => update.scan.clone(),
         _ => 0..ranges.len(),
     };
+    let bytes = ranges.bytes(scan.clone());
     let mut captures = Vec::new();
-    grammar.capture(
-        &tree,
-        source.as_bytes(),
-        ranges.bytes(scan.clone()),
-        &mut captures,
-        work,
-    )?;
+    match &trees {
+        ParseTrees::Whole(tree) => {
+            grammar.capture(tree, source.as_bytes(), bytes, &mut captures, work)?
+        }
+        ParseTrees::Csharp(parts) => {
+            csharp_parts::capture(parts, source.as_bytes(), bytes, &mut captures, work)?
+        }
+    }
     let (lines, changed_lines) = rows::assemble(
         &ranges,
         &source,
@@ -334,7 +382,7 @@ fn build(
             line_limit,
             parsed: Some(Parsed {
                 source,
-                tree,
+                trees,
                 ranges,
                 rebased: std::iter::repeat_with(OnceLock::new)
                     .take(lines.len())

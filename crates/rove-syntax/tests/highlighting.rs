@@ -433,3 +433,49 @@ fn markdown_inline_regions_keep_paragraph_boundaries() {
             .any(|s| s.as_ref() == "markup.bold.markdown")
     }));
 }
+
+#[test]
+fn large_csharp_document_preserves_line_diffs_after_partitioned_open() {
+    let service = TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::from_secs(30))
+        .document();
+    let padding = "Long member description. ".repeat(6);
+    let mut initial = String::from("class Example {\n");
+    for index in 0..3_100 {
+        use std::fmt::Write;
+        writeln!(
+            initial,
+            "    int Method{index}() {{ /* {padding} */ return 1; }}"
+        )
+        .unwrap();
+    }
+    initial.push_str("}\n");
+    assert!(initial.len() >= 512 * 1024);
+
+    let method = initial.find("Method1600()").unwrap();
+    let start = method + initial[method..].find("return 1;").unwrap() + "return ".len();
+    let expected = [Span::new(Line(1601), Line(1602)).unwrap()];
+    let old = parse(&service, "csharp", &initial, 1);
+    let mut updated = initial;
+    updated.replace_range(start..start + 1, "2");
+    let edit = service.with_edit(replacement(1, start, 1, "2"));
+    let result = parse(&edit, "csharp", &updated, 2);
+    assert_eq!(result.changed_lines.as_deref(), Some(expected.as_slice()));
+
+    updated.replace_range(start..start + 1, "(2 + 3)");
+    let edit = service.with_edit(replacement(2, start, 1, "(2 + 3)"));
+    let result = parse(&edit, "csharp", &updated, 3);
+    assert_eq!(result.changed_lines.as_deref(), Some(expected.as_slice()));
+    assert!(result
+        .snapshot
+        .tokens(Line(1601))
+        .unwrap()
+        .iter()
+        .any(|token| {
+            token
+                .scopes
+                .iter()
+                .any(|scope| scope.as_ref() == "keyword.operator.arithmetic.cs")
+        }));
+    assert_eq!(old.snapshot.version(), Version(1));
+}

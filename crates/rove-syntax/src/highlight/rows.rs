@@ -94,8 +94,7 @@ impl<'a> Incremental<'a> {
     pub fn new(
         patch: InputEdit,
         old: &'a Parsed,
-        edited_tree: Option<&Tree>,
-        tree: &Tree,
+        changed: Option<(&Tree, &Tree)>,
         ranges: &RowRanges,
     ) -> Self {
         let first = ranges.row_at(patch.start_byte);
@@ -103,9 +102,9 @@ impl<'a> Incremental<'a> {
         let old_last = old.ranges.row_at(patch.old_end_byte);
         let edited = first..last + 1;
         let mut scan = edited.clone();
-        for change in edited_tree
+        for change in changed
             .into_iter()
-            .flat_map(|old| old.changed_ranges(tree))
+            .flat_map(|(old, new)| old.changed_ranges(new))
         {
             scan.start = scan.start.min(ranges.row_at(change.start_byte));
             scan.end = scan

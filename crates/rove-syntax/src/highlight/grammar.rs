@@ -1,12 +1,13 @@
 use rove_base::{Cancellation, Error, Result};
 use std::{
+    collections::BTreeMap,
     ops::Range,
     sync::{Arc, LazyLock},
     time::Instant,
 };
 use tree_sitter::{
     Language, Node, ParseOptions, Parser, Query, QueryCursor, QueryCursorOptions,
-    Range as TreeRange, StreamingIterator, Tree,
+    QueryPredicateArg, Range as TreeRange, StreamingIterator, Tree,
 };
 
 pub(super) struct Work<'a> {
@@ -48,17 +49,82 @@ pub(super) struct Capture {
 struct HighlightQuery {
     query: Query,
     scopes: Vec<Arc<[Arc<str>]>>,
+    predefined_types: Option<PredefinedTypes>,
+}
+
+struct PredefinedTypes {
+    dispatch: u32,
+    rules: BTreeMap<Box<[u8]>, (usize, u32)>,
+}
+
+impl PredefinedTypes {
+    const MARKER: &'static str = "rove.internal.predefined_type";
+
+    fn compile(query: &mut Query) -> Option<Self> {
+        let dispatch = query.capture_index_for_name(Self::MARKER)?;
+        let mut rules = BTreeMap::new();
+        for pattern in 0..query.pattern_count() {
+            let Some(predicate) = query
+                .general_predicates(pattern)
+                .iter()
+                .find(|predicate| predicate.operator.as_ref() == "rove-predefined-type?")
+            else {
+                continue;
+            };
+            let [QueryPredicateArg::Capture(scope), QueryPredicateArg::String(literal)] =
+                predicate.args.as_ref()
+            else {
+                panic!("invalid bundled predefined type rule")
+            };
+            assert!(rules
+                .insert(literal.as_bytes().into(), (pattern, *scope))
+                .is_none());
+            query.disable_pattern(pattern);
+        }
+        Some(Self { dispatch, rules })
+    }
 }
 
 impl HighlightQuery {
     fn new(grammar: Grammar, source: &str) -> Self {
-        let query = Query::new(&grammar.language(), source).expect("valid bundled highlight query");
+        let expanded;
+        let source = if grammar == Grammar::Csharp {
+            // Tree-sitter names all C# built-in types "predefined_type". Dispatch
+            // their equality rules once instead of matching every rule at each node.
+            expanded = format!("{source}\n(predefined_type) @{}\n", PredefinedTypes::MARKER);
+            &expanded
+        } else {
+            source
+        };
+        let mut query =
+            Query::new(&grammar.language(), source).expect("valid bundled highlight query");
+        let predefined_types = PredefinedTypes::compile(&mut query);
         let scopes = query
             .capture_names()
             .iter()
             .map(|&name| Arc::from([Arc::from(name)]))
             .collect();
-        Self { query, scopes }
+        Self {
+            query,
+            scopes,
+            predefined_types,
+        }
+    }
+
+    fn capture_scope(
+        &self,
+        pattern: usize,
+        capture: u32,
+        source: &[u8],
+        span: &Range<usize>,
+    ) -> Option<(usize, &Arc<[Arc<str>]>)> {
+        let (pattern, capture) = match &self.predefined_types {
+            Some(types) if capture == types.dispatch => {
+                *types.rules.get(source.get(span.clone())?)?
+            }
+            _ => (pattern, capture),
+        };
+        Some((pattern, &self.scopes[capture as usize]))
     }
 }
 
@@ -129,6 +195,19 @@ impl Grammar {
 
     pub fn parse(self, source: &[u8], previous: Option<&Tree>, work: &Work<'_>) -> Result<Tree> {
         parse(&mut self.parser(), source, previous, work)
+    }
+
+    pub fn parse_ranges(
+        self,
+        source: &[u8],
+        ranges: &[TreeRange],
+        work: &Work<'_>,
+    ) -> Result<Tree> {
+        let mut parser = self.parser();
+        parser
+            .set_included_ranges(ranges)
+            .map_err(|_| Error::InvalidInput)?;
+        parse(&mut parser, source, None, work)
     }
 
     /// Reparse a lexeme in isolation only when the surrounding parse is provably unchanged.
@@ -247,8 +326,12 @@ impl Highlighter<'_, '_> {
                 if span.is_empty() {
                     continue;
                 }
-                let scopes = &highlights.scopes[c.index as usize];
-                let priority = (depth, m.pattern_index, index);
+                let Some((pattern, scopes)) =
+                    highlights.capture_scope(m.pattern_index, c.index, self.source, &span)
+                else {
+                    continue;
+                };
+                let priority = (depth, pattern, index);
                 if included.is_empty() {
                     output.push(Capture {
                         start: span.start,
@@ -426,5 +509,44 @@ mod tests {
         assert!(!grammar
             .reparse_unchanged_token(&tree, before, &structural, patch, &work)
             .unwrap());
+    }
+
+    #[test]
+    fn predefined_type_dispatch_preserves_the_query_matches() {
+        let source = b"class C { bool a; byte b; char c; decimal d; double e; float f; int g; long h; object i; sbyte j; short k; string l; uint m; ulong n; ushort o; nint p; nuint q; void M() {} }";
+        let cancel = Cancellation::default();
+        let work = Work {
+            cancel: &cancel,
+            deadline: None,
+        };
+        let grammar = Grammar::Csharp;
+        let tree = grammar.parse(source, None, &work).unwrap();
+        let reference =
+            include_str!("queries/csharp/highlights.scm").replace("rove-predefined-type?", "eq?");
+        let reference = Query::new(&grammar.language(), &reference).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&reference, tree.root_node(), source.as_slice());
+        let mut expected = Vec::new();
+        while let Some(m) = matches.next() {
+            for (index, capture) in m.captures.iter().enumerate() {
+                expected.push((
+                    capture.node.start_byte(),
+                    capture.node.end_byte(),
+                    (0, m.pattern_index, index),
+                    reference.capture_names()[capture.index as usize],
+                ));
+            }
+        }
+        let mut captures = Vec::new();
+        grammar
+            .capture(&tree, source, 0..source.len(), &mut captures, &work)
+            .unwrap();
+        let mut actual: Vec<_> = captures
+            .iter()
+            .map(|c| (c.start, c.end, c.priority, c.scopes[0].as_ref()))
+            .collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
     }
 }
