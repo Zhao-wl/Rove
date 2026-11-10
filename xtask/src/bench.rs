@@ -16,6 +16,10 @@ use crate::util;
 /// 相对基线退化超过这个比例就报警（issue #4）。
 const REGRESSION_THRESHOLD: f64 = 0.15;
 
+/// 低于这个量级（纳秒）的用例不参与相对比较：托管 runner 的噪声比信号大，
+/// 当前这些用例又都是占位实现（`EmptyText` / `EmptyWorkspace`）。
+const DEFAULT_COMPARE_FLOOR_NS: f64 = 100.0;
+
 struct BenchTarget {
     /// `cargo bench --bench <name>`
     name: &'static str,
@@ -158,7 +162,11 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     let mut code = 0u8;
     if let Some(path) = &baseline {
         let base = Results::load(path)?;
-        code |= compare(&base, &current);
+        let floor_ns = match util::flag(args, "--compare-floor-ns") {
+            Some(raw) => raw.parse::<f64>()?,
+            None => DEFAULT_COMPARE_FLOOR_NS,
+        };
+        code |= compare(&base, &current, floor_ns);
     }
     if check_budgets {
         let budgets = Budgets::load_default()?;
@@ -205,9 +213,12 @@ fn run_target(
 }
 
 /// 与基线比较：只报警、不失败（issue #4 明确不做绝对判定）。
-fn compare(baseline: &Results, current: &Results) -> u8 {
+///
+/// `floor_ns` 以下的用例不参与比较：托管 runner 上的噪声比信号大得多
+/// （占位基准量到的是 0.x ns 的取值调用，逐次运行的差异能有 100%+）。
+fn compare(baseline: &Results, current: &Results, floor_ns: f64) -> u8 {
     println!(
-        "\n与基线的比较（退化超过 {:.0}% 报警；只报警不失败）：",
+        "\n与基线的比较（退化超过 {:.0}% 报警；低于 {floor_ns} ns 的用例视为噪声跳过）；只报警不失败：",
         REGRESSION_THRESHOLD * 100.0
     );
     println!(
@@ -215,11 +226,17 @@ fn compare(baseline: &Results, current: &Results) -> u8 {
         "用例", "基线", "当前", "变化"
     );
     let mut regressions = Vec::new();
+    let mut skipped = 0usize;
     for (id, cur) in &current.benchmarks {
         let Some(base) = baseline.get(id) else {
             println!("  {:<36} 基线里没有这个用例，跳过", id);
             continue;
         };
+        if base.mean_ns < floor_ns && cur.mean_ns < floor_ns {
+            skipped += 1;
+            println!("  {:<36} 低于 {floor_ns} ns，噪声不可比，跳过", id);
+            continue;
+        }
         let delta = cur.mean_ns / base.mean_ns - 1.0;
         let status = if delta > REGRESSION_THRESHOLD {
             regressions.push((id.clone(), delta));
@@ -243,6 +260,9 @@ fn compare(baseline: &Results, current: &Results) -> u8 {
         describe_machine(baseline),
         describe_machine(current)
     );
+    if skipped > 0 {
+        println!("  跳过 {skipped} 个低于 {floor_ns} ns 的用例（噪声不可比；可用 --compare-floor-ns 调整）");
+    }
     if regressions.is_empty() {
         println!("OK：没有超过 {:.0}% 的退化。", REGRESSION_THRESHOLD * 100.0);
         return 0;

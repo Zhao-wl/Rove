@@ -82,6 +82,8 @@ cargo xtask startup --save target/startup.json
 - 判定口径：导航类预算（`goto_definition` / `find_references`）用 **p99**（criterion 的
   `sample.json` 逐次迭代耗时），与 CHARTER / M0 一致；其他用 `mean`。要改口径在
   `budgets.toml` 里加 `aggregate = "p99"`。
+- 相对比较会跳过低于 100 ns 的用例（`--compare-floor-ns` 可调）：托管 runner 的噪声比这种
+  量级的信号大得多，当前这些用例又都是占位实现（`EmptyText` / `EmptyWorkspace`）。
 - CI **不生成 `big1g.txt`**（1 GiB），只跑 `small.txt` / `uniq.txt` 级别的用例。
 - `ci.yml` 的「体积守护」任务构建 release 版 `rove.exe` 并运行 `cargo xtask check-size`
   （结果同时以 `::notice::` 出现在 PR 的检查注解里），然后运行 `cargo xtask startup` 采集首帧；

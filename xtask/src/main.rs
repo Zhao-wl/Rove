@@ -28,9 +28,11 @@ const USAGE: &str = "\
 
   bench [--cs-index PATH] [--filter PATTERN] [--testdata DIR]
         [--save PATH] [--baseline PATH] [--check-budgets] [--quick] [--from PATH]
+        [--compare-floor-ns N] [--no-startup] [--exe PATH] [--project DIR]
       跑基准。--save 写出机器可读结果；--baseline 与旧结果比较，退化超过 15% 报警；
       --check-budgets 按 perf/budgets.toml 校验，超预算时以非零码退出；
       --from 直接读已保存的结果（不重新跑基准），常用于复核预算与对比；
+      --compare-floor-ns（默认 100）以下的用例不参与相对比较（噪声不可比）；
       --cs-index 也可以用环境变量 ROVE_PERF_CS_INDEX 指定。
 
   check-size [--binary PATH] [--baseline-bytes N]
