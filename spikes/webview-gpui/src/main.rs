@@ -279,6 +279,12 @@ unsafe fn configure(
                         state.borrow_mut().ready = true;
                         log("ready", json!({"ms":start.elapsed().as_secs_f64()*1000.0,"documentScriptBlocked":message["documentScriptBlocked"],"localImageLoaded":message["localImageLoaded"]}));
                     }
+                    Some("focusExit") => {
+                        if let Some(shift) = message["shift"].as_bool() {
+                            state.borrow_mut().route = Some("tab".into());
+                            log("key_route", json!({"key":9,"shift":shift,"route":"tab","source":"trusted_bridge_keydown"}));
+                        }
+                    }
                     Some("pong" | "themeApplied" | "scrollApplied") => {
                         if let Some(seq) = message["seq"].as_u64() {
                             if let Some(sent) = state.borrow_mut().pings.remove(&seq) {
@@ -311,7 +317,7 @@ unsafe fn configure(
                     (true, true, 80) => Some("commandPalette"),
                     (true, true, 86) => Some("togglePreview"),
                     (_, _, 27) => Some("escape"),
-                    (_, _, 9) => Some("tab"),
+
                     (true, _, 82) => Some("blockedRefresh"),
                     (true, _, 70) => Some("findDeferred"),
                     _ => None,
@@ -452,7 +458,8 @@ impl Render for Spike {
                 }
             }
         }
-        if let Some(route) = self.state.borrow_mut().route.take() {
+        let route = self.state.borrow_mut().route.take();
+        if let Some(route) = route {
             match route.as_str() {
                 "quickOpen" | "commandPalette" => {
                     self.overlay = true;
@@ -463,6 +470,7 @@ impl Render for Spike {
             }
             unsafe {
                 let _ = SetFocus(Some(hwnd));
+                window.focus(&self.focus);
             }
         }
         let (controller, web, ready, pending, blocked, error) = {
@@ -533,9 +541,16 @@ impl Render for Spike {
             let _ = entity.update(cx, |_, cx| cx.notify());
         });
         window.request_animation_frame();
-        div().size_full().bg(rgb(0x181b20)).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
+        div().size_full().when(std::env::var_os("ROVE_TRANSPARENT_PREVIEW").is_none(), |d| d.bg(rgb(0x181b20))).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
+                    "tab" => {
+                        let controller = this.state.borrow().controller.clone();
+                        if let Some(controller) = controller {
+                            let reason = if event.keystroke.modifiers.shift { COREWEBVIEW2_MOVE_FOCUS_REASON_LAST } else { COREWEBVIEW2_MOVE_FOCUS_REASON_FIRST };
+                            unsafe { if controller.MoveFocus(reason).is_ok() { log("key_route",json!({"key":9,"route":"webview","shift":event.keystroke.modifiers.shift,"source":"host"})); return; } }
+                        }
+                    }
                     "o" => create(&this.state, hwnd),
                     "h" => { this.overlay = !this.overlay; this.mitigate = true; }
                     "u" => { this.overlay = !this.overlay; this.mitigate = false; }
@@ -552,8 +567,8 @@ impl Render for Spike {
                 window.focus(&this.focus);
                 cx.notify();
             }))
-            .child(div().p_6().w_1_2().child("Rove GPUI / fake editor").child(div().mt_4().child("O: open | H: mitigated popup | U: raw overlap | X: dispose | T: light theme")).child(div().mt_4().child(format!("Ready={ready}, creating={pending}, blocked={blocked}; {}",error.unwrap_or_default()))))
-            .child(div().absolute().left(px(640.)).top(px(100.)).child(if ready{"Preview hidden while popup overlaps"}else{"Loading preview — skeleton"}))
+            .child(div().h_full().bg(rgb(0x181b20)).p_6().w_1_2().child("Rove GPUI / fake editor").child(div().mt_4().child("O: open | H: mitigated popup | U: raw overlap | X: dispose | T: light theme")).child(div().mt_4().child(format!("Ready={ready}, creating={pending}, blocked={blocked}; {}",error.unwrap_or_default()))))
+            .when(!ready || (self.overlay && self.mitigate), |d| d.child(div().absolute().left(px(640.)).top(px(100.)).child(if ready{"Preview hidden while popup overlaps"}else{"Loading preview — skeleton"})))
             .when(self.overlay,|d|d.child(div().absolute().left(px(350.)).top(px(120.)).w(px(600.)).h(px(280.)).bg(rgb(0x334c65)).p_6().child("GPUI command palette / menu / hover / notification overlap fixture")))
     }
 }
@@ -564,7 +579,9 @@ fn main() {
         json!({
             "schema":2,"commit":env!("ROVE_BUILD_COMMIT"),"source_git_blob":env!("ROVE_SOURCE_GIT_BLOB"),
             "dirty":env!("ROVE_BUILD_DIRTY"),"built_unix_seconds":env!("ROVE_BUILD_UNIX_SECONDS"),
-            "benchmark_mode":"continuous_frame_probe_not_idle"
+            "benchmark_mode":"continuous_frame_probe_not_idle",
+            "disable_direct_composition":std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_some(),
+            "transparent_preview":std::env::var_os("ROVE_TRANSPARENT_PREVIEW").is_some()
         }),
     );
     let auto = std::env::args().any(|a| a == "--auto");
