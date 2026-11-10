@@ -27,15 +27,60 @@ enum RelKind : uint { BaseType = 1, Implements = 2, Overrides = 3 }
 sealed class SymRec
 {
     public int Id;
-    public required string Key;
+    public required SymbolKey Key;
     public required string Name;
     public required string Display;
     public required byte Kind;
     public required bool InSource;
-    public string? ContainerKey;
+    public SymbolKey? ContainerKey;
 }
 
-struct Occ { public int Line, Col, Len, Sym; public ushort Role; }
+struct Occ { public uint Line, Col, Len; public int Sym; public ushort Role; }
+
+readonly record struct SymbolKey(string? Text, uint File, uint Offset)
+{
+    public static SymbolKey Global(string text) => new(text, 0, 0);
+    public static SymbolKey Local(uint file, uint offset) => new(null, file, offset);
+}
+
+sealed record IndexedFile(uint Id, byte[] Path, SyntaxTree Tree, ulong Hash, Utf8Coordinates Coordinates);
+
+sealed class Utf8Coordinates
+{
+    readonly (int utf16, int extra)[] _checkpoints;
+
+    public Utf8Coordinates(SourceText source)
+    {
+        var text = source.ToString();
+        var checkpoints = new List<(int, int)>();
+        int extra = 0;
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c <= 0x7F) continue;
+            if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+            {
+                extra += 2;
+                i++;
+            }
+            else extra += c <= 0x7FF ? 1 : 2;
+            checkpoints.Add((i + 1, extra));
+        }
+        _checkpoints = checkpoints.ToArray();
+    }
+
+    public uint ByteOffset(int utf16)
+    {
+        int low = 0, high = _checkpoints.Length;
+        while (low < high)
+        {
+            int mid = low + (high - low) / 2;
+            if (_checkpoints[mid].utf16 <= utf16) low = mid + 1;
+            else high = mid;
+        }
+        return (uint)utf16 + (low == 0 ? 0 : (uint)_checkpoints[low - 1].extra);
+    }
+}
 
 static class Program
 {
@@ -63,6 +108,8 @@ static class Program
         }
         Phase("parse_csproj", sw);
 
+        var configHash = ProjectConfigHash.Compute(root, projects.Values, runGenerators, !args.Contains("--no-reconcile"));
+
         // 2. 并行解析语法树。预处理指令（#if UNITY_EDITOR 等）在解析时求值，
         //    所以必须用文件所属项目的宏来解析；文件归属第一个列出它的项目。
         var fileOwner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -72,7 +119,7 @@ static class Program
             parseOpts[p.Path] = new CSharpParseOptions(p.LangVersion, DocumentationMode.None, SourceCodeKind.Regular, p.Defines);
             foreach (var s in p.Sources) fileOwner.TryAdd(s, p.Path);
         }
-        var trees = new ConcurrentDictionary<string, (SyntaxTree tree, ulong hash)>(StringComparer.OrdinalIgnoreCase);
+        var trees = new ConcurrentDictionary<string, (SyntaxTree tree, ulong hash, Utf8Coordinates coordinates)>(StringComparer.OrdinalIgnoreCase);
         int missing = 0;
         Parallel.ForEach(fileOwner, kv =>
         {
@@ -81,7 +128,7 @@ static class Program
             if (bytes == null) { Interlocked.Increment(ref missing); return; }
             var hash = System.IO.Hashing.XxHash64.HashToUInt64(bytes);
             var text = SourceText.From(new MemoryStream(bytes), throwIfBinaryDetected: false, canBeEmbedded: false);
-            trees[f] = (CSharpSyntaxTree.ParseText(text, parseOpts[kv.Value], path: f), hash);
+            trees[f] = (CSharpSyntaxTree.ParseText(text, parseOpts[kv.Value], path: f), hash, new Utf8Coordinates(text));
         });
         Phase("parse_syntax", sw);
         Log($"files: {trees.Count}, missing: {missing}");
@@ -91,7 +138,7 @@ static class Program
         var analyzerRefs = new ConcurrentDictionary<string, AnalyzerFileReference>(StringComparer.OrdinalIgnoreCase);
         var loader = new SimpleAnalyzerLoader();
         var comps = new Dictionary<string, Lazy<CSharpCompilation>>(StringComparer.OrdinalIgnoreCase);
-        var generatorStats = new ConcurrentDictionary<string, int>();
+        var generatedTrees = new Dictionary<string, SyntaxTree[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in projects.Values)
         {
             var proj = p;
@@ -122,9 +169,9 @@ static class Program
                     {
                         try
                         {
-                            var driver = CSharpGeneratorDriver.Create(gens, parseOptions: po);
-                            driver.RunGeneratorsAndUpdateCompilation(comp, out var newComp, out _);
-                            generatorStats.AddOrUpdate(proj.AssemblyName, newComp.SyntaxTrees.Count() - comp.SyntaxTrees.Count(), (_, v) => v);
+                            GeneratorDriver driver = CSharpGeneratorDriver.Create(gens, parseOptions: po);
+                            driver = driver.RunGeneratorsAndUpdateCompilation(comp, out var newComp, out _);
+                            generatedTrees.Add(proj.Path, driver.GetRunResult().GeneratedTrees.ToArray());
                             comp = (CSharpCompilation)newComp;
                         }
                         catch (Exception e) { Log($"generator failed in {proj.AssemblyName}: {e.GetType().Name} {e.Message}"); }
@@ -145,44 +192,87 @@ static class Program
         }
         Phase(runGenerators ? "create_compilations+generators" : "create_compilations", sw);
 
+        string RelativePath(string fullPath) => Path.GetRelativePath(root, fullPath).Replace('\\', '/');
+        var inputs = new List<(string? fullPath, byte[] path, CSharpCompilation comp, SyntaxTree tree,
+            ulong hash, Utf8Coordinates coordinates)>(trees.Count);
+        foreach (var (fullPath, (tree, hash, coordinates)) in trees)
+            inputs.Add((fullPath, Encoding.UTF8.GetBytes(RelativePath(fullPath)), comps[fileOwner[fullPath]].Value,
+                tree, hash, coordinates));
+
+        foreach (var (project, generated) in generatedTrees)
+        {
+            var prefix = "rove-generated://" + Uri.EscapeDataString(RelativePath(project)) + "/";
+            var ordinals = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var tree in generated)
+            {
+                var path = prefix + Uri.EscapeDataString(tree.FilePath.Replace('\\', '/'));
+                ordinals.TryGetValue(path, out int ordinal);
+                ordinals[path] = ordinal + 1;
+                if (ordinal != 0) path += "#" + ordinal;
+                var text = tree.GetText();
+                var hash = System.IO.Hashing.XxHash64.HashToUInt64(Encoding.UTF8.GetBytes(text.ToString()));
+                inputs.Add((null, Encoding.UTF8.GetBytes(path), comps[project].Value, tree, hash, new Utf8Coordinates(text)));
+            }
+        }
+
+        inputs.Sort((a, b) => a.path.AsSpan().SequenceCompareTo(b.path));
+        var files = new IndexedFile[inputs.Count];
+        var filesByPath = new Dictionary<string, IndexedFile>(trees.Count, StringComparer.OrdinalIgnoreCase);
+        var filesByGeneratedTree = new Dictionary<SyntaxTree, IndexedFile>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            var input = inputs[i];
+            var file = files[i] = new IndexedFile((uint)i, input.path, input.tree, input.hash, input.coordinates);
+            if (input.fullPath is { } fullPath) filesByPath.Add(fullPath, file);
+            else filesByGeneratedTree.Add(file.Tree, file);
+        }
+        SymbolKey Key(ISymbol symbol) => GetSymbolKey(symbol, filesByPath, filesByGeneratedTree);
+
         // 4. 绑定 + 收集出现位置
-        var symbols = new ConcurrentDictionary<string, SymRec>();
+        var symbols = new ConcurrentDictionary<SymbolKey, SymRec>();
         int nextSym = -1;
-        var fileOccs = new ConcurrentDictionary<string, List<Occ>>(StringComparer.OrdinalIgnoreCase);
-        var rels = new ConcurrentBag<(string from, string to, RelKind kind)>();
+        var fileOccs = new List<Occ>?[files.Length];
+        var rels = new ConcurrentBag<(SymbolKey from, SymbolKey to, RelKind kind)>();
         var unresolved = new ConcurrentDictionary<string, int>();
         var unresolvedByProject = new ConcurrentDictionary<string, int>();
         long totalNames = 0, unresolvedNames = 0, candidateNames = 0;
 
         int GetSym(ISymbol s, out SymRec rec)
         {
-            var key = SymbolKey(s);
+            var key = Key(s);
             rec = symbols.GetOrAdd(key, k => new SymRec
             {
                 Id = Interlocked.Increment(ref nextSym), Key = k, Name = s.Name,
                 Display = SafeDisplay(s), Kind = (byte)s.Kind, InSource = s.Locations.Any(l => l.IsInSource),
                 ContainerKey = s.ContainingSymbol is { } c && c.Kind != SymbolKind.Namespace && c.Kind != SymbolKind.Assembly && c.Kind != SymbolKind.NetModule
-                    ? SymbolKey(Norm(c)) : null,
+                    ? Key(Norm(c)) : null,
             });
             return rec.Id;
         }
 
-        var work = comps.Values.SelectMany(c => c.Value.SyntaxTrees
-                .Where(t => fileOwner.TryGetValue(t.FilePath, out var owner) && comps[owner].Value == c.Value)
-                .Select(t => (comp: c.Value, tree: t)))
-            .ToArray();
-        Parallel.ForEach(work, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, item =>
+        Parallel.For(0, files.Length, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, i =>
         {
-            var (comp, tree) = item;
+            var file = files[i];
+            var tree = file.Tree;
+            var comp = inputs[i].comp;
             var model = comp.GetSemanticModel(tree);
             var text = tree.GetText();
+            var coordinates = file.Coordinates;
             var occs = new List<Occ>(1024);
             long names = 0, unres = 0, cand = 0;
             void Add(TextSpan span, ISymbol sym, Role role)
             {
                 var id = GetSym(sym, out _);
-                var lp = text.Lines.GetLinePosition(span.Start);
-                occs.Add(new Occ { Line = lp.Line, Col = lp.Character, Len = span.Length, Sym = id, Role = (ushort)role });
+                var line = text.Lines.GetLineFromPosition(span.Start);
+                uint start = coordinates.ByteOffset(span.Start);
+                occs.Add(new Occ
+                {
+                    Line = (uint)line.LineNumber,
+                    Col = start - coordinates.ByteOffset(line.Start),
+                    Len = coordinates.ByteOffset(span.End) - start,
+                    Sym = id,
+                    Role = (ushort)role,
+                });
             }
             foreach (var node in tree.GetRoot().DescendantNodes())
             {
@@ -213,10 +303,10 @@ static class Program
                     if (ds == null) continue;
                     ds = Norm(ds);
                     Add(tok.Span, ds, Role.Def);
-                    CollectRelations(ds, rels);
+                    CollectRelations(ds, rels, Key);
                 }
             }
-            fileOccs[tree.FilePath] = occs;
+            fileOccs[i] = occs;
             Interlocked.Add(ref totalNames, names);
             Interlocked.Add(ref unresolvedNames, unres);
             Interlocked.Add(ref candidateNames, cand);
@@ -226,7 +316,7 @@ static class Program
         long peakAfterBind = Process.GetCurrentProcess().PeakWorkingSet64;
 
         // 5. 写索引
-        var stats = IndexWriter.Write(outPath, root, trees, fileOccs, symbols, rels);
+        var stats = IndexWriter.Write(outPath, configHash, files, fileOccs, symbols, rels);
         Phase("write_index", sw);
 
         var proc = Process.GetCurrentProcess();
@@ -235,7 +325,7 @@ static class Program
             project = root,
             generators = runGenerators,
             projects = projects.Count,
-            files = trees.Count,
+            files = files.Length,
             missing_files = missing,
             phases_ms = Phases,
             total_ms = Total.Elapsed.TotalMilliseconds,
@@ -248,7 +338,7 @@ static class Program
             occurrences = stats.occurrences,
             relations = stats.relations,
             index_bytes = stats.bytes,
-            generated_trees = generatorStats.Values.Sum(),
+            generated_trees = filesByGeneratedTree.Count,
             top_unresolved = unresolved.OrderByDescending(kv => kv.Value).Take(40).ToDictionary(kv => kv.Key, kv => kv.Value),
             unresolved_by_project = unresolvedByProject.OrderByDescending(kv => kv.Value).Take(20).ToDictionary(kv => kv.Key, kv => kv.Value),
         };
@@ -266,7 +356,7 @@ static class Program
     }
 
     /// 以共享模式读取（Unity 编辑器、杀毒软件可能正占用文件），失败短暂重试。
-    static byte[]? ReadShared(string path)
+    internal static byte[]? ReadShared(string path)
     {
         for (int attempt = 0; attempt < 5; attempt++)
         {
@@ -324,19 +414,36 @@ static class Program
     }
 
     /// 符号的全局唯一键：可跨编译稳定（同一源符号被不同项目引用时得到相同键）。
-    static string SymbolKey(ISymbol s)
+    static SymbolKey GetSymbolKey(ISymbol s, Dictionary<string, IndexedFile> files,
+        Dictionary<SyntaxTree, IndexedFile> generatedFiles)
     {
-        if (s is INamespaceSymbol ns) return "N:" + ns.ToDisplayString();
+        if (s is INamespaceSymbol ns) return SymbolKey.Global("N:" + ns.ToDisplayString());
         var id = s.Kind switch
         {
             SymbolKind.Local or SymbolKind.Parameter or SymbolKind.RangeVariable or SymbolKind.Label or SymbolKind.TypeParameter => null,
             SymbolKind.Method when s is IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction } => null,
             _ => s.GetDocumentationCommentId(),
         };
-        if (id != null) return (s.ContainingAssembly?.Name ?? "") + "|" + id;
+        if (id != null) return SymbolKey.Global((s.ContainingAssembly?.Name ?? "") + "|" + id);
+
         var loc = s.Locations.FirstOrDefault(l => l.IsInSource);
-        if (loc != null) return $"@{loc.SourceTree!.FilePath}:{loc.SourceSpan.Start}:{s.Name}";
-        return $"?{s.Kind}:{s.ToDisplayString()}";
+        if (loc?.SourceTree is { } tree
+            && (generatedFiles.TryGetValue(tree, out var file) || files.TryGetValue(tree.FilePath, out file)))
+        {
+            // 单参数 lambda 的起点也是参数名的起点。用箭头作为 lambda 自己的声明位置。
+            int offset = s is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction }
+                ? s.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() switch
+                {
+                    SimpleLambdaExpressionSyntax lambda => lambda.ArrowToken.SpanStart,
+                    ParenthesizedLambdaExpressionSyntax lambda => lambda.ArrowToken.SpanStart,
+                    AnonymousMethodExpressionSyntax method => method.DelegateKeyword.SpanStart,
+                    _ => loc.SourceSpan.Start,
+                }
+                : loc.SourceSpan.Start;
+            return SymbolKey.Local(file.Id, file.Coordinates.ByteOffset(offset));
+        }
+
+        return SymbolKey.Global($"?{s.Kind}:{s.ToDisplayString()}");
     }
 
     static string SafeDisplay(ISymbol s)
@@ -365,29 +472,29 @@ static class Program
         _ => null,
     };
 
-    static void CollectRelations(ISymbol s, ConcurrentBag<(string, string, RelKind)> rels)
+    static void CollectRelations(ISymbol s, ConcurrentBag<(SymbolKey, SymbolKey, RelKind)> rels, Func<ISymbol, SymbolKey> key)
     {
         switch (s)
         {
             case INamedTypeSymbol t:
                 if (t.BaseType is { SpecialType: not SpecialType.System_Object and not SpecialType.System_ValueType and not SpecialType.System_Enum } bt)
-                    rels.Add((SymbolKey(t), SymbolKey(Norm(bt)), RelKind.BaseType));
-                foreach (var i in t.Interfaces) rels.Add((SymbolKey(t), SymbolKey(Norm(i)), RelKind.BaseType));
+                    rels.Add((key(t), key(Norm(bt)), RelKind.BaseType));
+                foreach (var i in t.Interfaces) rels.Add((key(t), key(Norm(i)), RelKind.BaseType));
                 foreach (var iface in t.AllInterfaces)
                     foreach (var m in iface.GetMembers())
                     {
                         if (m.IsStatic) continue;
                         var impl = t.FindImplementationForInterfaceMember(m);
                         if (impl != null && SymbolEqualityComparer.Default.Equals(impl.ContainingType, t))
-                            rels.Add((SymbolKey(Norm(impl)), SymbolKey(Norm(m)), RelKind.Implements));
+                            rels.Add((key(Norm(impl)), key(Norm(m)), RelKind.Implements));
                     }
                 break;
             case IMethodSymbol { OverriddenMethod: { } om } m:
-                rels.Add((SymbolKey(m), SymbolKey(Norm(om)), RelKind.Overrides)); break;
+                rels.Add((key(m), key(Norm(om)), RelKind.Overrides)); break;
             case IPropertySymbol { OverriddenProperty: { } op } p:
-                rels.Add((SymbolKey(p), SymbolKey(Norm(op)), RelKind.Overrides)); break;
+                rels.Add((key(p), key(Norm(op)), RelKind.Overrides)); break;
             case IEventSymbol { OverriddenEvent: { } oe } e:
-                rels.Add((SymbolKey(e), SymbolKey(Norm(oe)), RelKind.Overrides)); break;
+                rels.Add((key(e), key(Norm(oe)), RelKind.Overrides)); break;
         }
     }
 }

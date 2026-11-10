@@ -1,9 +1,12 @@
-//! M0 基准：打开 L2 语义索引，测量定义跳转 / 查找引用的响应时间，
+//! C# v2 基准：打开 L2 语义索引，测量定义跳转 / 查找引用的响应时间，
 //! 并对比“按名称查引用”与“语义查引用”的结果数量（噪音）。
-//! 用法: cargo run --release -p rove-lang-cs --example cs_index_bench -- <index.idx> [samples]
+//! 用法: cargo run --release -p rove-lang-cs --example cs_index_bench -- <index.idx> [samples] [--check-truncation]
 
 use rove_lang_cs::{CsIndex, Role};
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 fn mem_mb() -> f64 {
@@ -11,6 +14,9 @@ fn mem_mb() -> f64 {
 }
 
 fn stats(name: &str, mut v: Vec<Duration>) {
+    if v.is_empty() {
+        return;
+    }
     v.sort();
     let us = |d: Duration| d.as_secs_f64() * 1e6;
     let avg = v.iter().sum::<Duration>() / v.len() as u32;
@@ -29,7 +35,14 @@ fn main() {
     let path = args
         .get(1)
         .expect("usage: cs_index_bench <index.idx> [samples]");
-    let samples: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20000);
+    let samples: usize = args
+        .iter()
+        .skip(2)
+        .find(|arg| !arg.starts_with("--"))
+        .map(|s| s.parse().expect("sample count"))
+        .unwrap_or(20000);
+    assert!(samples > 0 && samples <= u32::MAX as usize);
+    let check_truncation = args.iter().any(|s| s == "--check-truncation");
 
     let m0 = mem_mb();
     let t = Instant::now();
@@ -40,46 +53,42 @@ fn main() {
         idx.byte_len() as f64 / 1048576.0,
         idx.files().len(),
         idx.symbols().len(),
-        idx.occurrences().len()
+        idx.occurrence_count()
     );
     println!(
-        "open: {:.1} ms, resident +{:.1} MB",
+        "open: {:.3} ms, resident +{:.1} MB, string payload reads: {}",
         open.as_secs_f64() * 1e3,
-        mem_mb() - m0
+        mem_mb() - m0,
+        idx.string_payload_reads()
     );
+    assert_eq!(idx.string_payload_reads(), 0);
 
     // 随机抽样引用位置（xorshift，可复现）
-    let occs = idx.occurrences();
+    let count = idx.occurrence_count();
+    if count == 0 || !(0..count).any(|i| idx.occurrence(i).is_some_and(|o| !Role(o.role).is_def()))
+    {
+        println!("no references to sample");
+        return;
+    }
     let mut seed: u64 = 0x9E3779B97F4A7C15;
-    let mut rnd = || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed
-    };
     let mut picks = Vec::with_capacity(samples);
     while picks.len() < samples {
-        let o = &occs[(rnd() % occs.len() as u64) as usize];
+        let i = (next_random(&mut seed) % count as u64) as usize;
+        let o = idx.occurrence(i).expect("occurrence");
         if !Role(o.role).is_def() {
-            let path = idx.str(idx.files()[o.file as usize].path).to_string();
-            picks.push((path, o.line, o.col + o.len as u32 / 2, o.symbol));
+            let path = idx.file_path(o.file).expect("occurrence path").to_owned();
+            picks.push((path, o.line, o.col, o.symbol));
         }
     }
 
-    // 冷查询（首次触达页面）与热查询分别统计
-    let mut cold = Vec::new();
-    let mut def_t = Vec::new();
+    let mut def_t = Vec::with_capacity(samples);
     let mut miss = 0;
     let mut wrong = 0;
-    for (i, (p, l, c, sym)) in picks.iter().enumerate() {
+    for (p, l, c, sym) in &picks {
         let t = Instant::now();
         let defs = idx.goto_definition(p, *l, *c);
         let d = t.elapsed();
-        if i < 200 {
-            cold.push(d)
-        } else {
-            def_t.push(d)
-        }
+        def_t.push(d);
         if idx.symbol_at(p, *l, *c) != Some(*sym) {
             wrong += 1;
         }
@@ -87,7 +96,15 @@ fn main() {
             miss += 1; // 外部 DLL 符号没有源码定义
         }
     }
-    stats("goto_definition (first 200)", cold);
+    stats(
+        "goto_definition (first 200)",
+        def_t.iter().take(200).copied().collect(),
+    );
+    // The v1 example reported the tail separately from the first 200 queries.
+    stats(
+        "goto_definition (after first 200)",
+        def_t.iter().skip(200).copied().collect(),
+    );
     stats("goto_definition", def_t);
     println!("  no source definition (external/metadata symbol): {:.1}%  position lookup mismatches: {wrong}", miss as f64 * 100.0 / samples as f64);
 
@@ -109,38 +126,42 @@ fn main() {
     );
 
     // 最重的查找引用：引用最多的 20 个源码符号
-    let mut heavy: Vec<(u32, u32)> = idx
+    let mut heavy: Vec<(usize, u32)> = idx
         .symbols()
         .iter()
         .enumerate()
         .filter(|(_, s)| s.flags & 1 != 0)
-        .map(|(i, s)| (s.ref_count, i as u32))
+        .map(|(i, _)| (idx.reference_count(i as u32), i as u32))
         .collect();
     heavy.sort_unstable_by(|a, b| b.cmp(a));
     let mut heavy_t = Vec::new();
     for &(_, sym) in heavy.iter().take(20) {
-        let mut n = 0usize;
         let t = Instant::now();
-        for o in idx.symbol_occurrences(sym) {
-            let _ = idx.location(o);
-            n += 1;
-        }
+        let n = idx
+            .symbol_occurrences(sym)
+            .filter(|o| idx.location(o).is_some())
+            .count();
         heavy_t.push(t.elapsed());
         assert!(n > 0);
     }
     stats("find_references (top-20 heavy)", heavy_t);
-    println!(
-        "  heaviest: {} refs ({})",
-        heavy[0].0,
-        idx.str(idx.symbols()[heavy[0].1 as usize].display)
-    );
+    if let Some(&(count, symbol)) = heavy.first() {
+        println!(
+            "  heaviest: {count} refs ({})",
+            idx.str(idx.symbols()[symbol as usize].display)
+                .expect("display")
+        );
+    }
 
     // 同名噪音：按名称查引用 vs 语义查引用
     println!("\nname-based vs semantic references (source symbols):");
     let mut by_name: HashMap<&str, Vec<u32>> = HashMap::new();
     for (i, s) in idx.symbols().iter().enumerate() {
         if s.flags & 1 != 0 {
-            by_name.entry(idx.str(s.name)).or_default().push(i as u32);
+            by_name
+                .entry(idx.str(s.name).expect("name"))
+                .or_default()
+                .push(i as u32);
         }
     }
     for name in [
@@ -150,13 +171,10 @@ fn main() {
         let Some(syms) = by_name.get(name) else {
             continue;
         };
-        let total: u32 = syms
-            .iter()
-            .map(|&s| idx.symbols()[s as usize].ref_count)
-            .sum();
+        let total: usize = syms.iter().map(|&s| idx.reference_count(s)).sum();
         let max = syms
             .iter()
-            .map(|&s| idx.symbols()[s as usize].ref_count)
+            .map(|&s| idx.reference_count(s))
             .max()
             .unwrap_or(0);
         let avg = total as f64 / syms.len() as f64;
@@ -166,4 +184,43 @@ fn main() {
         );
     }
     println!("\nresident after queries: {:.1} MB", mem_mb());
+    assert_eq!(
+        wrong, 0,
+        "position lookups disagreed with sampled occurrences"
+    );
+    if check_truncation {
+        verify_truncations(Path::new(path)).expect("truncation check");
+        println!("1000 random truncations rejected");
+    }
+}
+
+fn next_random(seed: &mut u64) -> u64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    *seed
+}
+
+fn verify_truncations(path: &Path) -> io::Result<()> {
+    let scratch = path.with_extension(format!("truncation-{}.tmp", std::process::id()));
+    let mut copy = File::create_new(&scratch)?;
+    let result = (|| {
+        let size = io::copy(&mut File::open(path)?, &mut copy)?;
+        let mut seed = 0x8aef_4d3b_129f_620b;
+        let mut lengths: Vec<_> = (0..1000).map(|_| next_random(&mut seed) % size).collect();
+        // Work from longest to shortest so every sample keeps its original prefix.
+        lengths.sort_unstable_by(|a, b| b.cmp(a));
+        for len in lengths {
+            copy.set_len(len)?;
+            if CsIndex::open(&scratch).is_ok() {
+                return Err(io::Error::other(format!(
+                    "accepted truncated index at {len} bytes"
+                )));
+            }
+        }
+        Ok(())
+    })();
+    drop(copy);
+    let cleanup = fs::remove_file(scratch);
+    result.and(cleanup)
 }
