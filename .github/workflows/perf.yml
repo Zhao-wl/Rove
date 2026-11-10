@@ -5,10 +5,8 @@ name: Perf
 # 触发方式：
 # - `main` 的 push：跑基准并把结果作为基线 artifact 保存（保留 90 天）；
 # - 给 PR 打 `perf` 标签：跑基准，并与最近一次 main 的基线比较，退化超过 15% **报警**；
-#   没有 main 基线时（例如还没在 main 上跑过）退而使用最近一次 perf 运行的结果，
-#   仅用于验证对比流程，报告里会写明基线来自哪个分支；
-# - 给 PR 打 `perf-baseline` 标签：只采集数据并把它上传成基线 artifact（同样用于验证流程）；
-# - 手动触发（workflow_dispatch）：可指定基线运行 ID。
+#   如果还没有任何基线（perf.yml 刚引入），这次运行会顺便把结果存成基线；
+# - 手动触发（workflow_dispatch）：可指定基线运行 ID，也可以强制上传基线。
 #
 # 不做绝对判定：托管机器的波动比 15% 还大。绝对指标在本地参考设备上测量并记入报告。
 # CI 不生成 big1g.txt（1 GiB），只跑 small.txt / uniq.txt 级别的用例。
@@ -46,11 +44,10 @@ jobs:
     name: 基准与预算
     runs-on: windows-latest
     timeout-minutes: 40
-    # 只有在 main 的 push、手动触发、或 PR 上打了 perf / perf-baseline 标签时才跑。
+    # main 的 push、手动触发，或 PR 上打了 perf 标签时才跑。
     if: |
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'perf') ||
-      contains(github.event.pull_request.labels.*.name, 'perf-baseline')
+      contains(github.event.pull_request.labels.*.name, 'perf')
     steps:
       - uses: actions/checkout@v4
 
@@ -74,32 +71,37 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 下载基线
+        id: baseline
         if: github.ref != 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           $runId = "${{ inputs.baseline_run_id }}"
           if (-not $runId) {
             $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml --branch main `
               --status success --limit 1 --json databaseId --jq '.[0].databaseId'
           }
           if (-not $runId) {
-            # 还没有 main 基线（例如 perf.yml 刚引入）：退而用最近一次 perf 运行，仅用于验证对比流程。
+            # 还没有 main 基线（perf.yml 刚引入）：退而用最近一次成功的 perf 运行。
             $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml `
-              --status success --limit 1 --json databaseId,headBranch --jq '.[0].databaseId'
-            Write-Host "没有 main 基线，退回最近一次 perf 运行：$runId（仅用于验证对比流程）"
+              --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+            if ($runId) {
+              Write-Host "没有 main 基线，退回最近一次 perf 运行：$runId（仅用于验证对比流程）"
+            }
           }
           if (-not $runId) {
-            Write-Host '没有可用的基线，本次只采集数据'
+            Write-Host '没有可用的基线，本次运行会顺便建立基线'
             exit 0
           }
           Write-Host "基线运行：$runId"
           gh run download $runId --repo $env:GITHUB_REPOSITORY -n perf-baseline -D baseline
           if ($LASTEXITCODE -ne 0) {
-            Write-Host '下载基线失败（该运行可能没有 perf-baseline artifact），本次只采集数据'
+            Write-Host '下载基线失败（该运行可能没有 perf-baseline artifact），本次运行会顺便建立基线'
             exit 0
           }
+          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: 跑基准并校验预算
         shell: pwsh
@@ -117,7 +119,7 @@ jobs:
         if: |
           github.ref == 'refs/heads/main' ||
           inputs.publish_baseline ||
-          contains(github.event.pull_request.labels.*.name, 'perf-baseline')
+          steps.baseline.outputs.found != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force baseline-out | Out-Null
@@ -127,7 +129,7 @@ jobs:
         if: |
           github.ref == 'refs/heads/main' ||
           inputs.publish_baseline ||
-          contains(github.event.pull_request.labels.*.name, 'perf-baseline')
+          steps.baseline.outputs.found != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: perf-baseline
