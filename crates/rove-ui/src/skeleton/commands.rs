@@ -20,6 +20,7 @@ impl Commands {
                 },
             )?;
         }
+        crate::editors::actions::register(&mut r)?;
         Ok(Self { registry: r })
     }
 }

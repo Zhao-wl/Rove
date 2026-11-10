@@ -27,7 +27,7 @@ enum Operation {
     Close,
     CloseGroup,
     CloseAllGroups,
-    CloseTabs(bool),
+    CloseTabs { all: bool, preserve_pinned: bool },
     Reopen,
     Keep,
     Pin(bool),
@@ -170,21 +170,30 @@ static COMMANDS: &[Spec] = &[
     spec!(
         "closeEditorsInGroup",
         "关闭组内标签",
-        CloseTabs(false),
+        CloseTabs {
+            all: false,
+            preserve_pinned: false
+        },
         "ctrl-k w",
         None
     ),
     spec!(
         "closeAllEditors",
         "关闭所有标签",
-        CloseTabs(true),
+        CloseTabs {
+            all: true,
+            preserve_pinned: true
+        },
         "ctrl-k ctrl-w",
         None
     ),
     spec!(
         "closeUnmodifiedEditors",
         "关闭未修改标签",
-        CloseTabs(false),
+        CloseTabs {
+            all: false,
+            preserve_pinned: true
+        },
         "ctrl-k u",
         None
     ),
@@ -525,7 +534,7 @@ pub(crate) fn execute(editor: &mut EditorService, id: &str) -> bool {
     let tab = editor.active().active;
     match spec.operation {
         Split(direction) => {
-            editor.split(direction);
+            let _ = editor.split(direction);
         }
         Orthogonal => {
             let direction = if editor.layout.parent_axis(group) == Some(Axis::Vertical) {
@@ -533,7 +542,7 @@ pub(crate) fn execute(editor: &mut EditorService, id: &str) -> bool {
             } else {
                 Direction::Down
             };
-            editor.split(direction);
+            let _ = editor.split(direction);
         }
         Secondary(split) => {
             if let Some(tab) = editor.groups.get_mut(&group).unwrap().current_mut() {
@@ -553,13 +562,18 @@ pub(crate) fn execute(editor: &mut EditorService, id: &str) -> bool {
                 editor.close_group(group);
             }
         }
-        CloseGroup => editor.close_group(group),
+        CloseGroup => {
+            editor.close_group(group);
+        }
         CloseAllGroups => {
             for group in editor.layout.order() {
                 editor.close_group(group);
             }
         }
-        CloseTabs(all) => editor.close_tabs((!all).then_some(group)),
+        CloseTabs {
+            all,
+            preserve_pinned,
+        } => editor.close_tabs((!all).then_some(group), preserve_pinned),
         Reopen => editor.reopen(),
         Keep => {
             if let Some(tab) = tab {

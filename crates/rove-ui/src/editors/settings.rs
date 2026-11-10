@@ -1,6 +1,6 @@
 use crate::documents::{OpenOptions, OpenSource, Presentation};
 use globset::{GlobBuilder, GlobMatcher};
-use rove_base::{Registry, Resource, Result, Value};
+use rove_base::{Error, Registry, Resource, Result, Value};
 use rove_config::{DefaultSettings, Key, Scope, Setting, SettingRegistry, Settings};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
@@ -16,6 +16,7 @@ pub(crate) enum EditorKind {
 pub(crate) struct EditorTypes {
     types: Registry<EditorKind>,
     rules: Vec<(GlobMatcher, bool, Arc<str>)>,
+    markdown: GlobMatcher,
 }
 
 fn compile(pattern: &str) -> Option<(GlobMatcher, bool)> {
@@ -65,7 +66,11 @@ impl EditorTypes {
                 }
             }
         }
-        Ok(Self { types, rules })
+        Ok(Self {
+            types,
+            rules,
+            markdown: compile("*.md").expect("valid built-in glob").0,
+        })
     }
 
     pub(crate) fn register_placeholder(&mut self, id: &str, label: &'static str) -> Result<()> {
@@ -78,7 +83,7 @@ impl EditorTypes {
         )
     }
 
-    pub(crate) fn resolve(&self, resource: &Resource, options: &OpenOptions) -> EditorKind {
+    pub(crate) fn resolve(&self, resource: &Resource, options: &OpenOptions) -> Result<EditorKind> {
         if options.location.is_some()
             || options.selection.is_some()
             || matches!(options.presentation, Presentation::Source)
@@ -91,14 +96,29 @@ impl EditorTypes {
                     | OpenSource::Breadcrumb
             )
         {
-            return EditorKind::Text;
+            return Ok(EditorKind::Text);
         }
         let path = resource_path(resource);
-        self.rules
+        let mut associated = self
+            .rules
             .iter()
             .filter(|(glob, basename, _)| matches(glob, *basename, path))
-            .find_map(|(_, _, id)| self.types.get(id).cloned())
-            .unwrap_or(EditorKind::Text)
+            .filter_map(|(_, _, id)| self.types.get(id));
+        if matches!(options.presentation, Presentation::Preview) {
+            associated
+                .find(|kind| matches!(kind, EditorKind::Placeholder { .. }))
+                .or_else(|| {
+                    if matches(&self.markdown, true, path) {
+                        self.types.get(MARKDOWN)
+                    } else {
+                        None
+                    }
+                })
+                .cloned()
+                .ok_or(Error::Unsupported)
+        } else {
+            Ok(associated.next().cloned().unwrap_or(EditorKind::Text))
+        }
     }
 }
 
@@ -229,7 +249,6 @@ pub fn register() -> Result<SettingRegistry> {
             "rove.largeFile.threshold",
             Value::Number(SizePolicy::default().huge_bytes as f64),
         ),
-        ("explorer.openFilePreserveFocus", Value::Bool(false)),
     ] {
         registry.register(
             key,
@@ -319,7 +338,11 @@ impl EditorSettings {
                 huge_bytes: number("rove.largeFile.threshold")?.max(1.0) as u64,
                 optimize: flag("editor.largeFileOptimizations")?,
             },
-            explorer_preserve_focus: flag("explorer.openFilePreserveFocus")?,
+            explorer_preserve_focus: match flag("explorer.openFilePreserveFocus") {
+                Ok(value) => value,
+                Err(Error::NotFound) => false, // Registered by the explorer when installed.
+                Err(error) => return Err(error),
+            },
             preview: flag("workbench.editor.enablePreview")?,
             preview_quick: flag("workbench.editor.enablePreviewFromQuickOpen")?,
             preview_code: flag("workbench.editor.enablePreviewFromCodeNavigation")?,

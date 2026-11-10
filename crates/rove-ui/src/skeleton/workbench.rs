@@ -152,7 +152,6 @@ pub struct Workbench {
     tree: Option<FileTree>,
     editor: EditorService,
     root: PathBuf,
-    editor_commands: rove_commands::CommandRegistry,
     prepared: VecDeque<PreparedViewport>,
     trace_switch: bool,
     switch_started: Option<(TabId, Instant)>,
@@ -161,7 +160,7 @@ pub struct Workbench {
     theme: Arc<dyn Theme>,
     strings: StringTable,
     contributions: ContributionRegistry,
-    commands: Arc<dyn CommandExecutor>,
+    commands: Commands,
     feedback: StatusFeedback,
     focus: FocusHandle,
     scan_failed: bool,
@@ -209,8 +208,6 @@ impl Workbench {
             .detach();
         };
         let size = settings.size;
-        let mut editor_commands = rove_commands::CommandRegistry::default();
-        editor_actions::register(&mut editor_commands).expect("unique editor commands");
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
@@ -220,7 +217,6 @@ impl Workbench {
                 schedule,
             ),
             root: root.clone(),
-            editor_commands,
             trace_switch: std::env::var_os("ROVE_EDITOR_SWITCH_TRACE").is_some(),
             switch_started: None,
             prepared: VecDeque::new(),
@@ -229,7 +225,7 @@ impl Workbench {
             theme: Arc::new(DarkTheme::new().unwrap()),
             strings: appearance::strings().unwrap(),
             contributions: appearance::contributions().unwrap(),
-            commands: Arc::new(Commands::new().unwrap()),
+            commands: Commands::new().unwrap(),
             feedback: StatusFeedback::default(),
             focus: cx.focus_handle(),
             scan_failed: false,
@@ -423,11 +419,16 @@ impl Workbench {
         self.note_switch(previous, start);
     }
 
+    /// Shared by the command palette and shortcut dispatch.
+    pub fn command_registry(&self) -> &rove_commands::CommandRegistry {
+        &self.commands.registry
+    }
+
     fn command(&mut self, id: &str, cx: &mut Context<Self>) {
         let start = Instant::now();
         let previous = self.editor.active().active;
-        if self.editor_commands.get(id).is_some() {
-            editor_actions::execute(&mut self.editor, id);
+        if self.commands.registry.get(id).is_some() && editor_actions::execute(&mut self.editor, id)
+        {
             self.note_switch(previous, start);
             cx.notify();
             return;
@@ -1002,6 +1003,8 @@ impl Element for CodeElement {
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
 pub fn launch(root: PathBuf, started: Instant) {
+    let settings =
+        crate::editors::startup_settings::load(crate::editor_setting_defaults().unwrap());
     Application::new().run(move |cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("ctrl-p", QuickOpen, None),
@@ -1022,7 +1025,12 @@ pub fn launch(root: PathBuf, started: Instant) {
                     }),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| Workbench::new(root, started, cx)),
+                |_, cx| {
+                    cx.new(|cx| {
+                        Workbench::with_editor_settings(root, started, &settings, cx)
+                            .expect("valid editor settings")
+                    })
+                },
             )
             .expect("create window");
         window

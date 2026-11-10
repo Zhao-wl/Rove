@@ -1,13 +1,14 @@
 pub(crate) mod actions;
 mod layout;
 pub(crate) mod settings;
+pub(crate) mod startup_settings;
 
 pub(crate) use layout::{Axis, Direction, Layout};
 use settings::{EditorKind, EditorSettings};
 
 use crate::{documents::*, skeleton::events::EventBus};
 use rove_base::*;
-use rove_buffer::{Document, Documents, SizeClass};
+use rove_buffer::{Document, Documents, LineCount, SizeClass};
 use rove_syntax::{SyntaxService, SyntaxSnapshot};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 
@@ -31,12 +32,23 @@ pub(crate) struct ViewState {
 }
 
 impl ViewState {
-    fn reveal(&mut self, position: Position, selection: Option<TextRange>, rows: f64, lines: u64) {
+    fn reveal(
+        &mut self,
+        position: Position,
+        selection: Option<TextRange>,
+        rows: f64,
+        lines: LineCount,
+    ) {
         self.cursor = position;
         self.selection = selection;
         let line = position.line.0 as f64;
         if line < self.scroll.ceil() || line >= (self.scroll + rows).floor() {
-            self.scroll = (line - (rows / 2.0).floor()).clamp(0.0, (lines as f64 - rows).max(0.0));
+            let centered = (line - (rows / 2.0).floor()).max(0.0);
+            self.scroll = if lines.complete {
+                centered.min((lines.known as f64 - rows).max(0.0))
+            } else {
+                centered
+            };
         }
     }
 }
@@ -84,16 +96,34 @@ impl Tab {
             && self.request.as_ref().is_some_and(|request| request.slow)
     }
 
-    fn cancel(&mut self) {
-        if let Some(request) = self.request.take() {
-            request.cancel.cancel();
+    fn cancel(&mut self) -> Option<OpenRequestId> {
+        let request = self.request.take()?;
+        request.cancel.cancel();
+        Some(request.id)
+    }
+
+    fn snapshot(&self) -> EditorTabSnapshot {
+        EditorTabSnapshot {
+            id: EditorTabId(self.id),
+            resource: self.resource.clone(),
+            kind: match &self.kind {
+                EditorKind::Text => EditorTabKind::Text,
+                EditorKind::Placeholder { id, .. } => EditorTabKind::Custom(id.clone()),
+            },
+            preview: self.preview,
+            pinned: self.pinned,
+            state: match &self.content {
+                Content::Loading => EditorTabState::Loading,
+                Content::Ready(opened) => EditorTabState::Ready(opened.document.clone()),
+                Content::Failed(error) => EditorTabState::Failed(error.clone()),
+            },
         }
     }
 }
 
 impl Drop for Tab {
     fn drop(&mut self) {
-        self.cancel();
+        let _ = self.cancel();
     }
 }
 
@@ -279,10 +309,12 @@ impl EditorService {
         }
     }
 
-    fn add_group(&mut self, anchor: EditorGroupId, direction: Direction) -> EditorGroupId {
+    fn add_group(&mut self, anchor: EditorGroupId, direction: Direction) -> Option<EditorGroupId> {
+        let rows = self.groups.get(&anchor)?.rows;
         let id = EditorGroupId(self.next());
-        assert!(self.layout.split(anchor, id, direction));
-        let rows = self.groups[&anchor].rows;
+        if !self.layout.split(anchor, id, direction) {
+            return None;
+        }
         let rows = if direction.axis() == Axis::Vertical {
             (rows / 2.0).floor().max(1.0)
         } else {
@@ -297,12 +329,12 @@ impl EditorService {
         );
         self.maximized = None;
         self.expanded = None;
-        id
+        Some(id)
     }
 
-    pub(crate) fn split(&mut self, direction: Direction) -> EditorGroupId {
+    pub(crate) fn split(&mut self, direction: Direction) -> Option<EditorGroupId> {
         let source = self.focused;
-        let target = self.add_group(source, direction);
+        let target = self.add_group(source, direction)?;
         let id = self.next();
         if let Some(tab) = self.groups[&source].current() {
             let copy = Tab {
@@ -338,7 +370,7 @@ impl EditorService {
             }
         }
         self.focus(target);
-        target
+        Some(target)
     }
 
     pub(crate) fn toggle_maximize(&mut self, group: EditorGroupId) {
@@ -417,7 +449,10 @@ impl EditorService {
             return;
         }
         if let Some(direction) = split {
-            target = self.add_group(target, direction);
+            let Some(group) = self.add_group(target, direction) else {
+                return;
+            };
+            target = group;
         }
         let mut tab = self.groups.get_mut(&origin).unwrap().take(id).unwrap();
         let pane = self.groups.get_mut(&target).unwrap();
@@ -480,7 +515,7 @@ impl EditorService {
         let Some(pane) = self.groups.get_mut(&group) else {
             return;
         };
-        let Some(tab) = pane.take(id) else { return };
+        let Some(mut tab) = pane.take(id) else { return };
         if remember {
             pane.remember(&tab);
             if self.closed.len() == HISTORY_LIMIT {
@@ -490,6 +525,17 @@ impl EditorService {
                 .push((group, tab.resource.clone(), tab.options.clone()));
         }
         self.count_down(&tab);
+        if let Some(request) = tab.cancel() {
+            self.report_cancelled(group, request);
+        }
+    }
+
+    fn report_cancelled(&self, group: EditorGroupId, request: OpenRequestId) {
+        self.events.emit(OpenEvent::Failed {
+            request,
+            group,
+            error: Error::Cancelled,
+        });
     }
 
     fn count_up(&mut self, tab: &Tab) {
@@ -500,25 +546,30 @@ impl EditorService {
 
     fn count_down(&mut self, tab: &Tab) {
         if let Some(opened) = tab.opened() {
-            let id = opened.document.id;
-            let count = self.open_ids.get_mut(&id).unwrap();
-            *count -= 1;
-            if *count == 0 {
-                self.open_ids.remove(&id);
+            Self::release_model(&mut self.open_ids, opened.document.id);
+        }
+    }
+
+    fn release_model(open_ids: &mut BTreeMap<DocumentId, usize>, id: DocumentId) {
+        if let Some(count) = open_ids.get_mut(&id) {
+            if *count > 1 {
+                *count -= 1;
+            } else {
+                open_ids.remove(&id);
             }
         }
     }
 
-    pub(crate) fn close_tabs(&mut self, group: Option<EditorGroupId>) {
+    pub(crate) fn close_tabs(&mut self, group: Option<EditorGroupId>, preserve_pinned: bool) {
         let ids: Vec<_> = self
             .groups
             .iter()
-            .filter(|(id, _)| group.is_none_or(|g| g == **id))
+            .filter(|(id, _)| group.is_none_or(|group| group == **id))
             .flat_map(|(&id, pane)| {
                 pane.tabs
                     .iter()
-                    .filter(|t| !t.pinned && !t.dirty)
-                    .map(move |t| (id, t.id))
+                    .filter(|tab| !tab.dirty && (!preserve_pinned || !tab.pinned))
+                    .map(move |tab| (id, tab.id))
             })
             .collect();
         for (group, id) in ids {
@@ -560,12 +611,12 @@ impl EditorService {
         changed
     }
 
-    pub(crate) fn close_group(&mut self, group: EditorGroupId) {
+    pub(crate) fn close_group(&mut self, group: EditorGroupId) -> CloseOutcome {
         let Some(pane) = self.groups.get(&group) else {
-            return;
+            return CloseOutcome::NotOpen;
         };
         if pane.tabs.iter().any(|tab| tab.dirty) {
-            return;
+            return CloseOutcome::NeedsUserDecision;
         }
         let ids: Vec<_> = pane.tabs.iter().map(|tab| tab.id).collect();
         for id in ids {
@@ -586,6 +637,7 @@ impl EditorService {
         } else {
             self.groups.insert(group, Group::default());
         }
+        CloseOutcome::Closed
     }
 
     pub(crate) fn reopen(&mut self) {
@@ -682,14 +734,22 @@ impl EditorService {
                 .ok_or(Error::NotFound),
             OpenTarget::Active if !self.active().locked => Ok(current),
             OpenTarget::Active | OpenTarget::Beside => {
-                if let Some(next) = self
-                    .layout
-                    .neighbor(current, Direction::Right)
-                    .filter(|group| !self.groups[group].locked)
-                {
-                    return Ok(next);
+                for direction in [
+                    Direction::Right,
+                    Direction::Down,
+                    Direction::Left,
+                    Direction::Up,
+                ] {
+                    if let Some(next) = self
+                        .layout
+                        .neighbor(current, direction)
+                        .filter(|group| self.groups.get(group).is_some_and(|pane| !pane.locked))
+                    {
+                        return Ok(next);
+                    }
                 }
-                Ok(self.add_group(current, Direction::Right))
+                self.add_group(current, Direction::Right)
+                    .ok_or(Error::NotFound)
             }
         }
     }
@@ -728,7 +788,7 @@ impl EditorService {
     ) -> Result<OpenRequestId> {
         cancel.check()?;
         let from = self.location();
-        let kind = self.settings.editors.resolve(&resource, &options);
+        let kind = self.settings.editors.resolve(&resource, &options)?;
         let text_editor = kind == EditorKind::Text;
         let known = self.loader.find(&resource);
         let matches = |tab: &Tab| {
@@ -765,6 +825,7 @@ impl EditorService {
             })
             .cloned();
         let id = OpenRequestId(self.next());
+        let mut replaced = None;
         let tab_id = if let Some(existing) = self.groups[&group]
             .tabs
             .iter()
@@ -777,7 +838,7 @@ impl EditorService {
                 .unwrap()
                 .tab_mut(existing)
                 .unwrap();
-            tab.cancel();
+            replaced = tab.cancel();
             if !preview {
                 tab.preview = false;
             }
@@ -849,6 +910,9 @@ impl EditorService {
             from,
             record: history,
         });
+        if let Some(request) = replaced {
+            self.report_cancelled(group, request);
+        }
         let loader = self.loader.clone();
         let syntax = self.syntax.clone();
         (self.schedule)(OpenJob {
@@ -859,9 +923,7 @@ impl EditorService {
                     Some(opened) => opened.document.clone(),
                     None => loader.open(resource, cancel.clone()).await?,
                 };
-                let position = options
-                    .location
-                    .or_else(|| options.selection.as_ref().map(TextRange::start));
+                let position = options.reveal_position();
                 if let Some(position) = position {
                     document.text.offset(position)?;
                 }
@@ -939,12 +1001,7 @@ impl EditorService {
         let event = match result {
             Ok(loaded) => {
                 if let Some(old) = tab.opened() {
-                    let id = old.document.id;
-                    let count = self.open_ids.get_mut(&id).unwrap();
-                    *count -= 1;
-                    if *count == 0 {
-                        self.open_ids.remove(&id);
-                    }
+                    Self::release_model(&mut self.open_ids, old.document.id);
                 }
                 let document = loaded.opened.document.id;
                 if let Some(position) = loaded.position {
@@ -952,7 +1009,7 @@ impl EditorService {
                         position,
                         loaded.selection,
                         rows,
-                        loaded.opened.document.text.lines().known,
+                        loaded.opened.document.text.lines(),
                     );
                 }
                 tab.content = Content::Ready(loaded.opened);
@@ -974,6 +1031,7 @@ impl EditorService {
                 }
                 OpenEvent::Ready {
                     request: id,
+                    group,
                     document,
                 }
             }
@@ -984,6 +1042,7 @@ impl EditorService {
                 }
                 OpenEvent::Failed {
                     request: id,
+                    group,
                     error: Error::Cancelled,
                 }
             }
@@ -991,7 +1050,11 @@ impl EditorService {
                 if !matches!(tab.content, Content::Ready(_)) {
                     tab.content = Content::Failed(error.clone());
                 }
-                OpenEvent::Failed { request: id, error }
+                OpenEvent::Failed {
+                    request: id,
+                    group,
+                    error,
+                }
             }
         };
         self.events.emit(event);
@@ -1046,15 +1109,11 @@ impl OpenDocuments for EditorService {
         Ok(CloseOutcome::Closed)
     }
 
-    fn in_group(&self, group: EditorGroupId) -> Vec<Arc<Document>> {
-        let mut seen = std::collections::BTreeSet::new();
+    fn in_group(&self, group: EditorGroupId) -> Vec<EditorTabSnapshot> {
         self.groups
             .get(&group)
             .into_iter()
-            .flat_map(|pane| &pane.tabs)
-            .filter_map(Tab::opened)
-            .filter(|opened| seen.insert(opened.document.id))
-            .map(|opened| opened.document.clone())
+            .flat_map(|pane| pane.tabs.iter().map(Tab::snapshot))
             .collect()
     }
 
