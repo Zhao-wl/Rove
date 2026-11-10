@@ -673,7 +673,14 @@ impl WindowsWindowInner {
     fn handle_ime_composition(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
         let ctx = unsafe { ImmGetContext(handle) };
         if ctx.0.is_null() {
-            return None;
+            // `lparam == 0` means the composition string is now empty; clearing it
+            // never reads the context, so keep that path alive without one. Nothing
+            // was acquired, so nothing is released, and geometry cannot be pushed
+            // without a context either.
+            if lparam.0 as u32 != 0 {
+                return None;
+            }
+            return self.handle_ime_composition_inner(ctx, lparam);
         }
         let result = self.handle_ime_composition_inner(ctx, lparam);
         unsafe { ImmReleaseContext(handle, ctx).ok().log_err() };

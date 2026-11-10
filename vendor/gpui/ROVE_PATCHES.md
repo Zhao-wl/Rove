@@ -12,7 +12,7 @@ Vendored crates.io `gpui` **0.2.2**, copied from the local Cargo registry packag
 
 - The shared helper reads the current window scale factor, rounds logical bounds into physical client coordinates, calls `ImmSetCompositionWindow(CFS_POINT)` and `ImmSetCandidateWindow(CFS_EXCLUDE)` with the caret rectangle, and releases every non-null HIMC. No screen-coordinate conversion is performed: IMM32 expects client coordinates. Candidate placement at screen edges remains the IME's responsibility and requires manual testing.
 
-- Original `handle_ime_composition` only applied composition text. It now refreshes geometry after applying the event and releasing its context, preserving the original event return value only for non-null contexts. **Behavior change:** a NULL HIMC now returns `None` immediately, so the Windows default procedure receives the message; the upstream implementation attempted composition handling with the null context. No release is needed for NULL.
+- Original `handle_ime_composition` only applied composition text. It now refreshes geometry after applying the event and releasing its context, preserving the original event return value only for non-null contexts. **Behavior change:** with a NULL HIMC the message is forwarded to the Windows default procedure (`None`) unless `lparam == 0`; see the NULL-HIMC entry below. No release is needed for NULL.
 
 ## Reapplying on upgrade
 
@@ -84,3 +84,20 @@ Both sides measured on the same machine with `cargo build --release -p rove-app`
 | `rove.exe` bytes | 13,664,768 | 13,661,696 (−3,072) |
 
 The build-time difference is **not** attributable to the patch: other sessions were compiling concurrently on the same 16-core machine during both runs (cargo reported waiting on the package-cache lock; a first "after" attempt hit a rustc `STATUS_STACK_BUFFER_OVERRUN` in the unmodified `windows` crate and was rerun). The patch changes only `platform/windows/{events,window}.rs`, so the dependency graph is identical and size differs by 3 KB. The historical 411 packages / 469 s / 6.2 MB baseline was the M0 standalone prototype, not today's `rove-app`, so it is not directly comparable; CI's size-guard job reports the PR's `rove.exe` against the 6.2 MB budget baseline.
+
+### Follow-up: NULL HIMC must still clear an emptied composition (2026-11-10)
+
+`handle_ime_composition` acquired the context first and returned `None` as soon as `ImmGetContext` yielded a NULL `HIMC`. Upstream 0.2.2 (`src/platform/windows/events.rs:657`) passes the NULL context straight into `handle_ime_composition_inner`, whose `lparam == 0` branch (Japanese IME signalling an empty composition string) calls `replace_text_in_range(None, "")` and never reads the context. The early return therefore dropped the only clear-composition path: if the IME was disabled or switched away mid-composition while the context was already gone, a stale preedit stayed in the buffer.
+
+`handle_ime_composition` now returns `None` only for a NULL context with `lparam != 0`; a NULL context with `lparam == 0` still runs the inner handler so the composition is cleared. Nothing was acquired in that branch, so `ImmReleaseContext` is not called and no geometry update is attempted — both require a live context. Non-NULL contexts are unchanged: apply, release, then reposition.
+
+## Known gaps (已知缺口)
+
+Recorded for follow-up; **no code is changed for these in this PR**. The first three are expected to be covered either by the product editor (R46) calling `Window::invalidate_character_coordinates()` as a backstop, or by a dedicated follow-up issue.
+
+- **Repositioning only happens on composition messages.** Candidate/composition geometry is pushed from `WM_IME_STARTCOMPOSITION` and `WM_IME_COMPOSITION` only. `WM_DPICHANGED`, `WM_SIZE` and scrolling do not refresh it, so an open candidate window keeps stale coordinates until the next composition message.
+- **`CFS_EXCLUDE.rcArea` is one physical pixel wide for an empty selection.** `update_ime_position` widens a collapsed caret rect by exactly 1px (`caret.x.saturating_add(1)`) to keep the rectangle non-empty. It does not cover the composition string or the whole line, so the IME may still overlap the preedit. Needs real-device acceptance, not code inspection.
+- **Coordinates are not clipped to the client area.** Logical bounds are rounded into client coordinates without clamping, so a caret scrolled out of the viewport yields negative (or out-of-bounds) coordinates handed to `ImmSetCompositionWindow` / `ImmSetCandidateWindow`.
+- **Manual evidence lives on a side branch.** The runs are on `codex/manual-evidence-2026-11-10` (commits `3e46ab2` and `441136a`). Permalinks, so the evidence survives deletion of that branch:
+  - https://github.com/Zhao-wl/Rove/tree/3e46ab2aadd555ee4d3cef39e09c8dcec6a5a06e/pr-80
+  - https://github.com/Zhao-wl/Rove/tree/441136a0763b3866eb000ca2411ce126f9561337/retest-2026-11-10/pr-80
