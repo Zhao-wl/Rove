@@ -13,7 +13,7 @@ use rove_buffer::TextSource;
 use rove_config::Settings;
 use rows::{LineTokens, RowRanges};
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tree_sitter::{InputEdit, Point, Tree};
@@ -104,7 +104,15 @@ impl SyntaxService for DocumentSyntax {
             let compatible = old
                 .as_deref()
                 .filter(|s| s.language == language && s.line_limit == line_limit);
-            let deadline = compatible.and_then(|_| {
+            // Budget only edits that extend the baseline. A fallback keeps the baseline, so the
+            // next edit mismatches it; that full rebuild must finish or highlighting never advances.
+            let incremental = compatible.filter(|s| {
+                service
+                    .edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.version == s.version())
+            });
+            let deadline = incremental.and_then(|_| {
                 Instant::now()
                     .checked_add(service.syntax.budget.unwrap_or(Duration::from_millis(50)))
             });
@@ -181,6 +189,8 @@ struct Parsed {
     tree: Tree,
     ranges: RowRanges,
     lines: Vec<LineTokens>,
+    /// Lines reused from an older snapshot keep old offsets; rebase each once per snapshot.
+    rebased: Vec<OnceLock<Arc<[Token]>>>,
 }
 
 impl SyntaxSnapshot for Snapshot {
@@ -192,7 +202,8 @@ impl SyntaxSnapshot for Snapshot {
         if let Some(parsed) = &self.parsed {
             let row = usize::try_from(line.0).map_err(|_| Error::OutOfBounds)?;
             let range = parsed.ranges.get(row)?;
-            return Ok(parsed.lines[row].at(range.start));
+            let tokens = parsed.rebased[row].get_or_init(|| parsed.lines[row].at(range.start));
+            return Ok(tokens.clone());
         }
         let count = self.text.lines();
         if line.0 < count.known {
@@ -303,6 +314,9 @@ fn build(
                 source,
                 tree,
                 ranges,
+                rebased: std::iter::repeat_with(OnceLock::new)
+                    .take(lines.len())
+                    .collect(),
                 lines,
             }),
         },

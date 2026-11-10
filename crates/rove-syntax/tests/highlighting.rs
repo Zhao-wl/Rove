@@ -288,6 +288,17 @@ fn deadline_returns_previous_version_and_cancellation_remains_distinct() {
         block_on(changed.analyze(Arc::new(Text::new("false", 2)), "json".into(), cancel)),
         Err(Error::Cancelled)
     ));
+
+    // The next edit is against the version that timed out, so it cannot extend the baseline.
+    // That rebuild ignores the budget and moves the baseline forward.
+    let recovered = parse(
+        &service.with_edit(replacement(2, 0, 5, "null")),
+        "json",
+        "null",
+        3,
+    );
+    assert_eq!(recovered.snapshot.version(), Version(3));
+    assert!(!recovered.snapshot.tokens(Line(0)).unwrap().is_empty());
 }
 
 #[test]
