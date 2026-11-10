@@ -23,7 +23,7 @@ static class IndexWriter
 
     public static (long occurrences, long relations, long bytes) Write(
         string outPath, byte[] configHash, IndexedFile[] files,
-        ConcurrentDictionary<string, List<Occ>> fileOccs,
+        List<Occ>?[] fileOccs,
         ConcurrentDictionary<SymbolKey, SymRec> symbols,
         ConcurrentBag<(SymbolKey from, SymbolKey to, RelKind kind)> rels)
     {
@@ -42,7 +42,7 @@ static class IndexWriter
 
     static (long occurrences, long relations, long bytes) WriteFile(
         string path, byte[] configHash, IndexedFile[] files,
-        ConcurrentDictionary<string, List<Occ>> fileOccs,
+        List<Occ>?[] fileOccs,
         ConcurrentDictionary<SymbolKey, SymRec> symbols,
         ConcurrentBag<(SymbolKey from, SymbolKey to, RelKind kind)> rels)
     {
@@ -61,7 +61,7 @@ static class IndexWriter
         uint pathOffset = 0;
         foreach (var file in files)
         {
-            fileOccs.TryGetValue(file.FullPath, out var list);
+            var list = fileOccs[(int)file.Id];
             fileRecs.Add((pathOffset, (uint)occurrences.Count, (uint)(list?.Count ?? 0), (uint)inactive.Count, file.Hash));
             pathOffset = checked(pathOffset + (uint)file.Path.Length);
             AddInactive(file, inactive);

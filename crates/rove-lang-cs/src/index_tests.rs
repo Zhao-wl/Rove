@@ -28,11 +28,8 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_file(self.dir.join("test.idx"));
-        let _ = fs::remove_file(self.dir.join("Fixture.csproj"));
-        let _ = fs::remove_file(self.dir.join("Assets/Unicode.cs"));
-        let _ = fs::remove_dir(self.dir.join("Assets"));
-        let _ = fs::remove_dir(&self.dir);
+        // Fixture::new creates this unique directory before storing it.
+        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -179,6 +176,11 @@ fn checks_structure_even_if_header_checksum_matches() {
     assert!(error.to_string().contains("unsupported C# index version 3"));
 }
 
+fn indexer_dll() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/rove-indexer-cs/bin/Release/net9.0/rove-indexer-cs.dll")
+}
+
 /// Runs against the real .NET writer after the release build.
 #[test]
 #[ignore = "requires the Release .NET indexer"]
@@ -206,8 +208,7 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
     ).unwrap();
 
     let index_path = fixture.dir.join("test.idx");
-    let dll = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/rove-indexer-cs/bin/Release/net9.0/rove-indexer-cs.dll");
+    let dll = indexer_dll();
     let output = std::process::Command::new("dotnet")
         .arg(dll)
         .arg(&fixture.dir)
@@ -220,7 +221,7 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     let index = CsIndex::open(&index_path).unwrap();
-    assert_eq!(index.header().indexer_version, [1, 0, 1, 0]);
+    assert_eq!(index.header().indexer_version, [1, 0, 2, 0]);
     let rel_path = "Assets/Unicode.cs";
     let file = index.file_id(rel_path).unwrap();
     let line = source_text.lines().nth(1).unwrap();
@@ -364,4 +365,224 @@ fn wide_occurrence_lookup_and_saturated_definition_count() {
             is_def: false
         })
     );
+}
+
+#[test]
+#[ignore = "requires the Release .NET indexer and .NET SDK"]
+fn generated_parameters_have_distinct_local_keys() {
+    const GENERATED: &str = r#"
+public static class GeneratedApi {
+    public static int Left(/* 中文😀 */ int value) { return value; }
+    public static int Right(int value) { return value; }
+}
+"#;
+    const CALLER_A: &str =
+        "class A { int Call() => GeneratedApi.Left(value: 1) + GeneratedApi.Right(value: 2); }";
+    const CALLER_B: &str = "class B { int Call() => GeneratedApi.Left(value: 3); }";
+    const CALLER_C: &str = "class C { int Call() => GeneratedApi.Left(value: 4); }";
+    let fixture = Fixture::new();
+    let dll = indexer_dll();
+    let roslyn = dll.with_file_name("Microsoft.CodeAnalysis.dll");
+    let generator = fixture.dir.join("generator");
+    fs::create_dir(&generator).unwrap();
+    let escape = |path: &Path| {
+        path.to_string_lossy()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    fs::write(generator.join("FixtureGenerator.csproj"), format!(r#"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Reference Include="Microsoft.CodeAnalysis"><HintPath>{}</HintPath></Reference></ItemGroup>
+</Project>
+"#, escape(&roslyn))).unwrap();
+    fs::write(
+        generator.join("FixtureGenerator.cs"),
+        format!(
+            r####"
+using Microsoft.CodeAnalysis;
+
+[Generator]
+public sealed class FixtureGenerator : ISourceGenerator
+{{
+    public void Initialize(GeneratorInitializationContext context) {{ }}
+    public void Execute(GeneratorExecutionContext context) =>
+        context.AddSource("Shared.g.cs", """
+{GENERATED}
+""");
+}}
+"####
+        ),
+    )
+    .unwrap();
+    let build = std::process::Command::new("dotnet")
+        .args([
+            "build",
+            "-c",
+            "Release",
+            "--disable-build-servers",
+            "--nologo",
+        ])
+        .current_dir(&generator)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let analyzer = generator.join("bin/Release/net9.0/FixtureGenerator.dll");
+
+    let runtimes = std::process::Command::new("dotnet")
+        .arg("--list-runtimes")
+        .output()
+        .unwrap();
+    assert!(runtimes.status.success());
+    let runtimes = String::from_utf8(runtimes.stdout).unwrap();
+    let corelib = runtimes
+        .lines()
+        .find_map(|line| {
+            let (version, folder) = line
+                .strip_prefix("Microsoft.NETCore.App ")?
+                .split_once(" [")?;
+            if !version.starts_with("9.") {
+                return None;
+            }
+            let path = Path::new(folder.strip_suffix(']')?)
+                .join(version)
+                .join("System.Private.CoreLib.dll");
+            path.is_file().then_some(path)
+        })
+        .expect(".NET 9 runtime required by the indexer");
+    for (project, source) in [("A", CALLER_A), ("B", CALLER_B)] {
+        fs::write(fixture.dir.join(format!("{project}.cs")), source).unwrap();
+        fs::write(
+            fixture.dir.join(format!("{project}.csproj")),
+            format!(
+                r#"
+<Project>
+  <PropertyGroup><AssemblyName>{project}</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="{project}.cs" />
+    <Reference Include="System.Private.CoreLib"><HintPath>{}</HintPath></Reference>
+    <Analyzer Include="{}" />
+  </ItemGroup>
+</Project>
+"#,
+                escape(&corelib),
+                escape(&analyzer)
+            ),
+        )
+        .unwrap();
+    }
+
+    fs::write(fixture.dir.join("C.cs"), CALLER_C).unwrap();
+    fs::write(
+        fixture.dir.join("C.csproj"),
+        format!(
+            r#"
+<Project>
+  <ItemGroup>
+    <Compile Include="C.cs" />
+    <Reference Include="System.Private.CoreLib"><HintPath>{}</HintPath></Reference>
+    <ProjectReference Include="A.csproj" />
+  </ItemGroup>
+</Project>
+"#,
+            escape(&corelib)
+        ),
+    )
+    .unwrap();
+
+    let path = fixture.dir.join("test.idx");
+    let output = std::process::Command::new("dotnet")
+        .arg(dll)
+        .arg(&fixture.dir)
+        .arg(&path)
+        .arg("--generators")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let index = CsIndex::open(path).unwrap();
+    assert_eq!(
+        index.files().len(),
+        5,
+        "three handwritten and two generated files"
+    );
+
+    let left_offset = GENERATED.find("value").unwrap() as u32;
+    let right_offset = GENERATED.find("Right(int ").unwrap() as u32 + "Right(int ".len() as u32;
+    let cases = [
+        (
+            "A.cs",
+            CALLER_A.find("value").unwrap(),
+            "A.csproj",
+            left_offset,
+        ),
+        (
+            "A.cs",
+            CALLER_A.rfind("value").unwrap(),
+            "A.csproj",
+            right_offset,
+        ),
+        (
+            "B.cs",
+            CALLER_B.find("value").unwrap(),
+            "B.csproj",
+            left_offset,
+        ),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for (caller, column, project, offset) in cases {
+        let column = Utf8Column(column as u32);
+        let symbol = index
+            .symbol_at(caller, 0, column)
+            .expect("named argument symbol");
+        assert!(
+            seen.insert(symbol),
+            "different parameters shared a symbol ID"
+        );
+        let SymbolKey::Local {
+            file,
+            offset: declaration,
+        } = index.symbol_key(symbol).unwrap()
+        else {
+            panic!("generated parameter did not get a local key")
+        };
+        assert_eq!(declaration, ByteOffset(offset));
+        let generated_path = index.file_path(file).unwrap();
+        assert!(generated_path.starts_with(&format!("rove-generated://{project}/")));
+        assert!(generated_path.ends_with("Shared.g.cs"));
+        let defs = index.goto_definition(caller, 0, column);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].path, generated_path);
+        let references = index.find_references(caller, 0, column);
+        let cross_project = project == "A.csproj" && offset == left_offset;
+        assert_eq!(
+            references.len(),
+            if cross_project { 4 } else { 3 },
+            "{references:?}"
+        );
+        if cross_project {
+            let c = Utf8Column(CALLER_C.find("value").unwrap() as u32);
+            assert_eq!(index.symbol_at("C.cs", 0, c), Some(symbol));
+            assert!(references.iter().any(|r| r.path == "C.cs" && r.col == c));
+        }
+        assert_eq!(
+            references
+                .iter()
+                .filter(|r| r.path == generated_path)
+                .count(),
+            2
+        );
+        assert!(references
+            .iter()
+            .any(|r| r.path == caller && r.col == column));
+    }
 }
