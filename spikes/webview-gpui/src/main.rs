@@ -29,6 +29,7 @@ struct EventTokens {
 }
 #[derive(Default)]
 struct State {
+    environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
     tokens: Option<EventTokens>,
@@ -98,6 +99,13 @@ fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
     }
     let generation = state.borrow().generation;
     let start = Instant::now();
+    log("open_requested", json!({"generation":generation}));
+    let cached_environment = state.borrow().environment.clone();
+    if let Some(env) = cached_environment {
+        log("environment_reused", json!({"generation":generation}));
+        create_controller(state, &env, hwnd, start, generation);
+        return;
+    }
     let weak = Rc::downgrade(state);
     let profile = std::env::var("ROVE_WEBVIEW_PROFILE")
         .unwrap_or_else(|_| format!("{}/runs/profile", env!("CARGO_MANIFEST_DIR")));
@@ -127,46 +135,8 @@ fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
                 "environment",
                 json!({"ms":start.elapsed().as_secs_f64()*1000.0}),
             );
-            let weak = Rc::downgrade(&state);
-            let environment = env.clone();
-            let callback = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
-                move |result, controller| {
-                    let Some(state) = weak.upgrade() else {
-                        if let Some(c) = controller {
-                            unsafe {
-                                let _ = c.Close();
-                            }
-                        }
-                        return Ok(());
-                    };
-                    if state.borrow().generation != generation {
-                        if let Some(c) = controller {
-                            unsafe {
-                                let _ = c.Close();
-                            }
-                        }
-                        return Ok(());
-                    }
-                    if let Err(e) = result {
-                        fail(&state, e);
-                        return Ok(());
-                    }
-                    let Some(controller) = controller else {
-                        fail(&state, "missing controller");
-                        return Ok(());
-                    };
-                    unsafe {
-                        if let Err(e) = configure(&state, &environment, &controller, hwnd, start) {
-                            let _ = controller.Close();
-                            fail(&state, e);
-                        }
-                    }
-                    Ok(())
-                },
-            ));
-            if let Err(e) = unsafe { env.CreateCoreWebView2Controller(hwnd, &callback) } {
-                fail(&state, e)
-            }
+            state.borrow_mut().environment = Some(env.clone());
+            create_controller(&state, &env, hwnd, start, generation);
             Ok(())
         }));
     let result = unsafe {
@@ -180,6 +150,60 @@ fn create(state: &Rc<RefCell<State>>, hwnd: HWND) {
         )
     };
     if let Err(e) = result {
+        fail(state, e)
+    }
+}
+
+fn create_controller(
+    state: &Rc<RefCell<State>>,
+    env: &ICoreWebView2Environment,
+    hwnd: HWND,
+    start: Instant,
+    generation: u64,
+) {
+    log("controller_requested", json!({"generation":generation}));
+    let weak = Rc::downgrade(state);
+    let environment = env.clone();
+    let callback = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+        move |result, controller| {
+            log(
+                "controller_completed",
+                json!({"generation":generation,"ok":result.is_ok(),"present":controller.is_some()}),
+            );
+            let Some(state) = weak.upgrade() else {
+                if let Some(c) = controller {
+                    unsafe {
+                        let _ = c.Close();
+                    }
+                }
+                return Ok(());
+            };
+            if state.borrow().generation != generation {
+                if let Some(c) = controller {
+                    unsafe {
+                        let _ = c.Close();
+                    }
+                }
+                return Ok(());
+            }
+            if let Err(e) = result {
+                fail(&state, e);
+                return Ok(());
+            }
+            let Some(controller) = controller else {
+                fail(&state, "missing controller");
+                return Ok(());
+            };
+            unsafe {
+                if let Err(e) = configure(&state, &environment, &controller, hwnd, start) {
+                    let _ = controller.Close();
+                    fail(&state, e);
+                }
+            }
+            Ok(())
+        },
+    ));
+    if let Err(e) = unsafe { env.CreateCoreWebView2Controller(hwnd, &callback) } {
         fail(state, e)
     }
 }
@@ -541,8 +565,9 @@ impl Render for Spike {
             let _ = entity.update(cx, |_, cx| cx.notify());
         });
         window.request_animation_frame();
-        div().size_full().when(std::env::var_os("ROVE_TRANSPARENT_PREVIEW").is_none(), |d| d.bg(rgb(0x181b20))).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
+        div().size_full().when(auto_flow::paint_background(std::env::var_os("ROVE_TRANSPARENT_PREVIEW").is_some(), ready, self.overlay && self.mitigate), |d| d.bg(rgb(0x181b20))).text_color(rgb(0xeeeeee)).track_focus(&self.focus)
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                log("host_key", json!({"key":event.keystroke.key}));
                 match event.keystroke.key.as_str() {
                     "tab" => {
                         let controller = this.state.borrow().controller.clone();
