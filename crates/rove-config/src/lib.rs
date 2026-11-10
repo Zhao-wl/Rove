@@ -85,22 +85,9 @@ pub trait Settings: Send + Sync {
 /// Fixed defaults; no disk writes. #13 supplies overrides, validation, JSONC patches and events.
 pub struct DefaultSettings(pub SettingRegistry);
 impl Settings for DefaultSettings {
-    fn read(&self, key: &str, scope: &Scope) -> Result<Value> {
+    fn read(&self, key: &str, _: &Scope) -> Result<Value> {
         let s = self.0.get(key).ok_or(Error::NotFound)?;
-        let language = scope
-            .language
-            .as_deref()
-            .filter(|_| s.language_overridable)
-            .and_then(|lang| self.0.get(&format!("[{lang}]")));
-        let member = |value: &'_ Value| match value {
-            Value::Object(map) => map.get(key).cloned(),
-            _ => None,
-        };
-        Ok(language
-            .and_then(|entry| entry.rove_default.as_ref().and_then(member))
-            .or_else(|| s.rove_default.clone())
-            .or_else(|| language.and_then(|entry| member(&entry.default)))
-            .unwrap_or_else(|| s.default.clone()))
+        Ok(s.rove_default.as_ref().unwrap_or(&s.default).clone())
     }
     fn write(&self, _: Arc<str>, _: Scope, _: Value, c: Cancellation) -> Task<()> {
         Box::pin(async move {

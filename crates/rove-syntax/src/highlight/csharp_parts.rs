@@ -8,9 +8,10 @@ use super::{
     advance,
     grammar::{Capture, Grammar, Work},
 };
-use rove_base::Result;
+use rove_base::{Error, Result};
 use std::{
     ops::Range,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::atomic::{AtomicBool, Ordering},
     thread,
 };
@@ -118,23 +119,28 @@ fn parallel_map<T: Sync, U: Send>(
     let Some((first, rest)) = items.split_first() else {
         return Ok(Vec::new());
     };
+    let read = &read;
+    let run_here =
+        |item: &T| catch_unwind(AssertUnwindSafe(|| read(item))).unwrap_or(Err(Error::NotReady));
     thread::scope(|scope| {
-        let read = &read;
         let tasks: Vec<_> = rest
             .iter()
             .map(
                 |item| match thread::Builder::new().spawn_scoped(scope, move || read(item)) {
                     Ok(task) => Ok(task),
-                    Err(_) => Err(read(item)),
+                    Err(_) => Err(run_here(item)),
                 },
             )
             .collect();
-        std::iter::once(read(first))
+        // Join all workers before returning any error. An implicit scope join of a
+        // panicking task must never unwind through SyntaxService::analyze.
+        let results: Vec<_> = std::iter::once(run_here(first))
             .chain(tasks.into_iter().map(|task| match task {
-                Ok(task) => task.join().expect("syntax worker panicked"),
+                Ok(task) => task.join().unwrap_or(Err(Error::NotReady)),
                 Err(result) => result,
             }))
-            .collect()
+            .collect();
+        results.into_iter().collect()
     })
 }
 
@@ -374,6 +380,17 @@ mod tests {
         }
         source.push_str("}\r\n");
         source
+    }
+
+    #[test]
+    fn parallel_panics_return_a_service_error() {
+        for failed in [0, 1] {
+            let result = parallel_map(&[0, 1, 2], |worker| {
+                assert_ne!(*worker, failed, "deliberate worker failure");
+                Ok(*worker)
+            });
+            assert_eq!(result, Err(Error::NotReady));
+        }
     }
 
     #[test]

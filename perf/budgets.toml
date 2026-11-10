@@ -143,3 +143,25 @@ unit = "ms"
 owner = "#40"
 status = "pending"
 reason = "界面侧端到端要等 #40 的导航交互与 #41 的速览窗口实现；与上面两条「索引查询本身」的耗时分开记录"
+
+
+# ---------------------------------------------------------------- 语法高亮
+
+[[budget]]
+id = "csharp_incremental_5000_lines"
+metric = "5,000 行 C# 单字符编辑后完成增量高亮"
+value = 2
+unit = "ms"
+owner = "#9"
+status = "enforced"
+bench = "syntax/csharp_edit_5000_lines"
+
+[[budget]]
+id = "csharp_initial_1mb"
+metric = "1 MB Unity 特征 C# 首次全量高亮"
+value = 50
+unit = "ms"
+owner = "#9"
+status = "pending"
+bench = "syntax/csharp_initial_1mb_unity"
+reason = "含预处理指令和插值字符串的 Unity 特征样本走整文件解析，实测仍超过 50 ms"

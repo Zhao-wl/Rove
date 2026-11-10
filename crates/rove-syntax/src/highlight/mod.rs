@@ -32,8 +32,8 @@ impl TreeSitterSyntax {
         self
     }
 
-    /// Time budget for a verified incremental edit. Full rebuilds run to completion
-    /// or cancellation so the baseline can recover after a skipped revision.
+    /// Time budget when reusing a whole-tree baseline. Full rebuilds run to completion
+    /// or cancellation, including rebuilds after a partitioned C# parse.
     pub fn with_refresh_budget(mut self, budget: Duration) -> Self {
         self.budget = Some(budget);
         self
@@ -246,7 +246,7 @@ impl SyntaxSnapshot for Snapshot {
         }
         let count = self.text.lines();
         if line.0 < count.known {
-            Ok(Arc::from([]))
+            Ok(rows::EMPTY_LINE.clone())
         } else if count.complete {
             Err(Error::OutOfBounds)
         } else {
@@ -299,14 +299,17 @@ fn build(
                 .then(|| input_edit(&parsed.source, &source, edit))
                 .flatten()
         });
-    // Establish the edit before applying its budget. Invalid or missing edits take the
-    // full rebuild path and must advance the baseline even when the budget is exhausted.
+    // Only an edit against a whole tree can perform a regular incremental parse.
+    // Full rebuilds, including from independent C# members, must be allowed to advance
+    // the baseline even when the refresh budget has already elapsed.
+    let baseline = patch.zip(old_parse);
     let work = &Work {
         cancel: work.cancel,
-        deadline: patch.and(work.deadline),
+        deadline: baseline
+            .and_then(|(_, old)| old.trees.whole())
+            .and(work.deadline),
     };
     work.check()?;
-    let baseline = patch.zip(old_parse);
     let (trees, edited_whole, scan_all) = if let Some((patch, old)) = baseline {
         let reuse = match old.trees.at(patch.start_byte) {
             Some(tree) => {
@@ -342,14 +345,16 @@ fn build(
     } else {
         RowRanges::new(text.as_ref(), count.known as usize, work)?
     };
-    let incremental = baseline.map(|(patch, old)| {
-        rows::Incremental::new(
-            patch,
-            old,
-            edited_whole.as_ref().zip(trees.whole()),
-            &ranges,
-        )
-    });
+    let incremental = baseline
+        .filter(|(_, old)| ranges.len() > 0 && old.ranges.len() > 0)
+        .map(|(patch, old)| {
+            rows::Incremental::new(
+                patch,
+                old,
+                edited_whole.as_ref().zip(trees.whole()),
+                &ranges,
+            )
+        });
     let scan = match &incremental {
         Some(update) if !scan_all && grammar != Grammar::Markdown => update.scan.clone(),
         _ => 0..ranges.len(),

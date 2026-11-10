@@ -354,14 +354,6 @@ fn settings_override_file_associations_and_highlighting_limits() {
     impl Settings for Overrides {
         fn read(&self, key: &str, scope: &Scope) -> Result<Value> {
             match key {
-                "[csharp]" => Ok(Value::Object(Arc::new(
-                    [(
-                        "editor.maxTokenizationLineLength".into(),
-                        Value::Number(2500.0),
-                    )]
-                    .into_iter()
-                    .collect(),
-                ))),
                 "files.associations" => Ok(Value::Object(Arc::new(
                     [
                         ("*.asset".into(), Value::String("json".into())),
@@ -436,9 +428,11 @@ fn markdown_inline_regions_keep_paragraph_boundaries() {
 
 #[test]
 fn large_csharp_document_preserves_line_diffs_after_partitioned_open() {
-    let service = TreeSitterSyntax::default()
-        .with_refresh_budget(Duration::from_secs(30))
-        .document();
+    if std::thread::available_parallelism().is_ok_and(|cores| cores.get() < 2) {
+        eprintln!("Skipped partitioned C# test: at least two hardware threads are required");
+        return;
+    }
+    let service = TreeSitterSyntax::default().document();
     let padding = "Long member description. ".repeat(6);
     let mut initial = String::from("class Example {\n");
     for index in 0..3_100 {
@@ -464,7 +458,14 @@ fn large_csharp_document_preserves_line_diffs_after_partitioned_open() {
 
     updated.replace_range(start..start + 1, "(2 + 3)");
     let edit = service.with_edit(replacement(2, start, 1, "(2 + 3)"));
-    let result = parse(&edit, "csharp", &updated, 3);
+    // Force input acquisition past the default 50 ms budget before rebuilding.
+    let result = block_on(edit.analyze(
+        Arc::new(Text::new(updated, 3).with_read_delay(Duration::from_millis(65))),
+        "csharp".into(),
+        Cancellation::default(),
+    ))
+    .unwrap();
+    assert_eq!(result.snapshot.version(), Version(3));
     assert_eq!(result.changed_lines.as_deref(), Some(expected.as_slice()));
     assert!(result
         .snapshot
@@ -478,4 +479,82 @@ fn large_csharp_document_preserves_line_diffs_after_partitioned_open() {
                 .any(|scope| scope.as_ref() == "keyword.operator.arithmetic.cs")
         }));
     assert_eq!(old.snapshot.version(), Version(1));
+}
+
+#[test]
+fn csharp_cr_only_lines_use_text_source_coordinates() {
+    use rove_buffer::{open_path, settings, LoadOptions, TextSource};
+    use rove_config::{DefaultSettings, SettingRegistry};
+
+    let source = "public class Café {\r    private int field = 7;\r}\r";
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cr-only.cs");
+    std::fs::write(&path, source).unwrap();
+
+    let mut registry = SettingRegistry::default();
+    settings::register(&mut registry).unwrap();
+    let settings = DefaultSettings(registry);
+    let document = open_path(&path, &LoadOptions::new("csharp", &settings)).unwrap();
+    let line = document.text.line_range(Line(1)).unwrap();
+    let result = block_on(TreeSitterSyntax::default().analyze(
+        document.text,
+        document.metadata.language,
+        Cancellation::default(),
+    ))
+    .unwrap();
+    let tokens = result.snapshot.tokens(Line(1)).unwrap();
+    assert!(tokens
+        .iter()
+        .all(|token| { token.range.start() >= line.start() && token.range.end() <= line.end() }));
+    assert!(tokens.iter().any(|token| {
+        &source[token.range.start().0 as usize..token.range.end().0 as usize] == "private"
+            && token
+                .scopes
+                .iter()
+                .any(|scope| scope.as_ref() == "storage.modifier.private.cs")
+    }));
+    assert!(tokens.iter().any(|token| {
+        token
+            .scopes
+            .iter()
+            .any(|scope| scope.as_ref() == "constant.numeric.decimal.cs")
+    }));
+    assert!(result
+        .snapshot
+        .tokens(Line(2))
+        .unwrap()
+        .iter()
+        .any(|token| {
+            token
+                .scopes
+                .iter()
+                .any(|scope| scope.as_ref() == "punctuation.curlybrace.close.cs")
+        }));
+}
+
+#[test]
+fn empty_line_table_does_not_panic_during_analysis_or_refresh() {
+    let document = TreeSitterSyntax::default().document();
+    let initial = block_on(document.analyze(
+        Arc::new(Text::new("", 1).without_rows()),
+        "json".into(),
+        Cancellation::default(),
+    ))
+    .unwrap();
+    assert!(matches!(
+        initial.snapshot.tokens(Line(0)),
+        Err(Error::OutOfBounds)
+    ));
+
+    let updated = block_on(document.with_edit(replacement(1, 0, 0, " ")).analyze(
+        Arc::new(Text::new(" ", 2).without_rows()),
+        "json".into(),
+        Cancellation::default(),
+    ))
+    .unwrap();
+    assert_eq!(updated.snapshot.version(), Version(2));
+    assert!(matches!(
+        updated.snapshot.tokens(Line(0)),
+        Err(Error::OutOfBounds)
+    ));
 }

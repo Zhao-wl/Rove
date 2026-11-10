@@ -8,6 +8,8 @@ pub struct Text {
     source: std::sync::Arc<str>,
     version: Version,
     starts: std::sync::Arc<[usize]>,
+    #[cfg(test)]
+    read_delay: std::time::Duration,
 }
 
 impl Text {
@@ -20,6 +22,8 @@ impl Text {
             source: source.into(),
             version: Version(version),
             starts,
+            #[cfg(test)]
+            read_delay: std::time::Duration::ZERO,
         }
     }
 
@@ -29,6 +33,20 @@ impl Text {
             version,
             ..self.clone()
         }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Only used by the integration tests sharing this fixture.
+    pub fn with_read_delay(mut self, delay: std::time::Duration) -> Self {
+        self.read_delay = delay;
+        self
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Only used by the integration tests sharing this fixture.
+    pub fn without_rows(mut self) -> Self {
+        self.starts = std::sync::Arc::from([]);
+        self
     }
 
     fn slice(&self, span: ByteRange) -> Result<&str> {
@@ -76,6 +94,10 @@ impl TextSource for Text {
     }
 
     fn visit_chunks(&self, range: ByteRange, visitor: &mut dyn FnMut(&str)) -> Result<()> {
+        #[cfg(test)]
+        if !self.read_delay.is_zero() {
+            std::thread::sleep(self.read_delay);
+        }
         visitor(self.slice(range)?);
         Ok(())
     }
@@ -101,7 +123,8 @@ impl TextSource for Text {
         let row = self
             .starts
             .partition_point(|&start| start <= offset.0 as usize)
-            - 1;
+            .checked_sub(1)
+            .ok_or(Error::OutOfBounds)?;
         let pos = Position {
             line: Line(row as u64),
             column: Utf8Column(offset.0 - self.starts[row] as u64),

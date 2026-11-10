@@ -43,6 +43,9 @@ impl RowRanges {
     }
 
     pub fn bytes(&self, scan: Range<usize>) -> Range<usize> {
+        if scan.is_empty() {
+            return 0..0;
+        }
         self.0[scan.start].start..self.0[scan.end - 1].end
     }
 }
@@ -132,7 +135,7 @@ impl<'a> Incremental<'a> {
     }
 }
 
-static EMPTY_LINE: LazyLock<Arc<[Token]>> = LazyLock::new(|| Arc::from([]));
+pub(super) static EMPTY_LINE: LazyLock<Arc<[Token]>> = LazyLock::new(|| Arc::from([]));
 
 type Rows = (Vec<LineTokens>, Option<Arc<[LineRange]>>);
 
