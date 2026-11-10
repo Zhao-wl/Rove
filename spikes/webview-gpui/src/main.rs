@@ -547,7 +547,7 @@ impl Render for Spike {
                     "tab" => {
                         let controller = this.state.borrow().controller.clone();
                         if let Some(controller) = controller {
-                            let reason = if event.keystroke.modifiers.shift { COREWEBVIEW2_MOVE_FOCUS_REASON_LAST } else { COREWEBVIEW2_MOVE_FOCUS_REASON_FIRST };
+                            let reason = if event.keystroke.modifiers.shift { COREWEBVIEW2_MOVE_FOCUS_REASON_PREVIOUS } else { COREWEBVIEW2_MOVE_FOCUS_REASON_NEXT };
                             unsafe { if controller.MoveFocus(reason).is_ok() { log("key_route",json!({"key":9,"route":"webview","shift":event.keystroke.modifiers.shift,"source":"host"})); return; } }
                         }
                     }
