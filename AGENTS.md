@@ -102,7 +102,9 @@ docs: 补充索引格式的元数据段说明
 3. 改完再跑并比较：`cargo xtask bench --baseline target/bench-before.json --check-budgets`
    - 退化超过 15% 会输出 `::warning::`（只报警，不失败：托管机器波动比 15% 大）
    - `--check-budgets` 按 `perf/budgets.toml` 判定，超预算以非零码退出
-4. 涉及 `rove.exe` 的改动附 `cargo xtask check-size` 的输出（相对 M0 6.2 MB 基线的变化）
+4. 涉及 `rove.exe` 的改动附 `cargo xtask check-size` 的输出（相对 M0 6.2 MB 基线的变化）；
+   需要冷启动数据时跑 `cargo xtask startup`（启动 release 版 `rove.exe`，读首帧标记；
+   `cargo xtask bench` 也会顺带测；「可交互」的埋点留给 #16）
 5. 有 C# 索引文件时可以加 `--cs-index <idx>` 一起测导航查询（没有索引就整组跳过）
 
 规则：

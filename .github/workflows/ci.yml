@@ -142,3 +142,11 @@ jobs:
           $code = $LASTEXITCODE
           Get-Content size-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($code -ne 0) { exit $code }
+
+      # 冷启动到首帧：复用刚才构建的 release exe，读 FIRSTFRAME_SINCE_PROCESS_MS。
+      # 托管 runner 上没有桌面会话时拿不到标记，脚本会跳过并返回 0（不阻断 CI）。
+      - name: 冷启动到首帧
+        shell: pwsh
+        run: |
+          cargo xtask startup --startup-tries 3 --startup-timeout 30 2>&1 | Tee-Object -FilePath startup-report.txt
+          Get-Content startup-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

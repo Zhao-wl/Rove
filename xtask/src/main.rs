@@ -13,6 +13,7 @@ mod budgets;
 mod gen_testdata;
 mod results;
 mod size;
+mod startup;
 mod util;
 
 use std::process::ExitCode;
@@ -36,6 +37,12 @@ const USAGE: &str = "\
       报告 rove.exe 体积与基线（默认取 perf/budgets.toml 里的 M0 基线）的差值，
       超过预算时以非零码退出。
 
+  startup [--exe PATH] [--project DIR] [--startup-tries N] [--startup-timeout SECS]
+          [--save PATH] [--require]
+      测量冷启动到首帧：启动 rove.exe，读它打印的 FIRSTFRAME_SINCE_PROCESS_MS。
+      需要先 cargo build --release -p rove-app；拿不到标记时默认跳过并返回 0，
+      加 --require 则视为失败。「可交互」时间留给 #16。
+
   --help  显示本说明。";
 
 fn main() -> ExitCode {
@@ -58,6 +65,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     match command.as_str() {
         "gen-testdata" => gen_testdata::run(rest),
         "bench" => bench::run(rest),
+        "startup" => startup::run(rest),
         "check-size" => size::run(rest),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");

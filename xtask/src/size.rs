@@ -62,20 +62,55 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
         println!("  说明：{reason}");
     }
 
-    if size > budget {
-        println!(
-            "::error::rove.exe 体积 {} 超过预算 {}（超出 {:.2}%）",
-            util::human_bytes(size),
-            util::human_bytes(budget),
-            (size as f64 / budget as f64 - 1.0) * 100.0
-        );
-        return Ok(1);
-    }
+    // ::notice:: 会出现在 PR 的检查注解里，让「体积相对基线的变化」在 PR 页面就能看到。
     println!(
-        "OK：体积在预算内（占预算 {:.1}%）。",
+        "::notice::rove.exe {}（{} B），相对 M0 基线 {} B 变化 {:+.2}%，占预算 {:.1}%",
+        util::human_bytes(size),
+        util::thousands(size),
+        util::thousands(baseline),
+        percent_delta(size, baseline),
         size as f64 / budget as f64 * 100.0
     );
-    Ok(0)
+
+    let over_budget = size > budget;
+    match size_budget.status.as_str() {
+        "enforced" => {
+            if over_budget {
+                println!(
+                    "::error::rove.exe 体积 {} 超过预算 {}（超出 {:.2}%）",
+                    util::human_bytes(size),
+                    util::human_bytes(budget),
+                    (size as f64 / budget as f64 - 1.0) * 100.0
+                );
+                return Ok(1);
+            }
+            println!(
+                "OK：体积在预算内（占预算 {:.1}%）。",
+                size as f64 / budget as f64 * 100.0
+            );
+            Ok(0)
+        }
+        "pending" | "recorded" => {
+            if over_budget {
+                println!(
+                    "::warning::rove.exe 体积 {} 超过预算 {}，但该预算状态是 `{}`：超限只报警、不失败",
+                    util::human_bytes(size),
+                    util::human_bytes(budget),
+                    size_budget.status
+                );
+            } else {
+                println!(
+                    "OK：体积在预算内（预算状态 `{}`，超限暂不失败）。",
+                    size_budget.status
+                );
+            }
+            Ok(0)
+        }
+        other => Err(format!(
+            "perf/budgets.toml 的 [size].status = `{other}` 非法（只接受 enforced / pending / recorded）"
+        )
+        .into()),
+    }
 }
 
 fn percent_delta(actual: u64, baseline: u64) -> f64 {

@@ -30,7 +30,19 @@ cargo xtask bench --check-budgets
 # 4) 体积守护
 cargo build --release -p rove-app
 cargo xtask check-size                    # 报告相对 M0 基线（6.2 MB）的变化
+
+# 5) 冷启动到首帧（读 rove.exe 打印的 FIRSTFRAME_SINCE_PROCESS_MS）
+cargo xtask startup                       # 默认启动 release 版 rove.exe 3 次，
+                                          # 用 target/perf-project 这个临时小项目
+cargo xtask startup --save target/startup.json
 ```
+
+`cargo xtask bench` 也会顺带做启动测量（`startup/first_frame`）；没有 release 构建时跳过，
+或加 `--no-startup` 显式关掉。
+
+**「可交互」还没有埋点**：口径是「首帧已呈现 + 第一个输入事件在一帧内得到响应」，
+需要在首帧后注入按键并等待重绘完成，这部分留给 #16 的启动预算；
+`budgets.toml` 里 `cold_start_interactive` 因此是 `pending`，**首帧数据单独记录、不设门槛**。
 
 `cargo xtask` 由 `.cargo/config.toml` 里的 alias 提供，等价于 `cargo run -p xtask --`。
 
@@ -64,17 +76,25 @@ cargo xtask check-size                    # 报告相对 M0 基线（6.2 MB）�
 
 - **不做绝对判定**。托管机器的波动比 15% 还大；绝对指标在本地参考设备上测量并记入报告。
 - `perf.yml` 在 `main` 的 push 上跑一遍基准并把结果上传成 artifact（`perf-baseline`）；
-  手动触发（`workflow_dispatch`）时下载最近一次 `main` 的 artifact 作为基线，逐项比较，
-  **退化超过 15% 报警**（`::warning::`，不失败）。
+  PR 打上 `perf` 标签（之后每次 push 也会重跑）时下载最近一次 `main` 的 artifact 作为基线，
+  逐项比较，**退化超过 15% 报警**（`::warning::`，不失败）。还没有 `main` 基线时，
+  第一次运行会顺手建立基线，之后只与本分支上一次 perf 运行比较（绝不拿别的分支当基线）。
+- 判定口径：导航类预算（`goto_definition` / `find_references`）用 **p99**（criterion 的
+  `sample.json` 逐次迭代耗时），与 CHARTER / M0 一致；其他用 `mean`。要改口径在
+  `budgets.toml` 里加 `aggregate = "p99"`。
 - CI **不生成 `big1g.txt`**（1 GiB），只跑 `small.txt` / `uniq.txt` 级别的用例。
-- `ci.yml` 的「体积守护」任务构建 release 版 `rove.exe` 并运行 `cargo xtask check-size`，
-  PR 里能看到体积与相对 6.2 MB 基线的变化；超过 `budgets.toml` 的 `[size].budget_bytes` 时失败。
+- `ci.yml` 的「体积守护」任务构建 release 版 `rove.exe` 并运行 `cargo xtask check-size`
+  （结果同时以 `::notice::` 出现在 PR 的检查注解里），然后运行 `cargo xtask startup` 采集首帧；
+  `[size].status = "enforced"` 时超预算失败，改成 `pending` / `recorded` 时只报警不失败。
 
 ## 预算怎么加 / 怎么改
 
-- 新增指标：在 `budgets.toml` 加一条 `[[budget]]`，写清 `owner`（负责达标的 issue）与 `source`。
-  可以被 `cargo xtask bench` 测到的，把 `bench` 写成 criterion 的用例 id（`<组>/<用例>`）；
+- 新增指标：在 `budgets.toml` 加一条 `[[budget]]`，写清 `owner`（负责达标的 issue）。
+  可以被 `cargo xtask bench` 测到的，把 `bench` 写成 criterion 的用例 id（`<组>/<用例>`），
+  `aggregate` 选 `mean`（默认）或 `p99`；
 - 暂时达不到：`status = "pending"` + `reason`，**不要**为了让 CI 绿把数值调大；
+- 单位与判定路径必须自洽：用 `bench` 判定的条目，单位只能是 `ns` / `us` / `ms` / `s`；
+  内存（MB）、体积（字节）这类指标不能用 bench 判定，写错时脚本会直接报错而不是静默按错误口径比；
 - 需要改数值：走 `PROJECT_CHARTER` 的修订流程并留下记录（像冷启动从 150 ms 改到 400 ms 那样），
   然后同步 `budgets.toml`。
 

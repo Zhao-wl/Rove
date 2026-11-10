@@ -15,7 +15,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [labeled]
+    # labeled：打 perf 标签时跑一次；synchronize：之后每次推送也重跑（仍然只在带 perf 标签时）。
+    types: [labeled, synchronize]
   workflow_dispatch:
     inputs:
       baseline_run_id:
@@ -84,11 +85,15 @@ jobs:
               --status success --limit 1 --json databaseId --jq '.[0].databaseId'
           }
           if (-not $runId) {
-            # 还没有 main 基线（perf.yml 刚引入）：退而用最近一次成功的 perf 运行。
-            $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml `
-              --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-            if ($runId) {
-              Write-Host "没有 main 基线，退回最近一次 perf 运行：$runId（仅用于验证对比流程）"
+            # 还没有 main 基线（perf.yml 刚引入）：退而用同一个 PR 上一次成功的 perf 运行，
+            # 只用于验证对比流程，绝不拿别的分支当基线。
+            $headRef = "${{ github.head_ref }}"
+            if ($headRef) {
+              $runId = gh run list --repo $env:GITHUB_REPOSITORY --workflow perf.yml --branch $headRef `
+                --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+              if ($runId) {
+                Write-Host "没有 main 基线，退回本分支上一次 perf 运行：$runId（仅用于验证对比流程）"
+              }
             }
           }
           if (-not $runId) {

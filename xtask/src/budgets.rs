@@ -50,6 +50,9 @@ pub struct Budget {
     /// criterion 的用例 id，例如 `cs_index/goto_definition`。
     #[serde(default)]
     pub bench: Option<String>,
+    /// 取哪个聚合值：`mean`（默认）或 `p99`。导航类指标关心尾延迟，用 `p99`。
+    #[serde(default)]
+    pub aggregate: Option<String>,
 }
 
 impl Budgets {
@@ -83,35 +86,66 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
     let mut unmeasured = 0usize;
 
     for budget in &budgets.budget {
-        let limit_ns = to_ns(budget.value, &budget.unit);
+        // 先校验声明本身，避免单位/聚合值写错时静默按错误口径判定。
+        let aggregate = budget.aggregate.as_deref().unwrap_or("mean");
+        if !matches!(aggregate, "mean" | "p99") {
+            return Err(format!(
+                "预算 `{}` 的 aggregate = `{aggregate}` 非法（只接受 mean / p99）",
+                budget.id
+            )
+            .into());
+        }
+        if budget.bench.is_some() && time_unit(budget.value, &budget.unit).is_none() {
+            return Err(format!(
+                "预算 `{}` 用 bench 判定（{}），但单位 `{}` 不是时间；内存/体积类指标需要单独的判定路径，不能套用 bench",
+                budget.id,
+                budget.bench.as_deref().unwrap_or(""),
+                budget.unit
+            )
+            .into());
+        }
+
         let measured = budget
             .bench
             .as_ref()
             .and_then(|id| results.get(id))
-            .map(|r| r.mean_ns);
+            .map(|r| {
+                if aggregate == "p99" {
+                    r.p99_ns.unwrap_or(r.mean_ns)
+                } else {
+                    r.mean_ns
+                }
+            });
 
         match (budget.status.as_str(), measured) {
-            ("enforced", Some(mean_ns)) => {
-                let status = if mean_ns <= limit_ns {
+            ("enforced", Some(measured_ns)) => {
+                let limit_ns = time_unit(budget.value, &budget.unit).ok_or_else(|| {
+                    format!(
+                        "预算 `{}` 的单位 `{}` 不是时间，无法用 bench 判定",
+                        budget.id, budget.unit
+                    )
+                })?;
+                let status = if measured_ns <= limit_ns {
                     "OK"
                 } else {
                     "超预算"
                 };
                 println!(
-                    "  {:<7} {:<30} 目标 {:>8.2} {:<3} 实测 {:>10}  ({})  {}",
+                    "  {:<7} {:<30} 目标 {:>8.2} {:<3} 实测 {:>10} [{}]  ({})  {}",
                     status,
                     budget.id,
                     budget.value,
                     budget.unit,
-                    format_ns(mean_ns),
+                    format_ns(measured_ns),
+                    aggregate,
                     budget.owner,
                     match status {
                         "OK" => String::new(),
-                        _ => format!("超出 {:.1}%", (mean_ns / limit_ns - 1.0) * 100.0),
+                        _ => format!("超出 {:.1}%", (measured_ns / limit_ns - 1.0) * 100.0),
                     }
                 );
-                if mean_ns > limit_ns {
-                    exceeded.push((budget, mean_ns));
+                if measured_ns > limit_ns {
+                    exceeded.push((budget, measured_ns));
                 }
             }
             ("enforced", None) => {
@@ -165,16 +199,16 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
     }
 
     eprintln!("超预算 {} 项：", exceeded.len());
-    for (budget, mean_ns) in &exceeded {
-        let limit_ns = to_ns(budget.value, &budget.unit);
+    for (budget, measured_ns) in &exceeded {
+        let limit_ns = time_unit(budget.value, &budget.unit).unwrap_or(f64::NAN);
         eprintln!(
             "  {}（{}）：目标 {} {}，实测 {}，超出 {:.1}%；负责 issue {}",
             budget.id,
             budget.metric,
             budget.value,
             budget.unit,
-            format_ns(*mean_ns),
-            (mean_ns / limit_ns - 1.0) * 100.0,
+            format_ns(*measured_ns),
+            (measured_ns / limit_ns - 1.0) * 100.0,
             budget.owner
         );
         println!(
@@ -182,21 +216,23 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
             budget.id,
             budget.value,
             budget.unit,
-            format_ns(*mean_ns),
-            (mean_ns / limit_ns - 1.0) * 100.0,
+            format_ns(*measured_ns),
+            (measured_ns / limit_ns - 1.0) * 100.0,
             budget.owner
         );
     }
     Ok(1)
 }
 
-fn to_ns(value: f64, unit: &str) -> f64 {
+/// 时间单位换算成纳秒；不认识的单位（包括 `MB` 这类非时间单位）返回 `None`，
+/// 由调用方报错，绝不静默按原值处理。
+fn time_unit(value: f64, unit: &str) -> Option<f64> {
     match unit {
-        "ns" => value,
-        "us" | "µs" => value * 1e3,
-        "ms" => value * 1e6,
-        "s" => value * 1e9,
-        _ => value,
+        "ns" => Some(value),
+        "us" | "µs" => Some(value * 1e3),
+        "ms" => Some(value * 1e6),
+        "s" => Some(value * 1e9),
+        _ => None,
     }
 }
 

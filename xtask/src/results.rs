@@ -36,6 +36,9 @@ pub struct Machine {
 pub struct BenchResult {
     /// criterion 的 mean 点估计，单位纳秒。
     pub mean_ns: f64,
+    /// 逐次迭代耗时的 p99（纳秒）。尾延迟才是导航类指标关心的数字（M0 也用 p99）。
+    #[serde(default)]
+    pub p99_ns: Option<f64>,
     #[serde(default)]
     pub std_dev_ns: Option<f64>,
 }
@@ -98,7 +101,8 @@ impl Results {
                     } else {
                         format!("{group}/{name}")
                     };
-                    if let Some(result) = read_estimates(&path)? {
+                    if let Some(mut result) = read_estimates(&path)? {
+                        result.p99_ns = read_p99(&dir.join("sample.json"));
                         results.benchmarks.insert(id, result);
                     }
                 }
@@ -136,6 +140,33 @@ fn read_estimates(path: &Path) -> Result<Option<BenchResult>, Box<dyn std::error
     let std_dev = value["mean"]["standard_error"].as_f64();
     Ok(mean.map(|mean_ns| BenchResult {
         mean_ns,
+        p99_ns: None,
         std_dev_ns: std_dev,
     }))
+}
+
+/// criterion 的 `sample.json` 里保存了每个采样点的迭代次数与总耗时（纳秒）。
+/// 逐次迭代耗时 = 总耗时 / 迭代次数，取 p99 作为尾延迟。
+fn read_p99(sample_path: &Path) -> Option<f64> {
+    let text = crate::util::read_text(sample_path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let iters = value["iters"].as_array()?;
+    let times = value["times"].as_array()?;
+    let mut per_iteration: Vec<f64> = iters
+        .iter()
+        .zip(times.iter())
+        .filter_map(|(iters, times)| {
+            let iters = iters.as_f64()?;
+            let times = times.as_f64()?;
+            (iters > 0.0).then_some(times / iters)
+        })
+        .collect();
+    if per_iteration.is_empty() {
+        return None;
+    }
+    per_iteration.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let index = ((per_iteration.len() as f64) * 0.99).ceil() as usize;
+    per_iteration
+        .get(index.saturating_sub(1).min(per_iteration.len() - 1))
+        .copied()
 }

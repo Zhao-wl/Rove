@@ -110,7 +110,36 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
             if ran == 0 {
                 return Err("没有可运行的基准组".into());
             }
-            Results::from_criterion(&util::target_dir())?
+            let mut results = Results::from_criterion(&util::target_dir())?;
+
+            // 冷启动（首帧）用独立测量：启动 release 版 rove.exe，读它打印的
+            // FIRSTFRAME_SINCE_PROCESS_MS。没有 release 构建时跳过（不失败）。
+            if !util::has_flag(args, "--no-startup") {
+                let options = crate::startup::Options::from_args(args)?;
+                if options.exe.is_file() {
+                    crate::startup::ensure_project_public(&options.project)?;
+                    println!("\n>>> 冷启动测量（{}）", options.exe.display());
+                    let samples = crate::startup::measure(&options);
+                    if let Some(result) = crate::startup::summarize(&samples) {
+                        println!(
+                            "  首帧 median {}（n={}）",
+                            format_ns(result.mean_ns),
+                            samples.len()
+                        );
+                        results
+                            .benchmarks
+                            .insert("startup/first_frame".to_string(), result);
+                    } else {
+                        println!("跳过 startup：没有拿到首帧标记（没有桌面会话时会这样）");
+                    }
+                } else {
+                    println!(
+                        "\n跳过 startup：找不到 {}（先 cargo build --release -p rove-app）",
+                        options.exe.display()
+                    );
+                }
+            }
+            results
         }
     };
     println!("\n汇总：{} 个用例", current.benchmarks.len(),);

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use rove_base::Utf8Column;
-use rove_lang_cs::CsIndex;
+use rove_lang_cs::{CsIndex, Role};
 
 /// 采样多少个引用位置作为查询输入（够覆盖热点与冷点）。
 const SAMPLES: usize = 2000;
@@ -22,27 +22,40 @@ fn index_path() -> Option<PathBuf> {
 }
 
 /// 采样「引用位置」：符号出现位置里的非定义项。
+///
+/// 出现位置可能全是定义，或者 `file_path` 一直返回 `None`，所以必须有尝试次数上限，
+/// 否则会死循环。上限取 `max(出现位置数 * 20, 10000)`。
 fn sample_positions(index: &CsIndex) -> Vec<(String, u32, Utf8Column)> {
     let mut samples = Vec::with_capacity(SAMPLES);
     let total = index.occurrence_count();
     if total == 0 {
         return samples;
     }
+    let max_attempts = total.saturating_mul(20).max(10_000);
+    let mut attempts = 0usize;
     let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
-    while samples.len() < SAMPLES {
+    while samples.len() < SAMPLES && attempts < max_attempts {
+        attempts += 1;
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
         let Some(occurrence) = index.occurrence((seed % total as u64) as usize) else {
             continue;
         };
-        if occurrence.role & 2 != 0 {
+        if Role(occurrence.role).is_def() {
             continue; // 只要引用，不要定义
         }
         let Some(path) = index.file_path(occurrence.file) else {
             continue;
         };
         samples.push((path.to_string(), occurrence.line, occurrence.col));
+    }
+    if samples.len() < SAMPLES {
+        println!(
+            "只采到 {}/{} 个引用位置（尝试 {attempts} 次），用现有的继续",
+            samples.len(),
+            SAMPLES
+        );
     }
     samples
 }
