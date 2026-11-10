@@ -18,6 +18,9 @@ rove-docview.workspace = true
 
 gpui.workspace = true
 
+globset.workspace = true
+async-channel.workspace = true
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"

@@ -207,7 +207,7 @@ cargo test --workspace
 | `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |
 | `workspace` | `workspace.rs`：Workspace 快照、递归扫描，排除 .git/Library/Temp | #15 |
 | `workbench` | `appearance.rs`、`commands.rs`、`workbench.rs`：贡献点装配、固定容器、状态反馈 | #16 |
-| `editors` | `editor.rs`、`text.rs`：OpenDocuments、单编辑区替换与文档身份缓存 | #17 |
+| 已替换（editors） | `rove-ui/src/editors/`：编辑器组网格、标签与 OpenDocuments；`text.rs`：文档弱引用缓存 | #17 |
 | `lists` | `workbench.rs`：ListModel/ListController、通用虚拟文件列表 | #18 |
 | `code-view` | `workbench.rs`：自定义 Element、可见行缓存、f64 行滚动 | #19 |
 | `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到 TextRun 的投影 | #20 |

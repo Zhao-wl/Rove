@@ -19,6 +19,32 @@ impl DarkTheme {
             ("statusBar.background", 0x191a1b),
             ("statusBar.foreground", 0x8c8c8c),
             ("editorLineNumber.foreground", 0x858889),
+            ("editorGroup.border", 0x36383a),
+            ("editorGroup.dropBackground", 0x294d6c),
+            ("editorGroup.focusedEmptyBorder", 0x58a6ff),
+            ("editorGroupHeader.tabsBackground", 0x191a1b),
+            ("editorGroupHeader.noTabsBackground", 0x191a1b),
+            ("editorGroupHeader.tabsBorder", 0x36383a),
+            ("editorPane.background", 0x121314),
+            ("sideBySideEditor.horizontalBorder", 0x36383a),
+            ("sideBySideEditor.verticalBorder", 0x36383a),
+            ("tab.activeBackground", 0x121314),
+            ("tab.inactiveBackground", 0x191a1b),
+            ("tab.unfocusedActiveBackground", 0x171819),
+            ("tab.unfocusedInactiveBackground", 0x191a1b),
+            ("tab.activeForeground", 0xe3e5e6),
+            ("tab.inactiveForeground", 0xa1a5a7),
+            ("tab.activeBorderTop", 0x58a6ff),
+            ("tab.unfocusedActiveBorderTop", 0x777a7c),
+            ("tab.activeModifiedBorder", 0xe2b963),
+            ("tab.inactiveModifiedBorder", 0x9d8250),
+            ("tab.border", 0x2c2e2f),
+            ("tab.lastPinnedBorder", 0x6a6d70),
+            ("tab.hoverBackground", 0x252729),
+            ("tab.dragAndDropBorder", 0x58a6ff),
+            ("editor.selectionBackground", 0x2c4c70),
+            ("progressBar.background", 0x58a6ff),
+            ("errorForeground", 0xff7b72),
         ] {
             let c = Some(Color(
                 (value >> 16) as u8,
@@ -88,10 +114,48 @@ pub fn strings() -> Result<StringTable> {
         ("tree.open", "▾ {name}"),
         ("tree.closed", "▸ {name}"),
         ("line.number", "{line}"),
+        ("editors.splitLeft", "←"),
+        ("editors.splitUp", "↑"),
+        ("editors.splitDown", "↓"),
+        ("editors.splitRight", "→"),
+        ("editors.lock", "◇"),
+        ("editors.unlock", "◆"),
+        ("editors.maximize", "□"),
+        ("editors.restore", "▣"),
+        ("editors.closeTab", "×"),
+        ("editors.pinned", "◆"),
+        ("editors.dirty", "●"),
+        ("editors.errorBadge", "!"),
+        ("editors.index", "{index}"),
+        (
+            "editors.watermark",
+            "快速打开 Ctrl+P　　命令面板 Ctrl+Shift+P",
+        ),
+        (
+            "editors.markdown",
+            "Markdown 预览尚未实现；带位置打开可查看源码。",
+        ),
+        ("editors.fileMissing", "无法打开编辑器：找不到文件。"),
+        ("editors.fileDenied", "无法打开编辑器：没有读取权限。"),
+        (
+            "editors.fileUnsupported",
+            "无法打开编辑器：文件格式或编码不受支持。",
+        ),
+        (
+            "editors.invalidLocation",
+            "无法定位：指定的行或列不在文件中。",
+        ),
+        (
+            "editors.fileUnavailable",
+            "无法打开编辑器：文件可能正被占用，或路径无效。",
+        ),
+        ("editors.retry", "重试"),
+        ("editors.reveal", "在资源管理器中显示"),
         ("workbench.statusTitle", "文件状态"),
     ] {
         t.register(k, Arc::from(v))?;
     }
+    crate::editors::actions::strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
