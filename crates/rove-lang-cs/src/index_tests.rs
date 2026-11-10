@@ -76,7 +76,10 @@ fn fixture_bytes(strings: &[u8]) -> Vec<u8> {
     sections[Section::Files as usize] = bytemuck::cast_slice(&files);
     sections[Section::Paths as usize] = paths;
     sections[Section::Strings as usize] = strings;
+    encode_fixture(sections)
+}
 
+fn encode_fixture(sections: [&[u8]; SECTION_COUNT]) -> Vec<u8> {
     let mut bytes = vec![0; HEADER_LEN];
     bytes[..8].copy_from_slice(MAGIC);
     bytes[8..12].copy_from_slice(&VERSION.to_le_bytes());
@@ -190,11 +193,12 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         static int Inactive2() => 3;\n\
         #endif\n\
         }\n";
+    let source_text = SOURCE.replace("中文😀𐐀", &format!("中文😀𐐀{}", "宽".repeat(90)));
     let fixture = Fixture::new();
     fs::create_dir(fixture.dir.join("Assets")).unwrap();
     let mut source = File::create(fixture.dir.join("Assets/Unicode.cs")).unwrap();
     source.write_all(b"\xef\xbb\xbf").unwrap();
-    source.write_all(SOURCE.as_bytes()).unwrap();
+    source.write_all(source_text.as_bytes()).unwrap();
     drop(source);
     fs::write(
         fixture.dir.join("Fixture.csproj"),
@@ -216,12 +220,15 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     let index = CsIndex::open(&index_path).unwrap();
+    assert_eq!(index.header().indexer_version, [1, 0, 1, 0]);
     let rel_path = "Assets/Unicode.cs";
     let file = index.file_id(rel_path).unwrap();
-    let line = SOURCE.lines().nth(1).unwrap();
+    let line = source_text.lines().nth(1).unwrap();
     let def = line.find("值").unwrap();
     let reference = line.rfind("值").unwrap();
-    assert_ne!(def, line[..def].encode_utf16().count());
+    let original_col = Utf16Column(line[..def].encode_utf16().count() as u32);
+    assert!(def > u8::MAX as usize);
+    assert_ne!(def as u32, original_col.0);
     let symbol = index
         .symbol_at(rel_path, 1, Utf8Column(reference as u32))
         .unwrap();
@@ -232,7 +239,7 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         let start = location.col.0 as usize;
         assert_eq!(&line[start..start + location.len as usize], "值");
     }
-    let expected_offset = SOURCE.find("值").unwrap() as u32;
+    let expected_offset = source_text.find("值").unwrap() as u32;
     assert_eq!(
         index.symbol_key(symbol).unwrap(),
         SymbolKey::Local {
@@ -255,5 +262,106 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
             InactiveLines { start: 5, end: 6 },
             InactiveLines { start: 7, end: 8 }
         ]
+    );
+}
+
+#[test]
+fn rejects_every_truncated_fixture_prefix() {
+    let fixture = Fixture::new();
+    let original = fixture_bytes(b"xabc");
+    for len in 0..original.len() {
+        assert!(
+            fixture.open_bytes(&original[..len]).is_err(),
+            "accepted truncated index at {len} bytes"
+        );
+    }
+}
+
+#[test]
+fn decodes_reference_ids_on_both_sides_of_the_width_boundary() {
+    let short_width = reference_width(1 << 24);
+    assert_eq!(short_width, 3);
+    assert_eq!(
+        read_reference_id(&[0xff, 0xff, 0xff], short_width),
+        (1 << 24) - 1
+    );
+
+    let long_width = reference_width((1 << 24) + 1);
+    assert_eq!(long_width, 4);
+    assert_eq!(read_reference_id(&[0, 0, 0, 1], long_width), 1 << 24);
+    assert_eq!(
+        read_reference_id(&[0x78, 0x56, 0x34, 0x12], long_width),
+        0x1234_5678
+    );
+}
+
+#[test]
+fn wide_occurrence_lookup_and_saturated_definition_count() {
+    const DEFINITIONS: u32 = u16::MAX as u32 + 1;
+    let fixture = Fixture::new();
+    let files = [FileRecord {
+        path_start: 0,
+        occ_start: 0,
+        occ_count: DEFINITIONS + 1,
+        inactive_start: 0,
+        hash: 0,
+    }];
+    let symbols = [SymbolRecord {
+        key: 0,
+        name: 0,
+        display: 0,
+        container: NONE,
+        ref_start: 0,
+        kind: 0,
+        flags: 1,
+        definition_count: u16::MAX,
+    }];
+    let mut occurrences: Vec<u64> = (0..DEFINITIONS)
+        .map(|i| {
+            (u64::from(i / 128) << 16) | (u64::from(i % 128) << 8) | (1 << 3) | u64::from(Role::DEF)
+        })
+        .collect();
+    occurrences.push(0); // Wide occurrence #0.
+    let wide = [WideOccurrence {
+        file: 0,
+        line: 4096,
+        col: 300,
+        symbol: 0,
+        len: 32,
+        role: u32::from(Role::REF),
+    }];
+    let references: Vec<_> = (0..=DEFINITIONS)
+        .flat_map(|i| [i as u8, (i >> 8) as u8, (i >> 16) as u8])
+        .collect();
+
+    let mut sections: [&[u8]; SECTION_COUNT] = [&[]; SECTION_COUNT];
+    sections[Section::StringOffsets as usize] = bytemuck::cast_slice(&[0_u32, 0]);
+    sections[Section::Files as usize] = bytemuck::cast_slice(&files);
+    sections[Section::Paths as usize] = b"Assets/A.cs";
+    sections[Section::Symbols as usize] = bytemuck::cast_slice(&symbols);
+    sections[Section::Occurrences as usize] = bytemuck::cast_slice(&occurrences);
+    sections[Section::WideOccurrences as usize] = bytemuck::cast_slice(&wide);
+    sections[Section::References as usize] = &references;
+    let index = fixture.open_bytes(&encode_fixture(sections)).unwrap();
+    let file = "Assets/A.cs";
+
+    assert_eq!(index.symbol_at(file, 4096, Utf8Column(331)), Some(0));
+    assert_eq!(index.symbol_at(file, 4096, Utf8Column(332)), None);
+    assert_eq!(index.reference_count(0), DEFINITIONS as usize + 1);
+    let definitions = index.goto_definition(file, 4096, Utf8Column(300));
+    assert_eq!(definitions.len(), DEFINITIONS as usize);
+    assert!(definitions.iter().all(|location| location.is_def));
+    assert_eq!(definitions.last().unwrap().col, Utf8Column(127));
+    let references = index.find_references(file, 4096, Utf8Column(300));
+    assert_eq!(references.len(), DEFINITIONS as usize + 1);
+    assert_eq!(
+        references.last(),
+        Some(&Location {
+            path: file,
+            line: 4096,
+            col: Utf8Column(300),
+            len: 32,
+            is_def: false
+        })
     );
 }

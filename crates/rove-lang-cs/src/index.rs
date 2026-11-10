@@ -47,9 +47,10 @@ pub struct Utf8Column(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ByteOffset(pub u32);
 
-/// Zero-based UTF-16 code-unit column for consumers of Roslyn coordinates.
+/// Roslyn column used only to verify UTF-8 coordinate conversion in tests.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Utf16Column(pub u32);
+struct Utf16Column(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymbolKey<'a> {
@@ -177,6 +178,18 @@ fn read_u64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(bytes.try_into().unwrap())
 }
 
+fn reference_width(occurrence_count: usize) -> usize {
+    if occurrence_count <= 1 << 24 {
+        3
+    } else {
+        4
+    }
+}
+
+fn read_reference_id(id: &[u8], width: usize) -> u32 {
+    u32::from_le_bytes([id[0], id[1], id[2], if width == 4 { id[3] } else { 0 }])
+}
+
 fn header_checksum(header: &[u8]) -> u64 {
     header[..88]
         .iter()
@@ -239,7 +252,7 @@ impl CsIndex {
             return Err(invalid("unexpected data after final section"));
         }
         let occurrence_count = sections[Section::Occurrences as usize].len() / 8;
-        let ref_width = if occurrence_count <= 1 << 24 { 3 } else { 4 };
+        let ref_width = reference_width(occurrence_count);
         if occurrence_count.checked_mul(ref_width)
             != Some(sections[Section::References as usize].len())
         {
@@ -517,12 +530,7 @@ impl CsIndex {
     ) -> impl Iterator<Item = Occurrence> + 'a {
         let occurrences = self.packed_occurrences();
         refs.chunks_exact(self.ref_width).filter_map(move |id| {
-            let i = u32::from_le_bytes([
-                id[0],
-                id[1],
-                id[2],
-                if self.ref_width == 4 { id[3] } else { 0 },
-            ]);
+            let i = read_reference_id(id, self.ref_width);
             self.decode_occurrence(*occurrences.get(i as usize)?)
                 .filter(|o| o.symbol == symbol)
         })

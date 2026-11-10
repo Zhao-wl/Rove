@@ -234,11 +234,15 @@ static class IndexWriter
 
         fs.Position = 0;
         w.Write(headerBytes);
+        w.Flush();
+        fs.Flush(flushToDisk: true);
         return (occurrences.Count, relArr.Length, total);
     }
 
     static ulong Pack(uint file, Occ occ, List<(uint file, Occ occ)> wide)
     {
+        if (occ.Role is 0 or > 7)
+            throw new InvalidDataException($"Invalid occurrence role: {occ.Role}");
         if (file < 1 << 15 && occ.Sym < 1 << 21 && occ.Line < 1 << 12 && occ.Col < 1 << 8 && occ.Len < 1 << 5)
             return occ.Role | ((ulong)occ.Len << 3) | ((ulong)occ.Col << 8) | ((ulong)occ.Line << 16)
                 | ((ulong)occ.Sym << 28) | ((ulong)file << 49);

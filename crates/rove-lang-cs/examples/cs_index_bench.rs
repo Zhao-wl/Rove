@@ -100,6 +100,11 @@ fn main() {
         "goto_definition (first 200)",
         def_t.iter().take(200).copied().collect(),
     );
+    // The v1 example reported the tail separately from the first 200 queries.
+    stats(
+        "goto_definition (after first 200)",
+        def_t.iter().skip(200).copied().collect(),
+    );
     stats("goto_definition", def_t);
     println!("  no source definition (external/metadata symbol): {:.1}%  position lookup mismatches: {wrong}", miss as f64 * 100.0 / samples as f64);
 
