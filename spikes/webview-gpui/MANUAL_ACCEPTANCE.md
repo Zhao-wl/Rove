@@ -127,3 +127,10 @@ Windows版本：
 ```
 
 每个命令返回独立日志目录，保存exe哈希且恢复调用者环境变量。按O打开：应看到网页正文而非宿主占位；截图记录实际结果，不能用复制成功代替可见性。按U看原始叠放，再按H切换隐藏规避，分别截图。网页按Tab/Shift+Tab应回宿主，宿主再次按Tab/Shift+Tab应进入网页；检查key_route的source为trusted_bridge_keydown/host。继续WV-1～8、KEY-5/9，100%和125%分别记录。Transparent是待验候选，不预设一定透出网页；Hwnd也须实测实际叠放。
+
+## 最新三模式手测之后的复验重点
+
+Hwnd已有100%/125%、双屏及Tab真实通过记录；Baseline是已确认不可见的负对照，不作为推荐模式。新版请重点检查：
+1. Transparent：启动未打开、加载中、H隐藏、X关闭四种阶段均应不再透出后方窗口；ready可见时仍显示正文，U矩形完整。
+2. Hwnd在125%调整尺寸、切浅色主题后，X后约200ms按O，连续至少三轮；每轮应有open_requested、environment_reused、controller_requested/completed、ready。若失败，保留全部日志和操作时间，不用延迟半秒替代该条件。
+3. 继续检查边缘命中、双屏与已通过按键以防回归；模式改变后的内存与300秒全释放不得沿用旧指标。

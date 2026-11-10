@@ -248,3 +248,33 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 本轮自动回归：同一新构建分别在Baseline/Hwnd/Transparent模式运行，3/3严格校验通过。证据在 `evidence/2026-11-10-composition/`，各有模式字段、构建指纹、exe哈希及汇总。三模式均未操作物理按键，不能算KEY-5/9或可见性通过。桥接逻辑测试覆盖Tab/Shift+Tab以及非Tab/不可信事件拒绝；3项Rust阶段回归、3项Python统计回归通过；workspace fmt/clippy/test和原型严格clippy/release build/test通过。
 
 合入#2后再次rebase至main `d645fac`，workspace fmt/严格clippy与56项测试通过（2个环境相关doc-test忽略）。rebase换行规范化后严格指纹检查拒绝先前三模式证据，已重新构建并重录3/3通过，当前证据位于 `evidence/2026-11-10-composition-final/`。旧composition目录仅为历史记录。
+
+## 13. 三模式真实手测与快速重开修复
+
+[固定提交手测证据](https://github.com/Zhao-wl/Rove/tree/3e46ab2aadd555ee4d3cef39e09c8dcec6a5a06e/pr-81)对应构建a9955d6，exe SHA-256 2e31be1e630e05223aa086b0c10c34ae0a308038a71c91a1a6514bad906e7e2b。Windows 11 23H2、100%/125%、双1920×1080。以下是评审真实手测，不是本代理自动运行所得：
+
+- Baseline正文不可见，判定不适合作为集成模式，保留为负对照。
+- Hwnd正文可见；原始弹出矩形被网页覆盖，相交隐藏/恢复有效；尺寸、125%、混合DPI双屏、主题通过。快速x→o约200ms出现一次无第二controller；等待约半秒的复测3/3通过，不抹除首轮失败。
+- Transparent正文和完整GPUI弹出矩形可见，但加载/隐藏透出后方窗口；跨屏未测。
+- KEY-1～7两档通过，KEY-8/9在Hwnd/Transparent通过，Baseline存在视觉限制。Tab路由修复已获得物理按键证据。
+
+因此建议工作台优先以Hwnd+相交隐藏作为**已获手测支持的候选**；四类产品控件、完整Tab顺序、300秒回收和产品骨架整体验收仍未测，不能宣称产品集成完成。Transparent保留为待修复复验的候选，不以其原始叠放优点掩盖透底。
+
+本轮修复：Transparent只在ready且可见时留透明区域，其余阶段根背景不透明，防止加载/关闭/隐藏透底。纯逻辑覆盖4种组合，画面仍须重新截图。
+
+快速重开原始日志包含第二次environment，没有controller；这排除了“o完全没有被处理”的猜测，但不足以唯一证明底层WebView2挂起原因。原实现每次重新创建环境，本轮改为一个窗口持有一个environment，Close仅销毁controller，重建复用environment；记录open_requested、controller_requested/completed、environment_reused及host_key以区分请求丢失、异步失败和回调缺失。auto关闭→重开间隔改为200ms，每次仍等待ready并保留观察期，不靠额外睡眠掩盖问题。
+
+环境现随窗口存活，Close控制器不等于释放全部浏览器环境，因此历史Close内存回落值不能用于这一版本；产品的300秒全释放需额外生命周期设计。主线接口未改。
+
+本轮构建身份：`{"schema": 2, "commit": "001565549cf21c96def176e50aac7f9c040590b6", "source_git_blob": "e8b3a9e61b9b96838411479d089e2ff8ce6fa42b", "dirty": "false", "built_unix_seconds": "1794295050", "benchmark_mode": "continuous_frame_probe_not_idle", "disable_direct_composition": false, "transparent_preview": true}`。Hwnd/Transparent各3轮快速重开，严格校验6/6通过；原始事件、exe哈希与统计在 `evidence/2026-11-10-rapid-reopen/`。
+
+| 运行 | close→open阶段间隔 ms | 重建ready ms | 校验 |
+|---|---:|---:|---|
+| Hwnd/auto-1 | 200.93 | 2527.61 | PASS |
+| Hwnd/auto-2 | 201.33 | 2513.32 | PASS |
+| Hwnd/auto-3 | 201.05 | 2660.75 | PASS |
+| Transparent/auto-1 | 210.11 | 2658.47 | PASS |
+| Transparent/auto-2 | 209.69 | 2670.67 | PASS |
+| Transparent/auto-3 | 200.46 | 2612.67 | PASS |
+
+每轮1次environment创建、1次复用、2次controller请求/完成、2次ready/close均通过；自动测试覆盖200ms调度与消息，不替代125%下调整尺寸后快速按键的完整原始手测。5项Rust阶段/背景回归、3项Python统计及桥接逻辑测试通过；workspace fmt/clippy/test通过（56项，2个环境相关doc-test忽略）。Transparent透底修复仍待新版截图，不把背景布尔测试当作视觉验收。

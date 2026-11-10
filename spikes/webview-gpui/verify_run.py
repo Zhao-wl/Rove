@@ -31,6 +31,11 @@ require([s.get('stage') for s in stages] == list(range(1, 9)), 'Automatic lifecy
 require(all(s.get('ready') is True for s in stages if s['stage'] in (2, 7)), 'Advanced before ready')
 require(stages[-1]['previous_stage_ms'] >= 3000, 'Rebuilt page observation was cut short')
 
+require(sum(e['event'] == 'environment' for e in events) == 1, 'Expected one environment per window')
+require(sum(e['event'] == 'environment_reused' for e in events) == 1, 'Recreation did not reuse environment')
+require(sum(e['event'] == 'controller_requested' for e in events) == 2, 'Missing controller requests')
+require(sum(e['event'] == 'controller_completed' for e in events) == 2, 'Missing controller completions')
+
 ready = [e['data'] for e in events if e['event'] == 'ready']
 require(len(ready) == 2, 'Expected creation and recreation to become ready')
 require(all((e['documentScriptBlocked'] is True for e in ready)), 'Document script executed')
