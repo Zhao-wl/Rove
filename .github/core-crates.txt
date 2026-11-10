@@ -9,3 +9,8 @@ rove-lang-cs
 rove-syntax
 rove-test-support
 rove-workspace
+rove-base
+rove-commands
+rove-config
+rove-i18n
+rove-theme
