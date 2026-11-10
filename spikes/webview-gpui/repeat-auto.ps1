@@ -13,7 +13,7 @@ try {
   $err=Join-Path $runRoot "auto-$i.stderr.log"
   $started=[DateTime]::UtcNow.ToString('o')
   $p=Start-Process -FilePath $exe -ArgumentList '--auto' -WindowStyle Normal -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-  if(-not $p.WaitForExit(30000)) { $p.Kill(); throw "auto-$i timed out" }
+  if(-not $p.WaitForExit(90000)) { $p.Kill(); throw "auto-$i timed out" }
   $p.Refresh()
   [pscustomobject]@{trial="auto-$i";startedUtc=$started;exeSha256=$hash;exitCode=$p.ExitCode;mode='fresh-profile continuous-frame auto probe';profile=$env:ROVE_WEBVIEW_PROFILE} | ConvertTo-Json | Set-Content (Join-Path $runRoot "auto-$i.run.json")
   & python (Join-Path $root 'verify_run.py') $out

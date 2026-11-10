@@ -17,7 +17,7 @@ try {
       $p = Start-Process -FilePath $exe -ArgumentList '--auto' -PassThru -WindowStyle Normal -RedirectStandardOutput $out -RedirectStandardError $err
       $watch = [Diagnostics.Stopwatch]::StartNew()
       $samples = [Collections.Generic.List[object]]::new()
-      while (-not $p.HasExited -and $watch.Elapsed.TotalSeconds -lt 45) {
+      while (-not $p.HasExited -and $watch.Elapsed.TotalSeconds -lt 90) {
         # Build the descendant tree, rather than count unrelated WebView2 apps.
         $processes = @(Get-CimInstance Win32_Process)
         $ids = [Collections.Generic.HashSet[int]]::new()

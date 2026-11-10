@@ -1,3 +1,4 @@
+mod auto_flow;
 use gpui::{
     div, prelude::*, px, rgb, size, App, Application, Bounds, Context, FocusHandle, Window,
     WindowBounds, WindowOptions,
@@ -389,6 +390,7 @@ struct Spike {
     overlay: bool,
     mitigate: bool,
     stage: u8,
+    stage_started: Instant,
     auto: bool,
     last_ping: Instant,
 }
@@ -411,42 +413,41 @@ impl Render for Spike {
                 json!({"ms":self.start.elapsed().as_secs_f64()*1000.0}),
             );
         }
-        let elapsed = self.start.elapsed().as_secs_f64();
         if self.auto {
-            let next = if elapsed > 16.0 {
-                6
-            } else if elapsed > 13.0 {
-                5
-            } else if elapsed > 11.0 {
-                4
-            } else if elapsed > 8.0 {
-                3
-            } else if elapsed > 5.0 {
-                2
-            } else if elapsed > 1.0 {
-                1
-            } else {
-                0
-            };
+            let elapsed = self.stage_started.elapsed().as_secs_f64();
+            let ready = self.state.borrow().ready;
+            if (self.stage == 1 || self.stage == 6) && !ready && elapsed >= 20.0 {
+                log(
+                    "error",
+                    json!({"reason":"auto_ready_timeout", "stage":self.stage,"wait_ms":elapsed*1000.0}),
+                );
+                cx.quit();
+            }
+            let next = auto_flow::next_stage(self.stage, elapsed, ready);
             if next != self.stage {
                 self.stage = next;
+                self.stage_started = Instant::now();
+                log(
+                    "auto_stage",
+                    json!({"stage":next,"previous_stage_ms":elapsed*1000.0,"ready":ready}),
+                );
                 match next {
                     1 => create(&self.state, hwnd),
-                    2 => {
+                    3 => {
                         self.overlay = true;
                         self.mitigate = false;
                         log("overlay_unmitigated", json!({}));
                     }
-                    3 => {
+                    4 => {
                         self.mitigate = true;
                         log("overlay_hidden_webview", json!({}));
                     }
-                    4 => {
+                    5 => {
                         self.overlay = false;
                         close(&self.state);
                     }
-                    5 => create(&self.state, hwnd),
-                    6 => cx.quit(),
+                    6 => create(&self.state, hwnd),
+                    8 => cx.quit(),
                     _ => {}
                 }
             }
@@ -584,6 +585,7 @@ fn main() {
                         overlay: false,
                         mitigate: false,
                         stage: 0,
+                        stage_started: Instant::now(),
                         auto,
                         last_ping: Instant::now(),
                     })

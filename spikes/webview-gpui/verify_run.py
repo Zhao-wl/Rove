@@ -19,7 +19,7 @@ require(int(starts[0]['built_unix_seconds']) > 0, 'Invalid build timestamp')
 import hashlib
 root = Path(__file__).resolve().parent
 payload = bytearray()
-for name in ('build.rs', 'Cargo.toml', 'Cargo.lock', 'src/main.rs', 'assets/bridge.js', 'assets/index.html', 'assets/local.svg'):
+for name in ('build.rs', 'Cargo.toml', 'Cargo.lock', 'src/main.rs', 'src/auto_flow.rs', 'assets/bridge.js', 'assets/index.html', 'assets/local.svg'):
     payload.extend(name.encode()); payload.append(0)
     payload.extend((root / name).read_bytes()); payload.append(0)
 expected = hashlib.sha1(b'blob ' + str(len(payload)).encode() + b'\0' + payload).hexdigest()

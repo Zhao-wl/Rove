@@ -18,6 +18,7 @@ fn main() {
         "Cargo.toml",
         "Cargo.lock",
         "src/main.rs",
+        "src/auto_flow.rs",
         "assets/bridge.js",
         "assets/index.html",
         "assets/local.svg",
