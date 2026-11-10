@@ -480,20 +480,23 @@ impl Render for Spike {
                 let mut r = RECT::default();
                 let _ = GetClientRect(hwnd, &mut r);
                 r.left = r.right / 2;
-                let mut state = self.state.borrow_mut();
-                if state.last_bounds != Some(r) {
+                let (last_bounds, last_visible) = {
+                    let state = self.state.borrow();
+                    (state.last_bounds, state.last_visible)
+                };
+                if last_bounds != Some(r) {
                     if let Err(error) = c.SetBounds(r) {
                         log("layout_error", json!(error.to_string()));
                     } else {
-                        state.last_bounds = Some(r);
+                        self.state.borrow_mut().last_bounds = Some(r);
                     }
                 }
                 let visible = !(self.overlay && self.mitigate);
-                if state.last_visible != Some(visible) {
+                if last_visible != Some(visible) {
                     if let Err(error) = c.SetIsVisible(visible) {
                         log("layout_error", json!(error.to_string()));
                     } else {
-                        state.last_visible = Some(visible);
+                        self.state.borrow_mut().last_visible = Some(visible);
                     }
                 }
                 // Parent movement can occur without a client-size change.
