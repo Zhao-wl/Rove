@@ -1,7 +1,7 @@
 # Rove M0 WebView2 嵌入验证报告
 
 > Issue #6 · 实测：2026-11-09；预算口径确认：2026-11-10 · 部分验收完成，PR 保持 Draft。
-> 原型与原始证据：`spikes/webview-gpui/`、`evidence/2026-11-09/`。
+> 原型与原始证据：`spikes/webview-gpui/`。工作树中只保留两批证据（`evidence/2026-11-10-retain-close/`、`evidence/2026-11-10-review3/`）；其余历史批次已删除，固定链接见§16。
 
 ## 1. 结论摘要
 
@@ -15,7 +15,9 @@
 |---|---|---|
 | 未开启预览的基础阅读器 | 保留 60 MB 约束 | 本原型持续刷新，不能代替产品静止空闲验收 |
 | WebView2 预览开启 | 单列预算；分别记录宿主、WebView2 子进程及合计的工作集/私有提交 | 现有 324–341 MiB 是活动原型进程树合计，含共享页重复计数可能性；具体上限未设定 |
-| 预览全部关闭且完成回收 | 单独验证资源释放和基础阅读器内存恢复 | 原型回落至 49–52 MiB 仅为当前运行证据，不是产品静止空闲预算已通过 |
+| 预览全部关闭且完成回收 | 单独验证资源释放和基础阅读器内存恢复 | 49–52 MiB 来自 11-09 旧构建的 Close 回落观测，**已不适用于§15 的生命周期**（见下注），不是产品静止空闲预算已通过 |
+
+> **关于「回收后 49–52 MiB」的适用范围。** 该数字出自§4.5 的 11-09 旧构建：当时每次打开都新建 environment，`Close()` 会连带销毁浏览器环境与全部子进程。当前实现（§13 起）一个窗口持有一个 environment、Close 只销毁 controller，§15 又把用户关闭改成「隐藏保留」——`x` 之后 controller 仍然存活，只调用了 `SetIsVisible(false)`，没有 `TrySuspend()`，**保留期内的内存仍是预览开启的量级**（§10 当前构建实测峰值工作集 327–347 MiB、私有提交 245–262 MiB）。因此不能用 49–52 MiB 描述「关闭预览后」的内存，也不能用它论证 300 秒超时前的占用。超时回收后的稳定值与 300 秒全释放均未在本 spike 测过，见§6.1。
 
 人工验收入口：[C 链手测清单](../spikes/webview-gpui/MANUAL_ACCEPTANCE.md)，包含 #5/#6 启动命令、逐步操作和反馈模板。
 
@@ -109,14 +111,41 @@ ready 约 2.4–2.6 秒，骨架占位是必需项。controller→ready 之间�
 
 重建 controller 223–245ms，页面 ready 2345–2383ms。原型用短时周期验证回收机制，未等待完整 300 秒，未测长时间多轮资源增长。
 
+**这段 49.3–52.1 MiB 不适用于当前生命周期**：当时 `Close()` 连带销毁 environment，而现在 environment 随窗口存活、`x` 只隐藏保留 controller（§13、§15）。详见§1 的注记与§6.1。
+
 ## 5. 集成设计（有条件建议）
 
 1. GPUI 拥有顶层 HWND；每窗口的预览管理器拥有一个 controller。原型不修改 GPUI 或共享契约。
 2. 第一次打开预览时异步创建，先显示骨架；不要嵌套消息泵阻塞 UI。关闭或取消时递增 generation，迟到回调立即 Close，不挂回失效窗口。
-3. 按布局提交客户区物理 bounds；GPUI 逻辑坐标乘当前 scale，跨屏后更新。当前原型从 GetClientRect 获取物理尺寸，但**高 DPI/混合显示器仍未实测**。
+3. 按布局提交客户区物理 bounds；GPUI 逻辑坐标乘当前 scale，跨屏后更新。当前原型从 GetClientRect 获取物理尺寸。**100%/125% 与混合 DPI 双屏往返拖动已有真实手测证据（见§13、§14）**；但原型从未显式同步 `ICoreWebView2Controller3::RasterizationScale`（只依赖 WebView2 自身跟随父窗口 DPI），**150% 也没有专门测过**，这两项留给 #29（见 5.1）。
 4. 先按§4.1实测渲染模式与叠放关系，再决定是否相交隐藏；不得继续假设WebView2必定覆盖GPUI。焦点与Tab边界由宿主负责，视觉通过前不能解除#16依赖。
 5. 文档切换复用实例；用户关闭预览只隐藏（SetIsVisible(false)）并保留 controller，`webviewIdleTimeout` 到期后才 Close；超时前重新打开直接复用，不重建。`ICoreWebView2Controller::Close()` 是同步调用，本机实测 29–459 ms（中位 48 ms），**不得在按键/输入回调里调用**，只在空闲超时或窗口关闭时从帧回调/定时器执行。新文档消息必须携带 generation/documentId。见§15。
 6. 接口缺口走单独契约 PR，本次没有擅自修改 #1 的接口。
+
+### 5.1 #29 必须做、本 spike 未验证的事项
+
+本 spike 的原型只证明「这条路线能跑通」，下面这些**在原型里是缺口或只有临时做法**，必须由 #29（Markdown 预览正式实现）落实并补证据。行号对应本分支当前的 `spikes/webview-gpui/src/main.rs`。
+
+**（1）运行时联网：AGENTS.md 硬约束目前零证据。**
+创建环境时 `CreateCoreWebView2EnvironmentWithOptions` 的 options 参数直接传 `None`（`spikes/webview-gpui/src/main.rs:232-241`），没有通过 `ICoreWebView2EnvironmentOptions` 的 `AdditionalBrowserArguments` 关掉 WebView2 自带的联网行为；`configure()` 里设置的只有脚本、DevTools、右键菜单、状态栏和浏览器快捷键（`src/main.rs:307-315`），**没有碰 `ICoreWebView2Settings8::IsReputationCheckingRequired`**，SmartScreen 信誉检查、组件/实验配置更新、崩溃上报等后台请求全部保持默认开启。原型里唯一的网络防线是 `WebResourceRequested`（`src/main.rs:348-351` 注册过滤器与处理器），**它只拦得住页面发起的资源请求，拦不住浏览器内核自身的后台连接**。
+AGENTS.md §1 的硬约束「运行时不发起任何网络请求」因此**目前零证据**（§4.4 也已声明「尚无 OS 级网络跟踪」）。#29 必须：显式关闭 SmartScreen 与自动更新/实验配置拉取，并做一次 OS 级抓包（Fiddler/Wireshark/`pktmon`）在「打开预览 → 空闲 → 回收」全程确认无外发连接，把抓包结果作为验收证据。
+
+**（2）空闲回收依赖渲染帧，产品按需重绘时超时永不到期。**
+空闲超时判定写在 `render()` 里（`src/main.rs:576-589`：读 `dismissed_at`，`auto_flow::dispose_due()` 判定后调 `close_to_host()`），而原型之所以能持续判定，只是因为它每帧无条件 `window.request_animation_frame()` 加 `on_next_frame` 自唤醒（`src/main.rs:671-674`）——这是基准探针行为，不是产品行为。产品是按需重绘：预览隐藏、用户不操作时根本不出帧，**`webviewIdleTimeout` 永远不会到期，controller 会被无限期保留**。#29 必须把回收改成定时器驱动（Win32 `SetTimer` / GPUI 的定时任务），到期后再投递到 UI 线程执行 `Close()`，不得依赖帧回调。
+
+**（3）隐藏保留没有挂起，保留期内存仍是预览开启量级。**
+`dismiss()`（`src/main.rs:145-157`）只记录 `dismissed_at` 并把 Win32 焦点还给宿主，真正的隐藏是下一帧的 `SetIsVisible(false)`（`src/main.rs:633-639`）。**全程没有调用 `ICoreWebView2_3::TrySuspend()` / `Resume()`**，WebView2 的渲染进程仍在运行，所以保留期（默认 300 秒）内的内存仍是预览开启的量级——§1 引用的 324–341 MiB、§10 当前构建实测峰值 327–347 MiB 都属于这个量级；§1 里「回收后 49–52 MiB」来自 11-09 旧构建（当时 Close 连带销毁 environment），**已不适用于§15 的生命周期**，§1 已就地加注。#29 必须在隐藏时 `TrySuspend()`、重新显示时 `Resume()`，并分别测量「挂起保留」「超时回收后」两个稳态的内存，再定预览预算。
+
+**（4）其余已知缺口（本 spike 只登记，不修）。**
+
+| 缺口 | 位置 | #29 要做什么 |
+|---|---|---|
+| `close()` 在持有 `state.borrow_mut()` 期间调用 COM `remove_*` 与 `Close()` | `src/main.rs:91-116` | COM 回调可能在同一线程重入并再次 `borrow_mut()`，触发 `RefCell` panic。产品要先复制出 controller/webview/token 并释放借用，再调 COM（§9 对布局路径已这么改，关闭路径没改） |
+| 导航/下载/权限拦截不全 | `src/main.rs:324-347`（`add_NavigationStarting` + `add_NewWindowRequested`） | 只拦顶层导航和新窗口，**没有 `add_FrameNavigationStarting`（子框架/iframe）、`add_DownloadStarting`（下载）、`add_PermissionRequested`（地理位置/剪贴板/通知等权限）**，这三类都要显式拒绝 |
+| 没有显式 COM 初始化 | 全文无 `CoInitializeEx` | 原型隐含依赖「GPUI 的窗口线程已经是 STA」。产品不得依赖这个未写明的前提，要显式初始化并断言线程套间 |
+| 没有设置 DPI 相关属性 | `configure()`，`src/main.rs:300-492` | 未设置 `ICoreWebView2Controller3::RasterizationScale` 与 `ShouldDetectMonitorScaleChanges`，跨屏/改缩放后的清晰度与命中区域依赖默认行为；150% 与跨屏改缩放要专测 |
+| 重建时无条件显示 | `configure()` 末尾 `controller.SetIsVisible(true)`（`src/main.rs:492`） | 不看当前是否处于「弹出层相交隐藏」或「已 dismiss」状态就置为可见，异步创建完成的那一帧可能闪一下。产品应按当前可见性状态决定初值 |
+| 测量设施混进时序 | `WH_GETMESSAGE` 线程钩子（`src/main.rs:717-724`，进程存活期间从不卸载）与每帧 JSON 日志 | 钩子和逐帧 stdout 写入都会改变 UI 线程时序，**本报告里的按键/Close 耗时都含这层干扰**；#29 的正式测量不要带这两样，或者做带/不带的对照 |
 
 ## 6. 替代方案与未完成项
 
@@ -125,6 +154,15 @@ ready 约 2.4–2.6 秒，骨架占位是必需项。controller→ready 之间�
 60 MB 不约束开启预览后的整个进程树，不能再据此要求放弃 WebView2。若后续确定的独立预览预算或视觉/焦点验收仍无法满足，再评估 pulldown-cmark 原生渲染；这需要重新决策 FEATURES D5，重新估算内嵌 HTML、Mermaid、数学公式能力与实现成本，不能无声删减功能。
 
 暂缓（不阻塞本 PR）：关闭保留方案在Transparent125%物理短按下的人工复验（本机只有100%，自动注入见§15）。当前未完成：四类真实产品控件及完整Tab顺序；150%专门验证；真正无运行时环境；OS网络跟踪；当前静止空闲预算、外部冷启动首帧、300秒全释放与长期循环；独立预览预算数值。100%/125%重叠截图、两模式按键和混合DPI跨屏已有真实证据，见§14。
+
+### 6.1 遗留到 #6 / #29 的事项（明确不在本 PR 完成）
+
+issue #6 的验收标准里有两项**本 PR 不做、转入后续**，在这里逐条写明，避免当成已通过：
+
+1. **冷/热启动与内存口径、静止空闲预算——未完成。** 本报告所有「首次 Render」都是进程内 `main`→首个 Render 回调，不是外部进程启动→显示器首帧（§2）；所有内存都来自持续 `request_animation_frame` 的探针场景（`benchmark_mode: continuous_frame_probe_not_idle`），**不是静止空闲测量**（§7、§10）。未开启预览的基础阅读器 60 MB 静止空闲预算、WebView2 预览的独立预算数值，都**尚未设定也未测量**。真正的外部首帧与预算判定由 #4 的产品基准（`cargo xtask bench` / `startup` / `perf/budgets.toml`）负责，预览侧口径由 #29 补。
+2. **真机无 WebView2 运行时环境、300 秒全释放——未完成。** §4.5 只做了「browser folder 指向不存在目录」的故障注入（返回 `0x80070002`），**没有卸载系统运行时，不等于在真正未安装 WebView2 的机器上验收**；需要干净测试机，不要卸载日常系统的运行时。300 秒默认空闲超时的全链路释放也没有实测：§4.5 的 300 秒等待从未执行，§15 只用 `ROVE_WEBVIEW_IDLE_MS=1000` 验证了回收路径走得通，而且按 5.1 第（2）条，当前的帧驱动超时在产品的按需重绘下根本不会到期。两项都转入 #29，并需要 5.1 第（3）条的 `TrySuspend` 到位后重测内存。
+
+此外，5.1 列出的全部缺口（运行时联网取证、定时器驱动回收、挂起/恢复、`close()` 重入、子框架/下载/权限拦截、COM 初始化、`RasterizationScale`、重建闪帧、测量设施干扰）同样不在本 PR 范围内，逐条交给 #29。
 
 ## 7. 构建环境、选型与许可证
 
@@ -159,7 +197,7 @@ workspace 与原型 fmt、严格 clippy（`-D warnings`）通过；workspace tes
 
 ## 8. 2026-11-10 评审复跑（50c93cb 历史构建自动验收子集）
 
-构建源码 commit `50c93cbbdf0f70484cd5e22a25f9af83447de013`，源码 Git-blob 指纹 `90a03d84e611e495e61e145ee12431d10a87fb22`，构建时间 `2026-11-10T01:59:51+00:00`，dirty=true（构建输入已提交，spike 目录内 README、验收脚本和证据仍有未提交更新；dirty 只检查 spike 目录，不包含根 docs 报告）。可执行文件 SHA-256：`06951e78fcb5f8ccc83cf330d44860ef23d669fa07d8d52df19a3de419e2f65c`。日志及清单在 `spikes/webview-gpui/evidence/2026-11-10/`；上一轮保存在其 `earlier-eb3c41f/` 子目录。verify_run.py按当前构建输入重新计算源码指纹，拒绝不匹配证据；文档更新不影响该指纹。
+构建源码 commit `50c93cbbdf0f70484cd5e22a25f9af83447de013`，源码 Git-blob 指纹 `90a03d84e611e495e61e145ee12431d10a87fb22`，构建时间 `2026-11-10T01:59:51+00:00`，dirty=true（构建输入已提交，spike 目录内 README、验收脚本和证据仍有未提交更新；dirty 只检查 spike 目录，不包含根 docs 报告）。可执行文件 SHA-256：`06951e78fcb5f8ccc83cf330d44860ef23d669fa07d8d52df19a3de419e2f65c`。日志及清单在 [`evidence/2026-11-10/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10)（已从工作树删除，固定链接，下同；见§16）；上一轮保存在其 `earlier-eb3c41f/` 子目录。verify_run.py按当前构建输入重新计算源码指纹，拒绝不匹配证据；文档更新不影响该指纹。
 
 `repeat-auto.ps1 -Runs 3` 使用同一二进制、每次全新profile；不是OS冷缓存试验，也没有重测六次内存表。三次均通过脚本/资源阻止、本地图片、主题、双向滚动、创建与重建的运行校验。
 
@@ -197,7 +235,7 @@ workspace 与原型 fmt、严格 clippy（`-D warnings`）通过；workspace tes
 
 ## 10. 第三轮修复与当前构建内存补测
 
-基于main `5f6f780`，构建身份：`{"schema": 2, "commit": "b00ce0a5034ed294f921f0f9420b71858dd7603b", "source_git_blob": "3e9f59c12723e4642c7ecf715cae51abd83f9010", "dirty": "false", "built_unix_seconds": "1794280355", "benchmark_mode": "continuous_frame_probe_not_idle"}`。exe SHA-256随run.json保存，原始日志、内存采样和逐轮校验输出在 `spikes/webview-gpui/evidence/2026-11-10-review3/`。
+基于main `5f6f780`，构建身份：`{"schema": 2, "commit": "b00ce0a5034ed294f921f0f9420b71858dd7603b", "source_git_blob": "3e9f59c12723e4642c7ecf715cae51abd83f9010", "dirty": "false", "built_unix_seconds": "1794280355", "benchmark_mode": "continuous_frame_probe_not_idle"}`。exe SHA-256随run.json保存，原始日志、内存采样和逐轮校验输出在 `spikes/webview-gpui/evidence/2026-11-10-review3/`（本批保留在工作树中）。
 
 | 运行 | 首Render ms | 峰值工作集 MiB | 峰值私有提交 MiB | >16ms/回复 | 运行校验 |
 |---|---|---:|---:|---:|---|
@@ -218,7 +256,7 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 
 修复改为逐阶段状态机，每次创建等待ready后才开始观察计时，重建ready后至少观察3秒才退出；每次ready等待上限20秒，超时记录error并失败。外层90秒只作失控进程保护，不是性能预算。阶段日志与严格校验要求1–8顺序完整、两次ready后推进及最后观察期完整。新增3个纯逻辑回归覆盖慢ready、长帧不跳步、重建观察时间。
 
-修复后以同一内存采样脚本复跑3次全新profile、3次复用profile，严格运行校验 **6/6通过**。身份：`{"schema": 2, "commit": "746373c91835e12543b73c60a6b18108664a7749", "source_git_blob": "25c8656b6f9a53bea0376b59e43b314ed7c23a45", "dirty": "false", "built_unix_seconds": "1794280960", "benchmark_mode": "continuous_frame_probe_not_idle"}`。日志、exe哈希、内存采样及校验输出见 `evidence/2026-11-10-ready-fix/`。
+修复后以同一内存采样脚本复跑3次全新profile、3次复用profile，严格运行校验 **6/6通过**。身份：`{"schema": 2, "commit": "746373c91835e12543b73c60a6b18108664a7749", "source_git_blob": "25c8656b6f9a53bea0376b59e43b314ed7c23a45", "dirty": "false", "built_unix_seconds": "1794280960", "benchmark_mode": "continuous_frame_probe_not_idle"}`。日志、exe哈希、内存采样及校验输出见 [`evidence/2026-11-10-ready-fix/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-ready-fix)（已删除，固定链接）。
 
 | 运行 | 第一次ready ms | 重建ready ms | 重建ready后观察 ms | 校验 |
 |---|---:|---:|---:|---|
@@ -239,9 +277,9 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 
 焦点方向依据：[ICoreWebView2Controller::MoveFocus](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller)，NEXT进入首元素、PREVIOUS进入末元素。
 
-本轮自动回归：同一新构建分别在Baseline/Hwnd/Transparent模式运行，3/3严格校验通过。证据在 `evidence/2026-11-10-composition/`，各有模式字段、构建指纹、exe哈希及汇总。三模式均未操作物理按键，不能算KEY-5/9或可见性通过。桥接逻辑测试覆盖Tab/Shift+Tab以及非Tab/不可信事件拒绝；3项Rust阶段回归、3项Python统计回归通过；workspace fmt/clippy/test和原型严格clippy/release build/test通过。
+本轮自动回归：同一新构建分别在Baseline/Hwnd/Transparent模式运行，3/3严格校验通过。证据在 [`evidence/2026-11-10-composition/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-composition)（已删除，固定链接），各有模式字段、构建指纹、exe哈希及汇总。三模式均未操作物理按键，不能算KEY-5/9或可见性通过。桥接逻辑测试覆盖Tab/Shift+Tab以及非Tab/不可信事件拒绝；3项Rust阶段回归、3项Python统计回归通过；workspace fmt/clippy/test和原型严格clippy/release build/test通过。
 
-合入#2后再次rebase至main `d645fac`，workspace fmt/严格clippy与56项测试通过（2个环境相关doc-test忽略）。rebase换行规范化后严格指纹检查拒绝先前三模式证据，已重新构建并重录3/3通过，当前证据位于 `evidence/2026-11-10-composition-final/`。旧composition目录仅为历史记录。
+合入#2后再次rebase至main `d645fac`，workspace fmt/严格clippy与56项测试通过（2个环境相关doc-test忽略）。rebase换行规范化后严格指纹检查拒绝先前三模式证据，已重新构建并重录3/3通过，当时证据位于 [`evidence/2026-11-10-composition-final/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-composition-final)（已删除，固定链接）。旧composition目录仅为历史记录。
 
 ## 13. 前轮三模式真实手测与快速重开修复（最新状态见§14）
 
@@ -260,7 +298,7 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 
 环境现随窗口存活，Close控制器不等于释放全部浏览器环境，因此历史Close内存回落值不能用于这一版本；产品的300秒全释放需额外生命周期设计。主线接口未改。
 
-本轮构建身份：`{"schema": 2, "commit": "001565549cf21c96def176e50aac7f9c040590b6", "source_git_blob": "e8b3a9e61b9b96838411479d089e2ff8ce6fa42b", "dirty": "false", "built_unix_seconds": "1794295050", "benchmark_mode": "continuous_frame_probe_not_idle", "disable_direct_composition": false, "transparent_preview": true}`。Hwnd/Transparent各3轮快速重开，严格校验6/6通过；原始事件、exe哈希与统计在 `evidence/2026-11-10-rapid-reopen/`。
+本轮构建身份：`{"schema": 2, "commit": "001565549cf21c96def176e50aac7f9c040590b6", "source_git_blob": "e8b3a9e61b9b96838411479d089e2ff8ce6fa42b", "dirty": "false", "built_unix_seconds": "1794295050", "benchmark_mode": "continuous_frame_probe_not_idle", "disable_direct_composition": false, "transparent_preview": true}`。Hwnd/Transparent各3轮快速重开，严格校验6/6通过；原始事件、exe哈希与统计在 [`evidence/2026-11-10-rapid-reopen/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-rapid-reopen)（已删除，固定链接）。
 
 | 运行 | close→open阶段间隔 ms | 重建ready ms | 校验 |
 |---|---:|---:|---|
@@ -283,7 +321,7 @@ Transparent四态不透底在100%/125%通过；两模式混合DPI、主题与KEY
 
 复验重点：Transparent125%尺寸/浅色主题后，沿用首轮短按持续时间与200ms间隔，检查closed后的host_focus_restored.ok、后续host_key=o及重建日志。若o仍未出现，保留Windows输入发送时刻与持续时间，不能将该次标记为WebView controller失败。此前通过的手测结果保留；产品弹出控件、完整Tab遍历、300秒全释放、真实冷启动/预算/无运行时环境仍未验。
 
-本轮构建：`{"schema": 2, "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f", "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179", "dirty": "true", "built_unix_seconds": "1794298329", "benchmark_mode": "continuous_frame_probe_not_idle", "disable_direct_composition": false, "transparent_preview": true}`；原生焦点断言与完整生命周期运行 **6/6通过**，证据在 `evidence/2026-11-10-native-focus/`，各轮包含exe SHA-256。
+本轮构建：`{"schema": 2, "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f", "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179", "dirty": "true", "built_unix_seconds": "1794298329", "benchmark_mode": "continuous_frame_probe_not_idle", "disable_direct_composition": false, "transparent_preview": true}`；原生焦点断言与完整生命周期运行 **6/6通过**，证据在 [`evidence/2026-11-10-native-focus/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-native-focus)（已删除，固定链接），各轮包含exe SHA-256。
 
 | 运行 | close→open间隔 ms | 重建ready ms | GetFocus=host | 校验 |
 |---|---:|---:|---|---|
@@ -304,7 +342,7 @@ main e3a93c9下workspace fmt/严格clippy/56项测试通过（2项环境相关do
 
 **修复。** `x` 只隐藏并保留 controller（`dismissed`），立刻把 Win32 焦点还给宿主；`o` 在空闲窗口内直接重新显示（`reshown`），不重建；`ROVE_WEBVIEW_IDLE_MS`（默认 300000，对应 `rove.markdown.webviewIdleTimeout`）到期或按 `d` 时，才在下一次渲染帧里 `Close()`。自动生命周期探针仍走真实 Close→重建。
 
-**验证**（证据：`spikes/webview-gpui/evidence/2026-11-10-retain-close/`，事件日志已去掉 roundtrip/local_resource 噪声）：
+**验证**（证据：`spikes/webview-gpui/evidence/2026-11-10-retain-close/`，本批保留在工作树中，事件日志已去掉 roundtrip/local_resource 噪声）：
 
 | 场景 | 结果 |
 |---|---|
@@ -316,3 +354,31 @@ main e3a93c9下workspace fmt/严格clippy/56项测试通过（2项环境相关do
 | 截图 | 关闭态不透底并提示保留；重新显示 300 ms 后正文可见 |
 
 原型 7 项 Rust 测试（新增复用/延迟回收判定 2 项）、`clippy -D warnings` 通过。自动注入不等于物理按键；125% 物理短按复验**暂缓**，不作为本 PR 的阻塞项，需要时按 MANUAL_ACCEPTANCE“关闭保留与延迟回收”执行。
+
+## 16. 证据批次的保留与历史位置
+
+本 PR 合入前精简了 `spikes/webview-gpui/evidence/`：**工作树中只保留两批**，其余 7 批已用 `git rm -r` 删除。删除只影响工作树，不影响历史——所有被删批次都完整存在于提交 `ab7d088` 的树里，下表是固定链接（permalink），点开即可看到当时的原始日志、`run.json`、exe SHA-256 与校验输出。
+
+保留在工作树中的两批：
+
+| 批次 | 对应章节 | 为什么保留 |
+|---|---|---|
+| `evidence/2026-11-10-retain-close/` | §15 | 本报告的**最新结论**（隐藏保留＋延迟回收、Close 28.7–459.0 ms 诊断、30/30 与 15/15 `reshown`、1 s 空闲回收 8/8）全部依赖这批 |
+| `evidence/2026-11-10-review3/` | §10 | 当前构建口径下**唯一**的内存采样（峰值工作集 327–347 MiB），§1 的内存注记与 5.1 第（3）条引用它 |
+
+已删除、改为固定链接的批次：
+
+| 批次（固定链接） | 对应章节 | 内容 |
+|---|---|---|
+| [`2026-11-09`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-09) | §3、§4.3、§4.4、§4.5 | 11-09 旧构建六次实测、`final-communication.jsonl`、`global-script-disabled.jsonl`、`acceptance.jsonl`、`missing-runtime.jsonl` |
+| [`2026-11-10`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10) | §8 | 50c93cb 历史构建的评审复跑（含 `earlier-eb3c41f/` 子目录） |
+| [`2026-11-10-ready-fix`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-ready-fix) | §11 | 重建未 ready 修复后的 6/6 复跑 |
+| [`2026-11-10-composition`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-composition) | §12 | 三模式（Baseline/Hwnd/Transparent）首批自动回归 |
+| [`2026-11-10-composition-final`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-composition-final) | §12 | rebase 到 d645fac 后重录的三模式回归 |
+| [`2026-11-10-rapid-reopen`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-rapid-reopen) | §13 | 200ms 快速重开、environment 复用 |
+| [`2026-11-10-native-focus`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-10-native-focus) | §14 | 原生焦点恢复断言与完整生命周期 6/6 |
+
+说明：
+- 这些历史批次的构建指纹与当前源码不一致，`verify_run.py` 本来就会以 `SOURCE MISMATCH` 或 `LEGACY/UNVERSIONED` 拒绝它们（§8、§9），只能用 `summarize.py` 作历史统计；删除它们不会让任何现行校验失去输入。
+- `verify_run.py`、`summarize.py`、`evidence_stats.py`、`repeat-auto.ps1` 都按命令行参数接收日志路径，**没有硬编码任何批次目录**，因此本次删除不需要改脚本。
+- 后续若要重新引用某批历史数据，用上表的固定链接，不要再往工作树里复制回来。

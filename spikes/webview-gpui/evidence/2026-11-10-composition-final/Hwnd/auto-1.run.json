@@ -1,8 +1,0 @@
-{
-  "trial": "auto-1",
-  "startedUtc": "2026-11-10T06:05:19.8798135Z",
-  "exeSha256": "2e31be1e630e05223aa086b0c10c34ae0a308038a71c91a1a6514bad906e7e2b",
-  "exitCode": 0,
-  "mode": "fresh-profile continuous-frame auto probe",
-  "profile": "C:\\Users\\zhaowenlong\\.codex\\worktrees\\rove-c-webview\\Rove\\spikes\\webview-gpui\\runs\\review-20261110-140519\\profile-1"
-}

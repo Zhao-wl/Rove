@@ -40,9 +40,10 @@ comparison: direct host injection runs, but event-based bridge replies were abse
 in this environment. Restore the variable after the comparison.
 
 Desktop capture may be unavailable (black screen/foreground denial). Never count
-a PrintWindow capture without child HWND contents as overlap proof. Raw JSON
-evidence is under `evidence/2026-11-09/`; visual and physical-key acceptance remains
-manual. Source and report explicitly distinguish these limits.
+a PrintWindow capture without child HWND contents as overlap proof. The 2026-11-09 raw JSON
+evidence was pruned from the tree and is pinned at
+[`evidence/2026-11-09/`](https://github.com/Zhao-wl/Rove/tree/ab7d0888660308ddbb0350891ae4c7d77ea54566/spikes/webview-gpui/evidence/2026-11-09) (see report section 16); visual and
+physical-key acceptance remains manual. Source and report explicitly distinguish these limits.
 
 After an auto run, execute `python spikes/webview-gpui/verify_run.py <events.jsonl>`
 to validate the runtime probes. This verifier deliberately does not mark manual
@@ -78,8 +79,10 @@ and unsubscribed at Close. Async initialization/script strings are retained by
 completion closures. Physical-key and visible-overlap acceptance is still pending.
 
 Review reruns: `./spikes/webview-gpui/repeat-auto.ps1 -Runs 3` writes one build
-identity per log and executable SHA-256 in run manifests. Current versioned
-evidence lives under evidence/2026-11-10; older logs are explicitly historical.
+identity per log and executable SHA-256 in run manifests. Only two batches are kept in the tree:
+`evidence/2026-11-10-retain-close/` (report section 15) and
+`evidence/2026-11-10-review3/` (report section 10). All other batches were pruned
+and are pinned as permalinks in report section 16; they are explicitly historical.
 The verifier compares the exact current build-input fingerprint, so newer code
 cannot silently reuse older evidence.
 

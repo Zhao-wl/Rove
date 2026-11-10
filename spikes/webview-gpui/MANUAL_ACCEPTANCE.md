@@ -100,6 +100,8 @@ Get-Content "$runDir\events.jsonl" | Select-String 'key_route|ready|controller|c
 - 基础阅读器静止空闲60 MB、独立预览预算具体值、外部首帧/OS冷缓存、长期内存增长及OS级网络拦截验证。
 - 真正无 WebView2 运行时机器：有现成干净测试机时再安排；不要卸载日常系统运行时。已有“缺失目录”故障注入不等于该验收。
 
+这些遗留项已在报告 [§6.1](../../docs/M0_WEBVIEW_SPIKE_REPORT.md) 逐条登记（冷/热启动与内存口径、静止空闲预算；真机无运行时环境与 300 秒全释放），明确不在 PR #81 完成，转入 #29；#29 还需补的原型缺口见报告 §5.1。
+
 ## 6. 反馈模板
 
 可直接复制填写；视频/截图用测试编号命名（如 IME-1.mp4、WV-2.png、WV-3.png），附 #6 的 events.jsonl / stderr.log。日志不用逐行手工分析，交给我核对即可。
