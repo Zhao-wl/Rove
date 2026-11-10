@@ -2,7 +2,7 @@
 //! 并对比“按名称查引用”与“语义查引用”的结果数量（噪音）。
 //! 用法: cargo run --release -p rove-lang-cs --example cs_index_bench -- <index.idx> [samples] [--check-truncation]
 
-use rove_lang_cs::{index::Utf8Column, CsIndex, Role};
+use rove_lang_cs::{CsIndex, Role};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
@@ -77,7 +77,7 @@ fn main() {
         let o = idx.occurrence(i).expect("occurrence");
         if !Role(o.role).is_def() {
             let path = idx.file_path(o.file).expect("occurrence path").to_owned();
-            picks.push((path, o.line, Utf8Column(o.col.0 + o.len / 2), o.symbol));
+            picks.push((path, o.line, o.col, o.symbol));
         }
     }
 

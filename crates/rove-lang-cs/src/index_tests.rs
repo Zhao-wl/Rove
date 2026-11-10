@@ -227,20 +227,20 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
     let line = source_text.lines().nth(1).unwrap();
     let def = line.find("值").unwrap();
     let reference = line.rfind("值").unwrap();
-    let original_col = Utf16Column(line[..def].encode_utf16().count() as u32);
+    let original_col = Utf16Column(line[..def].encode_utf16().count() as u64);
     assert!(def > u8::MAX as usize);
-    assert_ne!(def as u32, original_col.0);
+    assert_ne!(def as u64, original_col.0);
     let symbol = index
-        .symbol_at(rel_path, 1, Utf8Column(reference as u32))
+        .symbol_at(rel_path, 1, Utf8Column(reference as u64))
         .unwrap();
-    let result = index.goto_definition(rel_path, 1, Utf8Column(reference as u32));
+    let result = index.goto_definition(rel_path, 1, Utf8Column(reference as u64));
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].col, Utf8Column(def as u32));
-    for location in index.find_references(rel_path, 1, Utf8Column(reference as u32)) {
+    assert_eq!(result[0].col, Utf8Column(def as u64));
+    for location in index.find_references(rel_path, 1, Utf8Column(reference as u64)) {
         let start = location.col.0 as usize;
         assert_eq!(&line[start..start + location.len as usize], "值");
     }
-    let expected_offset = source_text.find("值").unwrap() as u32;
+    let expected_offset = source_text.find("值").unwrap() as u64;
     assert_eq!(
         index.symbol_key(symbol).unwrap(),
         SymbolKey::Local {
@@ -348,6 +348,7 @@ fn wide_occurrence_lookup_and_saturated_definition_count() {
 
     assert_eq!(index.symbol_at(file, 4096, Utf8Column(331)), Some(0));
     assert_eq!(index.symbol_at(file, 4096, Utf8Column(332)), None);
+    assert_eq!(index.symbol_at(file, 4096, Utf8Column(1 << 32)), None);
     assert_eq!(index.reference_count(0), DEFINITIONS as usize + 1);
     let definitions = index.goto_definition(file, 4096, Utf8Column(300));
     assert_eq!(definitions.len(), DEFINITIONS as usize);
@@ -516,8 +517,8 @@ public sealed class FixtureGenerator : ISourceGenerator
         "three handwritten and two generated files"
     );
 
-    let left_offset = GENERATED.find("value").unwrap() as u32;
-    let right_offset = GENERATED.find("Right(int ").unwrap() as u32 + "Right(int ".len() as u32;
+    let left_offset = GENERATED.find("value").unwrap() as u64;
+    let right_offset = (GENERATED.find("Right(int ").unwrap() + "Right(int ".len()) as u64;
     let cases = [
         (
             "A.cs",
@@ -540,7 +541,7 @@ public sealed class FixtureGenerator : ISourceGenerator
     ];
     let mut seen = std::collections::HashSet::new();
     for (caller, column, project, offset) in cases {
-        let column = Utf8Column(column as u32);
+        let column = Utf8Column(column as u64);
         let symbol = index
             .symbol_at(caller, 0, column)
             .expect("named argument symbol");
@@ -570,7 +571,7 @@ public sealed class FixtureGenerator : ISourceGenerator
             "{references:?}"
         );
         if cross_project {
-            let c = Utf8Column(CALLER_C.find("value").unwrap() as u32);
+            let c = Utf8Column(CALLER_C.find("value").unwrap() as u64);
             assert_eq!(index.symbol_at("C.cs", 0, c), Some(symbol));
             assert!(references.iter().any(|r| r.path == "C.cs" && r.col == c));
         }

@@ -39,18 +39,10 @@ const SECTION_COUNT: usize = Section::Strings as usize + 1;
 const HEADER_LEN: usize = TABLE_OFFSET + SECTION_COUNT * 16;
 const SECTION_SIZES: [usize; SECTION_COUNT] = [4, 24, 1, 24, 8, 8, 24, 1, 12, 12, 8, 8, 8, 1, 1];
 
-/// Zero-based byte column in the decoded UTF-8 line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Utf8Column(pub u32);
+pub use rove_base::{ByteOffset, Utf8Column};
 
-/// Zero-based byte offset in decoded UTF-8 source, excluding any BOM.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ByteOffset(pub u32);
-
-/// Roslyn column used only to verify UTF-8 coordinate conversion in tests.
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Utf16Column(u32);
+use rove_base::Utf16Column;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymbolKey<'a> {
@@ -382,7 +374,7 @@ impl CsIndex {
         }
         Ok(SymbolKey::Local {
             file,
-            offset: ByteOffset(offset),
+            offset: ByteOffset(u64::from(offset)),
         })
     }
 
@@ -450,7 +442,7 @@ impl CsIndex {
             return Some(Occurrence {
                 file: (packed >> 49) as u32,
                 line: ((packed >> 16) & 0xfff) as u32,
-                col: Utf8Column(((packed >> 8) & 0xff) as u32),
+                col: Utf8Column((packed >> 8) & 0xff),
                 symbol: ((packed >> 28) & 0x1f_ffff) as u32,
                 len: ((packed >> 3) & 0x1f) as u32,
                 role,
@@ -460,7 +452,7 @@ impl CsIndex {
         Some(Occurrence {
             file: wide.file,
             line: wide.line,
-            col: Utf8Column(wide.col),
+            col: Utf8Column(u64::from(wide.col)),
             symbol: wide.symbol,
             len: wide.len,
             role: wide.role as u16,
@@ -482,6 +474,7 @@ impl CsIndex {
         line: u32,
         col: Utf8Column,
     ) -> Option<(usize, Occurrence)> {
+        let stored_column = u32::try_from(col.0).ok()?;
         let range = self.file_occurrences(file);
         let occurrences = self.packed_occurrences().get(range.clone())?;
         let n = occurrences.partition_point(|&packed| {
@@ -496,11 +489,11 @@ impl CsIndex {
                     ((packed >> 8) & 0xff) as u32,
                 )
             };
-            pos <= (line, col.0)
+            pos <= (line, stored_column)
         });
         let index = n.checked_sub(1)?;
         let o = self.decode_occurrence(occurrences[index])?;
-        (o.file == file && o.line == line && col.0.checked_sub(o.col.0)? < o.len)
+        (o.file == file && o.line == line && col.0.checked_sub(o.col.0)? < u64::from(o.len))
             .then_some((range.start + index, o))
     }
 
