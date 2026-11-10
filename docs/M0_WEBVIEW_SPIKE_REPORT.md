@@ -11,7 +11,7 @@
 
 已实测：GPUI HWND 中异步创建 WebView2；虚拟域名页面加载；远程图片拦截；文档脚本禁止而可信桥接可用；主题/滚动消息往返；销毁后内存回落及重新创建；不存在的运行时目录可检测失败。
 
-尚不能解除 #16 的依赖：**缺少有效的重叠截图、真实键盘焦点路由与高 DPI 实测**。当前宿主无法把原型可靠置前，屏幕裁剪得到黑屏；PrintWindow 又没有包含 WebView2 子 HWND，均已排除，不能冒充视觉通过。
+尚不能解除 #16 的依赖：**人工实测发现网页不可见，Tab路由失败；本轮修复待视觉/物理键复验**。部分快捷键和100%/125%已有人工记录，见§12。当前宿主无法把原型可靠置前，屏幕裁剪得到黑屏；PrintWindow 又没有包含 WebView2 子 HWND，均已排除，不能冒充视觉通过。
 
 **预算口径已由用户于 2026-11-10 确认：60 MB 只约束未开启预览的基础阅读器，WebView2 预览单独列预算。** 11-09旧构建开启预览后的历史进程树工作集实测为 **324–341 MiB**，私有提交 **240–250 MiB**；这些是观测值，不是已批准的预览预算上限，不再作为违反基础阅读器 60 MB 预算的理由。预览的具体预算数值尚未设定。当前 NO-GO 来自验收未齐，不再包含“60 MB 适用范围待确认”这一阻塞。
 
@@ -58,15 +58,15 @@ ready 约 2.4–2.6 秒，骨架占位是必需项。controller→ready 之间�
 
 ### 4.1 遮挡与弹出层
 
-原型右半区为 windowed WebView2，GPUI 弹出矩形跨越左右区。无遮挡规避阶段和隐藏规避阶段均运行，SetIsVisible 调用路径正常。**没有有效视觉证据，因此遮挡规避未通过验收。**
+人工复核（cbbd1de）：100%/125%时网页可接收输入且可复制2889字符，但右侧始终显示宿主占位。GPUI 0.2.2源码使用 `CreateTargetForHwnd(hwnd, true)`，合成目标位于子HWND上方，原型又全窗口绘制不透明背景。这与此前假设“WebView2总在GPUI上方”相反，撤回基于该假设的推荐。
 
-PrintWindow 截图只显示 GPUI 内容，缺失子 HWND，不能用来证明原生层压在 WebView2 上方。屏幕裁剪黑屏也已排除，未纳入 evidence。
+现在必须分渲染模式确认：Baseline保留原叠放；Hwnd设置GPUI_DISABLE_DIRECT_COMPOSITION=1；Transparent保留DirectComposition，但仅左半编辑区有背景，右侧ready后不再绘制占位。源码推导不是修复后的视觉通过证据，两个候选模式均需真实截图对照。不能仅凭SetIsVisible成功或脚本ready判断可见。
 
-推荐的最小验证方案仍是隐藏整个预览：工作台保留预览占位；弹出层先登记相交区域，再隐藏 webview，然后呈现原生层；结束后恢复。隐藏期间不能把输入继续送到已隐藏的 WebView2。通知、菜单、悬停与命令面板全部要走同一管理器。相交判断、焦点恢复需后续集成测试，原型只用一个共用矩形代替四类控件。
+若Hwnd模式实测网页覆盖弹出层，则评估相交时隐藏预览；若Transparent模式显示网页且GPUI弹出层可覆盖，则评估保留合成并留透明预览区域。先测可见性与弹出层顺序，再选择方案；不能提前要求工作台统一隐藏，也不能据此解除#16依赖。
 
 ### 4.2 焦点与按键
 
-下表是已实现的路由意图，**尚未进行真实按键验收**，不代表产品命令已经接通。
+人工反馈：KEY-1～4在100%和125%通过；KEY-6～8在100%通过。KEY-5失败，KEY-9因不可见未完成。下表是路由设计，不代表尚未重测的修复已通过。
 
 | 按键/入口 | 原型处理者 | 集成要求 |
 |---|---|---|
@@ -74,7 +74,7 @@ PrintWindow 截图只显示 GPUI 内容，缺失子 HWND，不能用来证明原
 | Ctrl+Shift+P | commandPalette | 同上 |
 | Ctrl+Shift+V | togglePreview | 登记命令负责切换 |
 | Esc | 返回宿主、关闭弹出层 | 依上下文处理 |
-| Tab / Shift+Tab | 返回宿主 | 产品应实现边界 Tab 顺序；原型粗粒度退出不能直接照搬 |
+| Tab / Shift+Tab | 可信桥接keydown返回宿主；宿主MoveFocus进入网页 | 产品应实现边界 Tab 顺序；原型粗粒度退出不能直接照搬 |
 | Ctrl+F | findDeferred | 没有实现查找 UI，不声称原生查找可用 |
 | Ctrl+R | 禁止默认刷新 | 产品刷新走独立命令 |
 | 右键/DevTools | 禁用默认入口 | 按需接入 Rove 菜单 |
@@ -120,7 +120,7 @@ PrintWindow 截图只显示 GPUI 内容，缺失子 HWND，不能用来证明原
 1. GPUI 拥有顶层 HWND；每窗口的预览管理器拥有一个 controller。原型不修改 GPUI 或共享契约。
 2. 第一次打开预览时异步创建，先显示骨架；不要嵌套消息泵阻塞 UI。关闭或取消时递增 generation，迟到回调立即 Close，不挂回失效窗口。
 3. 按布局提交客户区物理 bounds；GPUI 逻辑坐标乘当前 scale，跨屏后更新。当前原型从 GetClientRect 获取物理尺寸，但**高 DPI/混合显示器仍未实测**。
-4. 所有弹出层统一提供区域与可见周期，按相交决定隐藏/恢复；焦点策略与 Tab 边界由宿主明确负责。视觉通过前不能解除 #16 的依赖。
+4. 先按§4.1实测渲染模式与叠放关系，再决定是否相交隐藏；不得继续假设WebView2必定覆盖GPUI。焦点与Tab边界由宿主负责，视觉通过前不能解除#16依赖。
 5. 文档切换复用实例；全部预览关闭后按设置延时回收，窗口关闭立即回收。新文档消息必须携带 generation/documentId。
 6. 接口缺口走单独契约 PR，本次没有擅自修改 #1 的接口。
 
@@ -236,3 +236,13 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 | reused-profile-3 | 2595.43 | 2411.46 | 3007.49 | PASS |
 
 两次ready、完整阶段序列、双向通信、本地图片、脚本/资源拦截及两次close均通过。原失败批次仍保留，不以新结果覆盖。3项阶段回归与3项Python统计测试通过；workspace fmt/clippy/test通过（43项，2个环境相关doc-test忽略）；原型fmt/严格clippy/release build/test通过。未宣称性能变快，也不解除视觉/按键及真正冷启动的待验项。
+
+## 12. 人工反馈后的可见性与Tab修复
+
+源码确认GPUI DirectComposition目标topmost=true，但实际画面仍需复测。新增launch-review.ps1三模式入口及run_start模式日志，移除ready后无条件绘制的右侧占位。Tab/Shift+Tab改由可信桥接监听真实keydown并preventDefault，经已有来源/version检查返回宿主；宿主Tab用MoveFocus NEXT/PREVIOUS进入网页。合成keydown不作为物理验收证据，原型仍为整页退出策略，产品需实现焦点边界顺序。
+
+新增手测必须覆盖：三模式下O打开能看到网页；U原始弹出层与H隐藏对照，各截图；网页与宿主双向Tab/Shift+Tab；100%/125%、跨屏、主题、三轮销毁重建。旧KEY通过项记录保留，但模式/代码改变后的结果不能自动继承。WV-1～8、KEY-5/9仍待真实视觉与按键复验。
+
+焦点方向依据：[ICoreWebView2Controller::MoveFocus](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller)，NEXT进入首元素、PREVIOUS进入末元素。
+
+本轮自动回归：同一新构建分别在Baseline/Hwnd/Transparent模式运行，3/3严格校验通过。证据在 `evidence/2026-11-10-composition/`，各有模式字段、构建指纹、exe哈希及汇总。三模式均未操作物理按键，不能算KEY-5/9或可见性通过。桥接逻辑测试覆盖Tab/Shift+Tab以及非Tab/不可信事件拒绝；3项Rust阶段回归、3项Python统计回归通过；workspace fmt/clippy/test和原型严格clippy/release build/test通过。

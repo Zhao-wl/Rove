@@ -115,3 +115,15 @@ Windows版本：
 异常编号 + 操作步骤 + 实际表现：
 证据路径/附件：
 ```
+
+## 最新反馈修复：三模式对照（优先执行）
+
+在本工作树PowerShell中逐个启动，关闭前一个窗口再换模式：
+
+```powershell
+./spikes/webview-gpui/launch-review.ps1 -Mode Baseline
+./spikes/webview-gpui/launch-review.ps1 -Mode Hwnd
+./spikes/webview-gpui/launch-review.ps1 -Mode Transparent
+```
+
+每个命令返回独立日志目录，保存exe哈希且恢复调用者环境变量。按O打开：应看到网页正文而非宿主占位；截图记录实际结果，不能用复制成功代替可见性。按U看原始叠放，再按H切换隐藏规避，分别截图。网页按Tab/Shift+Tab应回宿主，宿主再次按Tab/Shift+Tab应进入网页；检查key_route的source为trusted_bridge_keydown/host。继续WV-1～8、KEY-5/9，100%和125%分别记录。Transparent是待验候选，不预设一定透出网页；Hwnd也须实测实际叠放。
