@@ -64,3 +64,11 @@ Corrected events.rs update_ime_position: CFS_EXCLUDE ptCurrentPos is the caret p
 The input spike has no mouse-down handler on TextInput, so its composition-click observation cannot be attributed to this platform patch. User confirmed this round only fixes platform positioning; composition-click behavior is deferred to the product editor. No silent commit/cancel behavior is introduced.
 
 The latest manual feedback resolves the earlier provenance uncertainty: the tested release hash matches MANUAL_BUILD.json, source a443093, Microsoft Pinyin ChsPinyinDS.dll 10.0.22621.5983, 100% and 125%. Preserve that evidence as pre-exclusion-fix behavior. Screenshots/logs: https://github.com/Zhao-wl/Rove/tree/3e46ab2aadd555ee4d3cef39e09c8dcec6a5a06e/pr-80 . It confirms complete sentence submission, edge flipping, mode switching and mixed emoji text; IME-3 is only partially passed and unchanged-composition arrows remain failed. Do not reclassify these as passed without another run.
+
+### Latest identified retest and Notepad control (2026-11-10)
+
+The rebuilt exclusion patch was manually tested with hash b038fd9e11039dfe782c455705dfe2614c10fc8133d009d6fb80c4e9fab05c46, source 6eda4de. Same-machine Notepad 11.2607.14.0 and Rove both keep the candidate popup stationary during left/left/right inside unchanged composition, at both 100% and 125%. This establishes behavior parity, not the underlying cause, and does not satisfy a literal requirement that the popup must move on every arrow. No further speculative platform change is made for that parity result.
+
+Full sentence commit, screen-edge flipping, input-mode switching, emoji/UTF-16 and mixed-DPI 120→96→120 movement passed the identified retest. Composition-click remains explicitly deferred to the product editor per user scope. Third-party IME, VS Code control and product GUI E2E remain untested. Evidence: https://github.com/Zhao-wl/Rove/tree/441136a0763b3866eb000ca2411ce126f9561337/retest-2026-11-10/pr-80 . Keep Draft until the owner accepts the system-parity interpretation and remaining product acceptance scope; do not fabricate literal arrow-follow success.
+
+Latest documentation-only parity update rebased on main e3a93c9: workspace fmt/strict clippy/56 tests and IME release 4 tests passed; two environment-dependent doc tests ignored. No IME source change was made in this retest round.

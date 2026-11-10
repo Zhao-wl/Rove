@@ -57,3 +57,5 @@ This README is the self-contained #5 manual entrypoint; it does not require #81.
 `MANUAL_BUILD.json` 记录本次重新构建的 release exe 哈希与源码提交，仅用于下一轮手测。启动前用 `Get-FileHash spikes/ime-gpui/target/release/ime-gpui.exe -Algorithm SHA256` 对照；在记事本/VS Code 与本原型分别做组合内左移对照，记录行为，不能回溯认定旧手测版本。
 
 最新手测已确认旧exe身份：f9b5ee2...，源码a443093，微软拼音10.0.22621.5983。长句提交/边缘/切换/emoji通过，组合内方向键候选跟随失败，点击换位部分通过。新版修改了CFS_EXCLUDE锚点与非零排除矩形，需对照新版MANUAL_BUILD.json重测方向键和边缘；不能将旧结果自动继承为新版通过。用户已确认本轮只修平台定位，组合内点击行为留给产品编辑器；原型不增加提交/保留或点击定位逻辑。
+
+最新已识别构建b038fd9e的手测：完整长句、两档边缘、输入模式切换、emoji及125%→100%→125%跨屏通过。组合内左右键候选框保持原位，与同机记事本两档各两轮一致；这是系统行为对照一致，不是字面“每次方向键都跟随”通过，根因未定。第三方输入法/VS Code/产品GUI E2E未测，组合内点击留给产品编辑器。
