@@ -1,0 +1,234 @@
+MAIN_EPOCH_MS 1794296824117
+DOC_OPEN_MS 0.30
+FIRSTFRAME_SINCE_MAIN_MS 331.2
+FIRSTFRAME_EPOCH_MS 1794296824450
+SCALE_FACTOR 1.25
+OPEN_MS 0.30
+FILE_BYTES 34952
+FULL_INDEX_MS 0 LINES 423
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 775.2px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 775.2px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 775.2px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 775.2px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME commit: ""  buffer=""
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME preedit: "n"  marked=Some(0..1)  sel=1..1
+IME bounds_for_range 1..1 -> Bounds { origin: Point { x: 15.697266px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 1..1 -> Bounds { origin: Point { x: 15.697266px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 1..1 -> Bounds { origin: Point { x: 15.697266px, y: 657.6px }, size: Size { 0px × 20px } }
+IME preedit: "ni"  marked=Some(0..2)  sel=2..2
+IME bounds_for_range 2..2 -> Bounds { origin: Point { x: 15.697266px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 2..2 -> Bounds { origin: Point { x: 23.394531px, y: 657.6px }, size: Size { 0px × 20px } }
+IME preedit: "ni'h"  marked=Some(0..4)  sel=4..4
+IME bounds_for_range 4..4 -> Bounds { origin: Point { x: 23.394531px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 4..4 -> Bounds { origin: Point { x: 38.789063px, y: 657.6px }, size: Size { 0px × 20px } }
+IME preedit: "ni'ha"  marked=Some(0..5)  sel=5..5
+IME bounds_for_range 5..5 -> Bounds { origin: Point { x: 38.789063px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 5..5 -> Bounds { origin: Point { x: 46.48633px, y: 657.6px }, size: Size { 0px × 20px } }
+IME preedit: "ni'hao"  marked=Some(0..6)  sel=6..6
+IME bounds_for_range 6..6 -> Bounds { origin: Point { x: 46.48633px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 6..6 -> Bounds { origin: Point { x: 54.183594px, y: 657.6px }, size: Size { 0px × 20px } }
+IME preedit: ""  marked=None  sel=0..0
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME commit: ""  buffer=""
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 657.6px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME commit: ""  buffer=""
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "w"  marked=Some(0..1)  sel=1..1
+IME bounds_for_range 1..1 -> Bounds { origin: Point { x: 15.697266px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 1..1 -> Bounds { origin: Point { x: 15.697266px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 1..1 -> Bounds { origin: Point { x: 15.697266px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo"  marked=Some(0..2)  sel=2..2
+IME bounds_for_range 2..2 -> Bounds { origin: Point { x: 15.697266px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 2..2 -> Bounds { origin: Point { x: 23.394531px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'm"  marked=Some(0..4)  sel=4..4
+IME bounds_for_range 4..4 -> Bounds { origin: Point { x: 23.394531px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 4..4 -> Bounds { origin: Point { x: 38.789063px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'me"  marked=Some(0..5)  sel=5..5
+IME bounds_for_range 5..5 -> Bounds { origin: Point { x: 38.789063px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 5..5 -> Bounds { origin: Point { x: 46.48633px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men"  marked=Some(0..6)  sel=6..6
+IME bounds_for_range 6..6 -> Bounds { origin: Point { x: 46.48633px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 6..6 -> Bounds { origin: Point { x: 54.183594px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'z"  marked=Some(0..8)  sel=8..8
+IME bounds_for_range 8..8 -> Bounds { origin: Point { x: 54.183594px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 8..8 -> Bounds { origin: Point { x: 69.578125px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zh"  marked=Some(0..9)  sel=9..9
+IME bounds_for_range 9..9 -> Bounds { origin: Point { x: 69.578125px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 9..9 -> Bounds { origin: Point { x: 77.27539px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zhe"  marked=Some(0..10)  sel=10..10
+IME bounds_for_range 10..10 -> Bounds { origin: Point { x: 77.27539px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 10..10 -> Bounds { origin: Point { x: 84.97266px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zhen"  marked=Some(0..11)  sel=11..11
+IME bounds_for_range 11..11 -> Bounds { origin: Point { x: 84.97266px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 11..11 -> Bounds { origin: Point { x: 92.66992px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng"  marked=Some(0..12)  sel=12..12
+IME bounds_for_range 12..12 -> Bounds { origin: Point { x: 92.66992px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 12..12 -> Bounds { origin: Point { x: 100.36719px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'z"  marked=Some(0..14)  sel=14..14
+IME bounds_for_range 14..14 -> Bounds { origin: Point { x: 100.36719px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 14..14 -> Bounds { origin: Point { x: 115.76172px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'za"  marked=Some(0..15)  sel=15..15
+IME bounds_for_range 15..15 -> Bounds { origin: Point { x: 115.76172px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 15..15 -> Bounds { origin: Point { x: 123.458984px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai"  marked=Some(0..16)  sel=16..16
+IME bounds_for_range 16..16 -> Bounds { origin: Point { x: 123.458984px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 16..16 -> Bounds { origin: Point { x: 131.15625px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'y"  marked=Some(0..18)  sel=18..18
+IME bounds_for_range 18..18 -> Bounds { origin: Point { x: 131.15625px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 18..18 -> Bounds { origin: Point { x: 146.55078px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'ya"  marked=Some(0..19)  sel=19..19
+IME bounds_for_range 19..19 -> Bounds { origin: Point { x: 146.55078px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 19..19 -> Bounds { origin: Point { x: 154.24805px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan"  marked=Some(0..20)  sel=20..20
+IME bounds_for_range 20..20 -> Bounds { origin: Point { x: 154.24805px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 20..20 -> Bounds { origin: Point { x: 161.94531px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'z"  marked=Some(0..22)  sel=22..22
+IME bounds_for_range 22..22 -> Bounds { origin: Point { x: 161.94531px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 22..22 -> Bounds { origin: Point { x: 177.33984px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zh"  marked=Some(0..23)  sel=23..23
+IME bounds_for_range 23..23 -> Bounds { origin: Point { x: 177.33984px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 23..23 -> Bounds { origin: Point { x: 185.03711px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zhe"  marked=Some(0..24)  sel=24..24
+IME bounds_for_range 24..24 -> Bounds { origin: Point { x: 185.03711px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 24..24 -> Bounds { origin: Point { x: 192.73438px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zhen"  marked=Some(0..25)  sel=25..25
+IME bounds_for_range 25..25 -> Bounds { origin: Point { x: 192.73438px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 25..25 -> Bounds { origin: Point { x: 200.43164px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng"  marked=Some(0..26)  sel=26..26
+IME bounds_for_range 26..26 -> Bounds { origin: Point { x: 200.43164px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 26..26 -> Bounds { origin: Point { x: 208.1289px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 26..26 -> Bounds { origin: Point { x: 208.1289px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'z"  marked=Some(0..28)  sel=28..28
+IME bounds_for_range 28..28 -> Bounds { origin: Point { x: 208.1289px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 28..28 -> Bounds { origin: Point { x: 223.52344px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zh"  marked=Some(0..29)  sel=29..29
+IME bounds_for_range 29..29 -> Bounds { origin: Point { x: 223.52344px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 29..29 -> Bounds { origin: Point { x: 231.2207px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zho"  marked=Some(0..30)  sel=30..30
+IME bounds_for_range 30..30 -> Bounds { origin: Point { x: 231.2207px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 30..30 -> Bounds { origin: Point { x: 238.91797px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhon"  marked=Some(0..31)  sel=31..31
+IME bounds_for_range 31..31 -> Bounds { origin: Point { x: 238.91797px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 31..31 -> Bounds { origin: Point { x: 246.61523px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong"  marked=Some(0..32)  sel=32..32
+IME bounds_for_range 32..32 -> Bounds { origin: Point { x: 246.61523px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 32..32 -> Bounds { origin: Point { x: 254.3125px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'w"  marked=Some(0..34)  sel=34..34
+IME bounds_for_range 34..34 -> Bounds { origin: Point { x: 254.3125px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 34..34 -> Bounds { origin: Point { x: 269.70703px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'we"  marked=Some(0..35)  sel=35..35
+IME bounds_for_range 35..35 -> Bounds { origin: Point { x: 269.70703px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 35..35 -> Bounds { origin: Point { x: 277.4043px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen"  marked=Some(0..36)  sel=36..36
+IME bounds_for_range 36..36 -> Bounds { origin: Point { x: 277.4043px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 36..36 -> Bounds { origin: Point { x: 285.10156px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen's"  marked=Some(0..38)  sel=38..38
+IME bounds_for_range 38..38 -> Bounds { origin: Point { x: 285.10156px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 38..38 -> Bounds { origin: Point { x: 300.4961px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'sh"  marked=Some(0..39)  sel=39..39
+IME bounds_for_range 39..39 -> Bounds { origin: Point { x: 300.4961px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 39..39 -> Bounds { origin: Point { x: 308.19336px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu"  marked=Some(0..40)  sel=40..40
+IME bounds_for_range 40..40 -> Bounds { origin: Point { x: 308.19336px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 40..40 -> Bounds { origin: Point { x: 315.89063px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'r"  marked=Some(0..42)  sel=42..42
+IME bounds_for_range 42..42 -> Bounds { origin: Point { x: 315.89063px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 42..42 -> Bounds { origin: Point { x: 331.28516px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru"  marked=Some(0..43)  sel=43..43
+IME bounds_for_range 43..43 -> Bounds { origin: Point { x: 331.28516px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 43..43 -> Bounds { origin: Point { x: 338.98242px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'f"  marked=Some(0..45)  sel=45..45
+IME bounds_for_range 45..45 -> Bounds { origin: Point { x: 338.98242px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 45..45 -> Bounds { origin: Point { x: 354.37695px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa"  marked=Some(0..46)  sel=46..46
+IME bounds_for_range 46..46 -> Bounds { origin: Point { x: 354.37695px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 46..46 -> Bounds { origin: Point { x: 362.07422px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'h"  marked=Some(0..48)  sel=48..48
+IME bounds_for_range 48..48 -> Bounds { origin: Point { x: 362.07422px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 48..48 -> Bounds { origin: Point { x: 377.46875px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'ho"  marked=Some(0..49)  sel=49..49
+IME bounds_for_range 49..49 -> Bounds { origin: Point { x: 377.46875px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 49..49 -> Bounds { origin: Point { x: 385.16602px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou"  marked=Some(0..50)  sel=50..50
+IME bounds_for_range 50..50 -> Bounds { origin: Point { x: 385.16602px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 50..50 -> Bounds { origin: Point { x: 392.86328px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'x"  marked=Some(0..52)  sel=52..52
+IME bounds_for_range 52..52 -> Bounds { origin: Point { x: 392.86328px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 52..52 -> Bounds { origin: Point { x: 408.2578px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xu"  marked=Some(0..53)  sel=53..53
+IME bounds_for_range 53..53 -> Bounds { origin: Point { x: 408.2578px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 53..53 -> Bounds { origin: Point { x: 415.95508px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xua"  marked=Some(0..54)  sel=54..54
+IME bounds_for_range 54..54 -> Bounds { origin: Point { x: 415.95508px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 54..54 -> Bounds { origin: Point { x: 423.65234px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan"  marked=Some(0..55)  sel=55..55
+IME bounds_for_range 55..55 -> Bounds { origin: Point { x: 423.65234px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 55..55 -> Bounds { origin: Point { x: 431.3496px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'c"  marked=Some(0..57)  sel=57..57
+IME bounds_for_range 57..57 -> Bounds { origin: Point { x: 431.3496px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 57..57 -> Bounds { origin: Point { x: 446.74414px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'ch"  marked=Some(0..58)  sel=58..58
+IME bounds_for_range 58..58 -> Bounds { origin: Point { x: 446.74414px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 58..58 -> Bounds { origin: Point { x: 454.4414px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chu"  marked=Some(0..59)  sel=59..59
+IME bounds_for_range 59..59 -> Bounds { origin: Point { x: 454.4414px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 59..59 -> Bounds { origin: Point { x: 462.13867px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chu'a"  marked=Some(0..61)  sel=61..61
+IME bounds_for_range 61..61 -> Bounds { origin: Point { x: 462.13867px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 61..61 -> Bounds { origin: Point { x: 477.5332px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuan"  marked=Some(0..61)  sel=61..61
+IME bounds_for_range 61..61 -> Bounds { origin: Point { x: 477.5332px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 61..61 -> Bounds { origin: Point { x: 477.5332px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang"  marked=Some(0..62)  sel=62..62
+IME bounds_for_range 62..62 -> Bounds { origin: Point { x: 477.5332px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 62..62 -> Bounds { origin: Point { x: 485.23047px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'k"  marked=Some(0..64)  sel=64..64
+IME bounds_for_range 64..64 -> Bounds { origin: Point { x: 485.23047px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 64..64 -> Bounds { origin: Point { x: 500.625px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'ko"  marked=Some(0..65)  sel=65..65
+IME bounds_for_range 65..65 -> Bounds { origin: Point { x: 500.625px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 65..65 -> Bounds { origin: Point { x: 508.32227px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'kou"  marked=Some(0..66)  sel=66..66
+IME bounds_for_range 66..66 -> Bounds { origin: Point { x: 508.32227px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 66..66 -> Bounds { origin: Point { x: 516.01953px, y: 457.59998px }, size: Size { 0px × 20px } }
+IME bounds_for_range 66..66 -> Bounds { origin: Point { x: 516.01953px, y: 456px }, size: Size { 0px × 20px } }
+IME bounds_for_range 66..66 -> Bounds { origin: Point { x: 516.01953px, y: 456px }, size: Size { 0px × 20px } }
+IME bounds_for_range 66..66 -> Bounds { origin: Point { x: 516.01953px, y: 586px }, size: Size { 0px × 20px } }
+IME bounds_for_range 66..66 -> Bounds { origin: Point { x: 516.01953px, y: 588px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'kou'c"  marked=Some(0..68)  sel=68..68
+IME bounds_for_range 68..68 -> Bounds { origin: Point { x: 516.01953px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 68..68 -> Bounds { origin: Point { x: 531.41406px, y: 588px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'kou'ce"  marked=Some(0..69)  sel=69..69
+IME bounds_for_range 69..69 -> Bounds { origin: Point { x: 531.41406px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 69..69 -> Bounds { origin: Point { x: 539.1113px, y: 588px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'kou'ce's"  marked=Some(0..71)  sel=71..71
+IME bounds_for_range 71..71 -> Bounds { origin: Point { x: 539.1113px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 71..71 -> Bounds { origin: Point { x: 554.50586px, y: 588px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'kou'ce'sh"  marked=Some(0..72)  sel=72..72
+IME bounds_for_range 72..72 -> Bounds { origin: Point { x: 554.50586px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 72..72 -> Bounds { origin: Point { x: 562.2031px, y: 588px }, size: Size { 0px × 20px } }
+IME preedit: "wo'men'zheng'zai'yan'zheng'zhong'wen'shu'ru'fa'hou'xuan'chuang'kou'ce'shi"  marked=Some(0..73)  sel=73..73
+IME bounds_for_range 73..73 -> Bounds { origin: Point { x: 562.2031px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 73..73 -> Bounds { origin: Point { x: 569.9004px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 73..73 -> Bounds { origin: Point { x: 569.9004px, y: 588px }, size: Size { 0px × 20px } }
+IME preedit: ""  marked=None  sel=0..0
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 588px }, size: Size { 0px × 20px } }
+IME commit: ""  buffer=""
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 588px }, size: Size { 0px × 20px } }
+IME bounds_for_range 0..0 -> Bounds { origin: Point { x: 8px, y: 588px }, size: Size { 0px × 20px } }

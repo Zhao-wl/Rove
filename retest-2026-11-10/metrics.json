@@ -1,0 +1,1101 @@
+{
+  "ime": {
+    "100": {
+      "run": "IME-153829",
+      "candidateLeft": [
+        510,
+        510,
+        510,
+        510
+      ],
+      "cursorSelections": [
+        66,
+        65,
+        64,
+        65
+      ],
+      "longCommit": true,
+      "mixedCommit": true,
+      "cross": [],
+      "notepad": "Notepad-154134",
+      "notepadCandidates": {
+        "1": [
+          [
+            16,
+            29,
+            121
+          ],
+          [
+            16,
+            29,
+            121
+          ],
+          [
+            16,
+            29,
+            121
+          ],
+          [
+            16,
+            29,
+            121
+          ]
+        ],
+        "2": [
+          [
+            16,
+            29,
+            121
+          ],
+          [
+            16,
+            29,
+            121
+          ],
+          [
+            16,
+            29,
+            121
+          ],
+          [
+            16,
+            29,
+            121
+          ]
+        ]
+      }
+    },
+    "125": {
+      "run": "IME-154346",
+      "candidateLeft": [
+        636,
+        636,
+        636,
+        636
+      ],
+      "cursorSelections": [
+        66,
+        65,
+        64,
+        65
+      ],
+      "longCommit": true,
+      "mixedCommit": true,
+      "cross": [
+        "cross_secondary_dpi=96",
+        "cross_returned_dpi=120"
+      ],
+      "notepad": "Notepad-154444",
+      "notepadCandidates": {
+        "1": [
+          [
+            24,
+            37,
+            126
+          ],
+          [
+            24,
+            37,
+            126
+          ],
+          [
+            24,
+            37,
+            126
+          ],
+          [
+            24,
+            37,
+            126
+          ]
+        ],
+        "2": [
+          [
+            24,
+            37,
+            126
+          ],
+          [
+            24,
+            37,
+            126
+          ],
+          [
+            24,
+            37,
+            126
+          ],
+          [
+            24,
+            37,
+            126
+          ]
+        ]
+      }
+    }
+  },
+  "web": {
+    "100": {
+      "Baseline": {
+        "run": "Baseline-154154",
+        "buildOK": true,
+        "timingMs": [],
+        "completeCycles": 0,
+        "counts": {
+          "run_start": 1,
+          "first_render": 1,
+          "host_key": 1,
+          "open_requested": 1,
+          "environment": 1,
+          "controller_requested": 1,
+          "controller_completed": 1,
+          "controller": 1,
+          "message": 1,
+          "resource_blocked": 1,
+          "navigation_completed": 1,
+          "ready": 1,
+          "execute_script": 1,
+          "closed": 1
+        },
+        "readyMs": [
+          2481.4406999999997
+        ],
+        "cross": [],
+        "lastStep": "baseline-visible-negative-control",
+        "adjacentBackdrop": null,
+        "keyWindows": []
+      },
+      "Hwnd": {
+        "run": "Hwnd-153926",
+        "buildOK": true,
+        "timingMs": [
+          196.15,
+          196.16,
+          196.12
+        ],
+        "completeCycles": 3,
+        "counts": {
+          "run_start": 1,
+          "first_render": 1,
+          "host_key": 36,
+          "open_requested": 4,
+          "environment": 1,
+          "controller_requested": 4,
+          "controller_completed": 4,
+          "controller": 4,
+          "message": 17,
+          "resource_blocked": 4,
+          "navigation_completed": 4,
+          "ready": 4,
+          "execute_script": 4,
+          "key_route": 21,
+          "closed": 4,
+          "environment_reused": 3
+        },
+        "readyMs": [
+          2485.7663,
+          2550.7133,
+          2484.0823,
+          2517.4965
+        ],
+        "cross": [],
+        "lastStep": "WV-8-3",
+        "adjacentBackdrop": null,
+        "clipboard": {
+          "matchesFixture": true,
+          "changed": true,
+          "chars": 29
+        },
+        "keyWindows": [
+          [
+            "KEY-1-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": false,
+                "route": "quickOpen"
+              }
+            ]
+          ],
+          [
+            "KEY-2-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": true,
+                "route": "commandPalette"
+              }
+            ]
+          ],
+          [
+            "KEY-3-after",
+            [
+              {
+                "key": 86,
+                "ctrl": true,
+                "shift": true,
+                "route": "togglePreview"
+              }
+            ]
+          ],
+          [
+            "KEY-3-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-4-after",
+            [
+              {
+                "key": 27,
+                "ctrl": false,
+                "shift": false,
+                "route": "escape"
+              }
+            ]
+          ],
+          [
+            "KEY-4-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-after",
+            [
+              {
+                "key": 9,
+                "shift": false,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-after",
+            [
+              {
+                "key": 9,
+                "shift": true,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": true,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-6-after",
+            [
+              {
+                "key": 82,
+                "ctrl": true,
+                "shift": false,
+                "route": "blockedRefresh"
+              }
+            ]
+          ],
+          [
+            "KEY-7-after",
+            [
+              {
+                "key": 70,
+                "ctrl": true,
+                "shift": false,
+                "route": "findDeferred"
+              }
+            ]
+          ],
+          [
+            "KEY-8-F12-after",
+            []
+          ],
+          [
+            "KEY-8-CtrlShiftI-after",
+            []
+          ],
+          [
+            "KEY-9-hidden-after",
+            []
+          ]
+        ]
+      },
+      "Transparent": {
+        "run": "Transparent-154005",
+        "buildOK": true,
+        "timingMs": [
+          196.15,
+          196.15,
+          196.47
+        ],
+        "completeCycles": 3,
+        "counts": {
+          "run_start": 1,
+          "first_render": 1,
+          "host_key": 38,
+          "open_requested": 5,
+          "environment": 1,
+          "controller_requested": 5,
+          "controller_completed": 5,
+          "controller": 5,
+          "message": 17,
+          "resource_blocked": 5,
+          "navigation_completed": 5,
+          "ready": 5,
+          "execute_script": 5,
+          "key_route": 21,
+          "closed": 5,
+          "environment_reused": 4
+        },
+        "readyMs": [
+          2543.1682,
+          2465.7828,
+          2499.3532,
+          2556.2008,
+          2526.4685999999997
+        ],
+        "cross": [],
+        "lastStep": "WV-8-3",
+        "adjacentBackdrop": null,
+        "clipboard": {
+          "matchesFixture": true,
+          "changed": true,
+          "chars": 29
+        },
+        "keyWindows": [
+          [
+            "KEY-1-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": false,
+                "route": "quickOpen"
+              }
+            ]
+          ],
+          [
+            "KEY-2-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": true,
+                "route": "commandPalette"
+              }
+            ]
+          ],
+          [
+            "KEY-3-after",
+            [
+              {
+                "key": 86,
+                "ctrl": true,
+                "shift": true,
+                "route": "togglePreview"
+              }
+            ]
+          ],
+          [
+            "KEY-3-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-4-after",
+            [
+              {
+                "key": 27,
+                "ctrl": false,
+                "shift": false,
+                "route": "escape"
+              }
+            ]
+          ],
+          [
+            "KEY-4-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-after",
+            [
+              {
+                "key": 9,
+                "shift": false,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-after",
+            [
+              {
+                "key": 9,
+                "shift": true,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": true,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-6-after",
+            [
+              {
+                "key": 82,
+                "ctrl": true,
+                "shift": false,
+                "route": "blockedRefresh"
+              }
+            ]
+          ],
+          [
+            "KEY-7-after",
+            [
+              {
+                "key": 70,
+                "ctrl": true,
+                "shift": false,
+                "route": "findDeferred"
+              }
+            ]
+          ],
+          [
+            "KEY-8-F12-after",
+            []
+          ],
+          [
+            "KEY-8-CtrlShiftI-after",
+            []
+          ],
+          [
+            "KEY-9-hidden-after",
+            []
+          ]
+        ],
+        "background": {
+          "WV-1-before-o": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-1-load-01": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-1-ready": {
+            "sampleRgb": [
+              32,
+              36,
+              43
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-2-raw": {
+            "sampleRgb": [
+              32,
+              36,
+              43
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-3-hidden": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-3-restored": {
+            "sampleRgb": [
+              32,
+              36,
+              43
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-8-closed-preview": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          }
+        }
+      }
+    },
+    "125": {
+      "Baseline": {
+        "run": "Baseline-155149",
+        "buildOK": true,
+        "timingMs": [],
+        "completeCycles": 0,
+        "counts": {
+          "run_start": 1,
+          "first_render": 1,
+          "host_key": 1,
+          "open_requested": 1,
+          "environment": 1,
+          "controller_requested": 1,
+          "controller_completed": 1,
+          "controller": 1,
+          "message": 1,
+          "resource_blocked": 1,
+          "navigation_completed": 1,
+          "ready": 1,
+          "execute_script": 1,
+          "closed": 1
+        },
+        "readyMs": [
+          2439.1007
+        ],
+        "cross": [],
+        "lastStep": "baseline-visible-negative-control",
+        "adjacentBackdrop": [
+          67,
+          38,
+          91
+        ],
+        "keyWindows": []
+      },
+      "Hwnd": {
+        "run": "Hwnd-154502",
+        "buildOK": true,
+        "timingMs": [
+          200.13,
+          200.18,
+          200.15
+        ],
+        "completeCycles": 3,
+        "counts": {
+          "run_start": 1,
+          "first_render": 1,
+          "host_key": 56,
+          "open_requested": 4,
+          "environment": 1,
+          "controller_requested": 4,
+          "controller_completed": 4,
+          "controller": 4,
+          "message": 17,
+          "resource_blocked": 4,
+          "navigation_completed": 4,
+          "ready": 4,
+          "execute_script": 4,
+          "key_route": 33,
+          "closed": 4,
+          "environment_reused": 3
+        },
+        "readyMs": [
+          2407.5191,
+          2410.7088,
+          2418.0826,
+          2429.7371000000003
+        ],
+        "cross": [
+          {
+            "screen": "\\\\.\\DISPLAY2",
+            "dpi": 96
+          },
+          {
+            "screen": "\\\\.\\DISPLAY1",
+            "dpi": 120
+          }
+        ],
+        "lastStep": "WV-6-return-primary",
+        "adjacentBackdrop": [
+          67,
+          38,
+          91
+        ],
+        "clipboard": {
+          "chars": 29,
+          "changed": true,
+          "matchesFixture": true
+        },
+        "keyWindows": [
+          [
+            "KEY-1-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": false,
+                "route": "quickOpen"
+              }
+            ]
+          ],
+          [
+            "KEY-2-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": true,
+                "route": "commandPalette"
+              }
+            ]
+          ],
+          [
+            "KEY-3-after",
+            [
+              {
+                "key": 86,
+                "ctrl": true,
+                "shift": true,
+                "route": "togglePreview"
+              }
+            ]
+          ],
+          [
+            "KEY-3-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-4-after",
+            [
+              {
+                "key": 27,
+                "ctrl": false,
+                "shift": false,
+                "route": "escape"
+              }
+            ]
+          ],
+          [
+            "KEY-4-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-after",
+            [
+              {
+                "key": 9,
+                "shift": false,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-after",
+            [
+              {
+                "key": 9,
+                "shift": true,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": true,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-6-after",
+            [
+              {
+                "key": 82,
+                "ctrl": true,
+                "shift": false,
+                "route": "blockedRefresh"
+              }
+            ]
+          ],
+          [
+            "KEY-7-after",
+            [
+              {
+                "key": 70,
+                "ctrl": true,
+                "shift": false,
+                "route": "findDeferred"
+              }
+            ]
+          ],
+          [
+            "KEY-8-F12-after",
+            []
+          ],
+          [
+            "KEY-8-CtrlShiftI-after",
+            []
+          ],
+          [
+            "KEY-9-hidden-after",
+            []
+          ]
+        ]
+      },
+      "Transparent": {
+        "run": "Transparent-155052",
+        "buildOK": true,
+        "timingMs": [
+          200.18,
+          200.17,
+          200.15
+        ],
+        "completeCycles": 3,
+        "counts": {
+          "run_start": 1,
+          "first_render": 1,
+          "host_key": 58,
+          "open_requested": 5,
+          "environment": 1,
+          "controller_requested": 5,
+          "controller_completed": 5,
+          "controller": 5,
+          "message": 18,
+          "resource_blocked": 5,
+          "navigation_completed": 5,
+          "ready": 5,
+          "execute_script": 5,
+          "key_route": 33,
+          "closed": 5,
+          "environment_reused": 4
+        },
+        "readyMs": [
+          2462.7666,
+          2440.171,
+          2498.9076,
+          2453.1420000000003,
+          2522.6564
+        ],
+        "cross": [
+          {
+            "dpi": 96,
+            "screen": "\\\\.\\DISPLAY2"
+          },
+          {
+            "dpi": 120,
+            "screen": "\\\\.\\DISPLAY1"
+          }
+        ],
+        "lastStep": "WV-6-return-primary",
+        "adjacentBackdrop": [
+          67,
+          38,
+          91
+        ],
+        "clipboard": {
+          "matchesFixture": true,
+          "changed": true,
+          "chars": 29
+        },
+        "keyWindows": [
+          [
+            "KEY-1-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": false,
+                "route": "quickOpen"
+              }
+            ]
+          ],
+          [
+            "KEY-2-after",
+            [
+              {
+                "key": 80,
+                "ctrl": true,
+                "shift": true,
+                "route": "commandPalette"
+              }
+            ]
+          ],
+          [
+            "KEY-3-after",
+            [
+              {
+                "key": 86,
+                "ctrl": true,
+                "shift": true,
+                "route": "togglePreview"
+              }
+            ]
+          ],
+          [
+            "KEY-3-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-4-after",
+            [
+              {
+                "key": 27,
+                "ctrl": false,
+                "shift": false,
+                "route": "escape"
+              }
+            ]
+          ],
+          [
+            "KEY-4-focus-return",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-after",
+            [
+              {
+                "key": 9,
+                "shift": false,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-Tab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": false,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-after",
+            [
+              {
+                "key": 9,
+                "shift": true,
+                "route": "tab",
+                "source": "trusted_bridge_keydown"
+              }
+            ]
+          ],
+          [
+            "KEY-5-ShiftTab-host-back-to-web",
+            [
+              {
+                "key": 9,
+                "route": "webview",
+                "shift": true,
+                "source": "host"
+              }
+            ]
+          ],
+          [
+            "KEY-6-after",
+            [
+              {
+                "key": 82,
+                "ctrl": true,
+                "shift": false,
+                "route": "blockedRefresh"
+              }
+            ]
+          ],
+          [
+            "KEY-7-after",
+            [
+              {
+                "key": 70,
+                "ctrl": true,
+                "shift": false,
+                "route": "findDeferred"
+              }
+            ]
+          ],
+          [
+            "KEY-8-F12-after",
+            []
+          ],
+          [
+            "KEY-8-CtrlShiftI-after",
+            []
+          ],
+          [
+            "KEY-9-hidden-after",
+            []
+          ]
+        ],
+        "background": {
+          "WV-1-before-o": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-1-load-01": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-1-ready": {
+            "sampleRgb": [
+              32,
+              36,
+              43
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-2-raw": {
+            "sampleRgb": [
+              32,
+              36,
+              43
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-3-hidden": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-3-restored": {
+            "sampleRgb": [
+              32,
+              36,
+              43
+            ],
+            "purplePixelCount": 0
+          },
+          "WV-8-closed-preview": {
+            "sampleRgb": [
+              24,
+              27,
+              32
+            ],
+            "purplePixelCount": 0
+          }
+        }
+      }
+    }
+  }
+}

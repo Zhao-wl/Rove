@@ -1,0 +1,3 @@
+dpi=96; version=11.2607.14.0; window=Rove-IME-comparison.txt - Notepad
+input_indicator=托盘输入指示器 中文模式 单击右键以查看更多选项
+input_indicator=托盘输入指示器 英语模式 单击右键以查看更多选项
