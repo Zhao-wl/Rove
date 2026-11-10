@@ -1,5 +1,9 @@
 # GPUI / WebView2 spike
 
+中文操作入口：[C 链手测清单](MANUAL_ACCEPTANCE.md)（含 #5/#6 的本机启动命令、步骤、通过标准及反馈模板）。
+
+预算已确认：60 MB 只约束未开启预览的基础阅读器；WebView2 预览单列预算，具体上限尚未设定。
+
 Build with the MSVC developer environment:
 
 ```powershell
