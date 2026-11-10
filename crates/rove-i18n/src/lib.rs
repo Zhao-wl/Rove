@@ -19,6 +19,8 @@ impl Message {
 }
 /// Lookup is UI-safe, O(log keys + template bytes + placeholders * arguments + output bytes),
 /// no I/O. `{name}` substitutes a named argument; `{{` and `}}` emit literal braces.
+/// The first `}` closes a placeholder: `{name}}}` emits its value followed by `}`;
+/// `{name}}` is invalid (the final brace is unmatched).
 /// Missing keys return NotFound. Missing arguments, empty/nested placeholders and unmatched braces
 /// return InvalidInput. Substituted values are literal and never recursively interpreted.
 pub trait Strings: Send + Sync {
@@ -111,12 +113,26 @@ mod template_tests {
             tr!(&table, &message).unwrap(),
             "中文 {配置}：{😀{raw}} / 😀{raw}"
         );
+        table.register("suffix", Arc::from("{value}}}")).unwrap();
+        let suffix = Message {
+            key: "suffix".into(),
+            args: message.args.clone(),
+        };
+        assert_eq!(tr!(&table, &suffix).unwrap(), "😀{raw}}");
+        table
+            .register("invalid_suffix", Arc::from("{value}}"))
+            .unwrap();
+        let invalid = Message {
+            key: "invalid_suffix".into(),
+            args: message.args.clone(),
+        };
+        assert_eq!(tr!(&table, &invalid), Err(Error::InvalidInput));
         table.register("braces", Arc::from("{{}}")).unwrap();
         assert_eq!(tr!(&table, &Message::key("braces")).unwrap(), "{}");
     }
     #[test]
     fn malformed_templates_and_missing_arguments_fail() {
-        for template in ["{", "}", "{}", "{name", "{a{b}", "{missing}", "{{}"] {
+        for template in ["{", "}", "{}", "{name", "{a{b}", "{missing}", "{{}", "{a}}"] {
             let mut table = StringTable::default();
             table.register("example", Arc::from(template)).unwrap();
             assert_eq!(

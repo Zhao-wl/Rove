@@ -19,7 +19,8 @@ use std::{
     },
 };
 
-/// Stable failure categories, never localized UI text. Send + Sync; constant-size dispatch.
+/// Stable failure categories, not presentation-ready UI messages. Send + Sync; constant-size dispatch.
+/// Diagnostic text may be localized by the OS; the UI maps categories to registered string keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Cancelled,
@@ -29,7 +30,9 @@ pub enum Error {
     NotFound,
     Duplicate(String),
     Unsupported,
-    /// Filesystem failure with machine-readable category and diagnostic text.
+    /// Filesystem failure with machine-readable category and log/diagnostic-only text.
+    /// ErrorKind is non_exhaustive: consumers must include a fallback match arm.
+    /// This cloneable summary does not retain the original error chain; Error::source() is None.
     Io {
         kind: std::io::ErrorKind,
         message: String,
