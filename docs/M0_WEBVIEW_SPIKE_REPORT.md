@@ -5,7 +5,7 @@
 
 ## 1. 结论摘要
 
-**当前集成判定：有条件候选，PR仍保持Draft。** 最新状态以§13为准：真实手测已确认Hwnd模式可见、相交隐藏有效、125%与双屏通过，Tab双向路由通过；Baseline正文不可见，应排除。Transparent的加载/隐藏透底已修代码，待新版截图。快速200ms重开已改为复用environment，六轮自动校验通过，但125%完整手工复现仍待复验。
+**技术路线判定：GO（Hwnd＋相交隐藏）；整体issue验收未齐，PR仍保持Draft。** 最新状态以§13为准：真实手测已确认Hwnd模式可见、相交隐藏有效、125%与双屏通过，Tab双向路由通过；Baseline正文不可见，应排除。Transparent的加载/隐藏/关闭背景修复已获100%与125%真实截图通过。快速200ms重开在Hwnd125%及两模式100%获3/3手测通过；Transparent125%有一次未收到o的输入失败，同间隔延长按键持续时间后3/3通过，本轮补原生焦点恢复。
 
 对工作台：Hwnd＋相交隐藏已有原型级手测支持，可据此设计；尚未覆盖四类产品控件和产品骨架整体验收，不能将候选方案当作最终集成通过。以下历史批次保留用于追踪，不覆盖最新手测与修复结论。
 
@@ -56,7 +56,7 @@ ready 约 2.4–2.6 秒，骨架占位是必需项。controller→ready 之间�
 
 最新固定提交三模式手测见§13：Baseline不透明合成遮住网页，Hwnd正文可见但网页覆盖原始GPUI矩形，相交隐藏/恢复有效；Transparent正文可见且GPUI矩形在上，但原版加载/隐藏透底。此结果确认叠放依赖渲染模式，不存在通用的单向覆盖规则。
 
-优先候选是Hwnd＋相交隐藏；产品仍需统一弹出层区域、焦点交接和恢复管理。Transparent本轮补不透明背景，作为替代候选等待复验。旧黑屏/PrintWindow截取不作为证据，当前采用评审可见桌面截图与固定提交日志。
+优先候选是Hwnd＋相交隐藏；产品仍需统一弹出层区域、焦点交接和恢复管理。Transparent不透明背景已通过新版复验，可作为替代候选；其125%一次短按未到达宿主仍需焦点修复后复验。旧黑屏/PrintWindow截取不作为证据，当前采用评审可见桌面截图与固定提交日志。
 
 ### 4.2 焦点与按键
 
@@ -272,3 +272,26 @@ COM布局调用期间不再持有State借用；验收断言已改为明确错误
 | Transparent/auto-3 | 200.46 | 2612.67 | PASS |
 
 每轮1次environment创建、1次复用、2次controller请求/完成、2次ready/close均通过；自动测试覆盖200ms调度与消息，不替代125%下调整尺寸后快速按键的完整原始手测。5项Rust阶段/背景回归、3项Python统计及桥接逻辑测试通过；workspace fmt/clippy/test通过（56项，2个环境相关doc-test忽略）。Transparent透底修复仍待新版截图，不把背景布尔测试当作视觉验收。
+
+## 14. 最新复验：区分重建与输入未到达
+
+[固定复验证据](https://github.com/Zhao-wl/Rove/tree/441136a0763b3866eb000ca2411ce126f9561337/retest-2026-11-10/pr-81)，构建0015655，exe ef9a9b8159817e914a90db4452b16ef60d8cca35d1cf6158852293874e0abda1。
+
+Transparent四态不透底在100%/125%通过；两模式混合DPI、主题与KEY-1～9通过。Hwnd125%三次200ms重开通过，两模式100%各3/3通过。Transparent125%首轮约200.25ms间隔没有host_key=o；重测约200.15–200.18ms、按键保持28/32ms时3/3通过。因此这次失败不是已经进入environment/controller的重建失败，不能与旧失败混为一谈；短按注入、原生焦点等因素尚未被唯一归因。
+
+检查发现x关闭后原代码仅恢复GPUI FocusHandle，未显式恢复Win32焦点。本轮在同一路径补SetFocus(host HWND)，立即用GetFocus读取实际目标并记录host_focus_restored；host_key也携带native_focus与host HWND。自动关闭重建复用同一函数并校验焦点确实归宿主。无延迟抢焦点、无补发o、无改变按键持续时间，不把防御性修复声称为唯一根因已证实。
+
+复验重点：Transparent125%尺寸/浅色主题后，沿用首轮短按持续时间与200ms间隔，检查closed后的host_focus_restored.ok、后续host_key=o及重建日志。若o仍未出现，保留Windows输入发送时刻与持续时间，不能将该次标记为WebView controller失败。此前通过的手测结果保留；产品弹出控件、完整Tab遍历、300秒全释放、真实冷启动/预算/无运行时环境仍未验。
+
+本轮构建：`{"schema": 2, "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f", "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179", "dirty": "true", "built_unix_seconds": "1794298329", "benchmark_mode": "continuous_frame_probe_not_idle", "disable_direct_composition": false, "transparent_preview": true}`；原生焦点断言与完整生命周期运行 **6/6通过**，证据在 `evidence/2026-11-10-native-focus/`，各轮包含exe SHA-256。
+
+| 运行 | close→open间隔 ms | 重建ready ms | GetFocus=host | 校验 |
+|---|---:|---:|---|---|
+| Hwnd/auto-1 | 207.48 | 2532.77 | true | PASS |
+| Hwnd/auto-2 | 200.78 | 2539.44 | true | PASS |
+| Hwnd/auto-3 | 208.16 | 2551.18 | true | PASS |
+| Transparent/auto-1 | 200.97 | 2547.57 | true | PASS |
+| Transparent/auto-2 | 201.50 | 2543.55 | true | PASS |
+| Transparent/auto-3 | 200.02 | 2517.56 | true | PASS |
+
+main e3a93c9下workspace fmt/严格clippy/56项测试通过（2项环境相关doc-test忽略）；原型5项测试、Python3项统计回归及桥接逻辑测试通过。这里的自动调用不模拟物理短按，不宣称原始Transparent125%个例已经完全排除；下一轮按清单保留原始按键持续时间复验。

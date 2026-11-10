@@ -1,0 +1,194 @@
+[
+  {
+    "trial": "auto-1",
+    "provenance": {
+      "schema": 2,
+      "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f",
+      "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179",
+      "dirty": "true",
+      "built_unix_seconds": "1794298329",
+      "benchmark_mode": "continuous_frame_probe_not_idle",
+      "disable_direct_composition": true,
+      "transparent_preview": false
+    },
+    "evidence_class": "versioned",
+    "first_render_ms": [
+      354.7977
+    ],
+    "ready": [
+      {
+        "ms": 2823.9872,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      },
+      {
+        "ms": 2532.7718,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      }
+    ],
+    "key_route_count": 0,
+    "all_replies": {
+      "count": 682,
+      "p50_ms": 0.5345000000000001,
+      "p99_ms": 2.5277,
+      "max_ms": 6.4689,
+      "over_16ms_count": 0,
+      "over_16ms_percent": 0.0
+    },
+    "by_kind": {
+      "pong": {
+        "count": 455,
+        "p50_ms": 0.48109999999999997,
+        "p99_ms": 1.8809,
+        "max_ms": 5.004,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "scrollApplied": {
+        "count": 221,
+        "p50_ms": 0.7308,
+        "p99_ms": 2.663,
+        "max_ms": 6.4689,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "themeApplied": {
+        "count": 6,
+        "p50_ms": 0.6874,
+        "p99_ms": 1.3667,
+        "max_ms": 1.3667,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      }
+    }
+  },
+  {
+    "trial": "auto-2",
+    "provenance": {
+      "schema": 2,
+      "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f",
+      "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179",
+      "dirty": "true",
+      "built_unix_seconds": "1794298329",
+      "benchmark_mode": "continuous_frame_probe_not_idle",
+      "disable_direct_composition": true,
+      "transparent_preview": false
+    },
+    "evidence_class": "versioned",
+    "first_render_ms": [
+      399.6537
+    ],
+    "ready": [
+      {
+        "ms": 2668.9492999999998,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      },
+      {
+        "ms": 2539.4444,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      }
+    ],
+    "key_route_count": 0,
+    "all_replies": {
+      "count": 674,
+      "p50_ms": 0.531,
+      "p99_ms": 1.8665,
+      "max_ms": 2.9074999999999998,
+      "over_16ms_count": 0,
+      "over_16ms_percent": 0.0
+    },
+    "by_kind": {
+      "pong": {
+        "count": 450,
+        "p50_ms": 0.4858,
+        "p99_ms": 1.5927,
+        "max_ms": 2.9074999999999998,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "scrollApplied": {
+        "count": 218,
+        "p50_ms": 0.6514,
+        "p99_ms": 1.9781999999999997,
+        "max_ms": 2.2552000000000003,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "themeApplied": {
+        "count": 6,
+        "p50_ms": 0.5863,
+        "p99_ms": 1.8665,
+        "max_ms": 1.8665,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      }
+    }
+  },
+  {
+    "trial": "auto-3",
+    "provenance": {
+      "schema": 2,
+      "commit": "2f427642a2b4dc9686344eb34893ea0c5a37bf2f",
+      "source_git_blob": "8d398451b1b76833cdc6592866c4c221917af179",
+      "dirty": "true",
+      "built_unix_seconds": "1794298329",
+      "benchmark_mode": "continuous_frame_probe_not_idle",
+      "disable_direct_composition": true,
+      "transparent_preview": false
+    },
+    "evidence_class": "versioned",
+    "first_render_ms": [
+      339.17560000000003
+    ],
+    "ready": [
+      {
+        "ms": 2530.7743,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      },
+      {
+        "ms": 2551.1767,
+        "documentScriptBlocked": true,
+        "localImageLoaded": true
+      }
+    ],
+    "key_route_count": 0,
+    "all_replies": {
+      "count": 669,
+      "p50_ms": 0.6212,
+      "p99_ms": 2.3598,
+      "max_ms": 2.8828,
+      "over_16ms_count": 0,
+      "over_16ms_percent": 0.0
+    },
+    "by_kind": {
+      "pong": {
+        "count": 446,
+        "p50_ms": 0.53,
+        "p99_ms": 2.3059,
+        "max_ms": 2.7636000000000003,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "scrollApplied": {
+        "count": 217,
+        "p50_ms": 0.7804,
+        "p99_ms": 2.5056000000000003,
+        "max_ms": 2.8828,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      },
+      "themeApplied": {
+        "count": 6,
+        "p50_ms": 0.472,
+        "p99_ms": 1.2582,
+        "max_ms": 1.2582,
+        "over_16ms_count": 0,
+        "over_16ms_percent": 0.0
+      }
+    }
+  }
+]

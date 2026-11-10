@@ -134,3 +134,5 @@ Hwnd已有100%/125%、双屏及Tab真实通过记录；Baseline是已确认不�
 1. Transparent：启动未打开、加载中、H隐藏、X关闭四种阶段均应不再透出后方窗口；ready可见时仍显示正文，U矩形完整。
 2. Hwnd在125%调整尺寸、切浅色主题后，X后约200ms按O，连续至少三轮；每轮应有open_requested、environment_reused、controller_requested/completed、ready。若失败，保留全部日志和操作时间，不用延迟半秒替代该条件。
 3. 继续检查边缘命中、双屏与已通过按键以防回归；模式改变后的内存与300秒全释放不得沿用旧指标。
+
+最新复验已确认Transparent四态不透底、两模式混合DPI/主题/KEY-1～9通过。下一轮重点仅是Transparent125%原始短按的200ms X→O：先确认host_focus_restored.ok=true；host_key附native_focus，若没有o需保留原始输入发送记录和按键持续时间。不要只用更长按键替代首轮失败条件。
