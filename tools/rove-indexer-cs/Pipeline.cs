@@ -94,7 +94,7 @@ static class Pipeline
         var events = new BlockingCollection<(Event kind, int project)>();
         var ready = new PriorityQueue<int, (long, int)>();
         for (int i = 0; i < n; i++) if (pendingDeps[i] == 0) ready.Enqueue(i, (-priority[i], i));
-        int done = 0, active = 0;
+        int done = 0, active = 0, imagesPending = 0;
         long activeFiles = 0, releasedFiles = 0;
         var started = new bool[n];
         // 准入：活动项目的文件数之和不超过上限；但关键路径上的项目（优先级不低于任何尚未开工的项目）
@@ -113,6 +113,7 @@ static class Pipeline
                 ready.Dequeue();
                 started[next] = true;
                 active++;
+                imagesPending++;
                 activeFiles += weight[next];
                 int i = next;
                 MetadataReference?[] depImages = deps[i].Select(d => images[d]).ToArray();
@@ -123,11 +124,13 @@ static class Pipeline
                     image => { images[i] = image; events.Add((Event.ImageReady, i)); },
                     () => events.Add((Event.Done, i))));
             }
-            if (ready.Count == 0 && active == 0 && done < n)
+            // 绑定可能先于镜像输出完成（两者并行），所以 Done 可能早于 ImageReady 到达；只有两者都没有在途时才算卡死。
+            if (ready.Count == 0 && active == 0 && imagesPending == 0 && done < n)
                 throw new InvalidOperationException("project scheduler stalled");
             var (kind, project) = events.Take();
             if (kind == Event.ImageReady)
             {
+                imagesPending--;
                 foreach (int d in dependents[project])
                     if (--pendingDeps[d] == 0) ready.Enqueue(d, (-priority[d], d));
             }
