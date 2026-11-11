@@ -221,7 +221,7 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     let index = CsIndex::open(&index_path).unwrap();
-    assert_eq!(index.header().indexer_version, [1, 0, 2, 0]);
+    assert_eq!(index.header().indexer_version, [1, 0, 3, 0]);
     let rel_path = "Assets/Unicode.cs";
     let file = index.file_id(rel_path).unwrap();
     let line = source_text.lines().nth(1).unwrap();
