@@ -167,7 +167,7 @@ impl ProjectCache {
                 Some((generation, path))
             })
             .collect();
-        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found.sort_by_key(|g| std::cmp::Reverse(g.0));
         found
     }
     /// 下一个世代号（比现有最大的大 1）。

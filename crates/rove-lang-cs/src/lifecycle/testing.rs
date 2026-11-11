@@ -52,13 +52,13 @@ impl FixtureIndex {
         let mut out = vec![0u8; HEADER];
         let mut table = Vec::new();
         for (data, count) in &sections {
-            while out.len() % 8 != 0 {
+            while !out.len().is_multiple_of(8) {
                 out.push(0);
             }
             table.push((out.len() as u64, *count as u64));
             out.extend_from_slice(data);
         }
-        while out.len() % 8 != 0 {
+        while !out.len().is_multiple_of(8) {
             out.push(0);
         }
         let total = out.len() as u64;

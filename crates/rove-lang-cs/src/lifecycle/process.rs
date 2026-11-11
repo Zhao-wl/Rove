@@ -107,8 +107,8 @@ impl Progress {
         if let Some(rest) = text.strip_prefix("progress ") {
             let mut parts = rest.split_whitespace().map(|p| p.parse::<u64>());
             if let (Some(Ok(done)), Some(Ok(total))) = (parts.next(), parts.next()) {
-                if total > 0 {
-                    self.percent = self.percent.max((done.min(total) * 100 / total) as u8);
+                if let Some(percent) = (done.min(total) * 100).checked_div(total) {
+                    self.percent = self.percent.max(percent as u8);
                     self.files = u32::try_from(total).ok();
                 }
             }

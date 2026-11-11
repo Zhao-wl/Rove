@@ -18,19 +18,14 @@ use std::{
 };
 
 /// 预读策略。默认值的依据见 PR 中“不预读 / 预读 / 限速预读”的对比数据。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PrefetchMode {
     Off,
     /// 全速顺序读（仍是低 I/O 优先级）。
+    #[default]
     Full,
     /// 每秒最多读这么多字节。
     Throttled(u64),
-}
-
-impl Default for PrefetchMode {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
