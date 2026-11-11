@@ -4770,11 +4770,14 @@ dependencies = [
  "memmap2",
  "memory-stats",
  "rove-base",
+ "rove-config",
  "rove-syntax",
  "rove-test-support",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 0.8.23",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
