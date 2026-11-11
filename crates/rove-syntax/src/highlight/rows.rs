@@ -1,7 +1,9 @@
 use super::{
     grammar::{Capture, Work},
+    source::Source,
     Parsed,
 };
+
 use crate::Token;
 use rove_base::{ByteOffset, Error, Line, LineRange, Result, Span};
 use rove_buffer::TextSource;
@@ -15,8 +17,62 @@ use tree_sitter::{InputEdit, Tree};
 #[derive(Clone)]
 pub(super) struct RowRanges(Arc<[Range<usize>]>);
 
+/// Rows sampled against `TextSource::line_range` after a terminator scan.
+const SAMPLES: usize = 64;
+
 impl RowRanges {
-    pub fn new(text: &dyn TextSource, count: usize, work: &Work<'_>) -> Result<Self> {
+    /// Line table of `text`. Splits `source` at LF, CRLF and lone CR (the `RopeText`
+    /// convention) in one pass; when the line count or any sampled row disagrees with the
+    /// text source, the table is read row by row from `line_range` instead.
+    pub fn new(
+        text: &dyn TextSource,
+        source: &Source,
+        count: usize,
+        work: &Work<'_>,
+    ) -> Result<Self> {
+        if let Some(ranges) = Self::split(text, source, count)? {
+            return Ok(ranges);
+        }
+        Self::read(text, count, work)
+    }
+
+    fn split(text: &dyn TextSource, source: &Source, count: usize) -> Result<Option<Self>> {
+        let mut ranges = Vec::with_capacity(count);
+        let mut line_start = 0;
+        let mut offset = 0;
+        let mut after_cr = false;
+        for chunk in source.chunks(0..source.len()) {
+            for at in memchr::memchr2_iter(b'\r', b'\n', chunk) {
+                let at = offset + at;
+                if chunk[at - offset] == b'\n' && after_cr && line_start == at {
+                    // The LF of a CRLF: the line already ended at the CR.
+                    line_start = at + 1;
+                    after_cr = false;
+                    continue;
+                }
+                after_cr = chunk[at - offset] == b'\r';
+                ranges.push(line_start..at);
+                line_start = at + 1;
+            }
+            offset += chunk.len();
+        }
+        ranges.push(line_start..source.len());
+        if ranges.len() != count {
+            return Ok(None);
+        }
+        let step = (count / SAMPLES).max(1);
+        for row in (0..count).step_by(step).chain(std::iter::once(count - 1)) {
+            let line = text.line_range(Line(row as u64))?;
+            if line.start().0 as usize != ranges[row].start
+                || line.end().0 as usize != ranges[row].end
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(Self(ranges.into())))
+    }
+
+    fn read(text: &dyn TextSource, count: usize, work: &Work<'_>) -> Result<Self> {
         let mut ranges = Vec::with_capacity(count);
         for row in 0..count {
             if row % 256 == 0 {
@@ -28,6 +84,55 @@ impl RowRanges {
         Ok(Self(ranges.into()))
     }
 
+    /// Update the table for one edit: rows around the edit are read again from the new
+    /// text, rows after it move by the byte delta. `None` when the result is inconsistent
+    /// with the new text (the caller then rebuilds the whole table).
+    pub fn edit(
+        &self,
+        text: &dyn TextSource,
+        count: usize,
+        patch: &InputEdit,
+        work: &Work<'_>,
+    ) -> Result<Option<Self>> {
+        if self.0.is_empty() || count == 0 {
+            return Ok(None);
+        }
+        let first = self.row_at(patch.start_byte).saturating_sub(1);
+        let old_last = (self.row_at(patch.old_end_byte) + 1).min(self.0.len() - 1);
+        let Some(last) = (old_last + count)
+            .checked_sub(self.0.len())
+            .filter(|&last| last >= first && last < count)
+        else {
+            return Ok(None);
+        };
+        let delta = patch.new_end_byte as isize - patch.old_end_byte as isize;
+        let mut ranges = Vec::with_capacity(count);
+        ranges.extend_from_slice(&self.0[..first]);
+        for row in first..=last {
+            if (row - first).is_multiple_of(256) {
+                work.check()?;
+            }
+            let line = text.line_range(Line(row as u64))?;
+            ranges.push(line.start().0 as usize..line.end().0 as usize);
+        }
+        ranges.extend(
+            self.0[old_last + 1..]
+                .iter()
+                .map(|r| r.start.wrapping_add_signed(delta)..r.end.wrapping_add_signed(delta)),
+        );
+        if ranges.len() != count {
+            return Ok(None);
+        }
+        // The first moved row must agree with the new text.
+        if let Some(moved) = ranges.get(last + 1) {
+            let line = text.line_range(Line(last as u64 + 1))?;
+            if line.start().0 as usize != moved.start || line.end().0 as usize != moved.end {
+                return Ok(None);
+            }
+        }
+        Ok(Some(Self(ranges.into())))
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -36,7 +141,7 @@ impl RowRanges {
         self.0.get(row).ok_or(Error::OutOfBounds)
     }
 
-    fn row_at(&self, offset: usize) -> usize {
+    pub fn row_at(&self, offset: usize) -> usize {
         self.0
             .partition_point(|r| r.start <= offset)
             .saturating_sub(1)
@@ -137,18 +242,21 @@ impl<'a> Incremental<'a> {
 
 pub(super) static EMPTY_LINE: LazyLock<Arc<[Token]>> = LazyLock::new(|| Arc::from([]));
 
-type Rows = (Vec<LineTokens>, Option<Arc<[LineRange]>>);
+pub(super) type Rows = (Vec<LineTokens>, Option<Arc<[LineRange]>>);
 
 pub(super) fn assemble(
     ranges: &RowRanges,
-    source: &str,
+    source: &Source,
     scan: Range<usize>,
     mut captures: Vec<Capture>,
     baseline: Option<Incremental<'_>>,
     limit: usize,
     work: &Work<'_>,
 ) -> Result<Rows> {
-    captures.sort_unstable_by_key(|c| (c.start, Reverse(c.end), c.priority));
+    if !captures.is_sorted_by_key(|c| (c.start, Reverse(c.end), c.priority)) {
+        super::csharp_parts::sort_captures(&mut captures);
+    }
+
     let mut lines = Vec::with_capacity(ranges.len());
     let mut changed: Vec<Range<usize>> = Vec::new();
     let mut active = Vec::<&Capture>::new();
@@ -159,7 +267,15 @@ pub(super) fn assemble(
         }
         let previous = baseline.as_ref().and_then(|old| old.previous(row));
         if !scan.contains(&row) {
-            lines.push(previous.ok_or(Error::InvalidInput)?.clone());
+            // Without a baseline only a partial (visible-first) build skips rows.
+            lines.push(match (previous, &baseline) {
+                (Some(previous), _) => previous.clone(),
+                (None, None) => LineTokens {
+                    origin: range.start,
+                    tokens: EMPTY_LINE.clone(),
+                },
+                (None, Some(_)) => return Err(Error::InvalidInput),
+            });
             continue;
         }
         active.retain(|c| c.end > range.start);
@@ -173,7 +289,12 @@ pub(super) fn assemble(
             && !range.is_empty()
             && (range.len() <= limit
                 || (range.len() <= limit.saturating_mul(3)
-                    && source[range.clone()].encode_utf16().take(limit + 1).count() <= limit))
+                    && source
+                        .text(range.clone())
+                        .encode_utf16()
+                        .take(limit + 1)
+                        .count()
+                        <= limit))
         {
             project_line(range, &active)
         } else {

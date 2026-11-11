@@ -1,29 +1,48 @@
 //! Tree-sitter highlighting behind the frozen syntax contracts.
 
 mod csharp_parts;
+mod documents;
 mod grammar;
 mod rows;
 mod settings;
+mod source;
 
+pub use csharp_parts::WorkerPool;
+pub use documents::{DocumentHighlighter, Stateless, SyntaxDocuments};
 pub use settings::{language_for_path, register_settings};
 
 use crate::{Fold, Symbol, SyntaxService, SyntaxSnapshot, SyntaxUpdate, Token};
 use grammar::{Grammar, Work};
-use rove_base::{ByteOffset, Cancellation, Error, Line, Result, Span, Task, TextEdit, Version};
+use rove_base::{
+    ByteOffset, Cancellation, Error, Line, LineRange, Result, Span, Task, TextEdit, Version,
+};
 use rove_buffer::TextSource;
 use rove_config::Settings;
 use rows::{LineTokens, RowRanges};
+use source::{Source, EDIT_CONTEXT};
 use std::{
+    ops::Range,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tree_sitter::{InputEdit, Point, Tree};
+use tree_sitter::{InputEdit, Node, Point, Tree};
 
 /// Executor-neutral highlighter. Poll the returned task on a background executor.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TreeSitterSyntax {
     settings: Option<Arc<dyn Settings>>,
     budget: Option<Duration>,
+    pool: Option<Arc<WorkerPool>>,
+}
+
+impl Default for TreeSitterSyntax {
+    fn default() -> Self {
+        Self {
+            settings: None,
+            budget: None,
+            pool: Some(WorkerPool::shared()),
+        }
+    }
 }
 
 impl TreeSitterSyntax {
@@ -39,12 +58,21 @@ impl TreeSitterSyntax {
         self
     }
 
+    /// Threads for partitioned C# parsing, from a pool private to this service (and its
+    /// clones). Fewer than two disables partitioning. The default shares one process-wide
+    /// pool sized to the hardware threads.
+    pub fn with_parallelism(mut self, threads: usize) -> Self {
+        self.pool = (threads >= 2).then(|| WorkerPool::new(threads));
+        self
+    }
+
     /// Allocate a baseline for one open document. Versions are local to that document.
     pub fn document(&self) -> DocumentSyntax {
         DocumentSyntax {
             syntax: self.clone(),
             baseline: Arc::default(),
             edit: None,
+            visible: None,
         }
     }
 }
@@ -66,6 +94,7 @@ pub struct DocumentSyntax {
     syntax: TreeSitterSyntax,
     baseline: Arc<Mutex<Option<Arc<Snapshot>>>>,
     edit: Option<TextEdit>,
+    visible: Option<LineRange>,
 }
 
 impl DocumentSyntax {
@@ -76,6 +105,25 @@ impl DocumentSyntax {
             edit: Some(edit),
             ..self.clone()
         }
+    }
+
+    /// Highlight only these lines when there is no baseline to update (visible-first).
+    /// The result is partial: other lines have no tokens until the next analysis of the
+    /// same text without this hint completes it, reusing the parse.
+    pub fn with_visible(&self, lines: LineRange) -> Self {
+        Self {
+            visible: Some(lines),
+            ..self.clone()
+        }
+    }
+
+    /// Whether the latest successful result covers only a visible range.
+    pub fn is_partial(&self) -> bool {
+        self.baseline
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.partial)
     }
 }
 
@@ -107,18 +155,22 @@ impl SyntaxService for DocumentSyntax {
                 .filter(|s| s.language == language && s.line_limit == line_limit);
 
             let grammar = grammar.filter(|_| text.byte_len() < size_limit);
-            if let Some(snapshot) = old.as_ref().filter(|snapshot| {
-                compatible.is_some()
-                    && service.edit.is_none()
+            let same_text = compatible.filter(|snapshot| {
+                service.edit.is_none()
                     && Arc::ptr_eq(&snapshot.text, &text)
                     && snapshot.parsed.is_some() == grammar.is_some()
-            }) {
+            });
+            if let Some(snapshot) =
+                same_text.filter(|snapshot| !snapshot.partial || service.visible.is_some())
+            {
                 return Ok(SyntaxUpdate {
-                    snapshot: snapshot.clone(),
-                    previous: Some(version),
+                    snapshot: old.clone().unwrap(),
+                    previous: Some(snapshot.version()),
                     changed_lines: Some(Arc::from([])),
                 });
             }
+            // A partial snapshot is only completed, never updated by an edit.
+            let compatible = compatible.filter(|snapshot| !snapshot.partial);
             let deadline = Instant::now()
                 .checked_add(service.syntax.budget.unwrap_or(Duration::from_millis(50)));
             let work = Work {
@@ -127,12 +179,17 @@ impl SyntaxService for DocumentSyntax {
             };
             let result = if let Some(grammar) = grammar {
                 build(
-                    text,
-                    language,
-                    line_limit,
-                    grammar,
-                    compatible,
-                    service.edit.as_ref(),
+                    Request {
+                        text,
+                        language,
+                        line_limit,
+                        grammar,
+                        old: compatible,
+                        complete: same_text.and_then(|s| s.parsed.as_ref()),
+                        edit: service.edit.as_ref(),
+                        visible: service.visible,
+                        pool: service.syntax.pool.as_deref(),
+                    },
                     &work,
                 )
             } else {
@@ -142,6 +199,7 @@ impl SyntaxService for DocumentSyntax {
                         language,
                         line_limit,
                         parsed: None,
+                        partial: false,
                     },
                     None,
                 ))
@@ -187,10 +245,12 @@ struct Snapshot {
     language: Arc<str>,
     line_limit: usize,
     parsed: Option<Parsed>,
+    /// Only the requested visible lines carry tokens.
+    partial: bool,
 }
 
 struct Parsed {
-    source: String,
+    source: Source,
     trees: ParseTrees,
     ranges: RowRanges,
     lines: Vec<LineTokens>,
@@ -201,17 +261,23 @@ struct Parsed {
 #[derive(Clone)]
 enum ParseTrees {
     Whole(Tree),
-    Csharp(Arc<[csharp_parts::Part]>),
+    Csharp(Arc<csharp_parts::Parts>),
 }
 
 impl ParseTrees {
-    fn full(grammar: Grammar, source: &str, work: &Work<'_>) -> Result<Self> {
+    /// Parse from scratch. Partitioned C# also returns the captures of the whole document.
+    fn full(
+        grammar: Grammar,
+        source: &Source,
+        pool: Option<&WorkerPool>,
+        work: &Work<'_>,
+    ) -> Result<(Self, Option<Vec<grammar::Capture>>)> {
         if grammar == Grammar::Csharp {
-            if let Some(parts) = csharp_parts::try_parse(source, work)? {
-                return Ok(Self::Csharp(parts.into()));
+            if let Some((parts, captures)) = csharp_parts::try_parse(source, pool, work)? {
+                return Ok((Self::Csharp(parts.into()), Some(captures)));
             }
         }
-        Ok(Self::Whole(grammar.parse(source.as_bytes(), None, work)?))
+        Ok((Self::Whole(grammar.parse(source, None, work)?), None))
     }
 
     fn whole(&self) -> Option<&Tree> {
@@ -224,10 +290,7 @@ impl ParseTrees {
     fn at(&self, offset: usize) -> Option<&Tree> {
         match self {
             Self::Whole(tree) => Some(tree),
-            Self::Csharp(parts) => parts
-                .iter()
-                .find(|part| part.contains(offset))
-                .map(|part| &part.tree),
+            Self::Csharp(parts) => parts.at(offset),
         }
     }
 }
@@ -263,54 +326,104 @@ impl SyntaxSnapshot for Snapshot {
     }
 }
 
-type BuildResult = (Snapshot, Option<Arc<[rove_base::LineRange]>>);
+type BuildResult = (Snapshot, Option<Arc<[LineRange]>>);
 
-fn build(
+struct Request<'a> {
     text: Arc<dyn TextSource>,
     language: Arc<str>,
     line_limit: usize,
     grammar: Grammar,
-    old: Option<&Snapshot>,
-    edit: Option<&TextEdit>,
-    work: &Work<'_>,
-) -> Result<BuildResult> {
+    /// Compatible, complete baseline of an earlier version.
+    old: Option<&'a Snapshot>,
+    /// Parse of a partial snapshot of this very text, to be completed.
+    complete: Option<&'a Parsed>,
+    edit: Option<&'a TextEdit>,
+    visible: Option<LineRange>,
+    pool: Option<&'a WorkerPool>,
+}
+
+fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
+    let Request {
+        text,
+        language,
+        line_limit,
+        grammar,
+        old,
+        complete,
+        edit,
+        visible,
+        pool,
+    } = request;
     work.cancel.check()?;
     let count = text.lines();
     if !count.complete {
         return Err(Error::NotReady);
     }
-    let mut source = String::with_capacity(text.byte_len() as usize);
-    text.visit_chunks(
-        Span::new(ByteOffset(0), ByteOffset(text.byte_len()))?,
-        &mut |s| {
-            if work.cancel.check().is_ok() {
-                source.push_str(s);
-            }
-        },
-    )?;
-    work.cancel.check()?;
+    let full_work = Work {
+        cancel: work.cancel,
+        deadline: None,
+    };
+    if let Some(parsed) = complete {
+        // Same text as the partial snapshot: keep its parse, highlight every line.
+        let scan = 0..parsed.ranges.len();
+        let lines = highlight(
+            grammar,
+            &parsed.trees,
+            &parsed.source,
+            &parsed.ranges,
+            scan,
+            None,
+            None,
+            line_limit,
+            pool,
+            &full_work,
+        )?
+        .0;
+        return Ok((
+            snapshot(
+                text,
+                language,
+                line_limit,
+                parsed.source.clone(),
+                parsed.trees.clone(),
+                parsed.ranges.clone(),
+                lines,
+                false,
+            ),
+            None,
+        ));
+    }
 
     let old_parse = old.and_then(|s| s.parsed.as_ref());
-    let patch = edit
+    let patched = edit
         .zip(old)
         .zip(old_parse)
         .and_then(|((edit, old), parsed)| {
             (edit.version == old.version() && old.version() < text.version())
-                .then(|| input_edit(&parsed.source, &source, edit))
+                .then(|| apply_edit(parsed, text.as_ref(), edit))
                 .flatten()
         });
-    // Only an edit against a whole tree can perform a regular incremental parse.
-    // Full rebuilds, including from independent C# members, must be allowed to advance
-    // the baseline even when the refresh budget has already elapsed.
-    let baseline = patch.zip(old_parse);
-    let work = &Work {
-        cancel: work.cancel,
-        deadline: baseline
-            .and_then(|(_, old)| old.trees.whole())
-            .and(work.deadline),
+    // Only an edit against a whole tree can perform a regular incremental parse within the
+    // refresh budget. Full rebuilds, and edits confined to one independent C# member, must
+    // be allowed to advance the baseline even when the budget has already elapsed.
+    let baseline = patched.as_ref().map(|(_, patch)| *patch).zip(old_parse);
+    let whole_baseline = baseline.is_some_and(|(_, old)| old.trees.whole().is_some());
+    let work = if whole_baseline { work } else { &full_work };
+    let source = match patched {
+        Some((source, _)) => source,
+        None => Source::read(text.as_ref(), work)?,
     };
     work.check()?;
-    let (trees, edited_whole, scan_all) = if let Some((patch, old)) = baseline {
+
+    // The previous tree after the edit and its reparse, for changed-range detection.
+    let mut diff: Option<(Tree, Tree)> = None;
+    let mut captured = None;
+    let mut full = |source: &Source| -> Result<ParseTrees> {
+        let (trees, captures) = ParseTrees::full(grammar, source, pool, work)?;
+        captured = captures;
+        Ok(trees)
+    };
+    let (trees, scan_all) = if let Some((patch, old)) = baseline {
         let reuse = match old.trees.at(patch.start_byte) {
             Some(tree) => {
                 grammar.reparse_unchanged_token(tree, &old.source, &source, patch, work)?
@@ -319,110 +432,275 @@ fn build(
         };
         if reuse {
             // The re-lexed leaf has the same kind, width and token boundaries.
-            (old.trees.clone(), None, false)
-        } else if let Some(tree) = old.trees.whole() {
-            let mut edited = tree.clone();
-            edited.edit(&patch);
-            let updated = grammar.parse(source.as_bytes(), Some(&edited), work)?;
-            (ParseTrees::Whole(updated), Some(edited), false)
+            (old.trees.clone(), false)
         } else {
-            // Independent member trees cannot be passed as a whole-tree baseline.
-            // Compare the new tokens against the previous snapshot across every row.
-            (ParseTrees::full(grammar, &source, work)?, None, true)
+            match &old.trees {
+                ParseTrees::Whole(tree) => {
+                    let mut edited = tree.clone();
+                    edited.edit(&patch);
+                    let updated = grammar.parse(&source, Some(&edited), work)?;
+                    diff = Some((edited, updated.clone()));
+                    (ParseTrees::Whole(updated), false)
+                }
+                ParseTrees::Csharp(parts) => match parts.reparse(&source, &patch, work)? {
+                    Some((parts, edited, index)) => {
+                        diff = Some((edited, parts.tree(index).clone()));
+                        (ParseTrees::Csharp(parts.into()), false)
+                    }
+                    // Compare the new tokens against the previous snapshot across every row.
+                    None => (full(&source)?, true),
+                },
+            }
         }
     } else {
-        (ParseTrees::full(grammar, &source, work)?, None, true)
+        (full(&source)?, true)
     };
-    // A same-width edit without line separators keeps every line range at the same offset.
-    let unchanged_ranges = baseline.filter(|(patch, old)| {
-        patch.old_end_byte == patch.new_end_byte
-            && old.ranges.len() as u64 == count.known
-            && !old.source[patch.start_byte..patch.old_end_byte].contains(['\r', '\n'])
-            && !source[patch.start_byte..patch.new_end_byte].contains(['\r', '\n'])
-    });
-    let ranges = if let Some((_, old)) = unchanged_ranges {
-        old.ranges.clone()
-    } else {
-        RowRanges::new(text.as_ref(), count.known as usize, work)?
+
+    let edited_ranges = match baseline {
+        Some((patch, old)) => old
+            .ranges
+            .edit(text.as_ref(), count.known as usize, &patch, work)?,
+        None => None,
+    };
+    let ranges = match edited_ranges {
+        Some(ranges) => ranges,
+        None => RowRanges::new(text.as_ref(), &source, count.known as usize, work)?,
     };
     let incremental = baseline
         .filter(|(_, old)| ranges.len() > 0 && old.ranges.len() > 0)
         .map(|(patch, old)| {
-            rows::Incremental::new(
-                patch,
-                old,
-                edited_whole.as_ref().zip(trees.whole()),
-                &ranges,
-            )
+            rows::Incremental::new(patch, old, diff.as_ref().map(|(a, b)| (a, b)), &ranges)
         });
-    let scan = match &incremental {
-        Some(update) if !scan_all && grammar != Grammar::Markdown => update.scan.clone(),
-        _ => 0..ranges.len(),
+    let all = 0..ranges.len();
+    let scan = match (&incremental, visible) {
+        (Some(update), _) if !scan_all => update.scan.clone(),
+        (None, Some(lines)) => {
+            let start = (lines.start().0 as usize).min(all.end);
+            start..(lines.end().0 as usize).clamp(start, all.end)
+        }
+        _ => all.clone(),
     };
-    let bytes = ranges.bytes(scan.clone());
-    let mut captures = Vec::new();
-    match &trees {
-        ParseTrees::Whole(tree) => {
-            grammar.capture(tree, source.as_bytes(), bytes, &mut captures, work)?
+    let scan = match &trees {
+        ParseTrees::Whole(tree) if grammar == Grammar::Markdown && scan != all => {
+            markdown_rows(tree, &source, &ranges, scan)
         }
-        ParseTrees::Csharp(parts) => {
-            csharp_parts::capture(parts, source.as_bytes(), bytes, &mut captures, work)?
-        }
-    }
-    let (lines, changed_lines) = rows::assemble(
-        &ranges,
+        _ => scan,
+    };
+    let partial = incremental.is_none() && scan != all;
+    let captured = captured.filter(|_| scan == all);
+    let (lines, changed_lines) = highlight(
+        grammar,
+        &trees,
         &source,
+        &ranges,
+        scan,
+        captured,
+        incremental,
+        line_limit,
+        pool,
+        work,
+    )?;
+    work.check()?;
+    Ok((
+        snapshot(
+            text, language, line_limit, source, trees, ranges, lines, partial,
+        ),
+        changed_lines.filter(|_| !partial),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn highlight(
+    grammar: Grammar,
+    trees: &ParseTrees,
+    source: &Source,
+    ranges: &RowRanges,
+    scan: Range<usize>,
+    captured: Option<Vec<grammar::Capture>>,
+    incremental: Option<rows::Incremental<'_>>,
+    line_limit: usize,
+    pool: Option<&WorkerPool>,
+    work: &Work<'_>,
+) -> Result<rows::Rows> {
+    let bytes = ranges.bytes(scan.clone());
+    let captures = match (captured, trees) {
+        (Some(captures), _) => captures,
+        (None, ParseTrees::Whole(tree)) => {
+            let mut captures = Vec::new();
+            grammar.capture(tree, source, bytes, &mut captures, work)?;
+            captures
+        }
+        (None, ParseTrees::Csharp(parts)) => {
+            let mut captures = Vec::new();
+            csharp_parts::capture(parts, pool, source, bytes, &mut captures, work)?;
+            captures
+        }
+    };
+
+    rows::assemble(
+        ranges,
+        source,
         scan,
         captures,
         incremental,
         line_limit,
         work,
-    )?;
-    work.check()?;
+    )
+}
 
-    Ok((
-        Snapshot {
-            text,
-            language,
-            line_limit,
-            parsed: Some(Parsed {
-                source,
-                trees,
-                ranges,
-                rebased: std::iter::repeat_with(OnceLock::new)
-                    .take(lines.len())
-                    .collect(),
-                lines,
-            }),
+#[allow(clippy::too_many_arguments)]
+fn snapshot(
+    text: Arc<dyn TextSource>,
+    language: Arc<str>,
+    line_limit: usize,
+    source: Source,
+    trees: ParseTrees,
+    ranges: RowRanges,
+    lines: Vec<LineTokens>,
+    partial: bool,
+) -> Snapshot {
+    Snapshot {
+        text,
+        language,
+        line_limit,
+        partial,
+        parsed: Some(Parsed {
+            source,
+            trees,
+            ranges,
+            rebased: std::iter::repeat_with(OnceLock::new)
+                .take(lines.len())
+                .collect(),
+            lines,
+        }),
+    }
+}
+
+/// Widen Markdown rows to whole inline regions and code fences, so an injected region is
+/// either highlighted again in full or reused in full.
+fn markdown_rows(
+    tree: &Tree,
+    source: &Source,
+    ranges: &RowRanges,
+    rows: Range<usize>,
+) -> Range<usize> {
+    if rows.is_empty() {
+        return rows;
+    }
+    let mut bytes = ranges.bytes(rows.clone());
+    loop {
+        let expanded = widen(tree.root_node(), bytes.clone());
+        if expanded == bytes {
+            break;
+        }
+        bytes = expanded;
+    }
+    let bytes = bytes.start..bytes.end.min(source.len());
+    let start = ranges.row_at(bytes.start);
+    let end = ranges.row_at(bytes.end.saturating_sub(1).max(bytes.start)) + 1;
+    start.min(rows.start)..end.max(rows.end)
+}
+
+fn widen(node: Node<'_>, range: Range<usize>) -> Range<usize> {
+    let mut out = range.clone();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.end_byte() < range.start || child.start_byte() > range.end {
+            continue;
+        }
+        if matches!(
+            child.kind(),
+            "inline" | "pipe_table_cell" | "fenced_code_block" | "setext_heading"
+        ) {
+            out.start = out.start.min(child.start_byte());
+            out.end = out.end.max(child.end_byte());
+        } else {
+            let inner = widen(child, range.clone());
+            out.start = out.start.min(inner.start);
+            out.end = out.end.max(inner.end);
+        }
+    }
+    out
+}
+
+/// Apply one replacement to the previous source. Only the edit and [`EDIT_CONTEXT`] bytes
+/// around it are compared with the new text, together with its length; the rest of the
+/// document is shared with the previous source instead of being copied or compared.
+fn apply_edit(
+    parsed: &Parsed,
+    text: &dyn TextSource,
+    edit: &TextEdit,
+) -> Option<(Source, InputEdit)> {
+    let start = usize::try_from(edit.range.start().0).ok()?;
+    let old_end = usize::try_from(edit.range.end().0).ok()?;
+    let old_len = parsed.source.len();
+    let new_len = old_len
+        .checked_sub(old_end.checked_sub(start)?)?
+        .checked_add(edit.inserted.len())?;
+    if old_end > old_len || text.byte_len() != new_len as u64 {
+        return None;
+    }
+    let source = parsed.source.splice(start..old_end, &edit.inserted)?;
+    let new_end = start + edit.inserted.len();
+    let mut low = start.saturating_sub(EDIT_CONTEXT);
+    while low > 0 && source.byte(low).is_some_and(is_continuation) {
+        low -= 1;
+    }
+    let mut high = (new_end + EDIT_CONTEXT).min(new_len);
+    while high < new_len && source.byte(high).is_some_and(is_continuation) {
+        high += 1;
+    }
+    let mut actual = Vec::with_capacity(high - low);
+    text.visit_chunks(
+        Span::new(ByteOffset(low as u64), ByteOffset(high as u64)).ok()?,
+        &mut |chunk| actual.extend_from_slice(chunk.as_bytes()),
+    )
+    .ok()?;
+    if actual != *source.bytes(low..high) {
+        return None;
+    }
+    let start_position = point_at(parsed.trees.at(start)?, &parsed.source, start);
+    Some((
+        source,
+        InputEdit {
+            start_byte: start,
+            old_end_byte: old_end,
+            new_end_byte: new_end,
+            start_position,
+            old_end_position: advance(start_position, &parsed.source.bytes(start..old_end)),
+            new_end_position: advance(start_position, edit.inserted.as_bytes()),
         },
-        changed_lines,
     ))
 }
 
-/// Verify that the immutable snapshots differ only by the supplied replacement.
-fn input_edit(old: &str, new: &str, edit: &TextEdit) -> Option<InputEdit> {
-    let start = usize::try_from(edit.range.start().0).ok()?;
-    let old_end = usize::try_from(edit.range.end().0).ok()?;
-    let new_end = start.checked_add(edit.inserted.len())?;
-    if old.get(..start)? != new.get(..start)?
-        || old.get(old_end..)? != new.get(new_end..)?
-        || new.get(start..new_end)? != edit.inserted.as_ref()
-    {
-        return None;
-    }
-    let start_position = point(&old.as_bytes()[..start]);
-    Some(InputEdit {
-        start_byte: start,
-        old_end_byte: old_end,
-        new_end_byte: new_end,
-        start_position,
-        old_end_position: advance(start_position, &old.as_bytes()[start..old_end]),
-        new_end_position: advance(start_position, edit.inserted.as_bytes()),
-    })
+fn is_continuation(byte: u8) -> bool {
+    (0x80..0xc0).contains(&byte)
 }
 
-fn point(bytes: &[u8]) -> Point {
-    advance(Point::new(0, 0), bytes)
+/// Tree-sitter position of `offset`, from the nearest preceding node of the tree.
+fn point_at(tree: &Tree, source: &Source, offset: usize) -> Point {
+    let root = tree.root_node();
+    let mut base = (0, Point::default());
+    if root.end_byte() <= offset {
+        base = (root.end_byte(), root.end_position());
+    } else {
+        let mut cursor = root.walk();
+        while cursor.goto_first_child_for_byte(offset).is_some() {
+            let node = cursor.node();
+            if node.start_byte() <= offset {
+                base = (node.start_byte(), node.start_position());
+                continue;
+            }
+            if cursor.goto_previous_sibling() {
+                let previous = cursor.node();
+                if previous.end_byte() <= offset && previous.end_byte() >= base.0 {
+                    base = (previous.end_byte(), previous.end_position());
+                }
+            }
+            break;
+        }
+    }
+    advance(base.1, &source.bytes(base.0..offset))
 }
 
 fn advance(mut point: Point, bytes: &[u8]) -> Point {
@@ -435,4 +713,30 @@ fn advance(mut point: Point, bytes: &[u8]) -> Point {
         }
     }
     point
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn point_lookup_matches_a_scan_from_the_start() {
+        let text = "class C {\n  int a; // é\r\n\n  void M() { }\n}\n";
+        let source = Source::from_str(text);
+        let cancel = Cancellation::default();
+        let work = Work {
+            cancel: &cancel,
+            deadline: None,
+        };
+        let tree = Grammar::Csharp.parse(&source, None, &work).unwrap();
+        for offset in 0..=text.len() {
+            if text.is_char_boundary(offset) {
+                assert_eq!(
+                    point_at(&tree, &source, offset),
+                    advance(Point::default(), &text.as_bytes()[..offset]),
+                    "{offset}"
+                );
+            }
+        }
+    }
 }

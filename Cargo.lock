@@ -4788,6 +4788,7 @@ dependencies = [
  "futures-lite 2.6.1",
  "globset",
  "jsonc-parser",
+ "memchr",
  "rove-base",
  "rove-buffer",
  "rove-config",

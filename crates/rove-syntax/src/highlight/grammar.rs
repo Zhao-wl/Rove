@@ -1,3 +1,4 @@
+use super::source::Source;
 use rove_base::{Cancellation, Error, Result};
 use std::{
     collections::BTreeMap,
@@ -115,12 +116,12 @@ impl HighlightQuery {
         &self,
         pattern: usize,
         capture: u32,
-        source: &[u8],
+        source: &Source,
         span: &Range<usize>,
     ) -> Option<(usize, &Arc<[Arc<str>]>)> {
         let (pattern, capture) = match &self.predefined_types {
             Some(types) if capture == types.dispatch => {
-                *types.rules.get(source.get(span.clone())?)?
+                *types.rules.get(source.bytes(span.clone()).as_ref())?
             }
             _ => (pattern, capture),
         };
@@ -193,21 +194,23 @@ impl Grammar {
         parser
     }
 
-    pub fn parse(self, source: &[u8], previous: Option<&Tree>, work: &Work<'_>) -> Result<Tree> {
+    pub fn parse(self, source: &Source, previous: Option<&Tree>, work: &Work<'_>) -> Result<Tree> {
         parse(&mut self.parser(), source, previous, work)
     }
 
+    /// Parse only `ranges` of the document, optionally reusing an edited tree of them.
     pub fn parse_ranges(
         self,
-        source: &[u8],
+        source: &Source,
         ranges: &[TreeRange],
+        previous: Option<&Tree>,
         work: &Work<'_>,
     ) -> Result<Tree> {
         let mut parser = self.parser();
         parser
             .set_included_ranges(ranges)
             .map_err(|_| Error::InvalidInput)?;
-        parse(&mut parser, source, None, work)
+        parse(&mut parser, source, previous, work)
     }
 
     /// Reparse a lexeme in isolation only when the surrounding parse is provably unchanged.
@@ -216,8 +219,8 @@ impl Grammar {
     pub fn reparse_unchanged_token(
         self,
         tree: &Tree,
-        before: &str,
-        after: &str,
+        before: &Source,
+        after: &Source,
         patch: tree_sitter::InputEdit,
         work: &Work<'_>,
     ) -> Result<bool> {
@@ -234,8 +237,8 @@ impl Grammar {
             return Ok(false);
         };
         let bytes = node.byte_range();
-        let old = &before.as_bytes()[bytes.clone()];
-        let new = &after.as_bytes()[bytes.clone()];
+        let old = before.bytes(bytes.clone());
+        let new = after.bytes(bytes.clone());
         // C# decimal digits are interchangeable only inside a standalone, unsuffixed integer.
         // In particular, editing 1 to 0 in malformed "1x" could start a hexadecimal token.
         if node.kind() != "integer_literal"
@@ -243,18 +246,18 @@ impl Grammar {
             || !old.iter().all(u8::is_ascii_digit)
             || !new.iter().all(u8::is_ascii_digit)
             || !after
-                .as_bytes()
-                .get(bytes.end)
-                .is_none_or(|b| b" \t\r\n);,]}".contains(b))
+                .byte(bytes.end)
+                .is_none_or(|b| b" \t\r\n);,]}".contains(&b))
             || !bytes
                 .start
                 .checked_sub(1)
-                .is_none_or(|i| b" \t\r\n([=,:{".contains(&after.as_bytes()[i]))
+                .and_then(|i| after.byte(i))
+                .is_none_or(|b| b" \t\r\n([=,:{".contains(&b))
         {
             return Ok(false);
         }
 
-        let local = self.parse(new, None, work)?;
+        let local = self.parse(&Source::from_bytes(&new), None, work)?;
         let leaf = local.root_node().descendant_for_byte_range(0, new.len());
         Ok(leaf.is_some_and(|n| n.kind() == "integer_literal" && n.byte_range() == (0..new.len())))
     }
@@ -262,7 +265,7 @@ impl Grammar {
     pub fn capture(
         self,
         tree: &Tree,
-        source: &[u8],
+        source: &Source,
         scan: Range<usize>,
         output: &mut Vec<Capture>,
         work: &Work<'_>,
@@ -278,14 +281,14 @@ impl Grammar {
 
 fn parse(
     parser: &mut Parser,
-    source: &[u8],
+    source: &Source,
     previous: Option<&Tree>,
     work: &Work<'_>,
 ) -> Result<Tree> {
     let mut stop = |_: &_| work.cancelled();
     let options = ParseOptions::new().progress_callback(&mut stop);
     let result = parser.parse_with_options(
-        &mut |offset, _| source.get(offset..).unwrap_or_default(),
+        &mut |offset, _| source.chunk_at(offset),
         previous,
         Some(options),
     );
@@ -294,7 +297,7 @@ fn parse(
 }
 
 struct Highlighter<'a, 'b> {
-    source: &'a [u8],
+    source: &'a Source,
     work: &'a Work<'b>,
     cursor: QueryCursor,
 }
@@ -314,7 +317,7 @@ impl Highlighter<'_, '_> {
         }
         self.work.check()?;
         let highlights = grammar.highlight_query();
-        self.cursor.set_byte_range(scan);
+        self.cursor.set_byte_range(scan.clone());
         let mut stop = |_: &_| self.work.cancelled();
         let options = QueryCursorOptions::new().progress_callback(&mut stop);
         let mut matches =
@@ -357,7 +360,7 @@ impl Highlighter<'_, '_> {
         drop(matches);
         self.work.check()?;
         if grammar == Grammar::Markdown && depth < 16 {
-            self.markdown_children(root, included, depth + 1, output)?;
+            self.markdown_children(root, scan, included, depth + 1, output)?;
         }
         Ok(())
     }
@@ -365,6 +368,7 @@ impl Highlighter<'_, '_> {
     fn markdown_children(
         &mut self,
         root: Node<'_>,
+        scan: Range<usize>,
         parent: &[TreeRange],
         depth: usize,
         output: &mut Vec<Capture>,
@@ -377,6 +381,7 @@ impl Highlighter<'_, '_> {
             .expect("valid bundled injection query")
         });
         let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(scan.clone());
         let mut stop = |_: &_| self.work.cancelled();
         let options = QueryCursorOptions::new().progress_callback(&mut stop);
         let mut matches = cursor.matches_with_options(&INJECTIONS, root, self.source, options);
@@ -386,9 +391,8 @@ impl Highlighter<'_, '_> {
             let (grammar, node) = match m.captures {
                 [inline] => (Grammar::MarkdownInline, inline.node),
                 [language, body] => {
-                    let id = std::str::from_utf8(&self.source[language.node.byte_range()])
-                        .unwrap_or_default();
-                    let Some(grammar) = Grammar::for_fence(id) else {
+                    let id = self.source.text(language.node.byte_range());
+                    let Some(grammar) = Grammar::for_fence(&id) else {
                         continue;
                     };
                     (grammar, body.node)
@@ -411,10 +415,11 @@ impl Highlighter<'_, '_> {
                 .set_included_ranges(&ranges)
                 .map_err(|_| Error::InvalidInput)?;
             let tree = parse(parser, self.source, None, self.work)?;
+            let range = node.byte_range();
             self.highlight(
                 grammar,
                 tree.root_node(),
-                node.byte_range(),
+                range.start.max(scan.start)..range.end.min(scan.end),
                 &ranges,
                 depth,
                 output,
@@ -492,7 +497,8 @@ mod tests {
             deadline: None,
         };
         let grammar = Grammar::Csharp;
-        let tree = grammar.parse(before.as_bytes(), None, &work).unwrap();
+        let before_source = Source::from_str(before);
+        let tree = grammar.parse(&before_source, None, &work).unwrap();
         let byte = before.find('1').unwrap();
         let patch = InputEdit {
             start_byte: byte,
@@ -503,11 +509,23 @@ mod tests {
             new_end_position: Point::new(0, byte + 1),
         };
         assert!(grammar
-            .reparse_unchanged_token(&tree, before, &after, patch, &work)
+            .reparse_unchanged_token(
+                &tree,
+                &before_source,
+                &Source::from_str(&after),
+                patch,
+                &work
+            )
             .unwrap());
         let structural = before.replace('1', "x");
         assert!(!grammar
-            .reparse_unchanged_token(&tree, before, &structural, patch, &work)
+            .reparse_unchanged_token(
+                &tree,
+                &before_source,
+                &Source::from_str(&structural),
+                patch,
+                &work
+            )
             .unwrap());
     }
 
@@ -520,7 +538,8 @@ mod tests {
             deadline: None,
         };
         let grammar = Grammar::Csharp;
-        let tree = grammar.parse(source, None, &work).unwrap();
+        let text = Source::from_bytes(source);
+        let tree = grammar.parse(&text, None, &work).unwrap();
         let reference =
             include_str!("queries/csharp/highlights.scm").replace("rove-predefined-type?", "eq?");
         let reference = Query::new(&grammar.language(), &reference).unwrap();
@@ -539,7 +558,7 @@ mod tests {
         }
         let mut captures = Vec::new();
         grammar
-            .capture(&tree, source, 0..source.len(), &mut captures, &work)
+            .capture(&tree, &text, 0..source.len(), &mut captures, &work)
             .unwrap();
         let mut actual: Vec<_> = captures
             .iter()
