@@ -1,10 +1,10 @@
 //! Registration data for lists, trees and quick input (#18): command IDs, context keys, strings,
-//! color keys and the default keybinding table copied from docs/compat/KEYBINDINGS.md.
+//! color keys. Default keys come from #14's generated VS Code table (`crate::keys`).
 //!
 //! Everything goes through the #1 registries. Colors/commands/settings that a central owner
 //! (#10/#13/#14) registers first keep their entry; the defaults here are the same VS Code values.
-use rove_base::{Error, Result, Value};
-use rove_commands::{Binding, Command, CommandRegistry, Invocation, KeyStroke, When};
+use rove_base::{Error, Result};
+use rove_commands::{Command, CommandRegistry};
 use rove_i18n::StringTable;
 use rove_theme::{Color, ColorDefaults, ColorRegistry};
 use std::sync::Arc;
@@ -63,6 +63,7 @@ pub const LIST_COMMANDS: &[(&str, &str)] = &[
     ("list.toggleExpand", "切换展开"),
     ("list.toggleSelection", "切换选择"),
     ("list.triggerTypeNavigation", "触发键入导航"),
+    ("rove.list.contextMenu", "显示上下文菜单"),
 ];
 
 /// `quickInput.*` IDs (KEYBINDINGS.md 快速访问).
@@ -240,124 +241,6 @@ pub fn register_colors(registry: &mut ColorRegistry) -> Result<()> {
     Ok(())
 }
 
-/// (key, command, when) copied verbatim from KEYBINDINGS.md 通用列表 and 快速访问 (the
-/// `quickInput.*` rows). Order matters for equal-weight conflicts: later rows win, matching
-/// VS Code (e.g. `escape` → `list.closeFind` over `list.clear`).
-#[rustfmt::skip]
-pub const KEYBINDINGS: &[(&str, &str, &str)] = &[
-    ("alt+down", "history.showNext", "historyNavigationForwardsEnabled && historyNavigationWidgetFocus && !suggestWidgetVisible"),
-    ("down", "history.showNext", "historyNavigationForwardsEnabled && historyNavigationWidgetFocus && !suggestWidgetVisible"),
-    ("alt+up", "history.showPrevious", "historyNavigationBackwardsEnabled && historyNavigationWidgetFocus && !suggestWidgetVisible"),
-    ("up", "history.showPrevious", "historyNavigationBackwardsEnabled && historyNavigationWidgetFocus && !suggestWidgetVisible"),
-    ("escape", "list.clear", "listFocus && listHasSelectionOrFocus && !inputFocus && !treestickyScrollFocused"),
-    ("escape", "list.closeFind", "listFocus && treeFindOpen"),
-    ("left", "list.collapse", "listFocus && treeElementCanCollapse && !inputFocus && !treestickyScrollFocused || listFocus && treeElementHasParent && !inputFocus && !treestickyScrollFocused"),
-    ("ctrl+left", "list.collapseAll", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("right", "list.expand", "listFocus && treeElementCanExpand && !inputFocus && !treestickyScrollFocused || listFocus && treeElementHasChild && !inputFocus && !treestickyScrollFocused"),
-    ("shift+down", "list.expandSelectionDown", "listFocus && listSupportsMultiselect && !inputFocus && !treestickyScrollFocused"),
-    ("shift+up", "list.expandSelectionUp", "listFocus && listSupportsMultiselect && !inputFocus && !treestickyScrollFocused"),
-    ("ctrl+alt+f", "list.find", "listFocus && listSupportsFind"),
-    ("f3", "list.find", "listFocus && listSupportsFind"),
-    ("alt+down", "list.focusAnyDown", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("alt+home", "list.focusAnyFirst", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("alt+end", "list.focusAnyLast", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("alt+up", "list.focusAnyUp", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("down", "list.focusDown", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("home", "list.focusFirst", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("end", "list.focusLast", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("pagedown", "list.focusPageDown", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("pageup", "list.focusPageUp", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("up", "list.focusUp", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("ctrl+down", "list.scrollDown", "listFocus && !inputFocus && !treestickyScrollFocused && listScrollAtBoundary != 'both' && listScrollAtBoundary != 'bottom'"),
-    ("ctrl+up", "list.scrollUp", "listFocus && !inputFocus && !treestickyScrollFocused && listScrollAtBoundary != 'both' && listScrollAtBoundary != 'top'"),
-    ("enter", "list.select", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("ctrl+a", "list.selectAll", "listFocus && listSupportsMultiselect && !inputFocus && !treestickyScrollFocused"),
-    ("ctrl+k ctrl+i", "list.showHover", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("left", "list.stickyScroll.collapse", "treestickyScrollFocused"),
-    ("enter", "list.stickyScrollselect", "treestickyScrollFocused"),
-    ("space", "list.stickyScrolltoggleExpand", "treestickyScrollFocused"),
-    ("space", "list.toggleExpand", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("ctrl+shift+enter", "list.toggleSelection", "listFocus && !inputFocus && !treestickyScrollFocused"),
-    ("alt+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("ctrl+alt+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("ctrl+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("ctrl+shift+alt+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("ctrl+shift+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("shift+alt+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("shift+enter", "quickInput.accept", "inQuickInput && quickInputType != 'quickWidget'"),
-    ("alt+right", "quickInput.acceptInBackground", "cursorAtEndOfQuickInputBox && inQuickInput && quickInputType == 'quickPick' || inQuickInput && !inputFocus && quickInputType == 'quickPick'"),
-    ("ctrl+alt+right", "quickInput.acceptInBackground", "cursorAtEndOfQuickInputBox && inQuickInput && quickInputType == 'quickPick' || inQuickInput && !inputFocus && quickInputType == 'quickPick'"),
-    ("ctrl+right", "quickInput.acceptInBackground", "cursorAtEndOfQuickInputBox && inQuickInput && quickInputType == 'quickPick' || inQuickInput && !inputFocus && quickInputType == 'quickPick'"),
-    ("right", "quickInput.acceptInBackground", "cursorAtEndOfQuickInputBox && inQuickInput && quickInputType == 'quickPick' || inQuickInput && !inputFocus && quickInputType == 'quickPick'"),
-    ("ctrl+alt+home", "quickInput.first", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+home", "quickInput.first", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("alt+escape", "quickInput.hide", "inQuickInput"),
-    ("ctrl+alt+escape", "quickInput.hide", "inQuickInput"),
-    ("ctrl+escape", "quickInput.hide", "inQuickInput"),
-    ("escape", "quickInput.hide", "inQuickInput"),
-    ("ctrl+alt+end", "quickInput.last", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+end", "quickInput.last", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+down", "quickInput.next", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("down", "quickInput.next", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+alt+down", "quickInput.nextSeparator", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("alt+down", "quickInput.nextSeparatorWithQuickAccessFallback", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("alt+pagedown", "quickInput.pageNext", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+alt+pagedown", "quickInput.pageNext", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+pagedown", "quickInput.pageNext", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("pagedown", "quickInput.pageNext", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("alt+pageup", "quickInput.pagePrevious", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+alt+pageup", "quickInput.pagePrevious", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+pageup", "quickInput.pagePrevious", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("pageup", "quickInput.pagePrevious", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+up", "quickInput.previous", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("up", "quickInput.previous", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("ctrl+alt+up", "quickInput.previousSeparator", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("alt+up", "quickInput.previousSeparatorWithQuickAccessFallback", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-    ("space", "quickInput.toggleCheckbox", "inQuickInput && !inputFocus && quickInputType == 'quickPick' || inQuickInput && !inputFocus && quickInputType == 'quickTree'"),
-    ("ctrl+space", "quickInput.toggleHover", "inQuickInput && quickInputType == 'quickPick' || inQuickInput && quickInputType == 'quickTree'"),
-];
-
-/// Parses `ctrl+shift+enter` style VS Code keys into the #1 keystroke type.
-pub fn parse_chord(key: &str) -> Arc<[KeyStroke]> {
-    key.split(' ')
-        .map(|part| {
-            let mut stroke = KeyStroke {
-                key: "".into(),
-                ctrl: false,
-                shift: false,
-                alt: false,
-                meta: false,
-            };
-            for token in part.split('+') {
-                match token {
-                    "ctrl" => stroke.ctrl = true,
-                    "shift" => stroke.shift = true,
-                    "alt" => stroke.alt = true,
-                    "meta" | "win" | "cmd" => stroke.meta = true,
-                    k => stroke.key = k.into(),
-                }
-            }
-            stroke
-        })
-        .collect()
-}
-
-/// Default bindings in the #1 keybinding representation, for #14's resolver.
-pub fn default_bindings() -> Vec<Binding> {
-    KEYBINDINGS
-        .iter()
-        .map(|(key, command, when)| Binding {
-            chord: parse_chord(key),
-            invocation: Invocation {
-                id: (*command).into(),
-                args: Value::Null,
-            },
-            when: Some(When((*when).into())),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,11 +254,11 @@ mod tests {
         register_strings(&mut strings).unwrap();
         // Idempotent against central owners registering first.
         register_commands(&mut commands).unwrap();
-        for (_, id, _) in KEYBINDINGS {
-            let c = commands.get(id).unwrap_or_else(|| panic!("{id}"));
-            strings.text(&Message::key(c.title_key.clone())).unwrap();
+        for (id, c) in commands.entries() {
+            strings
+                .text(&Message::key(c.title_key.clone()))
+                .unwrap_or_else(|_| panic!("{id}"));
         }
-        assert_eq!(default_bindings().len(), KEYBINDINGS.len());
     }
 
     #[test]
@@ -388,14 +271,5 @@ mod tests {
             colors.get("list.activeSelectionBackground").unwrap().dark,
             Some(Color(0x04, 0x39, 0x5e, 0xff))
         );
-    }
-
-    #[test]
-    fn chords_parse_modifiers_and_sequences() {
-        let c = parse_chord("ctrl+k ctrl+i");
-        assert_eq!(c.len(), 2);
-        assert!(c[1].ctrl && c[1].key.as_ref() == "i");
-        let e = parse_chord("ctrl+shift+alt+enter");
-        assert!(e[0].ctrl && e[0].shift && e[0].alt && e[0].key.as_ref() == "enter");
     }
 }

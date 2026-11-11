@@ -253,8 +253,16 @@ impl Focusable for CodeView {
 impl Render for CodeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui::{InteractiveElement, ParentElement, Styled};
+        let mut context = gpui::KeyContext::default();
+        context.add(super::commands::KEY_CONTEXT);
+        for key in super::commands::FOCUS_CONTEXT_KEYS {
+            context.add(*key);
+        }
+        if !self.cursor.selection.is_empty() {
+            context.add("editorHasSelection");
+        }
         let el = gpui::div()
-            .key_context(super::commands::KEY_CONTEXT)
+            .key_context(context)
             .track_focus(&self.focus)
             .size_full()
             .child(super::element::CodeElement { view: cx.entity() });

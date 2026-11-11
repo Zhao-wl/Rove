@@ -7,7 +7,7 @@ use crate::{
         feedback::{FeedbackHub, NEVER_SHOW_AGAIN},
         layout::SideBarLocation,
         menus::MenuId,
-        view::{key_bindings, run_command, Part},
+        view::{run_command, Part},
     },
 };
 use gpui::{Modifiers, TestAppContext, VisualTestContext};
@@ -23,7 +23,6 @@ fn open_workbench<'a>(
         Workbench::with_store(folder.clone(), Instant::now(), store, cx)
     });
     cx.update(|window, cx| {
-        cx.bind_keys(key_bindings());
         window.focus(&view.read(cx).focus);
     });
     cx.run_until_parked();
@@ -250,7 +249,7 @@ fn menus_only_show_implemented_commands(cx: &mut TestAppContext) {
     let folder = csharp_folder();
     let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
     view.read_with(cx, |v, _| {
-        let commands = &v.commands.registry;
+        let commands = v.commands.registry();
         let mut shown = 0;
         let mut expected = 0;
         for menu in [

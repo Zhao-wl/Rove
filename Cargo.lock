@@ -4731,7 +4731,10 @@ dependencies = [
 name = "rove-commands"
 version = "0.0.1"
 dependencies = [
+ "fancy-regex",
+ "jsonc-parser",
  "rove-base",
+ "serde_json",
 ]
 
 [[package]]

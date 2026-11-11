@@ -14,3 +14,5 @@ pub mod code_view;
 
 pub(crate) mod editors;
 pub use editors::settings::register as editor_setting_defaults;
+
+pub mod keys;

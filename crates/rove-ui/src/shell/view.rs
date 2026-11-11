@@ -20,8 +20,8 @@ use crate::{
 };
 use gpui::{
     deferred, div, prelude::*, px, rgba, AnyElement, AnyView, App, Context, FocusHandle, Hsla,
-    KeyBinding, KeyContext, KeyDownEvent, MouseButton, MouseMoveEvent, Pixels, SharedString,
-    Subscription, Window, WindowBounds, WindowControlArea,
+    KeyContext, KeyDownEvent, MouseButton, MouseMoveEvent, Pixels, SharedString, Subscription,
+    Window, WindowBounds, WindowControlArea,
 };
 use rove_base::{DocumentId, Value};
 use rove_commands::CommandRegistry;
@@ -562,17 +562,13 @@ pub fn ensure_timers<T: ShellHost>(host: &mut T, cx: &mut Context<T>) {
 
 macro_rules! shell_actions {
     ($($action:ident => $id:literal),* $(,)?) => {
-        gpui::actions!(workbench, [$($action),*, CancelModal]);
-        /// 把 KEYBINDINGS.md 的默认键位装配成 GPUI KeyBinding（#14 合并后由其键位系统替代）。
-        pub fn key_bindings() -> Vec<KeyBinding> {
-            std::iter::once(KeyBinding::new("escape", CancelModal, Some(CONTEXT_MODAL)))
-                .chain(DEFAULT_KEYS
-                .iter()
-                .filter_map(|(keys, command, context)| match *command {
-                    $($id => Some(KeyBinding::new(keys, $action, *context)),)*
-                    _ => None,
-                }))
-                .collect()
+        gpui::actions!(workbench, [$($action),*]);
+        /// 命令 ID → 工作台的 GPUI action。按键由 #14 的键位服务（`crate::keys`）解析后分发到这里。
+        pub fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
+            match id {
+                $($id => Some(Box::new($action)),)*
+                _ => None,
+            }
         }
         /// 在宿主根元素上挂所有工作台命令的处理器。
         pub fn on_actions<T: ShellHost, E: InteractiveElement>(element: E, cx: &mut Context<T>) -> E {
@@ -590,6 +586,7 @@ shell_actions! {
     FocusPreviousPart => "workbench.action.focusPreviousPart",
     ViewExplorer => "workbench.view.explorer",
     ViewSearch => "workbench.view.search",
+    FindInFiles => "workbench.action.findInFiles",
     ZoomIn => "workbench.action.zoomIn",
     ZoomOut => "workbench.action.zoomOut",
     CloseWindow => "workbench.action.closeWindow",
@@ -750,7 +747,9 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
             };
         }
         "workbench.statusBar.clearFocus" => window.focus(&editor),
-        "workbench.view.explorer" | "workbench.view.search" => {
+        // `workbench.action.findInFiles` is VS Code's ctrl+shift+f; until the search feature
+        // implements it, it opens the search view like `workbench.view.search`.
+        "workbench.view.explorer" | "workbench.view.search" | "workbench.action.findInFiles" => {
             let container = if id.ends_with("explorer") {
                 EXPLORER
             } else {
@@ -1075,14 +1074,21 @@ pub fn render<T: ShellHost>(host: &mut T, window: &mut Window, cx: &mut Context<
         .text_color(fg)
         .key_context(key_context)
         .when_some(border, |d, c| d.border_1().border_color(c))
-        // Esc 关闭模态框等同取消：发出 Dismissed，绝不当作接受。
-        .on_action(cx.listener(|host: &mut T, _: &CancelModal, window, cx| {
-            if let Some(key) = host.shell().feedback.modal().map(|m| m.key.clone()) {
-                let _ = host.shell_mut().feedback.dismiss(&key);
-                window.focus(&host.editor_focus());
-                cx.notify();
-            }
-        }))
+        // Esc 关闭模态框等同取消：发出 Dismissed，绝不当作接受。模态框打开时它独占键盘
+        // （键位服务不解析按键，见 `crate::keys`），所以这里按对话框的原生行为处理 Esc。
+        .on_key_down(
+            cx.listener(|host: &mut T, e: &gpui::KeyDownEvent, window, cx| {
+                if e.keystroke.key != "escape" || e.keystroke.modifiers.modified() {
+                    return;
+                }
+                if let Some(key) = host.shell().feedback.modal().map(|m| m.key.clone()) {
+                    let _ = host.shell_mut().feedback.dismiss(&key);
+                    window.focus(&host.editor_focus());
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
         .on_mouse_move(
             cx.listener(|host: &mut T, e: &MouseMoveEvent, _, cx| drag_sash(host, e, cx)),
         )
@@ -1439,7 +1445,7 @@ fn render_layout_controls<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyEle
                 run_command(host, command, window, cx)
             }))
     };
-    let key = |c: &str| catalog::key_label(c).unwrap_or_default();
+    let key = |c: &str| catalog::key_label(c, cx).unwrap_or_default();
     div()
         .flex()
         .flex_row()
@@ -1711,7 +1717,7 @@ fn render_menu_dropdown<T: ShellHost>(
                     .rounded(shell.z(4.0))
                     .hover(move |s| s.bg(sel_bg).text_color(sel_fg))
                     .child(title)
-                    .children(catalog::key_label(&command).map(|k| div().opacity(0.8).child(k)))
+                    .children(catalog::key_label(&command, cx).map(|k| div().opacity(0.8).child(k)))
                     .on_click(cx.listener(move |host: &mut T, _, window, cx| {
                         host.shell_mut().open_menu = None;
                         run_command(host, &command, window, cx);
@@ -1750,7 +1756,7 @@ fn render_activity_bar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElemen
         let id_owned: Arc<str> = id.into();
         let tip = {
             let title = text(host, &c.title);
-            match c.command.as_deref().and_then(catalog::key_label) {
+            match c.command.as_deref().and_then(|c| catalog::key_label(c, cx)) {
                 Some(k) => format!("{title} ({k})"),
                 None => title,
             }

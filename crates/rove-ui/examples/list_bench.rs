@@ -15,7 +15,6 @@ use rove_i18n::{chinese, Strings};
 use rove_theme::{ColorRegistry, DefaultTheme, Theme, ThemeKind};
 use rove_ui::{
     list_widget::{
-        keys::bind_default_keys,
         options::ListOptions,
         plain_row, registry,
         tree::{ChildCount, Children, TreeItem, TreeModel, TreeSource},
@@ -133,7 +132,7 @@ fn main() {
     let step: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(66.0);
     println!("TREE_EXPAND_10000_MS p99={:.3}", tree_expand_ms());
     Application::new().run(move |cx: &mut App| {
-        bind_default_keys(cx);
+        rove_ui::keys::init(cx);
         let mut colors = ColorRegistry::default();
         registry::register_colors(&mut colors).unwrap();
         let mut table = chinese().unwrap();

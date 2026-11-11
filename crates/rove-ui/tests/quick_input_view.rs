@@ -7,7 +7,6 @@ use rove_base::Version;
 use rove_i18n::Message;
 use rove_ui::{
     list_widget::{
-        keys::bind_default_keys,
         plain_row,
         quick_input::{QuickInputService, QuickPickConfig, QuickPickEvent},
         quick_input_view::{QuickInputView, QuickInputViewEvent},
@@ -95,7 +94,7 @@ impl Render for Host {
 }
 
 fn open(cx: &mut TestAppContext) -> (Entity<Host>, &mut VisualTestContext) {
-    cx.update(bind_default_keys);
+    cx.update(rove_ui::keys::init);
     let (theme, strings) = list_support::theme_and_strings();
     cx.add_window_view(|_, cx| {
         let quick =

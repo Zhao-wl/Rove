@@ -1,8 +1,8 @@
 //! 工作台的全部登记项（#16）：命令、默认键位、设置项、颜色键、界面字符串、菜单项、视图与状态栏条目。
 //!
 //! 一律通过 #1 的登记机制加入，不写死在界面代码里；界面只引用这里登记的 ID / key。
-//! 默认键位来自 `docs/compat/KEYBINDINGS.md`（布局 / 通知 / 窗口与设置三节），由 #14 的键位系统
-//! 接管前，先以 GPUI KeyBinding 的形式装配（[`DEFAULT_KEYS`]）。
+//! 默认键位不在这里：它们来自 #14 生成的 VS Code 默认键位表，由键位服务（`crate::keys`）统一解析，
+//! 用户的 keybindings.json 可以覆盖。工作台只在焦点元素上发布 VS Code 上下文键（见下）。
 use super::menus::{MenuId, MenuItem, MenuRegistry};
 use crate::contributions::{Contribution, ContributionRegistry, Placement};
 use rove_base::{Result, Value};
@@ -189,6 +189,7 @@ const COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("workbench.view.explorer", "显示资源管理器", Some("view")),
     ("workbench.view.search", "显示搜索", Some("view")),
+    ("workbench.action.findInFiles", "在文件中查找", Some("view")),
     ("workbench.action.zoomIn", "放大", Some("view")),
     ("workbench.action.zoomOut", "缩小", Some("view")),
     ("workbench.action.zoomReset", "重置缩放", Some("view")),
@@ -275,7 +276,8 @@ pub fn register_commands(r: &mut CommandRegistry) -> Result<()> {
     Ok(())
 }
 
-/// GPUI 键位的上下文：状态栏获得焦点、通知 toast 获得焦点、toast 可见、通知中心可见。
+/// 发布在 GPUI key context 上的 VS Code 上下文键：状态栏获得焦点、通知 toast 获得焦点、toast 可见、
+/// 通知中心可见。键位服务按这些名字求值 when 子句。
 pub const CONTEXT_STATUS_BAR: &str = "statusBarFocused";
 pub const CONTEXT_NOTIFICATION: &str = "notificationFocus";
 pub const CONTEXT_TOASTS: &str = "notificationToastsVisible";
@@ -283,131 +285,9 @@ pub const CONTEXT_CENTER: &str = "notificationCenterVisible";
 /// 模态框打开（Rove 内部上下文，只用于模态框的 Esc）。
 pub const CONTEXT_MODAL: &str = "roveModalOpen";
 
-/// (GPUI 按键, 命令, 上下文)。对照 KEYBINDINGS.md：
-/// - `ctrl+numpad0`（zoomReset）在 GPUI 0.2.2 的 Windows 后端与 `ctrl+0` 是同一个按键，
-///   无法区分；为了保证 `ctrl+0` 聚焦侧边栏，这里不绑定，重置缩放从“查看”菜单执行。
-/// - `ctrl+numpad_add/subtract` 在 GPUI 中产生 `+` / `-` 字符，由 `ctrl-+` / `ctrl--` 覆盖。
-pub const DEFAULT_KEYS: &[(&str, &str, Option<&str>)] = &[
-    ("ctrl-b", "workbench.action.toggleSidebarVisibility", None),
-    ("ctrl-0", "workbench.action.focusSideBar", None),
-    ("ctrl-j", "workbench.action.togglePanel", None),
-    ("ctrl-shift-m", "workbench.actions.view.problems", None),
-    ("f6", "workbench.action.focusNextPart", None),
-    ("shift-f6", "workbench.action.focusPreviousPart", None),
-    ("ctrl-shift-e", "workbench.view.explorer", None),
-    ("ctrl-shift-f", "workbench.view.search", None),
-    ("ctrl-=", "workbench.action.zoomIn", None),
-    ("ctrl-+", "workbench.action.zoomIn", None),
-    ("ctrl-shift-=", "workbench.action.zoomIn", None),
-    ("ctrl--", "workbench.action.zoomOut", None),
-    ("ctrl-shift--", "workbench.action.zoomOut", None),
-    ("ctrl-shift-w", "workbench.action.closeWindow", None),
-    ("ctrl-k ctrl-shift-n", "notifications.showList", None),
-    (
-        "escape",
-        "workbench.statusBar.clearFocus",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    (
-        "home",
-        "workbench.statusBar.focusFirst",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    (
-        "end",
-        "workbench.statusBar.focusLast",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    (
-        "down",
-        "workbench.statusBar.focusNext",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    (
-        "right",
-        "workbench.statusBar.focusNext",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    (
-        "left",
-        "workbench.statusBar.focusPrevious",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    (
-        "up",
-        "workbench.statusBar.focusPrevious",
-        Some(CONTEXT_STATUS_BAR),
-    ),
-    ("delete", "notification.clear", Some(CONTEXT_NOTIFICATION)),
-    ("left", "notification.collapse", Some(CONTEXT_NOTIFICATION)),
-    ("right", "notification.expand", Some(CONTEXT_NOTIFICATION)),
-    ("enter", "notification.toggle", Some(CONTEXT_NOTIFICATION)),
-    ("space", "notification.toggle", Some(CONTEXT_NOTIFICATION)),
-    (
-        "home",
-        "notifications.focusFirstToast",
-        Some(CONTEXT_NOTIFICATION),
-    ),
-    (
-        "pageup",
-        "notifications.focusFirstToast",
-        Some(CONTEXT_NOTIFICATION),
-    ),
-    (
-        "end",
-        "notifications.focusLastToast",
-        Some(CONTEXT_NOTIFICATION),
-    ),
-    (
-        "pagedown",
-        "notifications.focusLastToast",
-        Some(CONTEXT_NOTIFICATION),
-    ),
-    (
-        "down",
-        "notifications.focusNextToast",
-        Some(CONTEXT_NOTIFICATION),
-    ),
-    (
-        "up",
-        "notifications.focusPreviousToast",
-        Some(CONTEXT_NOTIFICATION),
-    ),
-    ("escape", "notifications.hideToasts", Some(CONTEXT_TOASTS)),
-    ("escape", "notifications.hideList", Some(CONTEXT_CENTER)),
-];
-
-/// 菜单与悬停提示里显示的键位文字（VS Code 风格：`Ctrl+Shift+M`）。
-pub fn key_label(id: &str) -> Option<String> {
-    let (keys, _, _) = DEFAULT_KEYS
-        .iter()
-        .find(|(_, c, ctx)| *c == id && ctx.is_none())?;
-    Some(
-        keys.split(' ')
-            .map(|stroke| {
-                let mut parts: Vec<&str> = Vec::new();
-                let mut rest = stroke;
-                for (prefix, label) in [("ctrl-", "Ctrl"), ("shift-", "Shift"), ("alt-", "Alt")] {
-                    if let Some(r) = rest.strip_prefix(prefix) {
-                        parts.push(label);
-                        rest = r;
-                    }
-                }
-                let key = match rest {
-                    "escape" => "Escape".to_owned(),
-                    k if k.len() == 1 => k.to_uppercase(),
-                    k => {
-                        let mut c = k.chars();
-                        c.next()
-                            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
-                            .unwrap_or_default()
-                    }
-                };
-                parts.iter().map(|p| format!("{p}+")).collect::<String>() + &key
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+/// 菜单与悬停提示里显示的键位文字（VS Code 风格：`Ctrl+Shift+M`），取自生效的键位表（含用户覆盖）。
+pub fn key_label(id: &str, cx: &gpui::App) -> Option<String> {
+    crate::keys::key_label(id, cx)
 }
 
 // ------------------------------------------------------------------ 菜单
@@ -1035,29 +915,32 @@ mod tests {
                 assert!(commands.get(c).is_some(), "{c} 未登记");
             }
         }
-        for (_, command, _) in DEFAULT_KEYS {
-            assert!(commands.get(command).is_some(), "{command} 未登记");
-        }
     }
 
     #[test]
     fn key_labels_follow_vscode_style() {
-        assert_eq!(
-            key_label("workbench.action.toggleSidebarVisibility").as_deref(),
-            Some("Ctrl+B")
-        );
-        assert_eq!(
-            key_label("workbench.actions.view.problems").as_deref(),
-            Some("Ctrl+Shift+M")
-        );
-        assert_eq!(
-            key_label("notifications.showList").as_deref(),
-            Some("Ctrl+K Ctrl+Shift+N")
-        );
-        assert_eq!(
-            key_label("workbench.action.focusNextPart").as_deref(),
-            Some("F6")
-        );
-        assert_eq!(key_label("workbench.action.zoomReset"), None);
+        gpui::TestAppContext::single().update(|cx| {
+            assert_eq!(
+                key_label("workbench.action.toggleSidebarVisibility", cx).as_deref(),
+                Some("Ctrl+B")
+            );
+            assert_eq!(
+                key_label("workbench.actions.view.problems", cx).as_deref(),
+                Some("Ctrl+Shift+M")
+            );
+            assert_eq!(
+                key_label("notifications.showList", cx).as_deref(),
+                Some("Ctrl+K Ctrl+Shift+N")
+            );
+            assert_eq!(
+                key_label("workbench.action.focusNextPart", cx).as_deref(),
+                Some("F6")
+            );
+            assert_eq!(
+                key_label("workbench.action.zoomIn", cx).as_deref(),
+                Some("Ctrl+=")
+            );
+            assert_eq!(key_label("rove.index.rebuild", cx), None);
+        });
     }
 }

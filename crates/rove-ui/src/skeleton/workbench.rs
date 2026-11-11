@@ -1,6 +1,5 @@
 use super::{
     appearance,
-    commands::Commands,
     text::{default_settings, FileDocuments},
 };
 use crate::{
@@ -30,15 +29,15 @@ use crate::{
     },
 };
 use gpui::{
-    actions, div, point, prelude::*, px, relative, rgba, size, uniform_list, AnyElement, App,
-    Application, Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, KeyBinding,
-    Render, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, relative, rgba, size, uniform_list, AnyElement, App, Application,
+    Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, Render, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rove_base::{
     Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, TextRange, Value,
     Version, WorkspacePath,
 };
-use rove_commands::{CommandExecutor, CommandRegistry, Invocation};
+use rove_commands::{center::CommandCenter, CommandExecutor, CommandRegistry, Invocation};
 use rove_config::{Key, Scope};
 use rove_i18n::{Message, StringTable, Strings};
 use rove_theme::{Color, Theme, ThemeKind};
@@ -147,9 +146,6 @@ impl DecorationProvider for SyntaxColors {
     }
 }
 
-// SKELETON(commands): temporary GPUI action bridge and hardcoded keys, replaced by #14.
-actions!(skeleton_actions, [QuickOpen, ShowCommands]);
-
 /// What a code view currently displays: a tab's document at one text version.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Shown {
@@ -205,7 +201,8 @@ pub struct Workbench {
     theme: Arc<dyn Theme>,
     strings: StringTable,
     shell: Shell,
-    commands: Arc<Commands>,
+    /// #14 command table shared with the keybinding service (`crate::keys`).
+    commands: Arc<CommandCenter>,
     focus: FocusHandle,
     /// 工作区扫描次数（缩放等界面操作不得触发重新扫描）。
     scans: u32,
@@ -314,7 +311,10 @@ impl Workbench {
             theme,
             strings: appearance::strings().unwrap(),
             shell,
-            commands: Arc::new(Commands::new().unwrap()),
+            commands: {
+                crate::keys::init(cx);
+                crate::keys::keys(cx).commands.clone()
+            },
             focus: cx.focus_handle(),
             scans: 0,
             scan_failed: false,
@@ -334,7 +334,7 @@ impl Workbench {
                 .expect("registered contribution title");
             if let Some(command) = &c.command {
                 assert!(
-                    view.commands.registry.get(command).is_some(),
+                    view.commands.registry().get(command).is_some(),
                     "{id}: 未登记的命令 {command}"
                 );
             }
@@ -493,33 +493,50 @@ impl Workbench {
 
     /// Shared by the command palette and shortcut dispatch.
     pub fn command_registry(&self) -> &CommandRegistry {
-        &self.commands.registry
+        self.commands.registry()
     }
 
-    /// 编辑器组与标签命令由 #17 的服务直接执行；其余工作台没有实现的命令交给骨架的命令执行器
-    /// （#14 的执行桥合并后替换）；占位命令返回标题，作为状态栏临时消息显示（3 秒后消失）。
+    /// 编辑器组与标签命令由 #17 的服务直接执行；其余命令交给 #14 的命令表（`CommandCenter`），
+    /// 已登记未实现的命令把标题作为状态栏临时消息显示（3 秒后消失）。
     fn command(&mut self, id: &str, cx: &mut Context<Self>) {
-        let start = Instant::now();
-        let previous = self.editor.active().active;
-        if self.commands.registry.get(id).is_some() && editor_actions::execute(&mut self.editor, id)
-        {
-            self.note_switch(previous, start);
-            cx.notify();
-            return;
-        }
-        let executor: Arc<dyn CommandExecutor> = self.commands.clone();
-        let task = executor.execute(
+        self.run_invocation(
             Invocation {
                 id: id.into(),
                 args: Value::Null,
             },
-            Cancellation::default(),
-        );
+            cx,
+        )
+    }
+
+    fn run_invocation(&mut self, invocation: Invocation, cx: &mut Context<Self>) {
+        let id = invocation.id.clone();
+        let id = id.as_ref();
+        let start = Instant::now();
+        let previous = self.editor.active().active;
+        if self.commands.is_registered(id) && editor_actions::execute(&mut self.editor, id) {
+            self.note_switch(previous, start);
+            cx.notify();
+            return;
+        }
+        // Registered but not implemented yet: the status bar shows the command title (the
+        // placeholder titles say "尚未实现") instead of pretending it ran.
+        let title = self
+            .commands
+            .registry()
+            .get(id)
+            .map(|c| c.title_key.clone());
+        let executor: Arc<dyn CommandExecutor> = self.commands.clone();
+        let task = executor.execute(invocation, Cancellation::default());
         let task = cx.background_executor().spawn(task);
         cx.spawn(async move |this, cx| {
             let result = task.await;
+            let key = match (result, title) {
+                (Ok(Value::String(key)), _) => Some(key),
+                (Err(Error::Unsupported), title) => title,
+                _ => None,
+            };
             let _ = this.update(cx, |view, cx| {
-                if let Ok(Value::String(key)) = result {
+                if let Some(key) = key {
                     let _ = shell::view::report(
                         view,
                         "command.placeholder",
@@ -532,6 +549,35 @@ impl Workbench {
             });
         })
         .detach();
+    }
+
+    /// Chord feedback from the keybinding service: "waiting for the next key" / "not a command".
+    fn chord_status(&mut self, status: &crate::keys::ChordStatus, cx: &mut Context<Self>) {
+        use crate::keys::ChordStatus;
+        let (key, keys) = match status {
+            ChordStatus::Pending(keys) => ("keybindings.chordPending", keys),
+            ChordStatus::Aborted(keys) => ("keybindings.chordAborted", keys),
+            ChordStatus::Cleared => {
+                let _ = crate::feedback::FeedbackService::dismiss(
+                    &mut self.shell.feedback,
+                    "keybindings.chord",
+                );
+                cx.notify();
+                return;
+            }
+        };
+        let message = Message {
+            key: key.into(),
+            args: Arc::from([("keys".into(), keys.as_ref().into())]),
+        };
+        let _ = shell::view::report(
+            self,
+            "keybindings.chord",
+            Reason::Receipt,
+            message,
+            Arc::from([]),
+            cx,
+        );
     }
 
     // ------------------------------------------------------------- code views per group
@@ -859,7 +905,7 @@ impl ShellHost for Workbench {
         self.theme.as_ref()
     }
     fn commands(&self) -> &CommandRegistry {
-        &self.commands.registry
+        self.commands.registry()
     }
     fn render_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -976,12 +1022,17 @@ impl Render for Workbench {
                     v.command(action.0, cx)
                 }),
             )
-            .on_action(
-                cx.listener(|v, _: &QuickOpen, _, cx| v.command("workbench.action.quickOpen", cx)),
-            )
-            .on_action(cx.listener(|v, _: &ShowCommands, _, cx| {
-                v.command("workbench.action.showCommands", cx)
+            // #14: keys resolved by the keybinding service for commands without a module action.
+            .on_action(cx.listener(|v, a: &crate::keys::RunCommand, _, cx| {
+                v.run_invocation(
+                    Invocation {
+                        id: a.id.as_ref().into(),
+                        args: a.args.clone(),
+                    },
+                    cx,
+                )
             }))
+            .on_action(cx.listener(|v, a: &crate::keys::ChordStatus, _, cx| v.chord_status(a, cx)))
             .child(workbench)
     }
 }
@@ -996,13 +1047,11 @@ pub fn launch(root: PathBuf, started: Instant) {
         {
             eprintln!("codicons: {e}");
         }
-        cx.bind_keys([
-            KeyBinding::new("ctrl-p", QuickOpen, None),
-            KeyBinding::new("ctrl-shift-p", ShowCommands, None),
-        ]);
-        cx.bind_keys(shell::view::key_bindings());
-        cx.bind_keys(code_view::commands::default_key_bindings());
-        cx.bind_keys(editor_actions::bindings());
+        // #14：所有按键经键位服务解析（生成的 VS Code 默认键位 + 用户 keybindings.json）。
+        crate::keys::init(cx);
+        if let Some(path) = crate::keys::user_keybindings_path(std::env::args_os().skip(1)) {
+            crate::keys::watch_user_file(path, cx);
+        }
         // 布局文件只有几百字节：首帧前读取，用来恢复窗口位置、大小与最大化状态。
         let store = LayoutStore::for_workspace(&root);
         let layout = store.load();
@@ -1183,26 +1232,87 @@ mod tests {
             assert_eq!(&*c.painted_text(0).unwrap(), "public class B {}");
         });
     }
+    /// #14 entry point: keybindings.json → real GPUI key events → command dispatch. Covers user
+    /// overrides of workbench keys (formerly bound by each module), `-command` removal, unknown
+    /// commands, chords with Esc and timeout, and a placeholder command still reporting status.
     #[gpui::test]
-    fn registered_key_shows_temporary_status(cx: &mut TestAppContext) {
+    fn keybindings_json_keys_dispatch_commands(cx: &mut TestAppContext) {
         let folder = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let keybindings = user.path().join("keybindings.json");
+        std::fs::write(
+            &keybindings,
+            r#"// shared with VS Code
+            [
+                { "key": "ctrl+p", "command": "-workbench.action.quickOpen" },
+                { "key": "ctrl+k ctrl+o", "command": "workbench.action.quickOpen" },
+                { "key": "ctrl+b", "command": "-workbench.action.toggleSidebarVisibility" },
+                { "key": "ctrl+alt+b", "command": "workbench.action.toggleSidebarVisibility" },
+                { "key": "f5", "command": "workbench.action.debug.start" },
+            ]"#,
+        )
+        .unwrap();
+        cx.update(|cx| crate::keys::watch_user_file(keybindings, cx));
         let (view, cx) =
             cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
         cx.run_until_parked();
-        cx.update(|window, cx| {
-            cx.bind_keys([KeyBinding::new("ctrl-p", QuickOpen, None)]);
-            window.focus(&view.read(cx).focus);
-        });
+        cx.update(|window, cx| window.focus(&view.read(cx).focus));
+        let empty = |v: &Workbench| v.label("workbench.empty", &[]);
+        // Default ctrl+p removed by the user file: nothing happens.
         cx.simulate_keystrokes("ctrl-p");
-        cx.run_until_parked();
+        view.read_with(cx, |v, _| assert_eq!(v.status(), empty(v)));
+        // Unknown command in the file is ignored without an error.
+        cx.simulate_keystrokes("f5");
+        view.read_with(cx, |v, _| assert_eq!(v.status(), empty(v)));
+        // A workbench key (#16) rebound by the user: the old key no longer toggles the side bar.
+        cx.simulate_keystrokes("ctrl-b");
+        view.read_with(cx, |v, _| assert!(v.shell.layout.sidebar_visible));
+        cx.simulate_keystrokes("ctrl-alt-b");
+        view.read_with(cx, |v, _| assert!(!v.shell.layout.sidebar_visible));
+        cx.simulate_keystrokes("ctrl-alt-b");
+        view.read_with(cx, |v, _| assert!(v.shell.layout.sidebar_visible));
+        // Defaults still apply to keys the user did not touch (#16's ctrl+j toggles the panel).
+        let panel = view.read_with(cx, |v, _| v.shell.layout.panel_visible);
+        cx.simulate_keystrokes("ctrl-j");
+        view.read_with(cx, |v, _| assert_ne!(v.shell.layout.panel_visible, panel));
+        // User chord: pending status, then dispatch of a registered placeholder command.
+        cx.simulate_keystrokes("ctrl-k");
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.status(),
+                v.label("keybindings.chordPending", &[("keys", "ctrl+k".into())])
+            )
+        });
+        cx.simulate_keystrokes("ctrl-o");
         view.read_with(cx, |v, _| {
             assert_eq!(v.status(), v.label("commands.quickOpen", &[]))
         });
+        // Escape aborts a pending chord.
+        cx.simulate_keystrokes("ctrl-k escape");
+        cx.update(|window, cx| {
+            assert!(crate::keys::pending_chord(window, cx).is_empty());
+            assert_eq!(
+                view.read(cx).status(),
+                view.read(cx).label(
+                    "keybindings.chordAborted",
+                    &[("keys", "ctrl+k escape".into())]
+                )
+            );
+        });
+        // A pending chord times out after 5 seconds; the next key starts fresh.
+        cx.simulate_keystrokes("ctrl-k");
         cx.executor()
-            .advance_clock(std::time::Duration::from_secs(3));
+            .advance_clock(rove_commands::chord::CHORD_TIMEOUT);
         cx.run_until_parked();
-        view.read_with(cx, |v, _| {
-            assert_eq!(v.status(), v.label("workbench.empty", &[]))
+        cx.update(|window, cx| assert!(crate::keys::pending_chord(window, cx).is_empty()));
+        cx.simulate_keystrokes("ctrl-alt-b");
+        view.read_with(cx, |v, _| assert!(!v.shell.layout.sidebar_visible));
+        // Menus show the effective key (user override included).
+        cx.update(|_, cx| {
+            assert_eq!(
+                crate::keys::key_label("workbench.action.toggleSidebarVisibility", cx).as_deref(),
+                Some("Ctrl+Alt+B")
+            )
         });
     }
 }

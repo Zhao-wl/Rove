@@ -351,6 +351,13 @@ impl Render for TextInput {
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
+            // Native input-box editing: only keys no keybinding claimed reach this listener.
+            .on_key_down(cx.listener(|_, e: &gpui::KeyDownEvent, window, cx| {
+                if let Some(action) = keys::native_text_input_action(&e.keystroke) {
+                    window.dispatch_action(action, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|v, _: &Backspace, w, cx| {
                 if v.selected.is_empty() {
                     let p = v.previous_boundary(v.cursor());

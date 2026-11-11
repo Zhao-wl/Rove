@@ -8,7 +8,6 @@ use gpui::{
 };
 use rove_i18n::Message;
 use rove_ui::list_widget::{
-    keys::bind_default_keys,
     options::ListOptions,
     view::{EmptyState, ListView},
     widget::{ListEvent, ListWidget, RowHeight, ScrollBoundary},
@@ -45,7 +44,7 @@ impl Render for Host {
 
 fn open(cx: &mut TestAppContext, rows: usize) -> (Entity<Host>, &mut VisualTestContext) {
     cx.update(|cx| {
-        bind_default_keys(cx);
+        rove_ui::keys::init(cx);
         cx.bind_keys([
             KeyBinding::new("ctrl-up", HostCtrlUp, Some("Host")),
             KeyBinding::new("ctrl-down", HostCtrlDown, Some("Host")),

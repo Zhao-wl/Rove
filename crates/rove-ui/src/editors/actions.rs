@@ -1,5 +1,5 @@
 use super::{Axis, Direction, EditorService};
-use gpui::{Action, KeyBinding};
+use gpui::Action;
 use rove_base::Result;
 use rove_commands::{Command, CommandRegistry};
 use rove_i18n::StringTable;
@@ -49,133 +49,47 @@ struct Spec {
     title_key: &'static str,
     title: &'static str,
     operation: Operation,
-    keys: &'static str,
-    when: Option<&'static str>,
 }
 
 macro_rules! spec {
-    ($id:literal, $title:literal, $operation:expr, $keys:literal, $when:expr) => {
+    ($id:literal, $title:literal, $operation:expr) => {
         Spec {
             id: concat!("workbench.action.", $id),
             title_key: concat!("editors.command.", $id),
             title: $title,
             operation: $operation,
-            keys: $keys,
-            when: $when,
         }
     };
 }
 
 static COMMANDS: &[Spec] = &[
-    spec!(
-        "splitEditor",
-        "向右分屏",
-        Split(Direction::Right),
-        "ctrl-\\",
-        None
-    ),
-    spec!(
-        "splitEditorDown",
-        "向下分屏",
-        Split(Direction::Down),
-        "",
-        None
-    ),
-    spec!("splitEditorUp", "向上分屏", Split(Direction::Up), "", None),
-    spec!(
-        "splitEditorLeft",
-        "向左分屏",
-        Split(Direction::Left),
-        "",
-        None
-    ),
-    spec!(
-        "splitEditorRight",
-        "向右分屏",
-        Split(Direction::Right),
-        "",
-        None
-    ),
-    spec!(
-        "splitEditorOrthogonal",
-        "正交分屏",
-        Orthogonal,
-        "ctrl-k ctrl-\\",
-        None
-    ),
-    spec!(
-        "splitEditorInGroup",
-        "在组内拆分编辑器",
-        Secondary(true),
-        "ctrl-k ctrl-shift-\\",
-        Some("!sideBySideEditorActive")
-    ),
-    spec!(
-        "joinEditorInGroup",
-        "合并组内编辑器",
-        Secondary(false),
-        "ctrl-k ctrl-shift-\\",
-        Some("sideBySideEditorActive")
-    ),
-    spec!(
-        "toggleEditorGroupLayout",
-        "切换分屏方向",
-        Transpose,
-        "shift-alt-0",
-        None
-    ),
+    spec!("splitEditor", "向右分屏", Split(Direction::Right)),
+    spec!("splitEditorDown", "向下分屏", Split(Direction::Down)),
+    spec!("splitEditorUp", "向上分屏", Split(Direction::Up)),
+    spec!("splitEditorLeft", "向左分屏", Split(Direction::Left)),
+    spec!("splitEditorRight", "向右分屏", Split(Direction::Right)),
+    spec!("splitEditorOrthogonal", "正交分屏", Orthogonal),
+    spec!("splitEditorInGroup", "在组内拆分编辑器", Secondary(true)),
+    spec!("joinEditorInGroup", "合并组内编辑器", Secondary(false)),
+    spec!("toggleEditorGroupLayout", "切换分屏方向", Transpose),
     spec!(
         "toggleMaximizeEditorGroup",
         "最大化或还原编辑器组",
-        Maximize,
-        "ctrl-k ctrl-m",
-        None
+        Maximize
     ),
-    spec!(
-        "toggleEditorGroupLock",
-        "锁定或解锁编辑器组",
-        Lock(None),
-        "",
-        None
-    ),
-    spec!(
-        "lockEditorGroup",
-        "锁定编辑器组",
-        Lock(Some(true)),
-        "",
-        None
-    ),
-    spec!(
-        "unlockEditorGroup",
-        "解锁编辑器组",
-        Lock(Some(false)),
-        "",
-        None
-    ),
-    spec!(
-        "closeActiveEditor",
-        "关闭活动标签",
-        Close,
-        "ctrl-w|ctrl-f4",
-        None
-    ),
-    spec!("closeGroup", "关闭编辑器组", CloseGroup, "", None),
-    spec!(
-        "closeAllGroups",
-        "关闭所有编辑器组",
-        CloseAllGroups,
-        "ctrl-k ctrl-shift-w",
-        None
-    ),
+    spec!("toggleEditorGroupLock", "锁定或解锁编辑器组", Lock(None)),
+    spec!("lockEditorGroup", "锁定编辑器组", Lock(Some(true))),
+    spec!("unlockEditorGroup", "解锁编辑器组", Lock(Some(false))),
+    spec!("closeActiveEditor", "关闭活动标签", Close),
+    spec!("closeGroup", "关闭编辑器组", CloseGroup),
+    spec!("closeAllGroups", "关闭所有编辑器组", CloseAllGroups),
     spec!(
         "closeEditorsInGroup",
         "关闭组内标签",
         CloseTabs {
             all: false,
             preserve_pinned: false
-        },
-        "ctrl-k w",
-        None
+        }
     ),
     spec!(
         "closeAllEditors",
@@ -183,9 +97,7 @@ static COMMANDS: &[Spec] = &[
         CloseTabs {
             all: true,
             preserve_pinned: true
-        },
-        "ctrl-k ctrl-w",
-        None
+        }
     ),
     spec!(
         "closeUnmodifiedEditors",
@@ -193,305 +105,103 @@ static COMMANDS: &[Spec] = &[
         CloseTabs {
             all: false,
             preserve_pinned: true
-        },
-        "ctrl-k u",
-        None
+        }
     ),
-    spec!(
-        "reopenClosedEditor",
-        "重新打开已关闭的标签",
-        Reopen,
-        "ctrl-shift-t",
-        None
-    ),
-    spec!("keepEditor", "保留预览标签", Keep, "ctrl-k enter", None),
-    spec!(
-        "pinEditor",
-        "固定标签",
-        Pin(true),
-        "ctrl-k shift-enter",
-        Some("!activeEditorIsPinned")
-    ),
-    spec!(
-        "unpinEditor",
-        "取消固定标签",
-        Pin(false),
-        "ctrl-k shift-enter",
-        Some("activeEditorIsPinned")
-    ),
-    spec!(
-        "nextEditor",
-        "下一个标签",
-        Cycle(true),
-        "ctrl-pagedown",
-        None
-    ),
-    spec!(
-        "previousEditor",
-        "上一个标签",
-        Cycle(false),
-        "ctrl-pageup",
-        None
-    ),
-    spec!(
-        "nextEditorInGroup",
-        "组内下一个标签",
-        Cycle(true),
-        "ctrl-k ctrl-pagedown",
-        None
-    ),
-    spec!(
-        "previousEditorInGroup",
-        "组内上一个标签",
-        Cycle(false),
-        "ctrl-k ctrl-pageup",
-        None
-    ),
-    spec!(
-        "lastEditorInGroup",
-        "组内最后一个标签",
-        LastTab,
-        "alt-0|ctrl-9",
-        None
-    ),
-    spec!(
-        "moveEditorLeftInGroup",
-        "将标签左移",
-        ShiftTab(false),
-        "ctrl-shift-pageup",
-        None
-    ),
-    spec!(
-        "moveEditorRightInGroup",
-        "将标签右移",
-        ShiftTab(true),
-        "ctrl-shift-pagedown",
-        None
-    ),
+    spec!("reopenClosedEditor", "重新打开已关闭的标签", Reopen),
+    spec!("keepEditor", "保留预览标签", Keep),
+    spec!("pinEditor", "固定标签", Pin(true)),
+    spec!("unpinEditor", "取消固定标签", Pin(false)),
+    spec!("nextEditor", "下一个标签", Cycle(true)),
+    spec!("previousEditor", "上一个标签", Cycle(false)),
+    spec!("nextEditorInGroup", "组内下一个标签", Cycle(true)),
+    spec!("previousEditorInGroup", "组内上一个标签", Cycle(false)),
+    spec!("lastEditorInGroup", "组内最后一个标签", LastTab),
+    spec!("moveEditorLeftInGroup", "将标签左移", ShiftTab(false)),
+    spec!("moveEditorRightInGroup", "将标签右移", ShiftTab(true)),
     spec!(
         "moveEditorToNextGroup",
         "将标签移到下一组",
-        MoveTo(GroupIndex::Next),
-        "ctrl-alt-right",
-        None
+        MoveTo(GroupIndex::Next)
     ),
     spec!(
         "moveEditorToPreviousGroup",
         "将标签移到上一组",
-        MoveTo(GroupIndex::Previous),
-        "ctrl-alt-left",
-        None
+        MoveTo(GroupIndex::Previous)
     ),
     spec!(
         "moveEditorToFirstGroup",
         "将标签移到第一组",
-        MoveTo(GroupIndex::First),
-        "shift-alt-1",
-        None
+        MoveTo(GroupIndex::First)
     ),
     spec!(
         "moveEditorToLastGroup",
         "将标签移到最后一组",
-        MoveTo(GroupIndex::Last),
-        "shift-alt-9",
-        None
+        MoveTo(GroupIndex::Last)
     ),
-    spec!(
-        "navigateBack",
-        "后退",
-        History(false),
-        "alt-left",
-        Some("canNavigateBack")
-    ),
-    spec!(
-        "navigateForward",
-        "前进",
-        History(true),
-        "alt-right",
-        Some("canNavigateForward")
-    ),
+    spec!("navigateBack", "后退", History(false)),
+    spec!("navigateForward", "前进", History(true)),
     spec!(
         "navigateToLastEditLocation",
         "跳到最后打开的位置",
-        LastLocation,
-        "ctrl-k ctrl-q",
-        None
+        LastLocation
     ),
     spec!(
         "focusAboveGroup",
         "聚焦上方编辑器组",
-        FocusDirection(Direction::Up),
-        "ctrl-k ctrl-up",
-        None
+        FocusDirection(Direction::Up)
     ),
     spec!(
         "moveActiveEditorGroupUp",
         "将编辑器组向上移动",
-        MoveDirection(Direction::Up),
-        "ctrl-k up",
-        None
+        MoveDirection(Direction::Up)
     ),
     spec!(
         "focusBelowGroup",
         "聚焦下方编辑器组",
-        FocusDirection(Direction::Down),
-        "ctrl-k ctrl-down",
-        None
+        FocusDirection(Direction::Down)
     ),
     spec!(
         "moveActiveEditorGroupDown",
         "将编辑器组向下移动",
-        MoveDirection(Direction::Down),
-        "ctrl-k down",
-        None
+        MoveDirection(Direction::Down)
     ),
     spec!(
         "focusLeftGroup",
         "聚焦左方编辑器组",
-        FocusDirection(Direction::Left),
-        "ctrl-k ctrl-left",
-        None
+        FocusDirection(Direction::Left)
     ),
     spec!(
         "moveActiveEditorGroupLeft",
         "将编辑器组向左移动",
-        MoveDirection(Direction::Left),
-        "ctrl-k left",
-        None
+        MoveDirection(Direction::Left)
     ),
     spec!(
         "focusRightGroup",
         "聚焦右方编辑器组",
-        FocusDirection(Direction::Right),
-        "ctrl-k ctrl-right",
-        None
+        FocusDirection(Direction::Right)
     ),
     spec!(
         "moveActiveEditorGroupRight",
         "将编辑器组向右移动",
-        MoveDirection(Direction::Right),
-        "ctrl-k right",
-        None
+        MoveDirection(Direction::Right)
     ),
-    spec!(
-        "focusFirstEditorGroup",
-        "聚焦第 1 组",
-        FocusIndex(0),
-        "ctrl-1",
-        None
-    ),
-    spec!(
-        "focusSecondEditorGroup",
-        "聚焦第 2 组",
-        FocusIndex(1),
-        "ctrl-2",
-        None
-    ),
-    spec!(
-        "focusThirdEditorGroup",
-        "聚焦第 3 组",
-        FocusIndex(2),
-        "ctrl-3",
-        None
-    ),
-    spec!(
-        "focusFourthEditorGroup",
-        "聚焦第 4 组",
-        FocusIndex(3),
-        "ctrl-4",
-        None
-    ),
-    spec!(
-        "focusFifthEditorGroup",
-        "聚焦第 5 组",
-        FocusIndex(4),
-        "ctrl-5",
-        None
-    ),
-    spec!(
-        "focusSixthEditorGroup",
-        "聚焦第 6 组",
-        FocusIndex(5),
-        "ctrl-6",
-        None
-    ),
-    spec!(
-        "focusSeventhEditorGroup",
-        "聚焦第 7 组",
-        FocusIndex(6),
-        "ctrl-7",
-        None
-    ),
-    spec!(
-        "focusEighthEditorGroup",
-        "聚焦第 8 组",
-        FocusIndex(7),
-        "ctrl-8",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex1",
-        "打开第 1 个标签",
-        TabIndex(0),
-        "alt-1",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex2",
-        "打开第 2 个标签",
-        TabIndex(1),
-        "alt-2",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex3",
-        "打开第 3 个标签",
-        TabIndex(2),
-        "alt-3",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex4",
-        "打开第 4 个标签",
-        TabIndex(3),
-        "alt-4",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex5",
-        "打开第 5 个标签",
-        TabIndex(4),
-        "alt-5",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex6",
-        "打开第 6 个标签",
-        TabIndex(5),
-        "alt-6",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex7",
-        "打开第 7 个标签",
-        TabIndex(6),
-        "alt-7",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex8",
-        "打开第 8 个标签",
-        TabIndex(7),
-        "alt-8",
-        None
-    ),
-    spec!(
-        "openEditorAtIndex9",
-        "打开第 9 个标签",
-        TabIndex(8),
-        "alt-9",
-        None
-    ),
+    spec!("focusFirstEditorGroup", "聚焦第 1 组", FocusIndex(0)),
+    spec!("focusSecondEditorGroup", "聚焦第 2 组", FocusIndex(1)),
+    spec!("focusThirdEditorGroup", "聚焦第 3 组", FocusIndex(2)),
+    spec!("focusFourthEditorGroup", "聚焦第 4 组", FocusIndex(3)),
+    spec!("focusFifthEditorGroup", "聚焦第 5 组", FocusIndex(4)),
+    spec!("focusSixthEditorGroup", "聚焦第 6 组", FocusIndex(5)),
+    spec!("focusSeventhEditorGroup", "聚焦第 7 组", FocusIndex(6)),
+    spec!("focusEighthEditorGroup", "聚焦第 8 组", FocusIndex(7)),
+    spec!("openEditorAtIndex1", "打开第 1 个标签", TabIndex(0)),
+    spec!("openEditorAtIndex2", "打开第 2 个标签", TabIndex(1)),
+    spec!("openEditorAtIndex3", "打开第 3 个标签", TabIndex(2)),
+    spec!("openEditorAtIndex4", "打开第 4 个标签", TabIndex(3)),
+    spec!("openEditorAtIndex5", "打开第 5 个标签", TabIndex(4)),
+    spec!("openEditorAtIndex6", "打开第 6 个标签", TabIndex(5)),
+    spec!("openEditorAtIndex7", "打开第 7 个标签", TabIndex(6)),
+    spec!("openEditorAtIndex8", "打开第 8 个标签", TabIndex(7)),
+    spec!("openEditorAtIndex9", "打开第 9 个标签", TabIndex(8)),
 ];
 
 pub(crate) fn register(registry: &mut CommandRegistry) -> Result<()> {
@@ -514,16 +224,12 @@ pub(crate) fn strings(strings: &mut StringTable) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn bindings() -> Vec<KeyBinding> {
+/// 命令 ID → GPUI action（键位服务 `crate::keys` 解析按键后分发；默认键位来自 VS Code 默认表）。
+pub(crate) fn action_for(id: &str) -> Option<Box<dyn Action>> {
     COMMANDS
         .iter()
-        .flat_map(|spec| {
-            spec.keys
-                .split('|')
-                .filter(|key| !key.is_empty())
-                .map(|key| KeyBinding::new(key, EditorAction(spec.id), spec.when))
-        })
-        .collect()
+        .find(|spec| spec.id == id)
+        .map(|spec| Box::new(EditorAction(spec.id)) as Box<dyn Action>)
 }
 
 pub(crate) fn execute(editor: &mut EditorService, id: &str) -> bool {
@@ -623,21 +329,27 @@ pub(crate) fn execute(editor: &mut EditorService, id: &str) -> bool {
     true
 }
 
+/// 编辑器区域的 key context：发布 VS Code 默认键位 when 子句用到的上下文键。
 pub(crate) fn context(editor: &EditorService) -> String {
     let mut keys = String::from("EditorGroups");
-    if editor.can_back() {
-        keys.push_str(" canNavigateBack");
-    }
-    if editor.can_forward() {
-        keys.push_str(" canNavigateForward");
-    }
-    if let Some(tab) = editor.active().current() {
-        if tab.pinned {
-            keys.push_str(" activeEditorIsPinned");
+    let mut add = |on: bool, key: &str| {
+        if on {
+            keys.push(' ');
+            keys.push_str(key);
         }
-        if tab.secondary.is_some() {
-            keys.push_str(" sideBySideEditorActive");
-        }
+    };
+    add(editor.can_back(), "canNavigateBack");
+    add(editor.can_forward(), "canNavigateForward");
+    let multiple = editor.groups.len() > 1;
+    add(multiple, "multipleEditorGroups");
+    add(multiple, "editorPartMultipleEditorGroups");
+    add(editor.maximized.is_some(), "editorPartMaximizedEditorGroup");
+    let current = editor.active().current();
+    add(current.is_none(), "activeEditorGroupEmpty");
+    if let Some(tab) = current {
+        add(tab.pinned, "activeEditorIsPinned");
+        add(tab.secondary.is_some(), "sideBySideEditorActive");
+        add(tab.secondary.is_none(), "activeEditorCanSplitInGroup");
     }
     keys
 }
