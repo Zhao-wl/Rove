@@ -8,8 +8,8 @@ use super::{
     feedback::{FeedbackHub, Reason, Severity, NEVER_SHOW_AGAIN, TOAST_AUTO_HIDE_MS},
     icons::{self, LabelPart},
     layout::{
-        write_json, LayoutState, LayoutStore, PanelLocation, SideBarLocation, WindowPlacement,
-        MIN_PANEL_SIZE, MIN_SIDEBAR_WIDTH,
+        write_json, LayoutState, LayoutStore, PanelLocation, SaveGate, SideBarLocation,
+        WindowPlacement, MIN_PANEL_SIZE, MIN_SIDEBAR_WIDTH,
     },
     menus::{visible_items, visible_menus, MenuId, MenuRegistry},
     status::{Alignment, StatusBar, StatusEntry, StatusKind},
@@ -104,6 +104,7 @@ pub struct Shell {
     kind: ThemeKind,
     store: LayoutStore,
     save_generation: u64,
+    save_gate: SaveGate,
     status_timer: u64,
     toast_timers: BTreeMap<Arc<str>, u64>,
     zoom_level: f64,
@@ -208,6 +209,7 @@ impl Shell {
             kind,
             store,
             save_generation: 0,
+            save_gate: SaveGate::default(),
             status_timer: 0,
             toast_timers: BTreeMap::new(),
             zoom_level,
@@ -307,6 +309,17 @@ impl Shell {
     pub fn custom_title_bar(&self) -> bool {
         self.setting_str("window.titleBarStyle") != "native"
     }
+    /// 通知入口在标题栏（右上角 + `showInTitleBar`，且使用自绘标题栏）还是状态栏。
+    pub fn notifications_in_title_bar(&self) -> bool {
+        self.custom_title_bar()
+            && self.setting_str("workbench.notifications.position") == "top-right"
+            && self.setting_bool("workbench.notifications.showInTitleBar")
+    }
+    /// 测试用：只改当前窗口的设置值，不写用户设置。
+    #[cfg(test)]
+    pub(crate) fn override_setting(&mut self, key: &'static str, value: Value) {
+        self.overrides.insert(key, value);
+    }
     pub fn status_bar_visible(&self) -> bool {
         self.setting_bool("workbench.statusBar.visible")
     }
@@ -404,14 +417,16 @@ impl Shell {
             cx.background_executor()
                 .timer(Duration::from_millis(SAVE_DEBOUNCE_MS))
                 .await;
-            let Ok(Some(snapshot)) = this.update(cx, |host, _| {
+            let Ok(Some((snapshot, gate))) = this.update(cx, |host, _| {
                 let shell = host.shell();
-                (shell.save_generation == generation).then(|| shell.snapshot())
+                (shell.save_generation == generation)
+                    .then(|| (shell.snapshot(), shell.save_gate.clone()))
             }) else {
                 return;
             };
+            // 写之前在闸门里再比一次代次：关窗时的同步写入（更新的代次）先落盘时，这里直接放弃。
             cx.background_executor()
-                .spawn(async move { write_snapshot(snapshot) })
+                .spawn(async move { gate.write(generation, || write_snapshot(snapshot)) })
                 .await;
         })
         .detach();
@@ -419,7 +434,9 @@ impl Shell {
     /// 关闭窗口时同步写入（几百字节）。
     pub fn save_now(&mut self) {
         self.save_generation += 1;
-        write_snapshot(self.snapshot());
+        let snapshot = self.snapshot();
+        self.save_gate
+            .write(self.save_generation, || write_snapshot(snapshot));
     }
 
     // ------------------------------------------------------------- 焦点
@@ -1265,6 +1282,10 @@ fn render_title_bar<T: ShellHost>(
     let layout_controls = shell
         .setting_bool("workbench.layoutControl.enabled")
         .then(|| render_layout_controls(host, cx));
+    let bell = host
+        .shell()
+        .notifications_in_title_bar()
+        .then(|| render_title_bar_bell(host, cx));
     let controls = render_window_controls(host, window);
     div()
         .id("titlebar")
@@ -1296,7 +1317,87 @@ fn render_title_bar<T: ShellHost>(
                 .window_control_area(WindowControlArea::Drag),
         )
         .children(layout_controls)
+        .children(bell)
         .children(controls)
+        .into_any_element()
+}
+
+/// 通知铃铛的图标与悬停提示（状态栏与标题栏共用）：勿扰 → `bell-slash`，有通知 → `bell-dot`。
+fn notification_bell<T: ShellHost>(host: &T) -> (String, String) {
+    let shell = host.shell();
+    let unread = shell.feedback.notifications().len();
+    if shell.feedback.do_not_disturb() {
+        (
+            "$(bell-slash)".into(),
+            label(host, "status.notifications.dnd", &[]),
+        )
+    } else if unread > 0 {
+        (
+            "$(bell-dot)".into(),
+            label(
+                host,
+                "status.notifications.some",
+                &[("count", unread.to_string())],
+            ),
+        )
+    } else {
+        (
+            "$(bell)".into(),
+            label(host, "status.notifications.none", &[]),
+        )
+    }
+}
+
+/// 通知在右上角且 `workbench.notifications.showInTitleBar` 为真时，入口在标题栏
+/// （与 VS Code 相同：铃铛 + 未读数，点击切换通知中心），状态栏不再显示铃铛。
+fn render_title_bar_bell<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElement {
+    let shell = host.shell();
+    let p = Palette {
+        shell,
+        theme: host.theme(),
+    };
+    let (icon_text, tip) = notification_bell(host);
+    let unread = shell.feedback.notifications().len();
+    let hover = p
+        .get("toolbar.hoverBackground")
+        .or(p.get("menubar.selectionBackground"));
+    div()
+        .id("titlebar-notifications")
+        .debug_selector(|| "titlebar-notifications".into())
+        .relative()
+        .h(shell.z(22.0))
+        .px(shell.z(6.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(shell.z(4.0))
+        .rounded(shell.z(4.0))
+        .cursor_pointer()
+        .when(shell.feedback.center_visible(), |d| match hover {
+            Some(c) => d.bg(c),
+            None => d,
+        })
+        .when_some(hover, |d, c| d.hover(move |s| s.bg(c)))
+        .tooltip(tooltip(tip, &p))
+        .child(icon_label(&icon_text, shell.z(UI_FONT_SIZE)))
+        .when(unread > 0 && !shell.feedback.do_not_disturb(), |d| {
+            d.child(
+                div()
+                    .px(shell.z(5.0))
+                    .rounded(shell.z(8.0))
+                    .text_size(shell.z(10.0))
+                    .bg(p.or("activityBarBadge.background", "progressBar.background"))
+                    .text_color(p.or("activityBarBadge.foreground", "notifications.foreground"))
+                    .child(label(
+                        host,
+                        "notifications.count",
+                        &[("count", unread.to_string())],
+                    )),
+            )
+        })
+        .on_click(cx.listener(|host: &mut T, _, window, cx| {
+            run_command(host, "notifications.toggleList", window, cx)
+        }))
         .into_any_element()
 }
 
@@ -2202,30 +2303,11 @@ fn update_builtin_status_items<T: ShellHost>(host: &mut T) {
         command: None,
         kind: StatusKind::Standard,
     };
-    let shell = host.shell();
-    let unread = shell.feedback.notifications().len();
-    let dnd = shell.feedback.do_not_disturb();
-    let show_bell = !(shell.setting_str("workbench.notifications.position") == "top-right"
-        && shell.setting_bool("workbench.notifications.showInTitleBar"));
+    let show_bell = !host.shell().notifications_in_title_bar();
+    let (text, tooltip) = notification_bell(host);
     let bell = StatusEntry {
-        text: if dnd {
-            "$(bell-slash)".into()
-        } else if unread > 0 {
-            "$(bell-dot)".into()
-        } else {
-            "$(bell)".into()
-        },
-        tooltip: Some(if dnd {
-            label(host, "status.notifications.dnd", &[])
-        } else if unread > 0 {
-            label(
-                host,
-                "status.notifications.some",
-                &[("count", unread.to_string())],
-            )
-        } else {
-            label(host, "status.notifications.none", &[])
-        }),
+        text,
+        tooltip: Some(tooltip),
         command: None,
         kind: StatusKind::Standard,
     };
