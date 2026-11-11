@@ -149,3 +149,12 @@ mod tests {
             .is_err());
     }
 }
+
+// #14 implementation modules (contracts above stay unchanged).
+pub mod builtin;
+pub mod center;
+pub mod chord;
+pub mod context;
+pub mod keybindings;
+pub mod keys;
+pub mod when;
