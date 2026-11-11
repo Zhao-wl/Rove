@@ -7,7 +7,14 @@ pub fn strings() -> Result<StringTable> {
     let mut t = chinese()?;
     for (k, v) in [
         ("app.title", "Rove"),
-        ("app.usage", "用法：rove <文件夹路径>"),
+        (
+            "app.usage",
+            "用法：rove [--vscode-user-dir <VS Code 用户目录>] <文件夹路径>",
+        ),
+        (
+            "app.noUserDir",
+            "找不到 VS Code 用户目录，请用 --vscode-user-dir 指定。",
+        ),
         ("app.failed", "无法启动 Rove，请查看日志。"),
         ("workbench.explorer", "资源管理器"),
         ("workbench.empty", "从左侧选择一个文件"),
