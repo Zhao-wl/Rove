@@ -65,3 +65,7 @@ harness = false
 [[bench]]
 name = "lists"
 harness = false
+
+[[bench]]
+name = "huge_file"
+harness = false

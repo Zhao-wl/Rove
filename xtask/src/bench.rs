@@ -60,6 +60,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "lists",
         requires: "",
     },
+    BenchTarget {
+        name: "huge_file",
+        // 1 GB 用例缺 big1g.txt 时在基准内部跳过；其余用例自己生成数据。
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
