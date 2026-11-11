@@ -24,9 +24,18 @@ rove-commands = { path = "crates/rove-commands" }
 rove-i18n = { path = "crates/rove-i18n" }
 
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+# #7 文本缓冲：rope 快照、编码推断与解码。默认 feature 里的 unicode_lines 会把
+# NEL/LS/PS 也当成换行，与 VS Code / 本项目的行终止符约定不一致，所以显式关掉。
+ropey = { version = "1.6", default-features = false, features = ["cr_lines", "simd"] }
+chardetng = "0.1"
+encoding_rs = "0.8"
+memchr = "2"
 tree-sitter = "0.25"
 tree-sitter-c-sharp = "0.23"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+fancy-regex = "0.20"
+jsonc-parser = { version = "0.34", features = ["serde"] }
+serde_json = "1.0"
 
 [profile.release]
 lto = "thin"

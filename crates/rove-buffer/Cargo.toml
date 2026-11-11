@@ -6,3 +6,11 @@ license.workspace = true
 
 [dependencies]
 rove-base.workspace = true
+rove-config.workspace = true
+ropey.workspace = true
+chardetng.workspace = true
+encoding_rs.workspace = true
+memchr.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

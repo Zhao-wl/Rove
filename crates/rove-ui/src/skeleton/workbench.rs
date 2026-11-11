@@ -1,14 +1,14 @@
 use super::{
     appearance::{self, DarkTheme},
     commands::{Commands, StatusFeedback},
-    editor::SingleEditor,
+    editor::{Pending, SingleEditor},
     syntax::CSharp,
-    text::FileDocuments,
+    text::{default_settings, FileDocuments},
     workspace::Folder,
 };
 use crate::{
     contributions::ContributionRegistry,
-    documents::{OpenDocuments, OpenOptions},
+    documents::{OpenDocuments, OpenOptions, OpenSource},
     feedback::{Feedback, FeedbackLevel, FeedbackService},
     lists::{ItemId, ListController, ListModel, Navigation, Row},
 };
@@ -158,9 +158,57 @@ pub struct Workbench {
 }
 impl Workbench {
     pub fn new(root: PathBuf, started: Instant, cx: &mut Context<Self>) -> Self {
+        let owner = cx.entity().downgrade();
+        let app = cx.to_async();
+        let background = cx.background_executor().clone();
+        let schedule = move |job: Pending| {
+            let Pending { id, resource, task } = job;
+            let read = background.spawn(task);
+            let owner = owner.clone();
+            app.spawn(async move |cx| {
+                let result = read.await;
+                let _ = owner.update(cx, |view, cx| {
+                    match view.editor.complete(id, result) {
+                        Ok(true) => {
+                            view.scroll = view
+                                .editor
+                                .current
+                                .as_ref()
+                                .and_then(|opened| opened.position)
+                                .map_or(0.0, |position| position.line.0 as f64);
+                            view.editor.ready(id);
+                            view.error_path = None;
+                            view.dirty = true;
+                            view.prepared.clear();
+                        }
+                        Ok(false) => return,
+                        Err(Error::Cancelled) => {}
+                        Err(error) => {
+                            eprintln!("open {resource:?}: {error}");
+                            if view.editor.current.is_none() {
+                                let path = match &resource {
+                                    Resource::Workspace(path) => path.as_str().to_owned(),
+                                    Resource::File(path) => path.display().to_string(),
+                                    Resource::Virtual(name) => name.to_string(),
+                                };
+                                view.error_path = Some(path);
+                                view.prepared.clear();
+                                view.painted.clear();
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        };
         let mut view = Self {
             tree: None,
-            editor: SingleEditor::new(Arc::new(FileDocuments::new(root.clone())), Arc::new(CSharp)),
+            editor: SingleEditor::new(
+                Arc::new(FileDocuments::new(root.clone(), default_settings())),
+                Arc::new(CSharp),
+                schedule,
+            ),
             theme: Arc::new(DarkTheme::new().unwrap()),
             strings: appearance::strings().unwrap(),
             contributions: appearance::contributions().unwrap(),
@@ -253,51 +301,28 @@ impl Workbench {
         let resource = Resource::Workspace(WorkspacePath::new(&path).expect("workspace path"));
         self.open(resource, path, cx);
     }
+    /// The installed service schedules its own work.
+    pub fn open_documents(&mut self) -> &mut dyn OpenDocuments {
+        &mut self.editor
+    }
+
     fn open(&mut self, resource: Resource, path: String, cx: &mut Context<Self>) {
         self.error_path = None;
         self.feedback.clear();
-        if let Err(e) = OpenDocuments::open(
-            &mut self.editor,
+        if let Err(error) = self.open_documents().open(
             resource,
-            OpenOptions::default(),
+            OpenOptions {
+                source: OpenSource::Explorer,
+                ..Default::default()
+            },
             Cancellation::default(),
         ) {
-            eprintln!("open: {e}");
+            eprintln!("open: {error}");
             self.error_path = Some(path);
-            cx.notify();
-            return;
         }
-        let job = self.editor.take_pending().expect("open enqueues a request");
-        let task = cx.background_executor().spawn(job.task);
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |view, cx| {
-                match view.editor.complete(job.id, result) {
-                    Ok(true) => {
-                        view.scroll = view
-                            .editor
-                            .current
-                            .as_ref()
-                            .and_then(|o| o.position)
-                            .map_or(0.0, |p| p.line.0 as f64);
-                        view.editor.ready(job.id);
-                        view.dirty = true;
-                        view.prepared.clear();
-                    }
-                    Ok(false) => return,
-                    Err(e) => {
-                        eprintln!("open {path}: {e}");
-                        view.error_path = Some(path);
-                        view.prepared.clear();
-                        view.painted.clear();
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
         cx.notify();
     }
+
     fn command(&mut self, id: &str, cx: &mut Context<Self>) {
         let task = self.commands.execute(
             Invocation {
