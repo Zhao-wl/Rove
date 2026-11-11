@@ -587,3 +587,120 @@ public sealed class FixtureGenerator : ISourceGenerator
             .any(|r| r.path == caller && r.col == column));
     }
 }
+
+fn net9_corelib() -> PathBuf {
+    let runtimes = std::process::Command::new("dotnet")
+        .arg("--list-runtimes")
+        .output()
+        .unwrap();
+    assert!(runtimes.status.success());
+    String::from_utf8(runtimes.stdout)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let (version, folder) = line
+                .strip_prefix("Microsoft.NETCore.App ")?
+                .split_once(" [")?;
+            if !version.starts_with("9.") {
+                return None;
+            }
+            let path = Path::new(folder.strip_suffix(']')?)
+                .join(version)
+                .join("System.Private.CoreLib.dll");
+            path.is_file().then_some(path)
+        })
+        .expect(".NET 9 runtime required by the indexer")
+}
+
+/// #33：下游项目只引用上游的元数据镜像。经元数据看到的参数（命名实参、以实例形式调用的扩展方法）
+/// 仍要回指上游源码里的声明；上游镜像输出失败（csproj 声明的语言版本低于代码实际使用的）时退回引用编译。
+/// 同样的输入两次产出逐字节相同的索引。
+#[test]
+#[ignore = "requires the Release .NET indexer"]
+fn cross_project_parameters_resolve_through_metadata_images() {
+    const API: &str = "public static class Api {\n\
+        public static int Twice(int value) => value * 2;\n\
+        public static int Ext(this string text, int count) => count;\n\
+        }\n";
+    const OLD: &str = "public struct Old { public int X = 1; public Old() { } public static int Make(int seed) => seed; }\n";
+    const USER: &str =
+        "class User { int Run() => Api.Twice(value: 1) + \"x\".Ext(count: 2) + Old.Make(seed: 3); }\n";
+    let fixture = Fixture::new();
+    let corelib = net9_corelib();
+    let corelib = corelib.to_string_lossy();
+    let project = |name: &str, lang: &str, refs: &[&str]| {
+        let refs: String = refs
+            .iter()
+            .map(|r| format!(r#"<ProjectReference Include="{r}.csproj" />"#))
+            .collect();
+        format!(
+            r#"<Project><PropertyGroup><AssemblyName>{name}</AssemblyName><LangVersion>{lang}</LangVersion></PropertyGroup><ItemGroup><Compile Include="{name}.cs" /><Reference Include="System.Private.CoreLib"><HintPath>{corelib}</HintPath></Reference>{refs}</ItemGroup></Project>"#
+        )
+    };
+    for (name, source, lang, refs) in [
+        ("Api", API, "latest", &[][..]),
+        ("Old", OLD, "9.0", &[][..]),
+        ("User", USER, "latest", &["Api", "Old"][..]),
+    ] {
+        fs::write(fixture.dir.join(format!("{name}.cs")), source).unwrap();
+        fs::write(
+            fixture.dir.join(format!("{name}.csproj")),
+            project(name, lang, refs),
+        )
+        .unwrap();
+    }
+
+    let run = |name: &str| {
+        let path = fixture.dir.join(name);
+        let output = std::process::Command::new("dotnet")
+            .arg(indexer_dll())
+            .arg(&fixture.dir)
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        path
+    };
+    let first = run("first.idx");
+    let second = run("second.idx");
+    assert_eq!(
+        fs::read(&first).unwrap(),
+        fs::read(&second).unwrap(),
+        "same input must produce the same index"
+    );
+
+    let index = CsIndex::open(&first).unwrap();
+    for (name, file, line, source) in [
+        ("value", "Api.cs", 1, API),
+        ("count", "Api.cs", 2, API),
+        ("seed", "Old.cs", 0, OLD),
+    ] {
+        let call = Utf8Column(USER.find(&format!("{name}:")).unwrap() as u64);
+        let defs = index.goto_definition("User.cs", 0, call);
+        assert_eq!(defs.len(), 1, "{name}: {defs:?}");
+        let decl_line = source.lines().nth(line as usize).unwrap();
+        assert_eq!(defs[0].path, file, "{name}");
+        assert_eq!(defs[0].line, line, "{name}");
+        assert_eq!(
+            defs[0].col,
+            Utf8Column(decl_line.find(&format!(" {name}")).unwrap() as u64 + 1),
+            "{name}"
+        );
+        let references = index.find_references("User.cs", 0, call);
+        assert!(
+            references
+                .iter()
+                .any(|r| r.path == "User.cs" && r.col == call),
+            "{name}: {references:?}"
+        );
+    }
+    // 跨项目的成员引用与定义是同一个符号
+    let twice = Utf8Column(USER.find("Twice").unwrap() as u64);
+    let defs = index.goto_definition("User.cs", 0, twice);
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0].path, "Api.cs");
+}
