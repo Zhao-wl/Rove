@@ -12,3 +12,8 @@ bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 memory-stats = "1"
+# #39 nav_check 运行器：读 tests/nav-cases/*.toml，写 JSON 结果文件。
+rove-test-support.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+toml = "0.8"

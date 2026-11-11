@@ -1,0 +1,794 @@
+#(大型 Unity 项目，约 2 万个 .cs）的 var / chain / overload / extension /
+# generic / inheritance / interface / partial 八类用例。
+#
+# 选点原则：每个点的成员名在项目里都有多个同名声明（或根本不是接收者类型的成员），
+# 按名称解析必然出错；查询点与期望定义都在 Assets/ 下项目自己的源码里。
+# 选的文件都是近期（2026-08 之后）没有改动过的稳定代码。
+
+project = "large"
+
+# ============================================================
+# var 推断（6）
+# ============================================================
+
+[[case]]
+id = "l-var-01"
+category = "var"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 188
+col = 20
+token = "Start"
+anchor = "action.Start();"
+why = "action 由上一行 var 从 ActMgr.CreateAct() 推断为 Act；项目中 Start 有 150 多处同名声明"
+source = "人工阅读：ActSet.cs:185 var action = ActMgr.CreateAct(...)，ActMgr.cs:220 声明 public static Act CreateAct(...) 返回 Act；Act.cs:150 public virtual bool Start()；rg 统计同名 Start 声明 158 处，引用多，改用 refs_include（ActSet.cs:188 本处与 355 行 act.Start()，act 也是 Act）"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 150, anchor = "public virtual bool Start()" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 188, anchor = "action.Start();" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 355, anchor = "var isFinished = act.Start();" },
+]
+
+[[case]]
+id = "l-var-02"
+category = "var"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 240
+col = 44
+token = "Update"
+anchor = "action.IsFinished = action.Update(info);"
+why = "action 来自 var action = m_ExecutingActs[index]（List<Act> 索引器）；Update 在项目中有 190 多处同名声明"
+source = "人工阅读：ActSet.cs:222 var action = m_ExecutingActs[index]，ActSet.cs:99 m_ExecutingActs = new List<Act>()，元素类型 Act；Act.cs:173 public abstract bool Update(TimeDeltaInfo info)；rg 统计 Update 声明 193 处，引用多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 173, anchor = "public abstract bool Update(TimeDeltaInfo info);" }]
+refs_include = [{ file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 240, anchor = "action.IsFinished = action.Update(info);" }]
+
+[[case]]
+id = "l-var-03"
+category = "var"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 157
+col = 28
+token = "Cancel"
+anchor = "if (action.Cancel())"
+why = "action 由 var 从 List<Act> 索引器推断为 Act；Cancel 在项目中有 28 处同名声明（含 WorkerAI.Cancel 等）"
+source = "人工阅读：ActSet.cs:155 var action = m_ExecutingActs[index]（List<Act>）；Act.cs:90 public bool Cancel()（非 virtual）；rg -w Cancel 命中很多（含 CancellationTokenSource.Cancel 等外部符号），故用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 90, anchor = "public bool Cancel()" }]
+refs_include = [{ file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 157, anchor = "if (action.Cancel())" }]
+
+[[case]]
+id = "l-var-04"
+category = "var"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 230
+col = 32
+token = "End"
+anchor = "action.End();"
+why = "action 由 var 推断为 Act；End 在项目中有 11 处同名方法声明，且同文件内 ActSet 自己也有 End 相关成员"
+source = "人工阅读：ActSet.cs:222 var action = m_ExecutingActs[index]（List<Act>）；Act.cs:131 public void End(bool isCancel = false)，无参调用走默认参数；rg -w End 命中含大量其他类型的 End，用 refs_include（本处与 ActSet.cs:493 action.End(true)）"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 131, anchor = "public void End(bool isCancel = false)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 230, anchor = "action.End();" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 493, anchor = "action.End(true);" },
+]
+
+[[case]]
+id = "l-var-05"
+category = "var"
+file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs"
+line = 149
+col = 31
+token = "SetEnable"
+anchor = "itemContainer.SetEnable(true);"
+why = "itemContainer 由 var 从 CreateAssetAdd() 推断为 UIRewardPreviewItem，SetEnable 其实继承自 UIContainer；项目里有 9 处同名 SetEnable"
+source = "人工阅读：UIRewardPreviewList.cs:147 var itemContainer = CreateAssetAdd()，同文件 126 行 private UIRewardPreviewItem CreateAssetAdd()；UIRewardPreviewItem.cs:19 class UIRewardPreviewItem : UIContainer，自身不声明 SetEnable；UIContainer.cs:199 public void SetEnable(bool enable, bool isNotify = true)。rg 查到的其他 SetEnable（DebugConsoleSetup、UIGlobalScreenMask、GestureManager、ResFloatTipsMgr、UIRssEfficiencyItem、UIBuildCraftItem、RBuildingBoard 等）都是不相干类型，引用数远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/UIWnd/Container/UIContainer.cs", line = 199, anchor = "public void SetEnable(bool enable, bool isNotify = true)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs", line = 149, anchor = "itemContainer.SetEnable(true);" },
+    { file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs", line = 139, anchor = "item.SetEnable(false);" },
+]
+
+[[case]]
+id = "l-var-06"
+category = "var"
+file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs"
+line = 58
+col = 65
+token = "ToProto"
+anchor = "ItemHelper.SetItemList<UIItemComponent, IDVal>(top2.ToProto(), V.GoRewards.transform, (com, data) =>"
+why = "top2 由 var 推断为 List<AssetAdd>，ToProto 的两个扩展版本只靠 List<AssetCost> / List<AssetAdd> 区分"
+source = "人工阅读：第 55 行 var sorted = ...SortByQuality() 返回 List<AssetAdd>（AssetAddsExt.cs:58），第 57 行 var top2 = sorted.Count > 2 ? sorted.GetRange(0, 2) : sorted，两支都是 List<AssetAdd>；因此 ToProto 应解析到 AssetAddsExt.cs:83 而不是 AssetCostsExt.cs:80 或 AssetAddsBuilder.cs:107 / PropSourceGrouping.cs:36。rg -w ToProto 共 21 处命中，混有 4 种同名声明，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs", line = 83, anchor = "public static List<cspb.IDVal> ToProto(this List<AssetAdd> self)" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs", line = 58, anchor = "ItemHelper.SetItemList<UIItemComponent, IDVal>(top2.ToProto(), V.GoRewards.transform, (com, data) =>" }]
+
+# ============================================================
+# 链式调用（6）
+# ============================================================
+
+[[case]]
+id = "l-chain-01"
+category = "chain"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs"
+line = 128
+col = 46
+token = "Occupation"
+anchor = "return XCfg.Worker.I.Get(cfgId)?.Occupation ?? 0;"
+why = "要先知道 XCfg.Worker.I 是 ConfigComData<int, Worker>、Get 返回 V=Worker，才能把 Occupation 定位到 Worker 配置类；项目里有 8 个同名 Occupation"
+source = "人工阅读：XCfg/Worker.cs:93 public static Cfg.ConfigComData<int, Worker> I；ConfigComData.cs:18 class ConfigComData<K, V>，62 行 public V Get(K id) 返回 V；代入 V=XCfg.Worker 得 XCfg/Worker.cs:18 public int Occupation。rg 'public .* Occupation' 命中 8 处（ConditionWorker、OccupationPriority、PEventWorkerRemove、PEventWorkerAdd、StoryDelegate、TraceWorkerCntMaxVal、Worker、WorkerStatusControl），仅 Worker.cs:18 正确"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptAuto/Config/XCfg/Worker.cs", line = 18, anchor = "public int Occupation { get; private set; }  = 0;" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs", line = 128, anchor = "return XCfg.Worker.I.Get(cfgId)?.Occupation ?? 0;" }]
+
+[[case]]
+id = "l-chain-02"
+category = "chain"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs"
+line = 279
+col = 87
+token = "Occupation"
+anchor = "var occupation = XCfg.WorkerStatusControl.I.Get(cfg.WorkType).Occupation;"
+why = "与 l-chain-01 成对：同一行形态、同一个成员名，但链前段是 WorkerStatusControl，期望落在另一个配置类上"
+source = "人工阅读：XCfg/WorkerStatusControl.cs 里 I 为 ConfigComData<int, WorkerStatusControl>，Get 返回 V=WorkerStatusControl；WorkerStatusControl.cs:42 public int Occupation。按名称解析无法区分它与 Worker.cs:18（共 8 个同名声明）"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptAuto/Config/XCfg/WorkerStatusControl.cs", line = 42, anchor = "public int Occupation { get; private set; }  = 0;" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs", line = 279, anchor = "var occupation = XCfg.WorkerStatusControl.I.Get(cfg.WorkType).Occupation;" }]
+
+[[case]]
+id = "l-chain-03"
+category = "chain"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs"
+line = 34
+col = 75
+token = "WorkerJobModel"
+anchor = "return CityEntityMgr.I.OneLCityEntity<LCityWorker>(workerId)?.WorkerJobModel;"
+why = "链中段是泛型方法 OneLCityEntity<T> 返回 T=LCityWorker，末段的 WorkerJobModel 既是类型名又是属性名，按名称解析会落到 partial 类型声明上"
+source = "人工阅读：CityEntityMgr.Query.cs:39 public T OneLCityEntity<T>(long ID) where T : LCityEntity 返回 T；代入 T=LCityWorker；LCityWorker.cs:18 public WorkerJobModel WorkerJobModel { get; private set; }。同名的 WorkerJobModel 类型本身有 5 处 partial 声明，属性名与类型名完全相同，极易错"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/CityWorker/LCityWorker.cs", line = 18, anchor = "public WorkerJobModel WorkerJobModel { get; private set; }" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs", line = 34, anchor = "return CityEntityMgr.I.OneLCityEntity<LCityWorker>(workerId)?.WorkerJobModel;" }]
+
+[[case]]
+id = "l-chain-04"
+category = "chain"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs"
+line = 28
+col = 47
+token = "WorkerActionModel"
+anchor = "return GetInvasionEntity(id)?.WorkerActionModel;"
+why = "要先知道 GetInvasionEntity 返回 LInvasion，才能把 WorkerActionModel 落到 LInvasion 上而不是 LCityWorker 上的同名属性"
+source = "人工阅读：同文件 18 行 public LInvasion GetInvasionEntity(long id)；LInvasion.cs:25 class LInvasion : LIncident，27 行 public WorkerActionModel WorkerActionModel { get; private set; }。LCityWorker.cs:17 有一模一样的属性声明，WorkerActionModel 类型本身还有 6 处 partial 声明，按名称必错"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Incident/Entity/LInvasion.cs", line = 27, anchor = "public WorkerActionModel WorkerActionModel { get; private set; }" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs", line = 28, anchor = "return GetInvasionEntity(id)?.WorkerActionModel;" }]
+
+[[case]]
+id = "l-chain-05"
+category = "chain"
+file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs"
+line = 55
+col = 71
+token = "SortByQuality"
+anchor = "var sorted = rewardInfo.rewards.ToAssetAdds().Normalize().SortByQuality();"
+why = "三段链 ToAssetAdds().Normalize().SortByQuality()，末段要逐步知道前两段的返回类型才能选到 AssetAdd 版本"
+source = "人工阅读：rewardInfo.rewards 是 IList<cspb.IDVal>，AssetAddsExt.cs:71 ToAssetAdds(this IList<cspb.IDVal>) 返回 List<AssetAdd>；54 行 Normalize(this List<AssetAdd>) 返回 List<AssetAdd>；58 行 SortByQuality(this List<AssetAdd>)。AssetCostsExt.cs:58 有完全同名同形的 List<AssetCost> 版本，按名称无法区分；rg -w SortByQuality 共 20 处命中，混有 AssetListCore.SortByQuality<T,TOps> 与 Cost 版本，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs", line = 58, anchor = "public static List<AssetAdd> SortByQuality(this List<AssetAdd> self)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs", line = 55, anchor = "var sorted = rewardInfo.rewards.ToAssetAdds().Normalize().SortByQuality();" },
+    { file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs", line = 144, anchor = "var sorted = assetAdds.SortByQuality();" },
+]
+
+[[case]]
+id = "l-chain-06"
+category = "chain"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Extend.cs"
+line = 248
+col = 87
+token = "UnitType"
+anchor = "RescueTargetType = CityEntityMgr.I.OneLCityEntity<LCityEntity>(targetId)?.UnitType ?? 0;"
+why = "链 CityEntityMgr.I -> OneLCityEntity<LCityEntity>() -> UnitType；UnitType 在项目里有 17 处同名声明（含 CityUnitType 等类型名）"
+source = "人工阅读：CityEntityMgr.Query.cs:39 OneLCityEntity<T> 返回 T，代入 T=LCityEntity；LCityEntity.cs:35 public int UnitType => UnitInfo.unitType。rg 统计 UnitType 相关声明 17 处，引用多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs", line = 35, anchor = "public int UnitType => UnitInfo.unitType;" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Extend.cs", line = 248, anchor = "RescueTargetType = CityEntityMgr.I.OneLCityEntity<LCityEntity>(targetId)?.UnitType ?? 0;" }]
+
+# ============================================================
+# 方法重载（6）
+# ============================================================
+
+[[case]]
+id = "l-overload-01"
+category = "overload"
+file = "Assets/X1/ScriptCore/Act/Act/ActTrackEffect.cs"
+line = 479
+col = 25
+token = "TryGetValue"
+anchor = "if (env.TryGetValue(ActConst.CActEvHitTime, out float hitTime))"
+why = "ActSetEnvVariables 有 6 个 TryGetValue 重载，只靠 out 参数类型区分，这里 out float 必须落到 float 版本"
+source = "人工阅读：ActTrackEffect.cs:475 var env = actSet.EnvironmentVariables，ActSet.cs:64 public ActSetEnvVariables EnvironmentVariables；ActSetEnvVariables.cs 的 TryGetValue 重载在 93(float)/99(int)/105(bool)/111(object)/117(Vector3)/123(EffectCacheType)。实参 out float 只匹配 93 行。同名 TryGetValue 还有 Dictionary 的外部版本，引用多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSetEnvVariables.cs", line = 93, anchor = "public bool TryGetValue(string name, out float value)" }]
+refs_include = [{ file = "Assets/X1/ScriptCore/Act/Act/ActTrackEffect.cs", line = 479, anchor = "if (env.TryGetValue(ActConst.CActEvHitTime, out float hitTime))" }]
+
+[[case]]
+id = "l-overload-02"
+category = "overload"
+file = "Assets/X1/ScriptGame/Worker/WorkerRender/WorkerRender.cs"
+line = 133
+col = 49
+token = "Add"
+anchor = "animActSet.EnvironmentVariables.Add(ActConst.CActEvAnimTransitionTime, 0.15f);"
+why = "ActSetEnvVariables 有 6 个 Add 重载（float/bool/int/Vector3/EffectCacheType/泛型 T），第二实参 0.15f 为 float，必须落到 float 版本"
+source = "人工阅读：ActConst.cs:52 public const string CActEvAnimTransitionTime，第一实参是 string；0.15f 是 float 字面量；ActSetEnvVariables.cs 的 Add 重载在 42(float)/53(bool)/64(int)/75(泛型 T where T : class)/81(Vector3)/87(EffectCacheType)，float 实参只匹配 42 行（泛型版有 class 约束，float 不满足）。Add 是全项目最泛滥的方法名之一，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSetEnvVariables.cs", line = 42, anchor = "public void Add(string name, float value)" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerRender/WorkerRender.cs", line = 133, anchor = "animActSet.EnvironmentVariables.Add(ActConst.CActEvAnimTransitionTime, 0.15f);" }]
+
+[[case]]
+id = "l-overload-03"
+category = "overload"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 113
+col = 20
+token = "ReInit"
+anchor = "restAI.ReInit(m_WorkerId, m_AIFactory, immediatelyRoam);"
+why = "WorkerCodeAIRest 自己的 3 参 ReInit 与基类 WorkerCodeAI / WorkerAI 的 1 参 ReInit 同名，按实参个数与类型才能选对"
+source = "人工阅读：112 行 var restAI = m_AIFactory.CreateWorkerAI<WorkerCodeAIRest>()，WorkerAIFactory.cs:19 public T CreateWorkerAI<T>() 返回 T；WorkerCodeAIRest.cs:18 public void ReInit(long workerId, WorkerAIFactory aiFactory, bool immediatelyRoam = false) 匹配 3 实参；WorkerCodeAI.cs:16 / WorkerAI.cs:11 的 ReInit 只有 1 个参数。rg -n '\\.ReInit\\(' 全项目核对：接收者为 WorkerCodeAIRest 的调用只有本行一处（rg -w WorkerCodeAIRest 只有类声明、CreateWorkerAI<WorkerCodeAIRest> 与本调用），故 refs = 1"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs", line = 18, anchor = "public void ReInit(long workerId, WorkerAIFactory aiFactory, bool immediatelyRoam = false)" }]
+refs = 1
+
+[[case]]
+id = "l-overload-04"
+category = "overload"
+file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs"
+line = 34
+col = 28
+token = "ReInit"
+anchor = "aiNode.ReInit(m_WorkerId, 5, 20);"
+why = "aiNode 是 WorkerCodeAIWait，3 实参要落到它自己的 ReInit(long,float,float)，不是基类 1 参版本"
+source = "人工阅读：33 行 var aiNode = m_AIFactory.CreateWorkerAI<WorkerCodeAIWait>() 返回 WorkerCodeAIWait；WorkerCodeAIWait.cs:14 public void ReInit(long m_WorkerId, float minTime, float maxTime)。rg -n '\\.ReInit\\(' Assets/X1/ScriptGame/Worker 全部核对，接收者为 WorkerCodeAIWait 的调用共 2 处：本行与 WorkerJobModel.Extend.cs:111（110 行 CreateWorkerAI<WorkerCodeAIWait>），其余 ReInit 调用的接收者都是别的 AI 类型，故 refs = 2"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIWait.cs", line = 14, anchor = "public void ReInit(long m_WorkerId, float minTime, float maxTime)" }]
+refs = 2
+
+[[case]]
+id = "l-overload-05"
+category = "overload"
+file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs"
+line = 51
+col = 62
+token = "SetAvatar"
+anchor = "V.GoCPlayerAvatar.GetComponent<UIPlayerAvatar>().SetAvatar(rewardInfo.head);"
+why = "UIPlayerAvatar 有 5 个 SetAvatar 重载（UnifyPlayerHead / int / string / Sprite / (int,long,int)），实参 rewardInfo.head 是 UnifyPlayerHead"
+source = "人工阅读：UIPlayerAvatar.cs 的 SetAvatar 重载在 156(UnifyPlayerHead,...)/341(int,int,Action)/353(string)/375(Sprite,PlayerAvatarType)/393(int,long,int)；UnionBossRewardInfo.head 为 UnifyPlayerHead（第 52 行同时用了 rewardInfo.head.name），只匹配 156 行。另有 MapWidgetRadarFakePvp / MapWidgetPlayerCity / MapTroopNamePlate / UxmlDialog 上的同名 SetAvatar，引用多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Common/UIComponent/UIPlayerAvatar.cs", line = 156, anchor = "public void SetAvatar(UnifyPlayerHead playerHead, bool showFrame = true, long unionId = 0," }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs", line = 51, anchor = "V.GoCPlayerAvatar.GetComponent<UIPlayerAvatar>().SetAvatar(rewardInfo.head);" }]
+
+[[case]]
+id = "l-overload-06"
+category = "overload"
+file = "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs"
+line = 577
+col = 13
+token = "UpdateEffecTimeScale"
+anchor = "UpdateEffecTimeScale(effect, timeScale, multiTrackTargetFollower);"
+why = "同一个类里 2 参与 3 参两个 UpdateEffecTimeScale 重载递归调用，这里是 3 实参；另一个文件 ActTrackEffect 还有同名 1 参方法"
+source = "人工阅读：ActMultiTrackEffect.cs:571 private void UpdateEffecTimeScale(Effect, IMutiTrackTargetFollower)（2 参），586 行 private void UpdateEffecTimeScale(Effect, float, IMutiTrackTargetFollower)（3 参）；本行 3 实参只匹配 586。rg -w UpdateEffecTimeScale 全项目共 7 处：3 处声明（ActTrackEffect.cs:577、ActMultiTrackEffect.cs:571/586）与 4 处调用；其中调用 3 参版本的是 ActMultiTrackEffect.cs:563 与 577，ActMultiTrackEffect.cs:325 是 2 参版本、ActTrackEffect.cs:82 是另一个类的 1 参版本，故 refs = 2"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs", line = 586, anchor = "private void UpdateEffecTimeScale(Effect effect, float timeScale, IMutiTrackTargetFollower multiTrackTargetFollower)" }]
+refs = 2
+
+# ============================================================
+# 扩展方法（7）：4 个项目自定义 + 3 个 LINQ
+# ============================================================
+
+[[case]]
+id = "l-ext-01"
+category = "extension"
+file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs"
+line = 55
+col = 59
+token = "Normalize"
+anchor = "var sorted = rewardInfo.rewards.ToAssetAdds().Normalize().SortByQuality();"
+why = "项目自定义扩展方法：AssetAddsExt 与 AssetCostsExt 的 Normalize 签名只差 List<AssetAdd> / List<AssetCost>，按名称必然二选一错"
+source = "人工阅读：ToAssetAdds(this IList<cspb.IDVal>) 返回 List<AssetAdd>（AssetAddsExt.cs:71），所以 Normalize 的接收者是 List<AssetAdd>，落在 AssetAddsExt.cs:54。rg -w Normalize 全项目 8 处同名声明（AssetCostsExt.cs:54、AssetAddsExt.cs:54、CityFogPerformanceRequest、CityFogCompositePerformanceBatch、BattleStatisticsCompletedView、DragonAtlasCombinerWindow、BallPitUnitAssetConfig、测试里一个），引用散布较多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs", line = 54, anchor = "public static List<AssetAdd> Normalize(this List<AssetAdd> self)" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs", line = 55, anchor = "var sorted = rewardInfo.rewards.ToAssetAdds().Normalize().SortByQuality();" }]
+
+[[case]]
+id = "l-ext-02"
+category = "extension"
+file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs"
+line = 144
+col = 36
+token = "SortByQuality"
+anchor = "var sorted = assetAdds.SortByQuality();"
+why = "项目自定义扩展方法：接收者是方法参数 List<AssetAdd>，要在 AssetAddsExt / AssetCostsExt 两个同名扩展间选对"
+source = "人工阅读：142 行 private void SetList(List<AssetAdd> assetAdds)，接收者确定为 List<AssetAdd>；AssetAddsExt.cs:58 public static List<AssetAdd> SortByQuality(this List<AssetAdd> self)。AssetCostsExt.cs:58 与 AssetListCore.cs:157 是同名的其它声明。rg -w SortByQuality 共 20 处命中，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs", line = 58, anchor = "public static List<AssetAdd> SortByQuality(this List<AssetAdd> self)" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs", line = 144, anchor = "var sorted = assetAdds.SortByQuality();" }]
+
+[[case]]
+id = "l-ext-03"
+category = "extension"
+file = "Assets/X1/ScriptCore/Act/Act/ActEffect.cs"
+line = 429
+col = 47
+token = "Position"
+anchor = "m_TargetPos = data.targetType.Position(ActCommonInfo);"
+why = "项目自定义扩展方法挂在枚举 TargetType 上，Position 根本不是枚举的成员；项目里另有 UI 上的同名 Position 方法"
+source = "人工阅读：ActEffectData.cs:41 public TargetType targetType，所以接收者是枚举 TargetType；ActDataDef.cs:119 public static class Extensions，148 行 public static Vector3 Position(this TargetType targetType, ActCommonInfo commonInfo)。rg -n '\\.Position\\(' 全项目 5 处调用：ActEffect.cs:429 与 ActExternalEventEffect.cs:182 是本扩展；DailyJourneyPrefabTests.cs:196、UIDailyJourneyRulesPopup.cs:24、UIDailyJourneyBlessingDetailPopup.cs:34 的 panel/m_Anchor.Position(...) 是另一个同名方法，排除后 refs = 2"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Data/ActDataDef.cs", line = 148, anchor = "public static Vector3 Position(this TargetType targetType, ActCommonInfo commonInfo)" }]
+refs = 2
+
+[[case]]
+id = "l-ext-04"
+category = "extension"
+file = "Assets/X1/ScriptCore/Act/Act/ActTrackEffect.cs"
+line = 490
+col = 41
+token = "ActorId"
+anchor = "var id = data.startType.ActorId(this);"
+why = "项目自定义扩展方法：接收者是枚举 TargetType，ActorId 不是它的成员；同名的 actorId 字段遍布 Act 子类，大小写外只差首字母"
+source = "人工阅读：ActTrackEffectData.cs:24 public TargetType startType；ActDataDef.cs:131 public static long ActorId(this TargetType targetType, Act act)。rg -w ActorId 全项目 25 行：1 处声明 + 24 处调用（ActWorkerFishing/ActWorkerFish/ActHelper/ActWwiseSound/ActUnityAudioSound/ActTrackEffect/ActMultiTrackEffect/ActLinkEffect/ActLightningChain/ActGlowEffect/ActGlitter/ActExternalEventEffect/ActEffect/ActDirectionalBullet/ActColorGlitter/ActAnimation），引用 ≥ 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Data/ActDataDef.cs", line = 131, anchor = "public static long ActorId(this TargetType targetType, Act act)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActTrackEffect.cs", line = 490, anchor = "var id = data.startType.ActorId(this);" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActEffect.cs", line = 43, anchor = "var actorId = m_TargetType.ActorId(this);" },
+]
+
+[[case]]
+id = "l-ext-05"
+category = "extension"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs"
+line = 48
+col = 44
+token = "ID"
+anchor = "return allWorker.Select(p => p.ID);"
+why = "LINQ：p 的类型要从 Enumerable.Select<TSource,TResult> 的泛型推断得到 LCityWorker，ID 才能落到基类 LCityEntity；项目里 ID 同名声明很多"
+source = "人工阅读：47 行 var allWorker = GetAllWorker(allowClient)，40 行 public IEnumerable<LCityWorker> GetAllWorker(bool allowClient = false)；Select 的 TSource = LCityWorker；LCityWorker.cs:10 class LCityWorker : LWorkerBase，LWorkerBase.cs:7 class LWorkerBase : LCityEntity，ID 声明在 LCityEntity.cs:25。rg 查到的其它 ID 声明（RCityEntity.cs:28、TFWActor.cs:28、TEvent.CityEntity.cs:64/69 等）都在别的类型上；ID 引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs", line = 25, anchor = "public long ID => UnitInfo?.unitID ?? 0;" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs", line = 48, anchor = "return allWorker.Select(p => p.ID);" }]
+
+[[case]]
+id = "l-ext-06"
+category = "extension"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs"
+line = 174
+col = 70
+token = "CfgID"
+anchor = "workers = GetAllWorker(allowClient).Where(p => p.CfgID == workerCfgId).Select((p) => p.ID);"
+why = "LINQ：Where 的 lambda 参数类型来自 Enumerable.Where<TSource> 的泛型推断；CfgID 在项目里有 RCityEntity / LCityEntity / BuildingCloverComponent 三个同名声明"
+source = "人工阅读：GetAllWorker 返回 IEnumerable<LCityWorker>（WorkerMgr.cs:40），Where 的 TSource = LCityWorker；CfgID 由 LCityEntity.cs:30 public int CfgID => UnitInfo?.cfgID ?? 0 提供。rg 'CfgID' 另见 RCityEntity.cs:29（R 侧实体）、BuildingCloverComponent.cs:27（字段）、LMainMissionRaftShip.cs:36（引用而非声明）；引用多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs", line = 30, anchor = "public int CfgID => UnitInfo?.cfgID ?? 0;" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs", line = 174, anchor = "workers = GetAllWorker(allowClient).Where(p => p.CfgID == workerCfgId).Select((p) => p.ID);" }]
+
+[[case]]
+id = "l-ext-07"
+category = "extension"
+file = "Assets/X1/ScriptGame/Worker/WorkerBubble/AWorkerDialogBubble.cs"
+line = 196
+col = 32
+token = "ID"
+anchor = ".Select(p => p.ID)"
+why = "LINQ：接收者在上一行（WorkerMgr.I.GetAllWorker()），lambda 参数类型完全靠跨行的链式 + 泛型推断"
+source = "人工阅读：195 行 var list = WorkerMgr.I.GetAllWorker()，WorkerMgr.cs:40 返回 IEnumerable<LCityWorker>；Select 的 TSource = LCityWorker，ID 来自基类 LCityEntity.cs:25。引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs", line = 25, anchor = "public long ID => UnitInfo?.unitID ?? 0;" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerBubble/AWorkerDialogBubble.cs", line = 196, anchor = ".Select(p => p.ID)" }]
+
+# ============================================================
+# 泛型（7）：3 个 GetComponent<项目类型>，其余为泛型实参替换后的成员访问
+# ============================================================
+
+[[case]]
+id = "l-generic-01"
+category = "generic"
+file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs"
+line = 51
+col = 44
+token = "UIPlayerAvatar"
+anchor = "V.GoCPlayerAvatar.GetComponent<UIPlayerAvatar>().SetAvatar(rewardInfo.head);"
+why = "光标在 GetComponent<T> 的泛型实参上，T 是项目内类型 UIPlayerAvatar，期望落在项目源码的类声明"
+source = "人工阅读：UIPlayerAvatar.cs:35 public class UIPlayerAvatar : MonoBehaviour，是全项目唯一的 UIPlayerAvatar 类型声明；GetComponent 本身是 Unity 外部符号，但泛型实参是项目类型。rg -o 'GetComponent<UIPlayerAvatar>' 命中 161 处，加上 new/字段声明等引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Common/UIComponent/UIPlayerAvatar.cs", line = 35, anchor = "public class UIPlayerAvatar : MonoBehaviour" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs", line = 51, anchor = "V.GoCPlayerAvatar.GetComponent<UIPlayerAvatar>().SetAvatar(rewardInfo.head);" }]
+
+[[case]]
+id = "l-generic-02"
+category = "generic"
+file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs"
+line = 148
+col = 79
+token = "ScrollRectFilter"
+anchor = "itemContainer.RefreshAssetAdd(assetAdd, V.GoList.GetComponent<ScrollRectFilter>());"
+why = "GetComponent<T> 的泛型实参是 TFWCore 里的项目类型 ScrollRectFilter，且整行还嵌在另一个调用的实参位置上"
+source = "人工阅读：ScrollRectFilter.cs:24 public class ScrollRectFilter : MonoBehaviour，全项目唯一声明；UIRewardPreviewItem.cs:31 public void RefreshAssetAdd(AssetAdd assetAdd, ScrollRectFilter filter) 也印证实参类型。rg -o 'GetComponent<ScrollRectFilter>' 命中 73 处，引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Common/ScrollRectFilter.cs", line = 24, anchor = "public class ScrollRectFilter : MonoBehaviour" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs", line = 148, anchor = "itemContainer.RefreshAssetAdd(assetAdd, V.GoList.GetComponent<ScrollRectFilter>());" }]
+
+[[case]]
+id = "l-generic-03"
+category = "generic"
+file = "Assets/X1/ScriptGame/Worker/WorkerSatisfy/UIWorkerCountChangeWnd.cs"
+line = 150
+col = 29
+token = "TFWText"
+anchor = "go.GetComponent<TFWText>().text = property.Name();"
+why = "GetComponent<T> 的泛型实参是项目自己的 UGUI 组件 TFWText（继承 UnityEngine.UI.Text），不能落到 Unity 的 Text"
+source = "人工阅读：TFWText.cs:20 public class TFWText : Text，是全项目唯一的 TFWText 类型声明；基类 Text 是外部符号，按名称很容易错到它上面。rg -o 'GetComponent<TFWText>' 命中 204 处，引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/Component/TFWText.cs", line = 20, anchor = "public class TFWText : Text" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerSatisfy/UIWorkerCountChangeWnd.cs", line = 150, anchor = "go.GetComponent<TFWText>().text = property.Name();" }]
+
+[[case]]
+id = "l-generic-04"
+category = "generic"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 556
+col = 60
+token = "TimeScale"
+anchor = "listener.OnTimeScaleChanged(groupTimeScale.TimeScale);"
+why = "groupTimeScale 是 Dictionary<int, ActMgr.GroupTimeScale>.TryGetValue 的 out var，类型来自泛型实参 V 的替换；项目里另有 3 个同名 TimeScale 字段"
+source = "人工阅读：ActSet.cs:540 public void NotifyTimeScaleChanged(in Dictionary<int, ActMgr.GroupTimeScale> tab)，546 行 tab.TryGetValue(GroupTimeID, out var groupTimeScale)，out var 的类型是字典的 TValue = ActMgr.GroupTimeScale；ActMgr.TimeGroup.cs:21 class GroupTimeScale，26 行 public float TimeScale。rg -w TimeScale 全项目 20 行，逐条排除：ParticlesTargetForceJobData.cs:185/286 是另两个同名字段（它们的引用在 ParticlesTargetForceSystem.cs:270/353、ParticleTargetForceJob.cs:79、ParticlesTargetForce.cs:162/173）、FloatingSolveCommon.cs:72 是常量、FogNavigationMove.cs 的 m_WaterSystem.TimeScale 是外部类型、UIDialog/UIDialogLogic 三处是注释；剩下属于 GroupTimeScale.TimeScale 的引用是 ActMgr.TimeGroup.cs:82、96、97 与本行 ActSet.cs:556，故 refs = 4"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs", line = 26, anchor = "public float TimeScale;" }]
+refs = 4
+
+[[case]]
+id = "l-generic-05"
+category = "generic"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 100
+col = 31
+token = "ChangeState"
+anchor = "m_JobStateMachine.ChangeState(WorkerJobState.Free);"
+why = "项目自定义泛型类 StateMachine<T> 的成员；项目里 ChangeState 有 10 处同名声明，包括另一个 TFWCore 的 StateMachine<T>"
+source = "人工阅读：WorkerJobModel.cs:16 private StateMachine<WorkerJobState> m_JobStateMachine，using X1.ScriptCore（第 4 行）指向 ScriptCore/Common/StateMachine/StateMachine.cs:9 public class StateMachine<T> where T : struct, Enum，69 行 public void ChangeState(T newState)。TFWCore/Script/Common/StateMachine.cs:105 的 ChangeState(IState<T>) 以及 LMainMissionRaft / MBattleTeam / MBattleActor / UnifyObjectStateCtr / ActorUvAnim / UIFloatRewardBaseContainer 上的同名方法都要排除；引用较分散，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs", line = 69, anchor = "public void ChangeState(T newState)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs", line = 100, anchor = "m_JobStateMachine.ChangeState(WorkerJobState.Free);" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs", line = 138, anchor = "m_JobStateMachine.ChangeState(WorkerJobState.None);" },
+]
+
+[[case]]
+id = "l-generic-06"
+category = "generic"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 15
+col = 61
+token = "CurrentState"
+anchor = "public WorkerJobState JobState => m_JobStateMachine.CurrentState;"
+why = "表达式体属性里访问泛型类 StateMachine<T> 的 T 类型属性 CurrentState；项目里有 8 处同名声明"
+source = "人工阅读：同文件 16 行 private StateMachine<WorkerJobState> m_JobStateMachine；StateMachine.cs:11 public T CurrentState { get; private set; }，代入 T=WorkerJobState 正好与属性返回类型吻合。rg 统计 CurrentState 相关声明 8 处（含 TFWCore 的另一套状态机），引用较多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs", line = 11, anchor = "public T CurrentState { get; private set; }" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs", line = 15, anchor = "public WorkerJobState JobState => m_JobStateMachine.CurrentState;" }]
+
+[[case]]
+id = "l-generic-07"
+category = "generic"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 114
+col = 20
+token = "Execute"
+anchor = "restAI.Execute(StopJob);"
+why = "restAI 的类型来自泛型方法 CreateWorkerAI<WorkerCodeAIRest>() 的返回值 T；Execute 是全项目同名最多的方法之一（261 处声明）"
+source = "人工阅读：112 行 var restAI = m_AIFactory.CreateWorkerAI<WorkerCodeAIRest>()，WorkerAIFactory.cs:19 public T CreateWorkerAI<T>() where T : WorkerAI, new() 返回 T；WorkerCodeAIRest.cs:56 public override void Execute(Action onComplete) 覆盖了 WorkerAI.cs:16 的 virtual 版本，静态类型为 WorkerCodeAIRest 时绑定到 56 行。rg -w WorkerCodeAIRest 全项目只有类声明与 CreateWorkerAI<WorkerCodeAIRest> 这一处创建点，故接收者静态类型为 WorkerCodeAIRest 的 Execute 调用只有本行，refs = 1"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs", line = 56, anchor = "public override void Execute(Action onComplete)" }]
+refs = 1
+
+# ============================================================
+# 继承与重写（6）
+# ============================================================
+
+[[case]]
+id = "l-inheritance-01"
+category = "inheritance"
+file = "Assets/X1/ScriptCore/Behaviour/BehaviorTreeMgr.cs"
+line = 31
+col = 18
+token = "Init"
+anchor = "base.Init();"
+why = "base.Init() 要落到泛型基类 SingletonActivableModule<T>；同一个文件里还有 3 个同名 Init 声明，全项目 490 多处"
+source = "人工阅读：BehaviorTreeMgr.cs:20 public class BehaviorTreeMgr : SingletonActivableModule<BehaviorTreeMgr>；ModuleBase.cs:52 public abstract class SingletonActivableModule<T>，67 行 public virtual void Init() { }。同文件 22 行 SingletonModule<T>.Init、40 行 SingletonSubModule<T>.Init、94 行 SingletonActivableSubModule<T>.Init 都是干扰项。引用远超 20，用 refs_include（本处与 OptimizedBehaviorTreeMgr.cs:39，后者同样继承 SingletonActivableModule<T>）"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Module/ModuleBase.cs", line = 67, anchor = "public virtual void Init() { }" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Behaviour/BehaviorTreeMgr.cs", line = 31, anchor = "base.Init();" },
+    { file = "Assets/X1/ScriptCore/Behaviour/OptimizedBehaviorTreeMgr.cs", line = 39, anchor = "base.Init();" },
+]
+
+[[case]]
+id = "l-inheritance-02"
+category = "inheritance"
+file = "Assets/X1/ScriptCore/Act/Act/ActGroup.cs"
+line = 100
+col = 18
+token = "OnEnd"
+anchor = "base.OnEnd(isCancel);"
+why = "base.OnEnd 要落到抽象基类 Act 的 protected virtual 声明；项目里 OnEnd 有 40 处同名声明"
+source = "人工阅读：ActGroup.cs:11 public class ActGroup : Act, IActDynTargetListener，直接基类是 Act；Act.cs:161 protected virtual void OnEnd(bool isCancel = false)。rg 统计 OnEnd 声明 40 处（ActPlayablesRunner、ActSequence、ActUnityAudioSound、ActWwiseSound 等都有 override），引用较多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 161, anchor = "protected virtual void OnEnd(bool isCancel = false)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActGroup.cs", line = 100, anchor = "base.OnEnd(isCancel);" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSequence.cs", line = 89, anchor = "base.OnEnd(isCancel);" },
+]
+
+[[case]]
+id = "l-inheritance-03"
+category = "inheritance"
+file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs"
+line = 20
+col = 18
+token = "ReInit"
+anchor = "base.ReInit(workerId);"
+why = "三层继承 WorkerCodeAIRest -> WorkerCodeAI -> WorkerAI，base.ReInit 要停在中间层的 override，不能穿到 WorkerAI 的 virtual"
+source = "人工阅读：WorkerCodeAIRest.cs:7 class WorkerCodeAIRest : WorkerCodeAI；WorkerCodeAI.cs:12 abstract class WorkerCodeAI : WorkerAI，16 行 public override void ReInit(long workerId)；因此最近的基类声明是 WorkerCodeAI.cs:16，而不是 WorkerAI.cs:11。与 l-inheritance-04 构成对照（同样一行 base.ReInit(workerId);，期望不同）。rg 统计 ReInit 声明 19 处，调用点 30 余处，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAI.cs", line = 16, anchor = "public override void ReInit(long workerId)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs", line = 20, anchor = "base.ReInit(workerId);" },
+    { file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs", line = 91, anchor = "m_CurrentAI.ReInit(m_WorkerId);" },
+]
+
+[[case]]
+id = "l-inheritance-04"
+category = "inheritance"
+file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAI.cs"
+line = 18
+col = 18
+token = "ReInit"
+anchor = "base.ReInit(workerId);"
+why = "与 l-inheritance-03 完全相同的一行文本，但所在类不同，期望落到最上层 WorkerAI 的 virtual 声明"
+source = "人工阅读：WorkerCodeAI.cs:12 abstract class WorkerCodeAI : WorkerAI，所以 base 是 WorkerAI；WorkerAI.cs:11 public virtual void ReInit(long workerId)。按名称或按行文本都无法与 l-inheritance-03 区分，必须靠所在类型的继承链。引用较多，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAI.cs", line = 11, anchor = "public virtual void ReInit(long workerId)" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAI.cs", line = 18, anchor = "base.ReInit(workerId);" }]
+
+[[case]]
+id = "l-inheritance-05"
+category = "inheritance"
+file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs"
+line = 58
+col = 18
+token = "Execute"
+anchor = "base.Execute(onComplete);"
+why = "中间层 WorkerCodeAI 没有覆盖 Execute，base.Execute 要穿两层落到 WorkerAI；Execute 全项目 261 处同名声明"
+source = "人工阅读：WorkerCodeAI.cs 通篇只覆盖了 ReInit / DeInit / Cancel / Complete，没有 Execute；所以 WorkerCodeAIRest 的 base.Execute 解析到 WorkerAI.cs:16 public virtual void Execute(Action onComplete)。与 l-inheritance-03 对照：同一个类里 base.ReInit 停在中间层、base.Execute 却要穿透。引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAI.cs", line = 16, anchor = "public virtual void Execute(Action onComplete)" }]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs", line = 58, anchor = "base.Execute(onComplete);" }]
+
+[[case]]
+id = "l-inheritance-06"
+category = "inheritance"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 167
+col = 24
+token = "SetActive"
+anchor = "action.SetActive(isActive);"
+why = "经基类引用（List<Act> 的元素）调用 virtual 成员，期望绑定基类 Act 的声明而不是任何子类 override，也不是 Unity 的 GameObject.SetActive"
+source = "人工阅读：ActSet.cs:165 foreach (var action in m_ExecutingActs)，m_ExecutingActs 是 List<Act>（99 行）；Act.cs:154 public virtual void SetActive(bool isActive)。ActBulletFire/ActDirectionalBullet/ActExternalEventEffect/ActLightningChain/ActLinkEffect/ActMultiTrackEffect/ActTrackEffect 都有 override SetActive，加上 Unity GameObject.SetActive，rg 统计同名声明 80 处，引用远超 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 154, anchor = "public virtual void SetActive(bool isActive)" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 167, anchor = "action.SetActive(isActive);" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 189, anchor = "action.SetActive(m_OnLodChange?.Invoke() ?? true);" },
+]
+
+# ============================================================
+# 接口实现（6）
+# ============================================================
+
+[[case]]
+id = "l-interface-01"
+category = "interface"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 556
+col = 26
+token = "OnTimeScaleChanged"
+anchor = "listener.OnTimeScaleChanged(groupTimeScale.TimeScale);"
+why = "经接口变量调用，期望落到接口方法声明；项目里 OnTimeScaleChanged 有 12 处同名（两个接口 + 4 个显式实现 + 多个公开实现）"
+source = "人工阅读：ActSet.cs:551 var listener = m_TimeScaleListeners[idx]，26 行 private readonly List<IActTimeScaleListener> m_TimeScaleListeners；接口方法在 IActTimeScaleListener.cs:13 void OnTimeScaleChanged(float timeScale)。rg -w OnTimeScaleChanged --type cs 全项目 12 行，逐条排除：IMutiTrackTargetFollower.cs:26 是另一个接口的同名方法、ActTrackEffect.cs:567/ActEffect.cs:827/ActDirectionalBullet.cs:350/ActAnimation.cs:278 是显式实现（属于各自类的成员）、ActMultiTrackEffect.cs:561/MultiTrackEffect.cs:81/ParticlesTargetForce.cs:186 是公开同名方法、ActMultiTrackEffect.cs:592 与 MultiTrackEffect.cs:91 的接收者分别是 IMutiTrackTargetFollower 与 ParticlesTargetForce；经 IActTimeScaleListener 调用的只有本行，故 refs = 1"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/IActTimeScaleListener.cs", line = 13, anchor = "void OnTimeScaleChanged(float timeScale);" }]
+refs = 1
+
+[[case]]
+id = "l-interface-02"
+category = "interface"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 580
+col = 26
+token = "OnSkillFire"
+anchor = "listener.OnSkillFire(SkillFireIndex);"
+why = "接口调用的唯一入口（实现是显式接口实现，只能经接口调到）；项目里另有 RBattleHero/RTestBattleHero 的同名虚方法"
+source = "人工阅读：ActSet.cs:575 var listener = m_SkillFireListeners[idx]，31 行 private readonly List<IActSkillFireListener> m_SkillFireListeners；IActSkillFireListener.cs:11 public void OnSkillFire(int index)。rg -w OnSkillFire --type cs 共 8 行：RTestBattleHero.cs:36/40、RBattleHero.cs:60/70/135 是另一组签名完全不同的同名方法（MBattleTeam 参数），ActSequence.cs:277 是显式实现（声明不是引用），IActSkillFireListener.cs:11 是定义处；剩下 ActSet.cs:580 是唯一经接口的调用，故 refs = 1"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/IActSkillFireListener.cs", line = 11, anchor = "public void OnSkillFire(int index);" }]
+refs = 1
+
+[[case]]
+id = "l-interface-03"
+category = "interface"
+file = "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs"
+line = 592
+col = 42
+token = "OnTimeScaleChanged"
+anchor = "multiTrackTargetFollower.OnTimeScaleChanged(timeScale);"
+why = "与 l-interface-01 成对：同一个方法名、同一个参数类型，但接口是 IMutiTrackTargetFollower，期望落到另一个接口文件"
+source = "人工阅读：ActMultiTrackEffect.cs:586 private void UpdateEffecTimeScale(Effect effect, float timeScale, IMutiTrackTargetFollower multiTrackTargetFollower)，形参类型就是接口；IMutiTrackTargetFollower.cs:26 public void OnTimeScaleChanged(float timeScale)。同文件 561 行该类自己还有一个 public void OnTimeScaleChanged(float)（实现 IActTimeScaleListener），按名称解析极易错到它身上。rg -w IMutiTrackTargetFollower 全项目只有 6 行：接口声明、两个实现类（ParticlesTargetForce、MultiTrackEffect）、ActMultiTrackEffect.cs:169 的字段与 571/586 两个形参；在这些接口类型表达式上调用 OnTimeScaleChanged 的只有 592 行，故 refs = 1"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Utility/MultiTrackEffect/IMutiTrackTargetFollower.cs", line = 26, anchor = "public void OnTimeScaleChanged(float timeScale);" }]
+refs = 1
+
+[[case]]
+id = "l-interface-04"
+category = "interface"
+file = "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs"
+line = 591
+col = 77
+token = "IsValid"
+anchor = "if(null != multiTrackTargetFollower && multiTrackTargetFollower.IsValid())"
+why = "经接口调用 IsValid，而 IsValid 在项目与 Unity API 里都极其泛滥（rg -w 命中 750 多行）"
+source = "人工阅读：multiTrackTargetFollower 是 586 行形参，类型 IMutiTrackTargetFollower；IMutiTrackTargetFollower.cs:37 public bool IsValid()。rg -w IsValid 全项目 750 多行，绝大多数是 Scene.IsValid() 等外部符号与另外 11 处同名声明；接口类型表达式只有 ActMultiTrackEffect.cs:169 的字段 m_MutiTrackTargetFollower 与 571/586 两个形参，rg 'MutiTrackTargetFollower\\w*\\.IsValid' 精确命中 ActMultiTrackEffect.cs:440、486、591 三处，故 refs = 3"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Utility/MultiTrackEffect/IMutiTrackTargetFollower.cs", line = 37, anchor = "public bool IsValid();" }]
+refs = 3
+
+[[case]]
+id = "l-interface-05"
+category = "interface"
+file = "Assets/X1/ScriptGame/Launch/AplLayer/AplLayerMgr.cs"
+line = 27
+col = 34
+token = "DeInit"
+anchor = "applicationLayer.DeInit();"
+why = "foreach 变量的类型来自 Dictionary<Type, IAplLayer>.Values，经接口调用 DeInit；DeInit 是全项目第 6 泛滥的方法名（690 处声明）"
+source = "人工阅读：AplLayerMgr.cs:13 private Dictionary<Type, IAplLayer> m_ApplicationLayerMap，26 行 foreach (var applicationLayer in m_ApplicationLayerMap.Values)，元素类型 IAplLayer；IContract.cs:17 public interface IAplLayer，20 行 void DeInit()。DeInit 全项目有 690 处同名声明（ModuleBase.cs:27/45/72/99、ModelLayer<T>/ServiceLayer<T> 等）需全部排除；rg -w IAplLayer 全项目只有接口声明、各实现类的基类列表与 AplLayerMgr.cs:13/36/64/79 这几处，IAplLayer 类型表达式上的 DeInit 调用是 AplLayerMgr.cs:27、88、99 三处，故 refs = 3"
+[case.expect]
+defs = [{ file = "Assets/Launch/Flow/IContract.cs", line = 20, anchor = "void DeInit();" }]
+refs = 3
+
+[[case]]
+id = "l-interface-06"
+category = "interface"
+file = "Assets/X1/ScriptCore/Act/Act/ActSequence.cs"
+line = 277
+col = 36
+token = "OnSkillFire"
+anchor = "void IActSkillFireListener.OnSkillFire(int index)"
+why = "显式接口实现：这个成员只能经接口调用，自身没有任何直接引用，光标放在方法名上应绑定到它自己这一处声明"
+source = "人工阅读：ActSequence.cs:12 public class ActSequence : Act, IActSkillFireListener，277 行是显式实现（带接口限定名），C# 里它不是类的公开成员，调用点 ActSet.cs:580 绑定的是接口成员 IActSkillFireListener.cs:11 而不是这里。rg -w OnSkillFire 共 8 行，没有任何一行以 ActSequence 实例直接调用该成员，故不含定义处的引用数为 0"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/ActSequence.cs", line = 277, anchor = "void IActSkillFireListener.OnSkillFire(int index)" }]
+refs = 0
+
+# ============================================================
+# partial（6）：4 个多处类型声明 + 2 个跨文件成员
+# ============================================================
+
+[[case]]
+id = "l-partial-01"
+category = "partial"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 185
+col = 26
+token = "ActMgr"
+anchor = "var action = ActMgr.CreateAct(this, actData, m_OnLodChange);"
+why = "ActMgr 是跨 3 个文件的 static partial 类，定义必须同时列出三处声明"
+source = "人工阅读 + rg -n 'partial class ActMgr' Assets/：共 3 处声明——ActMgr.cs:20 public static partial class ActMgr、ActMgr.TimeGroup.cs:11、ActMgr.Preload.cs:10，全项目没有第四处同名类型。ActMgr 被引用上百次（ActMgr.StartActSet / ActMgr.DestroyAct / ActMgr.InvalidTimeGroup 等），用 refs_include"
+[case.expect]
+defs = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActMgr.cs", line = 20, anchor = "public static partial class ActMgr" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs", line = 11, anchor = "public partial class ActMgr" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActMgr.Preload.cs", line = 10, anchor = "public partial class ActMgr" },
+]
+refs_include = [{ file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 185, anchor = "var action = ActMgr.CreateAct(this, actData, m_OnLodChange);" }]
+
+[[case]]
+id = "l-partial-02"
+category = "partial"
+file = "Assets/X1/ScriptGame/Worker/WorkerBubble/WorkerBubbleMgr.cs"
+line = 70
+col = 26
+token = "WorkerMgr"
+anchor = "category ??= WorkerMgr.I.GetWorkerActionModel(workerId)?.WidgetCategory ?? WidgetCategory.City;"
+why = "WorkerMgr 是跨 6 个文件的 partial 类，6 处声明要全部列出"
+source = "rg -n 'partial class WorkerMgr' Assets/ 共 6 处：WorkerMgr.cs:11（带基类 Singleton<WorkerMgr>）、WorkerMgr.Cfg.cs:18、WorkerMgr.Effect.cs:11、WorkerMgr.JobExtend.cs:12、WorkerMgr.Sort.cs:6、WorkerMgr.Timeline.cs:6；全项目没有其他同名类型。WorkerMgr.I 引用上百处，用 refs_include"
+[case.expect]
+defs = [
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs", line = 11, anchor = "public partial class WorkerMgr : Singleton<WorkerMgr>" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs", line = 18, anchor = "public partial class WorkerMgr" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Effect.cs", line = 11, anchor = "public partial class WorkerMgr" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.JobExtend.cs", line = 12, anchor = "public partial class WorkerMgr" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs", line = 6, anchor = "public partial class WorkerMgr" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Timeline.cs", line = 6, anchor = "public partial class WorkerMgr" },
+]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerBubble/WorkerBubbleMgr.cs", line = 70, anchor = "category ??= WorkerMgr.I.GetWorkerActionModel(workerId)?.WidgetCategory ?? WidgetCategory.City;" }]
+
+[[case]]
+id = "l-partial-03"
+category = "partial"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs"
+line = 32
+col = 16
+token = "WorkerJobModel"
+anchor = "public WorkerJobModel GetWorkerJobModel(long workerId)"
+why = "方法返回类型位置上的 partial 类型引用，WorkerJobModel 有 5 处声明；同名的还有 LCityWorker 上的同名属性"
+source = "rg -n 'partial class WorkerJobModel' Assets/ 共 5 处：WorkerJobModel.cs:11、WorkerJobModel.Build.cs:5、WorkerJobModel.Extend.cs:9、WorkerJobModel.Gather.cs:3、WorkerJobModel.Incident.cs:8。LCityWorker.cs:18 的 public WorkerJobModel WorkerJobModel 是同名属性（成员，不是类型），必须排除。类型引用较多（字段、属性、new、返回类型），用 refs_include"
+[case.expect]
+defs = [
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs", line = 11, anchor = "public partial class WorkerJobModel" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Build.cs", line = 5, anchor = "public partial class WorkerJobModel" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Extend.cs", line = 9, anchor = "public partial class WorkerJobModel" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Gather.cs", line = 3, anchor = "public partial class WorkerJobModel" },
+    { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Incident.cs", line = 8, anchor = "public partial class WorkerJobModel" },
+]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs", line = 32, anchor = "public WorkerJobModel GetWorkerJobModel(long workerId)" }]
+
+[[case]]
+id = "l-partial-04"
+category = "partial"
+file = "Assets/X1/ScriptGame/Worker/WorkerCommand/WorkerJobCommandMgr.cs"
+line = 76
+col = 17
+token = "WorkerUtil"
+anchor = "if (WorkerUtil.FilterWorkerJobCommand(commandType, workerId, targetId))"
+why = "static partial 工具类跨 3 个文件，静态调用点上的类型名要同时指向三处声明"
+source = "rg -n 'partial class WorkerUtil' Assets/ 共 3 处：WorkerUtil.cs:11、WorkerUtil.Cfg.cs:13、WorkerUtil.Extend.cs:3，都是 public static partial class WorkerUtil；全项目没有其他同名类型。WorkerUtil.xxx 调用较多，用 refs_include"
+[case.expect]
+defs = [
+    { file = "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.cs", line = 11, anchor = "public static partial class WorkerUtil" },
+    { file = "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.Cfg.cs", line = 13, anchor = "public static partial class WorkerUtil" },
+    { file = "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.Extend.cs", line = 3, anchor = "public static partial class WorkerUtil" },
+]
+refs_include = [{ file = "Assets/X1/ScriptGame/Worker/WorkerCommand/WorkerJobCommandMgr.cs", line = 76, anchor = "if (WorkerUtil.FilterWorkerJobCommand(commandType, workerId, targetId))" }]
+
+[[case]]
+id = "l-partial-05"
+category = "partial"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 515
+col = 39
+token = "InvalidTimeGroup"
+anchor = "if (GroupTimeID == ActMgr.InvalidTimeGroup)"
+why = "partial 类型的跨文件成员：常量声明在 ActMgr.TimeGroup.cs，而 ActMgr 的主文件是 ActMgr.cs"
+source = "人工阅读：ActMgr.TimeGroup.cs:16 public const int InvalidTimeGroup = -1，是 ActMgr 三个 partial 片段里唯一的声明处（ActMgr.cs 与 ActMgr.Preload.cs 都只是使用）。rg -w InvalidTimeGroup 全项目 20 行以上（ActHelper、ActSet、ActMgr.TimeGroup、ActMgr、ActAnimation、RTowerUnit 等），引用 ≥ 20，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs", line = 16, anchor = "public const int InvalidTimeGroup = -1;" }]
+refs_include = [
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 515, anchor = "if (GroupTimeID == ActMgr.InvalidTimeGroup)" },
+    { file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs", line = 83, anchor = "public int GroupTimeID { get; private set; } = ActMgr.InvalidTimeGroup;" },
+]
+
+[[case]]
+id = "l-partial-06"
+category = "partial"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs"
+line = 58
+col = 41
+token = "GetWorkerOccupation"
+anchor = "return allWorker.Where(p => GetWorkerOccupation(p.ID) == occupation).Select(p => p.ID);"
+why = "partial 类型的跨文件成员：在 WorkerMgr.cs 里无限定名调用，声明却在 WorkerMgr.Cfg.cs；还嵌在 LINQ lambda 里"
+source = "人工阅读：WorkerMgr.Cfg.cs:119 public int GetWorkerOccupation(long workerId) 是唯一声明。rg -w GetWorkerOccupation --type cs 全项目共 13 行，去掉声明后逐条核对为 12 处引用：WorkerMgr.Sort.cs:36/47/75/94/123/124/246/247（8 处）、ConditionWorker.cs:18、UIPopWorkerDismissLogic.cs:171/183（2 处）、本行 WorkerMgr.cs:58；无 nameof 用法，无同名的其他符号，故 refs = 12"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs", line = 119, anchor = "public int GetWorkerOccupation(long workerId)" }]
+refs = 12

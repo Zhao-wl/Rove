@@ -1,0 +1,795 @@
+project = "medium"
+
+[[case]]
+id = "m-lambda-01"
+category = "lambda"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 62
+col = 78
+token = "Chunk"
+anchor = "if (slots.Count != 0 && new HashSet<int>(slots.ConvertAll(s => s.Chunk.Chunk)).Count != 4)"
+why = "ConvertAll 的 lambda 参数 s 由 List<Slot> 推断，s.Chunk 是嵌套类 Slot 的字段，不是同行后面 GrfPitchChunkReference.Chunk"
+source = "人工阅读：slots 声明为 List<Slot>（GrfPitchTextureView.cs:49），Slot 是本文件嵌套类（198），其字段 Chunk 在 203 行；rg -w Chunk --type cs 全项目只有两处声明：GrfPitchChunkReference.cs:16 的属性与本文件 203 行的字段，同行第二个 Chunk 属于前者，按名称解析无法区分"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 203, anchor = "internal readonly GrfPitchChunkReference Chunk;" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 62, anchor = "if (slots.Count != 0 && new HashSet<int>(slots.ConvertAll(s => s.Chunk.Chunk)).Count != 4)" },
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 91, anchor = "slot.Owned = clones[slot.Chunk.Chunk];" },
+]
+
+[[case]]
+id = "m-lambda-02"
+category = "lambda"
+file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs"
+line = 26
+col = 47
+token = "Time"
+anchor = "m_Samples.RemoveAll(s => time - s.Time >= m_Settings.TrailLifetime);"
+why = "RemoveAll 的 lambda 参数 s 由 List<Sample> 推断，s.Time 是本文件嵌套结构 Sample 的字段"
+source = "人工阅读：m_Samples 声明为 List<Sample>（UnityPowerKickTrail.cs:18），Sample 是本文件嵌套结构（112），字段 Time 在 116 行；rg -w Time --type cs 命中数百处（MatchTime/Context.Time 等同名成员遍布全项目），按名称必然解析错，故引用用 refs_include（26 与 66 两处都确认属于本嵌套结构）"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs", line = 116, anchor = "internal readonly double Time;" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs", line = 26, anchor = "m_Samples.RemoveAll(s => time - s.Time >= m_Settings.TrailLifetime);" },
+    { file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs", line = 66, anchor = "float alpha = (float)(1 - (time - sample.Time) / m_Settings.TrailLifetime);" },
+]
+
+[[case]]
+id = "m-lambda-03"
+category = "lambda"
+file = "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs"
+line = 40
+col = 79
+token = "Id"
+anchor = "m_NodeIndices = new RigNodeIndex(nodeList.ConvertAll(node => node.Id));"
+why = "ConvertAll 的 lambda 参数 node 由 List<RigNodeDefinition> 推断，node.Id 是 RigNodeDefinition 的属性"
+source = "人工阅读：nodeList 为 List<RigNodeDefinition>（构造参数），lambda 元素类型随之确定；RigNodeDefinition.Id 声明在 RigNodeDefinition.cs:7；rg -w Id --type cs 命中上千处（几乎每个值对象都有 Id），引用改用 refs_include，另取 RigDefinition.cs:65 的同形写法（nodes 同为 List<RigNodeDefinition>）"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/LogicalRig/RigNodeDefinition.cs", line = 7, anchor = "public RigNodeId Id { get; }" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs", line = 40, anchor = "m_NodeIndices = new RigNodeIndex(nodeList.ConvertAll(node => node.Id));" },
+    { file = "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs", line = 65, anchor = "m_NodeIndices = new RigNodeIndex(nodes.ConvertAll(node => node.Id));" },
+]
+
+[[case]]
+id = "m-lambda-04"
+category = "lambda"
+file = "Assets/Football/Runtime/Integration/Skills/Timelines/Session/MatchTimelineRuntime.cs"
+line = 132
+col = 63
+token = "Context"
+anchor = "foreach (var end in m_Ends.FindAll(e => e.Context.Time.Units == time))"
+why = "FindAll 的 lambda 参数 e 由 List<EndSkillRequest> 推断，Context 还来自基类 EffectRequest，需要两步语义"
+source = "人工阅读：m_Ends 声明为 List<EndSkillRequest>（MatchTimelineRuntime.cs:16），EndSkillRequest : EffectRequest（EndSkillRequest.cs:5），Context 属性声明在基类 EffectRequest.cs:8；rg -w Context --type cs 命中极多（含 MatchProcessingScope/EffectContext 等同名成员），用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/SkillSystem/Contracts/Effects/EffectRequest.cs", line = 8, anchor = "public EffectContext Context { get; }" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Integration/Skills/Timelines/Session/MatchTimelineRuntime.cs", line = 132, anchor = "foreach (var end in m_Ends.FindAll(e => e.Context.Time.Units == time))" },
+    { file = "Assets/Football/Runtime/Integration/Skills/Timelines/Session/MatchTimelineRuntime.cs", line = 145, anchor = "m_Ends.RemoveAll(e => e.Context.Time.Units == time);" },
+]
+
+[[case]]
+id = "m-lambda-05"
+category = "lambda"
+file = "Assets/Football/Runtime/Core/AnimationResources/AnimationDefinition.cs"
+line = 30
+col = 80
+token = "NodeId"
+anchor = "m_TrackIndices = new RigNodeIndex(tracks.ConvertAll(track => track.NodeId));"
+why = "ConvertAll 的 lambda 参数 track 由 List<AnimationTrack> 推断，track.NodeId 是 AnimationTrack 的属性而非 RigNodeId 类型名"
+source = "人工阅读：tracks 是构造函数参数 List<AnimationTrack>（AnimationDefinition.cs:23），AnimationTrack.NodeId 声明在 AnimationTrack.cs:9；rg -w NodeId --type cs 还命中 AnimationTrack.cs:8/15/16 的自身使用与 AnimationNodeIndices.cs:28 的 tracks[i].NodeId，引用用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/AnimationResources/AnimationTrack.cs", line = 9, anchor = "public RigNodeId NodeId { get; }" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/AnimationResources/AnimationDefinition.cs", line = 30, anchor = "m_TrackIndices = new RigNodeIndex(tracks.ConvertAll(track => track.NodeId));" },
+    { file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs", line = 28, anchor = "indices[i] = rig.IndexOf(tracks[i].NodeId);" },
+]
+
+[[case]]
+id = "m-lambda-06"
+category = "lambda"
+file = "Assets/Football/Runtime/Core/AnimationResources/Loading/RigResourceLoader.cs"
+line = 38
+col = 51
+token = "Parent"
+anchor = "if (!geometry.Exists(item => item.Parent == index))"
+why = "Exists 的 lambda 参数 item 由 List<BodyGeometryDefinition> 推断，Parent 与 RigNodeDefinition.Parent 同名"
+source = "人工阅读：geometry 声明为 new List<BodyGeometryDefinition>()（RigResourceLoader.cs:27），BodyGeometryDefinition.Parent 在 BodyGeometryDefinition.cs:8；同文件 37 行的 nodes.FindIndex(node => node.Id...) 对应 RigNodeDefinition（其 Parent 在 RigNodeDefinition.cs:9），两个 Parent 同名不同类型；rg -w Parent --type cs 命中数十处（含 Transform.parent 之外的多个项目成员），引用用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/LogicalRig/BodyGeometryDefinition.cs", line = 8, anchor = "public int Parent { get; }" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/AnimationResources/Loading/RigResourceLoader.cs", line = 38, anchor = "if (!geometry.Exists(item => item.Parent == index))" },
+    { file = "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs", line = 45, anchor = "if (!names.Add(item.Name) || item.Parent < 0 || item.Parent >= nodeList.Count)" },
+]
+
+[[case]]
+id = "m-conditional-01"
+category = "conditional"
+branch = "active"
+file = "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs"
+line = 2551
+col = 60
+token = "LogFileName"
+anchor = "s_LogPath = Path.Combine(Application.dataPath, LogFileName);"
+why = "#if UNITY_EDITOR 生效一侧引用外层类的常量 LogFileName，与同文件嵌套类 ScrollDiag 的同名常量冲突"
+source = "人工阅读：UIParticleRTDebugLogger 外层类常量 LogFileName 声明在第 24 行，嵌套类 ScrollDiag 另有同名常量在 2717 行；本行在 EnsureInitialized 内、属外层类，故绑定 24 行。Coffee.UIParticle.csproj 的 DefineConstants 含 UNITY_EDITOR，本行为生效侧。rg -w LogFileName 全项目 6 处：24/2551/2553（外层）与 2717/2927/2929（ScrollDiag），外层常量在源码中出现于 2551、2553 两处，但 2553 行位于 #else 不生效一侧，编译器不绑定，精确层“与编译器一致”的口径只计生效一侧的 1 处（不生效一侧由 inactive 用例单独衡量）"
+[case.expect]
+defs = [{ file = "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs", line = 24, anchor = "private const string LogFileName = \"UIParticleRT_Debug.log\";" }]
+refs = 1
+
+[[case]]
+id = "m-conditional-02"
+category = "conditional"
+branch = "active"
+file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs"
+line = 142
+col = 21
+token = "s_Instance"
+anchor = "if (s_Instance) return s_Instance;"
+why = "#if UNITY_EDITOR 生效一侧的静态字段访问，同一行出现两次且该文件 #else 侧还有一处同名使用"
+source = "人工阅读：PreloadedProjectSettings<T> 的 private static T s_Instance 声明在第 131 行，133 行起是 #if UNITY_EDITOR 块，本行在其中；Coffee.UIParticle.csproj 定义了 UNITY_EDITOR，故为生效侧。grep -n s_Instance 该文件共 19 行命中（131 为声明），引用超过 20 处合并计数，改用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 131, anchor = "private static T s_Instance;" }]
+refs_include = [
+    { file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 142, anchor = "if (s_Instance) return s_Instance;" },
+    { file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 147, anchor = "s_Instance = CreateInstance<T>();" },
+]
+
+[[case]]
+id = "m-conditional-03"
+category = "conditional"
+branch = "active"
+file = "Assets/Football/Tests/PlayMode/MatchPresentation/MatchDisplayPlayLifecycleTests.cs"
+line = 28
+col = 57
+token = "FootballArtCatalog"
+anchor = "var catalog = AssetDatabase.LoadAssetAtPath<FootballArtCatalog>("
+why = "#if UNITY_EDITOR 生效一侧的泛型实参类型引用，同名的还有测试类 FootballArtCatalogTests 与大量 catalog 变量"
+source = "人工阅读：Football.PlayMode.Tests.csproj 的 DefineConstants 含 UNITY_EDITOR，本文件 26 行 #if UNITY_EDITOR 为生效侧；FootballArtCatalog 类声明在 FootballArtCatalog.cs:8（public sealed class ... : ScriptableObject）；rg -w FootballArtCatalog --type cs 命中上百处（Editor 迁移与测试大量使用），引用用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/ArtResources/FootballArtCatalog.cs", line = 8, anchor = "public sealed class FootballArtCatalog : ScriptableObject, ISerializationCallbackReceiver" }]
+refs_include = [
+    { file = "Assets/Football/Tests/PlayMode/MatchPresentation/MatchDisplayPlayLifecycleTests.cs", line = 28, anchor = "var catalog = AssetDatabase.LoadAssetAtPath<FootballArtCatalog>(" },
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 19, anchor = "public static GrfPitchTextureView Attach(GameObject root, FootballArtCatalog catalog)" },
+]
+
+[[case]]
+id = "m-conditional-04"
+category = "conditional"
+branch = "inactive"
+file = "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs"
+line = 2553
+col = 70
+token = "LogFileName"
+anchor = "s_LogPath = Path.Combine(Application.persistentDataPath, LogFileName);"
+why = "与 m-conditional-01 同一符号的 #else 不生效侧，验证不生效分支里的名称仍能正确绑定"
+source = "人工阅读：本行在 2552 行 #else 之后、2554 行 #endif 之前，外层 #if 是 UNITY_EDITOR；Coffee.UIParticle.csproj 定义了 UNITY_EDITOR，所以 #else 一侧不生效。符号仍是外层类常量（第 24 行），不是嵌套类 ScrollDiag 的同名常量（2717）。rg -w LogFileName 全项目 6 处，外层常量引用为 2551、2553。已复核：运行器报「该位置没有出现位置记录」——不生效分支整段没有进入索引，定义与引用都查不到；期望值按源码阅读保留，这正是本类用例要量的差距"
+[case.expect]
+defs = [{ file = "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs", line = 24, anchor = "private const string LogFileName = \"UIParticleRT_Debug.log\";" }]
+refs = 2
+
+[[case]]
+id = "m-conditional-05"
+category = "conditional"
+branch = "inactive"
+file = "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs"
+line = 2929
+col = 77
+token = "LogFileName"
+anchor = "var path = Path.Combine(Application.persistentDataPath, LogFileName);"
+why = "不生效侧且位于嵌套类 ScrollDiag 内，期望绑定嵌套类自己的常量而不是外层同名常量"
+source = "人工阅读：2709 行起是 internal static class ScrollDiag，其 private const string LogFileName 在 2717 行；本行在 ScrollDiag.EnsureOpen 的 #else 分支（2928 #else / 2930 #endif，外层 #if UNITY_EDITOR 在 2926），UNITY_EDITOR 已定义故不生效。ScrollDiag 的常量引用为 2927、2929 两处。已复核：运行器报「该位置没有出现位置记录」——不生效分支整段没有进入索引，定义与引用都查不到；期望值按源码阅读保留，这正是本类用例要量的差距"
+[case.expect]
+defs = [{ file = "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs", line = 2717, anchor = "private const string LogFileName = \"UIParticleRT_ScrollDiag.log\";" }]
+refs = 2
+
+[[case]]
+id = "m-conditional-06"
+category = "conditional"
+branch = "inactive"
+file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs"
+line = 177
+col = 37
+token = "s_Instance"
+anchor = "public static T instance => s_Instance ? s_Instance : s_Instance = CreateInstance<T>();"
+why = "不生效 #else 侧，一行里三次引用同一静态字段；表达式体属性的名称解析不能被条件编译跳过"
+source = "人工阅读：176 行 #else 对应 133 行的 #if UNITY_EDITOR，UNITY_EDITOR 已在 Coffee.UIParticle.csproj 定义，故本行不生效；s_Instance 声明在 131 行（在 #if 之外，两侧共用）。引用处超过 20 处，用 refs_include。已复核：运行器报「该位置没有出现位置记录」——不生效分支整段没有进入索引，定义与引用都查不到；期望值按源码阅读保留，这正是本类用例要量的差距"
+[case.expect]
+defs = [{ file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 131, anchor = "private static T s_Instance;" }]
+refs_include = [
+    { file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 177, anchor = "public static T instance => s_Instance ? s_Instance : s_Instance = CreateInstance<T>();" },
+    { file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 197, anchor = "s_Instance = this as T;" },
+]
+
+[[case]]
+id = "m-external-01"
+category = "external"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 22
+col = 22
+token = "GetComponent"
+anchor = "if (root.GetComponent<GrfPitchTextureView>() != null)"
+why = "Unity 泛型 API GetComponent<T>()，v1 索引没有元数据视图，#34 之前必然失败"
+source = "人工阅读：root 是 GameObject 参数（GrfPitchTextureView.cs:19），所以是 UnityEngine.GameObject 上的泛型实例方法；文档注释 ID 按泛型方法写 ``1。项目源码中不存在同名声明（rg -w GetComponent 全部是调用处），引用用 refs_include。已复核：运行器显示索引其实已绑定到同一个文档注释 ID，只是 v1 没有元数据视图所以没有落点，期望值保留（#34 的验收依据）"
+[case.expect]
+external = "M:UnityEngine.GameObject.GetComponent``1"
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 22, anchor = "if (root.GetComponent<GrfPitchTextureView>() != null)" },
+]
+
+[[case]]
+id = "m-external-02"
+category = "external"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 7
+col = 47
+token = "MonoBehaviour"
+anchor = "public sealed class GrfPitchTextureView : MonoBehaviour, IDisposable"
+why = "继承列表里的外部基类型，期望落到 DLL 中的类型而不是无落点"
+source = "人工阅读：GrfPitchTextureView 的基类写在声明行上；MonoBehaviour 在 UnityEngine.CoreModule 中，rg -w MonoBehaviour --type cs 在 Assets 下没有任何项目自己的声明，只有继承与引用处。已复核：运行器显示索引其实已绑定到同一个文档注释 ID，只是 v1 没有元数据视图所以没有落点，期望值保留（#34 的验收依据）"
+[case.expect]
+external = "T:UnityEngine.MonoBehaviour"
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 7, anchor = "public sealed class GrfPitchTextureView : MonoBehaviour, IDisposable" },
+]
+
+[[case]]
+id = "m-external-03"
+category = "external"
+file = "Assets/Football/Runtime/Presentation/Rendering/GrfDeferredLighting.cs"
+line = 63
+col = 47
+token = "position"
+anchor = "Vector3 point = m_Light.transform.position;"
+why = "经项目类型的继承成员 transform 再访问外部属性 position，两步都要走元数据"
+source = "人工阅读：m_Light 是 GrfLightParameters（GrfDeferredLighting.cs:12），它是 Unity 组件，transform 继承自 UnityEngine.Component，position 是 UnityEngine.Transform 的属性；rg -w position --type cs 命中数百处（项目自有 position 参数、局部变量亦多），引用用 refs_include。已复核：运行器显示索引其实已绑定到同一个文档注释 ID，只是 v1 没有元数据视图所以没有落点，期望值保留（#34 的验收依据）"
+[case.expect]
+external = "P:UnityEngine.Transform.position"
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/Rendering/GrfDeferredLighting.cs", line = 63, anchor = "Vector3 point = m_Light.transform.position;" },
+]
+
+[[case]]
+id = "m-external-04"
+category = "external"
+file = "Assets/Football/Editor/AnimationDiagnostics/LogicalPoseWindow.cs"
+line = 45
+col = 19
+token = "Log"
+anchor = "Debug.Log(\"M1_06_POSE_CAPTURE_PASS: 14 nodes / 13 bodies, raw touch frame 16, Apply offset -1\");"
+why = "重载的外部静态方法，期望落到 Log(object) 这个重载而不是 LogFormat/LogError"
+source = "人工阅读：实参是单个 string，匹配 UnityEngine.Debug.Log(object) 重载（另一个重载是 Log(object, Object)）；参数按全名写。rg -w Log --type cs 在 Assets 下没有项目自己的 Log 方法声明，引用用 refs_include。已复核：运行器显示索引其实已绑定到同一个文档注释 ID，只是 v1 没有元数据视图所以没有落点，期望值保留（#34 的验收依据）"
+[case.expect]
+external = "M:UnityEngine.Debug.Log(System.Object)"
+refs_include = [
+    { file = "Assets/Football/Editor/AnimationDiagnostics/LogicalPoseWindow.cs", line = 45, anchor = "Debug.Log(\"M1_06_POSE_CAPTURE_PASS: 14 nodes / 13 bodies, raw touch frame 16, Apply offset -1\");" },
+]
+
+[[case]]
+id = "m-external-05"
+category = "external"
+file = "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs"
+line = 150
+col = 32
+token = "RoundToInt"
+anchor = "int frames = Mathf.RoundToInt(clip.length * clip.frameRate) + 1;"
+why = "外部静态工具方法，参数是 float，期望写出带参数全名的文档 ID"
+source = "人工阅读：clip.length * clip.frameRate 是 float，匹配 UnityEngine.Mathf.RoundToInt(float)；rg -w RoundToInt --type cs 在 Assets 下全部是 Mathf. 调用，没有项目同名声明，引用用 refs_include。已复核：运行器显示索引其实已绑定到同一个文档注释 ID，只是 v1 没有元数据视图所以没有落点，期望值保留（#34 的验收依据）"
+[case.expect]
+external = "M:UnityEngine.Mathf.RoundToInt(System.Single)"
+refs_include = [
+    { file = "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs", line = 150, anchor = "int frames = Mathf.RoundToInt(clip.length * clip.frameRate) + 1;" },
+]
+
+[[case]]
+id = "m-external-06"
+category = "external"
+file = "Assets/Football/Runtime/Core/Mathematics/V3.cs"
+line = 42
+col = 44
+token = "Sqrt"
+anchor = "float length = (float)Math.Sqrt(x * x + y * y + z * z);"
+why = "BCL 符号（非 Unity），验证外部落点不只覆盖 UnityEngine"
+source = "人工阅读：x/y/z 在 39-41 行被显式提升为 double，所以是 System.Math.Sqrt(double)；rg -w Sqrt --type cs 在 Assets 下全部是 Math.Sqrt 调用，无项目声明，引用用 refs_include。已复核：运行器显示索引其实已绑定到同一个文档注释 ID，只是 v1 没有元数据视图所以没有落点，期望值保留（#34 的验收依据）"
+[case.expect]
+external = "M:System.Math.Sqrt(System.Double)"
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 42, anchor = "float length = (float)Math.Sqrt(x * x + y * y + z * z);" },
+    { file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 79, anchor = "public V3 Normalized() => this * (1 / (float)Math.Sqrt(SquaredLength));" },
+]
+
+[[case]]
+id = "m-local-01"
+category = "local"
+file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TacticModifierParser.cs"
+line = 25
+col = 58
+token = "parameter"
+anchor = "values.Add(new TacticModifier(phase, parameter, value));"
+why = "out var 声明的局部变量；项目里 parameter 还是 FormationTactics 索引器与多个方法的参数名"
+source = "人工阅读：parameter 由 23 行的 out var 引入（TryKey 的 out TacticParameter parameter），只在 25 行被使用；rg -w parameter --type cs 命中数十处，分别属于 FormationTactics.cs:27 索引器参数、TeamTactics.cs:12 索引器参数、AdaptedFormation.cs:171 方法参数等不同符号，全部排除后本局部变量引用只有 25 行一处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TacticModifierParser.cs", line = 23, anchor = "if (TryKey(pair.Key, out var phase, out var parameter))" }]
+refs = 1
+
+[[case]]
+id = "m-local-02"
+category = "local"
+file = "Assets/Football/Runtime/Core/MatchScheduling/MatchStepPipeline.cs"
+line = 112
+col = 40
+token = "exact"
+anchor = "bool exactMotion = exact.ProcessExact(m_Context, () => m_Direction?.AfterReferee("
+why = "is 模式变量；同一行还有 ProcessExact / exactMotion 这类含 exact 的标识符"
+source = "人工阅读：exact 由 110 行 `m_Stages is IMatchExactStepStages exact` 引入，作用域只到该 if 块结束（116 行），块内仅 112 行使用了它；rg -w exact --type cs 在全项目只命中本文件 110、112 两行（其余是 Exact 开头的类型名，大小写与词边界都不匹配）"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchScheduling/MatchStepPipeline.cs", line = 110, anchor = "if (m_Context.Config.Timebase.StepsPerSecond == 30 && m_Stages is IMatchExactStepStages exact)" }]
+refs = 1
+
+[[case]]
+id = "m-local-03"
+category = "local"
+file = "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs"
+line = 120
+col = 36
+token = "spawn"
+anchor = "MatchSpawns.Create(spawn);"
+why = "is 模式变量；同一文件 142 行另有一个同名模式变量 spawn，按名称必然混淆"
+source = "人工阅读：本处 spawn 由 118 行 `request is CreateSpawnRequest spawn` 引入，只在 120 行使用；142 行 `request is CreateSpawnRequest spawn` 是 ExecuteImmediate 里另一个独立局部变量（143 行使用）。rg -w spawn --type cs 还命中 MatchSpawnRuntime、SpawnModule 等文件的其他局部变量，逐一排除后本变量引用为 1 处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs", line = 118, anchor = "if (request is CreateSpawnRequest spawn && MatchSpawns != null)" }]
+refs = 1
+
+[[case]]
+id = "m-local-04"
+category = "local"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 125
+col = 32
+token = "slot"
+anchor = "Slot current = slot;"
+why = "foreach 循环变量；同一文件有 5 个同名 foreach 变量，项目里还有 Entry.slot 字段和多个 slot 参数"
+source = "人工阅读：本处 slot 由 123 行 `foreach (Slot slot in m_Slots)` 引入，循环体只有 125 行使用它；89/104/112/137 行的 slot 是另外四个独立符号。rg -w slot --type cs 还命中 Entry.cs:11 的字段 slot、MatchPlayerConfig.cs:15 等处的参数 slot，排除后本循环变量引用为 1 处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 123, anchor = "foreach (Slot slot in m_Slots)" }]
+refs = 1
+
+[[case]]
+id = "m-local-05"
+category = "local"
+file = "Assets/Football/Runtime/Core/MatchConfiguration/MatchPlayerConfig.cs"
+line = 19
+col = 20
+token = "slot"
+anchor = "Slot = slot;"
+why = "构造函数参数被同名属性 Slot 遮蔽式书写（Slot = slot），大小写之外没有别的线索"
+source = "人工阅读：slot 是 15 行构造函数的参数，19 行 `Slot = slot;` 右侧即是它，左侧是 8 行的属性 Slot；rg -w slot --type cs 命中数十处，分别属于 Entry.cs:11 的字段、RulePlayerId/MotionEntityId/PlayerRuntime 等各自的构造参数，排除后本参数引用只有 19 行一处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchConfiguration/MatchPlayerConfig.cs", line = 15, anchor = "public MatchPlayerConfig(int team, int slot, Role role, V3 position," }]
+refs = 1
+
+[[case]]
+id = "m-local-06"
+category = "local"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 57
+col = 79
+token = "chunk"
+anchor = "slots.Add(new Slot(renderer, index, materials[index], chunk));"
+why = "TryGetValue 的 out var 变量，和同文件 44 行、71 行两个 foreach 变量 chunk 同名"
+source = "人工阅读：本处 chunk 由 55 行 `out var chunk` 引入，作用域是 55-59 行的 if 块，块内只有 57 行使用；44 行 `foreach (var chunk in catalog.PitchChunks)` 与 71 行 `foreach (GrfPitchChunkReference chunk ...)` 是另外两个符号。rg -w chunk --type cs 排除同名变量后本变量引用为 1 处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 55, anchor = "if (materials[index] != null && sources.TryGetValue(materials[index], out var chunk))" }]
+refs = 1
+
+[[case]]
+id = "m-event-01"
+category = "event"
+file = "Assets/Football/Editor/FootballDebugWindow.cs"
+line = 47
+col = 21
+token = "Selected"
+anchor = "m_Pitch.Selected += _ => Refresh();"
+why = "事件 += 订阅；项目里有三个不同类型的 Selected 事件，还有十余个 Selected 字段/属性/方法"
+source = "人工阅读：m_Pitch 声明为 PitchView（FootballDebugWindow.cs:10），所以是 PitchView.cs:14 的事件；rg -w Selected --type cs 共 43 处，其中 MatchPitchView.cs:17 与 MotionPitchView.cs:19 是另外两个同名事件，其余是 ActionSelectionMeasurement.Selected 属性、测试类字段与字符串中的 Selected；PitchView.Selected 的引用只有 PitchView.cs:98 的 Invoke 与本行"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/PitchView.cs", line = 14, anchor = "public event Action<PlayerView> Selected;" }]
+refs = 2
+
+[[case]]
+id = "m-event-02"
+category = "event"
+file = "Assets/Football/Editor/MotionDiagnostics/MotionDiagnosticWindow.cs"
+line = 65
+col = 21
+token = "Selected"
+anchor = "m_Pitch.Selected += _ => Present(m_History.value);"
+why = "另一个同名事件的 += 订阅，用来证明区分靠的是 m_Pitch 的声明类型而不是名称"
+source = "人工阅读：m_Pitch 声明为 MotionPitchView（MotionDiagnosticWindow.cs:17），对应 MotionPitchView.cs:19 的事件；rg -w Selected --type cs 的 43 处中排除 PitchView/MatchPitchView 的同名事件与各处属性字段后，该事件引用只有 MotionPitchView.cs:131 的 Invoke 与本行"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/Motion/MotionPitchView.cs", line = 19, anchor = "public event Action<PlayerMotionView> Selected;" }]
+refs = 2
+
+[[case]]
+id = "m-event-03"
+category = "event"
+file = "Assets/Football/Editor/FootballDebugWindow.cs"
+line = 78
+col = 28
+token = "Rebuilt"
+anchor = "FootballSample.Rebuilt -= OnRebuilt;"
+why = "事件 -= 退订，目标是另一个类型上的静态事件"
+source = "人工阅读：FootballSample 是静态类，其 public static event Action Rebuilt 在 FootballSample.cs:16；rg -w Rebuilt --type cs 全项目 9 处：声明 1 处，FootballDebugWindow.cs:72/78 的 +=/-=，FootballSample.cs:36/47/53/60/76/86 的 6 处 Invoke，合计引用 8 处"
+[case.expect]
+defs = [{ file = "Assets/Football/Editor/FootballSample.cs", line = 16, anchor = "public static event Action Rebuilt;" }]
+refs = 8
+
+[[case]]
+id = "m-event-04"
+category = "event"
+file = "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs"
+line = 112
+col = 29
+token = "ProcessingStepCompleted"
+anchor = "m_Logic.ProcessingStepCompleted += () => ProcessingStepCompleted?.Invoke();"
+why = "同一行出现两个同名事件；光标在左侧的 m_Logic.ProcessingStepCompleted 上，期望落到 Logic 的那个"
+source = "人工阅读：m_Logic 是 MatchApplicationLogic（109 行 new MatchApplicationLogic(...) 赋值），其事件声明在 MatchApplicationLogic.cs:23；rg -w ProcessingStepCompleted --type cs 共 6 处，属于 Logic 的引用是 MatchApplicationLogic.cs:68 的 Invoke 与本行左侧，共 2 处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationLogic.cs", line = 23, anchor = "public event Action ProcessingStepCompleted;" }]
+refs = 2
+
+[[case]]
+id = "m-event-05"
+category = "event"
+file = "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs"
+line = 112
+col = 62
+token = "ProcessingStepCompleted"
+anchor = "m_Logic.ProcessingStepCompleted += () => ProcessingStepCompleted?.Invoke();"
+why = "同一行右侧的 ?.Invoke 指向本类自己的事件，与左侧只差列号"
+source = "人工阅读：lambda 体内无限定名，绑定当前类型 MatchApplicationRun 的事件（MatchApplicationRun.cs:46）；rg -w ProcessingStepCompleted --type cs 的 6 处中，属于 Run 的引用是本行右侧 Invoke、MatchApplicationHost.cs:341 的 += 与 ManualSkillHudTests.cs:137 的 +=，共 3 处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs", line = 46, anchor = "public event Action ProcessingStepCompleted;" }]
+refs = 3
+
+[[case]]
+id = "m-event-06"
+category = "event"
+file = "Assets/Football/Runtime/Core/MatchFlow/Completion/MatchFlowNotifications.cs"
+line = 41
+col = 37
+token = "Published"
+anchor = "var listeners = Published?.GetInvocationList();"
+why = "事件在 lambda 内被当作委托取 GetInvocationList；Published 在项目里还是两个类的属性名"
+source = "人工阅读：无限定名，绑定当前类型的 public event Action<MatchScheduleResult> Published（MatchFlowNotifications.cs:12）；rg -w Published --type cs 共 250 处，绝大多数是异常消息中的英文单词与 BallMotionPipeline/CollisionDiagnosticPipeline 的同名属性，真正订阅该事件的有 21 处（≥20），故用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchFlow/Completion/MatchFlowNotifications.cs", line = 12, anchor = "public event Action<MatchScheduleResult> Published;" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/MatchFlow/Completion/MatchFlowNotifications.cs", line = 41, anchor = "var listeners = Published?.GetInvocationList();" },
+    { file = "Assets/Football/Runtime/Integration/PresentationBinding/MatchObservationSubscription.cs", line = 22, anchor = "m_Notifications.Published += Receive;" },
+    { file = "Assets/Football/Runtime/Integration/PresentationBinding/MatchObservationSubscription.cs", line = 47, anchor = "m_Notifications.Published -= Receive;" },
+]
+
+[[case]]
+id = "m-operator-01"
+category = "operator"
+file = "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs"
+line = 26
+col = 31
+token = "-"
+anchor = "V3 delta = target - start;"
+why = "光标在二元减号上，两侧都是 V3，期望落到 operator -(V3, V3) 而不是 operator -(V3, float)"
+source = "人工阅读：target 是方法参数 V3（MatchDribbleCommit.cs:7），start 在 25 行声明为 V3；V3 上的 - 有三个重载：V3.cs:21(V3,V3)、29(V3,float)、27(一元)，本处匹配 21 行。运算符使用处当前索引不记录，引用按约定用 refs_include 指向查询点所在行。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 21, anchor = "public static V3 operator -(V3 a, V3 b) => new V3(a.X - b.X, a.Y - b.Y, a.Z - b.Z);" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs", line = 26, anchor = "V3 delta = target - start;" },
+]
+
+[[case]]
+id = "m-operator-02"
+category = "operator"
+file = "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs"
+line = 35
+col = 37
+token = "+"
+anchor = "V3 destination = target + offset;"
+why = "同类型两个加号重载，期望落到 operator +(V3, V3)"
+source = "人工阅读：target 是 V3 参数，offset 在 33 行声明为 V3；V3 的 + 有 V3.cs:20(V3,V3) 与 28(V3,float) 两个重载，本处是前者。引用按运算符约定用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 20, anchor = "public static V3 operator +(V3 a, V3 b) => new V3(a.X + b.X, a.Y + b.Y, a.Z + b.Z);" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs", line = 35, anchor = "V3 destination = target + offset;" },
+]
+
+[[case]]
+id = "m-operator-03"
+category = "operator"
+file = "Assets/Football/Runtime/Core/FootballActions/Calculations/BallControlCalculator.cs"
+line = 53
+col = 40
+token = "*"
+anchor = "V3 physics = nextDirection * velocity;"
+why = "乘号有四个重载（V3*float、float*V3、V3*V3、Q4*V3），右操作数是 float 才能定位"
+source = "人工阅读：nextDirection 是 V3（同方法 52 行作为 Normalized 的 fallback 实参），velocity 在 51 行声明为 float，故匹配 V3.cs:22 的 operator *(V3 a, float k)，排除 23/24 行与 Q4.cs:45。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 22, anchor = "public static V3 operator *(V3 a, float k) => new V3(a.X * k, a.Y * k, a.Z * k);" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/FootballActions/Calculations/BallControlCalculator.cs", line = 53, anchor = "V3 physics = nextDirection * velocity;" },
+]
+
+[[case]]
+id = "m-operator-04"
+category = "operator"
+file = "Assets/Football/Tests/Editor/MatchPresentation/MatchRootMappingTests.cs"
+line = 22
+col = 37
+token = "*"
+anchor = "V3 rotated = source * axis;"
+why = "左操作数是 Q4，期望跳到 Q4.cs 的 operator *(Q4, V3)，而不是 V3 自己的任何乘号重载"
+source = "人工阅读：source 在 18 行是 new Q4(...).Normalized()，axis 是 20 行 foreach 的 V3；匹配 Q4.cs:45 的 public static V3 operator *(Q4 q, V3 value)。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/Q4.cs", line = 45, anchor = "public static V3 operator *(Q4 q, V3 value)" }]
+refs_include = [
+    { file = "Assets/Football/Tests/Editor/MatchPresentation/MatchRootMappingTests.cs", line = 22, anchor = "V3 rotated = source * axis;" },
+]
+
+[[case]]
+id = "m-operator-05"
+category = "operator"
+file = "Assets/Football/Runtime/Core/Activation.cs"
+line = 58
+col = 44
+token = "!="
+anchor = "if (new ScenarioId(c.scenario) != BuiltinScenarioIds.Stochastic || c.episode < 1 || c.seed < 0)"
+why = "自定义值对象的 != 重载；同一行还有 || 与 < 两种内建运算符"
+source = "人工阅读：左侧 new ScenarioId(c.scenario) 与右侧 BuiltinScenarioIds.Stochastic 都是 ScenarioId，匹配 ScenarioId.cs:21 的 operator !=；项目里另有 RigNodeId/SpecialStateId/DirectionParticipantId 等多个结构声明了同形的 != 重载，按名称无法区分。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs", line = 21, anchor = "public static bool operator !=(ScenarioId left, ScenarioId right) => !left.Equals(right);" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/Activation.cs", line = 58, anchor = "if (new ScenarioId(c.scenario) != BuiltinScenarioIds.Stochastic || c.episode < 1 || c.seed < 0)" },
+]
+
+[[case]]
+id = "m-indexer-01"
+category = "indexer"
+file = "Assets/Football/Runtime/Core/TeamAI/Formation/AdaptedFormation.cs"
+line = 173
+col = 34
+token = "["
+anchor = "float value = tactics[phase, parameter];"
+why = "双参数索引器，光标在 [ 上，期望跳到 TeamTactics 的 this[TacticPhase, TacticParameter]"
+source = "人工阅读：tactics 是 171 行方法参数 TeamTactics，索引器声明在 TeamTactics.cs:12；项目里 FormationTactics.cs:27 另有一个单参数索引器，参数个数不同才区分得开。索引器使用处当前索引不记录，引用按约定用 refs_include 指向查询点所在行。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs", line = 12, anchor = "public float this[TacticPhase phase, TacticParameter parameter]" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/TeamAI/Formation/AdaptedFormation.cs", line = 173, anchor = "float value = tactics[phase, parameter];" },
+]
+
+[[case]]
+id = "m-indexer-02"
+category = "indexer"
+file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs"
+line = 18
+col = 61
+token = "["
+anchor = "case TacticPhase.Offense: return Offense[parameter];"
+why = "索引器内部再用另一个类型的索引器；Offense 是属性不是数组"
+source = "人工阅读：Offense 是 TeamTactics.cs:8 的 FormationTactics 属性，故 [parameter] 走 FormationTactics.cs:27 的索引器；引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs", line = 27, anchor = "public float this[TacticParameter parameter]" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs", line = 18, anchor = "case TacticPhase.Offense: return Offense[parameter];" },
+]
+
+[[case]]
+id = "m-indexer-03"
+category = "indexer"
+file = "Assets/Football/Tests/Editor/MatchAnalytics/MatchMetricsCollectorTests.cs"
+line = 54
+col = 39
+token = "["
+anchor = "double value = summary[name];"
+why = "字符串键索引器，容易被误判成字典或数组下标"
+source = "人工阅读：summary 来自 43 行 MatchMetricsRun.Execute(...)，该方法返回 MatchMetricsSummary（MatchMetricsRun.cs:26），索引器 this[string name] 声明在 MatchMetricsSummary.cs:20；它的实现体内部才是对 SortedDictionary 的索引。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs", line = 20, anchor = "public double this[string name] => m_Values[name];" }]
+refs_include = [
+    { file = "Assets/Football/Tests/Editor/MatchAnalytics/MatchMetricsCollectorTests.cs", line = 54, anchor = "double value = summary[name];" },
+]
+
+[[case]]
+id = "m-indexer-04"
+category = "indexer"
+file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs"
+line = 205
+col = 38
+token = "["
+anchor = "yield return this[index];"
+why = "this[index] 自引用索引器，所在类型是嵌套类 EntryView"
+source = "人工阅读：本行在 SelectionTrace 的嵌套类 EntryView（SelectionTrace.cs:146）的 GetEnumerator 内，this 即 EntryView，其索引器 public string this[int index] 声明在 SelectionTrace.cs:161；同文件 156 行的 m_Entries[...] 是 List<Entry> 的索引器，不能混。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs", line = 161, anchor = "public string this[int index]" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs", line = 205, anchor = "yield return this[index];" },
+]
+
+[[case]]
+id = "m-indexer-05"
+category = "indexer"
+file = "Assets/Football/Runtime/Core/MatchConfiguration/MatchConfigResolver.cs"
+line = 57
+col = 26
+token = "["
+anchor = ": sources[MatchConfigField.RequestedSeed]);"
+why = "枚举键索引器，接收者是三元表达式之后的 sources 变量"
+source = "人工阅读：sources 是 21 行 new MatchConfigSources(data.Sources)，索引器 this[MatchConfigField field] 声明在 MatchConfigSources.cs:30；项目里 MatchScenarioDefinition.Sources 等同名成员是 Dictionary，按名称解析会落错。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs", line = 30, anchor = "internal ConfigSource this[MatchConfigField field] => m_Fields[field];" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/MatchConfiguration/MatchConfigResolver.cs", line = 57, anchor = ": sources[MatchConfigField.RequestedSeed]);" },
+]
+
+[[case]]
+id = "m-type_ref-01"
+category = "type_ref"
+file = "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs"
+line = 205
+col = 22
+token = "Inventory"
+anchor = "internal Inventory Inventory;"
+why = "字段声明里类型名与字段名完全相同（internal Inventory Inventory;），光标在类型上"
+source = "人工阅读：本行在嵌套类 Publication 内，类型 Inventory 是同一外层类的嵌套类（VisualMotionPublication.cs:213）；rg -w Inventory --type cs 共 9 处，另有 PublishedNativeRootMotionTests.cs:146 的同名嵌套类及其 65 行的使用，本嵌套类的引用是 29 行（声明与 FromJson 泛型实参两处）与本行，故用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs", line = 213, anchor = "sealed class Inventory" }]
+refs_include = [
+    { file = "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs", line = 29, anchor = "Inventory inventory = JsonUtility.FromJson<Inventory>(File.ReadAllText(inventoryPath));" },
+    { file = "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs", line = 205, anchor = "internal Inventory Inventory;" },
+]
+
+[[case]]
+id = "m-type_ref-02"
+category = "type_ref"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 89
+col = 22
+token = "Slot"
+anchor = "foreach (Slot slot in slots)"
+why = "foreach 的显式元素类型；Slot 既是两个不同文件里的嵌套类，又是十余个类型上的 int 属性名"
+source = "人工阅读：本行在 GrfPitchTextureView 内，Slot 指同文件嵌套类（GrfPitchTextureView.cs:198）；GrfPlayerBodyAppearance.cs:93 另有一个同名嵌套类，RulePlayerId/PlayerRuntime/MotionEntityId/PlayerView 等还有同名的 Slot 属性或字段（rg -w Slot --type cs 共 50+ 处）。本嵌套类引用十余处，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 198, anchor = "sealed class Slot" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 89, anchor = "foreach (Slot slot in slots)" },
+    { file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 24, anchor = "List<Slot> slots = CreateSlots(root, catalog);" },
+]
+
+[[case]]
+id = "m-type_ref-03"
+category = "type_ref"
+file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs"
+line = 128
+col = 57
+token = "PreloadedProjectSettings"
+anchor = "public abstract class PreloadedProjectSettings<T> : PreloadedProjectSettings"
+why = "继承列表里的基类型，和同一行的泛型类型同名（PreloadedProjectSettings<T> : PreloadedProjectSettings）"
+source = "人工阅读：非泛型基类声明在 PreloadedProjectSettings.cs:14，泛型派生类在 128 行；rg -w PreloadedProjectSettings --type cs 共 12 处，其中 37/129/217 行与 UIParticleProjectSettings.cs:8 指的是泛型类型，76 行是 nameof（不计引用），非泛型基类的引用为 43/73/75/78/82/128 六处，用 refs_include 列其中两处"
+[case.expect]
+defs = [{ file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 14, anchor = "public abstract class PreloadedProjectSettings : ScriptableObject" }]
+refs_include = [
+    { file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 128, anchor = "public abstract class PreloadedProjectSettings<T> : PreloadedProjectSettings" },
+    { file = "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs", line = 73, anchor = "protected static PreloadedProjectSettings GetDefaultSettings(Type type)" },
+]
+
+[[case]]
+id = "m-type_ref-04"
+category = "type_ref"
+file = "Assets/Football/Runtime/Core/PlayerView.cs"
+line = 25
+col = 27
+token = "Entry"
+anchor = "public PlayerView(Entry e, V3 mixed, V3 formation)"
+why = "构造函数参数的类型声明；项目里有 6 个 Entry 类型声明和 5 个 Entry 方法"
+source = "人工阅读：PlayerView 在命名空间 Football.Core 内，无嵌套 Entry，故绑定 Football.Core.Entry（Entry.cs:8）；rg -w Entry --type cs 共 51 处，排除 SelectionTrace/SetPieceSeparation/VisualMotionPublication/PublishedNativeRootMotionTests/ObjectRepository 五处嵌套类型及其内部使用，再排除 ActionProviderFixture.Entry 等名为 Entry 的方法后，Football.Core.Entry 的引用只剩 PlayerView.cs:25 与 SampleConfig.cs:24 两处"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/Entry.cs", line = 8, anchor = "public sealed class Entry" }]
+refs = 2
+
+[[case]]
+id = "m-type_ref-05"
+category = "type_ref"
+file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs"
+line = 10
+col = 23
+token = "Entry"
+anchor = "readonly List<Entry> m_Entries = new List<Entry>();"
+why = "泛型实参位置的类型引用；同命名空间 Football.Core 下还有一个公开的 Entry 类，嵌套类型应优先"
+source = "人工阅读：SelectionTrace 同样在 Football.Core 命名空间，但它有嵌套的 readonly struct Entry（SelectionTrace.cs:60），C# 查找先看嵌套类型，所以本行两个 Entry 都指 60 行而非 Entry.cs:8；该嵌套类型在本文件被引用十余处（10 行两次、22/36/41/47/55/72/81/91/111/120/148/194），用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs", line = 60, anchor = "readonly struct Entry" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs", line = 10, anchor = "readonly List<Entry> m_Entries = new List<Entry>();" },
+    { file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs", line = 148, anchor = "readonly List<Entry> m_Entries;" },
+]
+
+[[case]]
+id = "m-type_ref-06"
+category = "type_ref"
+file = "Assets/Football/Tests/Editor/MatchPose/PublishedNativeRootMotionTests.cs"
+line = 148
+col = 20
+token = "Entry"
+anchor = "public Entry[] clips;"
+why = "数组字段声明的元素类型，位于测试类的嵌套类型里"
+source = "人工阅读：本行在嵌套类 Inventory（PublishedNativeRootMotionTests.cs:146）内，Entry 指同一外层类的嵌套类（152 行）；rg -w Entry --type cs 中属于这个嵌套类型的引用是 67、70、148 三处"
+[case.expect]
+defs = [{ file = "Assets/Football/Tests/Editor/MatchPose/PublishedNativeRootMotionTests.cs", line = 152, anchor = "sealed class Entry" }]
+refs = 3
+
+[[case]]
+id = "m-type_ref-07"
+category = "type_ref"
+file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs"
+line = 18
+col = 23
+token = "Sample"
+anchor = "readonly List<Sample> m_Samples = new List<Sample>();"
+why = "泛型实参 Sample：项目里有 4 个同名嵌套结构，还有名为 Sample 的方法与类（FootballSample）"
+source = "人工阅读：本行在 UnityPowerKickTrail 内，Sample 指同文件嵌套结构（UnityPowerKickTrail.cs:112）；另外三个同名结构在 AnimationIntegerSampleCache.cs:39、RootMotionVelocityCache.cs:33、DistanceArrivalTrajectory.cs:98，VisualMotionPublication.cs:142 还有一个 static 方法 Sample。本结构的引用是 18 行两处、30 行与 63 行，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs", line = 112, anchor = "readonly struct Sample" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs", line = 18, anchor = "readonly List<Sample> m_Samples = new List<Sample>();" },
+    { file = "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs", line = 63, anchor = "Sample sample = m_Samples[i];" },
+]
+
+[[case]]
+id = "m-type_ref-08"
+category = "type_ref"
+file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs"
+line = 18
+col = 13
+token = "Bindings"
+anchor = "Bindings bindings = s_Bindings.GetValue(animation, _ => new Bindings());"
+why = "局部变量声明的类型；同名的还有 MatchWorld.Actors.Bindings 属性与测试里的另一个嵌套类 Bindings"
+source = "人工阅读：本行在 AnimationNodeIndices 内，Bindings 指同文件嵌套类（AnimationNodeIndices.cs:40）；PitchCatalogFixture.cs:111 另有一个同名嵌套类，MatchLiveObservationSource.cs:15/20/23 的 Bindings 是属性。本嵌套类引用为 12、13 行与 18 行两处，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs", line = 40, anchor = "sealed class Bindings" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs", line = 18, anchor = "Bindings bindings = s_Bindings.GetValue(animation, _ => new Bindings());" },
+    { file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs", line = 12, anchor = "static readonly ConditionalWeakTable<AnimationDefinition, Bindings> s_Bindings =" },
+]
+
+[[case]]
+id = "m-type_ref-09"
+category = "type_ref"
+file = "Assets/Football/Runtime/Core/PlayerView.cs"
+line = 30
+col = 44
+token = "Role"
+anchor = "Role = (Role)Enum.Parse(typeof(Role), e.role);"
+why = "typeof(Role) 里的类型引用；同一行开头的 Role 是字段、末尾的 role 是 Entry 的字段"
+source = "人工阅读：Role = (Role)Enum.Parse(typeof(Role), e.role); 一行里 Role 出现三次，第一个是 PlayerView.cs:12 的字段，第二、三个是 Football.Core.Role 枚举（Role.cs:5）；光标取第三个（typeof 内）。rg -w Role --type cs 命中 323 处，枚举与同名属性/字段混在一起，引用用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/Role.cs", line = 5, anchor = "public enum Role" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Core/PlayerView.cs", line = 30, anchor = "Role = (Role)Enum.Parse(typeof(Role), e.role);" },
+    { file = "Assets/Football/Runtime/Core/MatchConfiguration/MatchPlayerConfig.cs", line = 9, anchor = "public Role Role { get; }" },
+]
+
+[[case]]
+id = "m-type_ref-10"
+category = "type_ref"
+file = "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs"
+line = 87
+col = 27
+token = "SpawnModule"
+anchor = "if (Spawns is SpawnModule spawns)"
+why = "is 模式里的类型；同前缀的 SpawnModuleHarness / SpawnModuleLifecycleTests 需要词边界之外的语义区分"
+source = "人工阅读：SpawnModule 声明在 SpawnModule.cs:8（public sealed class SpawnModule : ISpawnModule），SkillJointLifecycleTests.cs:97 用全名 Football.SkillSystem.SpawnedEntities.SpawnModule 证实命名空间；rg -w SpawnModule --type cs 共 10 处，其中 SpawnModule.cs:32 是构造函数声明不计为类型引用，其余 8 处为引用，用 refs_include"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs", line = 8, anchor = "public sealed class SpawnModule : ISpawnModule" }]
+refs_include = [
+    { file = "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs", line = 87, anchor = "if (Spawns is SpawnModule spawns)" },
+    { file = "Assets/Football/Runtime/Integration/Skills/Spawns/Session/MatchSpawnRuntime.cs", line = 14, anchor = "readonly SpawnModule m_Module;" },
+]

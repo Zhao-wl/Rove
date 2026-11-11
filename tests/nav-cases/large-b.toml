@@ -1,0 +1,851 @@
+project = "large"
+
+# 大型 Unity 项目（约 2 万个 .cs）的 lambda / conditional / external / local /
+# event / operator / indexer / type_ref 用例。
+# 选点原则：每个查询点都要求“按名称解析必然出错”——同名符号分布在不同类型、
+# 不同命名空间或不同条件编译分支里。期望值全部由人工阅读源码 + rg 全项目交叉核对得出。
+
+# ---------------------------------------------------------------------------
+# lambda：lambda 形参的类型来自委托推断，成员名在项目里不唯一
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-lambda-01"
+category = "lambda"
+file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs"
+line = 662
+col = 43
+token = "Dirty"
+anchor = 'var evs = m_Rows.Where(r => r.Dirty).ToList();'
+why = "r 的类型只能由 m_Rows(List<Row>) 推断；同文件另有 GroupRow.Dirty，按名称二选一必错"
+source = "人工阅读：m_Rows 声明在第 100 行 List<Row>，Row 是第 51 行的 private sealed class，Dirty 在第 75 行。rg -w Dirty --type cs 全项目 60+ 处，本文件内 .Dirty 共 6 处（432/465/618 的 r.Dirty、570/618/681 的 g.Dirty）；属于 Row.Dirty 的是 432、465、618(第一处 r.Dirty)、662 共 4 处，其余 3 处是 GroupRow.Dirty。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 75, anchor = 'public bool Dirty =>' }]
+refs = 4
+
+[[case]]
+id = "l-lambda-02"
+category = "lambda"
+file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs"
+line = 681
+col = 44
+token = "Dirty"
+anchor = 'var gs = m_Groups.Where(g => g.Dirty).ToList();'
+why = "与 l-lambda-01 同名同文件，但 g 来自 m_Groups(List<GroupRow>)，期望落在另一个 Dirty"
+source = "人工阅读：m_Groups 是 List<GroupRow>，GroupRow 是第 84 行的 private sealed class，Dirty 在第 95 行。本文件 .Dirty 的 6 处里属于 GroupRow.Dirty 的是 570、618(第二处 g.Dirty)、681 共 3 处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 95, anchor = 'public bool Dirty => ThrottleMs != BaseThrottleMs' }]
+refs = 3
+
+[[case]]
+id = "l-lambda-03"
+category = "lambda"
+file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs"
+line = 494
+col = 62
+token = "GroupName"
+anchor = 'var grp = m_Groups.FirstOrDefault(g => g.GroupName == r.PlayGroup);'
+why = "GroupName 在 XCfg 生成配置类里有多处同名字段，只有知道 g 是 GroupRow 才能落到本文件"
+source = "人工阅读：m_Groups 为 List<GroupRow>，GroupRow.GroupName 在第 86 行。rg -w GroupName --type cs 命中 XCfg/AudioGroup.cs:18、XCfg/AudioState.cs:18、XCfg/AudioSwitchVariantCondition.cs:22、Guide/Core/TEvent.cs:37 等多个同名成员，故不断言精确引用数，只列两处确认属于 GroupRow 的引用（494 查询点、571 的 GUILayout.Label(g.GroupName...)，两处的 g 都来自 m_Groups）。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 86, anchor = 'public string GroupName;' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 494, anchor = 'var grp = m_Groups.FirstOrDefault(g => g.GroupName == r.PlayGroup);' },
+  { file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 571, anchor = 'GUILayout.Label(g.GroupName, style, GUILayout.Width(160));' },
+]
+
+[[case]]
+id = "l-lambda-04"
+category = "lambda"
+file = "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs"
+line = 173
+col = 73
+token = "Count"
+anchor = 'm_SelectedSwitchButton = m_StateInfos.Find(info => info.Count > 0)?.StateGroup.GetComponent<TFWSwitchButton>();'
+why = "Count 是项目里最泛滥的成员名（List<T>.Count 等），只有推断出 info 是 WorkerExceptionStateInfo 才能落到本文件"
+source = "人工阅读：m_StateInfos 声明为 List<WorkerExceptionStateInfo>（第 44 行），WorkerExceptionStateInfo 定义在同文件第 29 行，Count 属性在第 32 行。rg -w WorkerExceptionStateInfo --type cs 只在本文件出现，故该属性的引用全部在本文件内：139、149、159、168、173、174、190、196、202、210、244、269 共 12 处（190/196/202 是对象初始化器里的 Count = ...，同样是对该属性的引用），不含第 32 行定义处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs", line = 32, anchor = 'public int Count { get; set; }' }]
+refs = 12
+
+[[case]]
+id = "l-lambda-05"
+category = "lambda"
+file = "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs"
+line = 267
+col = 60
+token = "StateType"
+anchor = 'var stateInfo = m_StateInfos.Find(info => info.StateType == m_SelectedWorkerStateType);'
+why = "项目里另有 UIActivityWonderPopWnd.StateType 同名字段，lambda 形参类型决定落点"
+source = "人工阅读：info 来自 List<WorkerExceptionStateInfo>.Find，StateType 属性在同文件第 31 行。rg -w StateType --type cs 全项目只有两处声明：本文件第 31 行与 Activity/UIActivityWonderPopWnd.cs:28（public int StateType;），后者的引用都在那个文件内。本类型 StateType 的引用全部在本文件：137、147、157、174、189、195、201、239、256、267、268 共 11 处，不含第 31 行定义处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs", line = 31, anchor = 'public int StateType { get; set; }' }]
+refs = 11
+
+[[case]]
+id = "l-lambda-06"
+category = "lambda"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs"
+line = 174
+col = 70
+token = "CfgID"
+anchor = 'workers = GetAllWorker(allowClient).Where(p => p.CfgID == workerCfgId).Select((p) => p.ID);'
+why = "p 的类型要经 GetAllWorker 的返回值推断，CfgID 在 XCfg 生成类里有大量同名字段"
+source = "人工阅读：WorkerMgr.cs:40 的 GetAllWorker 返回 IEnumerable<LCityWorker>；LCityWorker : LWorkerBase : LCityEntity，CfgID 定义在 LCityEntity.cs:30，LCityWorker/LWorkerBase 都没有重新声明 CfgID。rg -w CfgID --type cs 命中 XCfg/ConditionBuilding.cs:14、XCfg/ConditionAsset.cs:14、FrameworkProtos/wmap_city.cs:547、UIWorldTrendStageCard.cs:21 等多处同名成员，数量远超可逐条排除的范围，故只列查询点这一处确认过的引用。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs", line = 30, anchor = 'public int CfgID => UnitInfo?.cfgID ?? 0;' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs", line = 174, anchor = 'workers = GetAllWorker(allowClient).Where(p => p.CfgID == workerCfgId).Select((p) => p.ID);' },
+]
+
+# ---------------------------------------------------------------------------
+# conditional：#if UNITY_EDITOR 的生效侧与不生效侧
+# 这些文件分别属于 ScriptCore.csproj / TFW.Common.csproj，两个 csproj 的
+# DefineConstants 都含 UNITY_EDITOR，所以 #else / #if !UNITY_EDITOR 一侧不生效。
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-conditional-01"
+branch = "active"
+category = "conditional"
+file = "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs"
+line = 97
+col = 4
+token = "Refresh"
+anchor = 'Refresh();'
+why = "位于 #if UNITY_EDITOR 生效侧；Refresh 是全项目最常见的方法名之一，必须按类型解析"
+source = "人工阅读：第 96 行 #if UNITY_EDITOR，第 98 行 #else，第 103 行 #endif，所以第 97 行在生效侧；调用的是同类 CustomGradient 的 void Refresh()（第 33 行）。rg -w Refresh --type cs 全项目 900+ 处、440+ 个文件，无法逐条排除，故只列生效侧这一处确认过的引用（第 101 行那处在 #else 里，是否计入引用正是本用例要考察的，不写进期望）。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs", line = 33, anchor = 'void Refresh()' }]
+refs_include = [
+  { file = "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs", line = 97, anchor = 'Refresh();' },
+]
+
+[[case]]
+id = "l-conditional-02"
+branch = "inactive"
+category = "conditional"
+file = "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs"
+line = 101
+col = 5
+token = "Refresh"
+anchor = 'Refresh();'
+why = "与 l-conditional-01 成对：同一个调用写在 #else 里，查询点落在不生效侧"
+source = "人工阅读：第 98 行 #else、第 103 行 #endif，第 101 行在不生效侧；绑定目标仍是同类第 33 行的 Refresh()。引用只列生效侧的第 97 行（已确认属于同一方法）。已复核：当前索引在该位置没有任何出现记录（不生效分支整段未入库），重读源码后确认期望无误，按原样保留。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs", line = 33, anchor = 'void Refresh()' }]
+refs_include = [
+  { file = "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs", line = 97, anchor = 'Refresh();' },
+]
+
+[[case]]
+id = "l-conditional-03"
+branch = "active"
+category = "conditional"
+file = "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs"
+line = 21
+col = 17
+token = "ScaleWithScreenSize"
+anchor = 'ScaleWithScreenSize();'
+why = "位于 #if UNITY_EDITOR 生效侧；同名的 CanvasScaler.ScaleMode.ScaleWithScreenSize 在项目里出现十余次，按名称必错"
+source = "人工阅读：第 19 行 #if UNITY_EDITOR、第 24 行 #else、第 26 行 #endif，第 21 行在生效侧；调用的是本类第 29 行的 private void ScaleWithScreenSize()。rg -w ScaleWithScreenSize --type cs 共 15 处，除本文件 21/25/29 外，其余 12 处全部是 Unity 枚举成员 CanvasScaler.ScaleMode.ScaleWithScreenSize（UIWnd.cs:875/876、MenuOptionsBase.cs:118、Gm.Scene.cs:252 等），与本方法无关；本方法的引用只有 21 与 25 两行，其中 25 在 #else 里，故只断言生效侧的 21。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs", line = 29, anchor = 'private void ScaleWithScreenSize()' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs", line = 21, anchor = 'ScaleWithScreenSize();' },
+]
+
+[[case]]
+id = "l-conditional-04"
+branch = "inactive"
+category = "conditional"
+file = "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs"
+line = 25
+col = 13
+token = "ScaleWithScreenSize"
+anchor = 'ScaleWithScreenSize();'
+why = "与 l-conditional-03 成对：同一调用写在 #else 不生效侧"
+source = "人工阅读：第 24 行 #else、第 26 行 #endif，第 25 行不生效；绑定目标仍是第 29 行的私有方法（不是 Unity 的 ScaleMode 枚举值）。引用只列生效侧第 21 行。已复核：当前索引在该位置没有任何出现记录，重读源码后确认期望无误，按原样保留。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs", line = 29, anchor = 'private void ScaleWithScreenSize()' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs", line = 21, anchor = 'ScaleWithScreenSize();' },
+]
+
+[[case]]
+id = "l-conditional-05"
+branch = "active"
+category = "conditional"
+file = "Assets/TFWCore/Script/UI/Component/TFWSwitchButtonGroup.cs"
+line = 182
+col = 30
+token = "SetWithoutGroup"
+anchor = 'targetSwitch.SetWithoutGroup(false, sendCallback);'
+why = "位于 #if UNITY_EDITOR 生效侧，且与第 174 行同文本的调用分处 if/else 两支，容易串行"
+source = "人工阅读：第 180 行 #if UNITY_EDITOR、第 184 行 #else、第 190 行 #endif，第 182 行在生效侧；targetSwitch 是 TFWSwitchButton，方法声明在 TFWSwitchButton.cs:419（internal void SetWithoutGroup(bool value, bool sendCallback = true)）。rg -w SetWithoutGroup --type cs 共 11 处：TFWSwitchButtonGroup.cs 的 94、101、128、134、159、163、174、182 共 8 处调用，TFWSwitchButton.cs:413 的内部调用 1 处，TFWSwitchButton.cs:419 是定义处，UIActivityRebuilding.cs:417 是文档注释里的 <c>SetWithoutGroup(true)</c> 不算引用；故引用共 9 处，且 182 在生效侧、#else 一侧没有该调用。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/Component/TFWSwitchButton.cs", line = 419, anchor = 'internal void SetWithoutGroup(bool value, bool sendCallback = true)' }]
+refs = 9
+
+[[case]]
+id = "l-conditional-06"
+branch = "inactive"
+category = "conditional"
+file = "Assets/TFWCore/Script/UI/Component/TFWInputField.cs"
+line = 141
+col = 17
+token = "OnKeyboardDone"
+anchor = 'OnKeyboardDone?.Invoke();'
+why = "#else 不生效侧里的委托调用，与第 136 行生效侧文本完全相同"
+source = "人工阅读：第 132 行 #if UNITY_EDITOR、第 138 行 #else、第 143 行 #endif，第 141 行在不生效侧；OnKeyboardDone 是同类第 25 行的 public Action 属性。rg -w OnKeyboardDone --type cs 全项目只有本文件 3 处（25 定义、136、141），两处调用分居 #if 两侧，故只断言生效侧的 136。已复核：当前索引在该位置没有任何出现记录，重读源码后确认期望无误，按原样保留。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/Component/TFWInputField.cs", line = 25, anchor = 'public Action OnKeyboardDone { get; set; }' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/UI/Component/TFWInputField.cs", line = 136, anchor = 'OnKeyboardDone?.Invoke();' },
+]
+
+# ---------------------------------------------------------------------------
+# external：Unity / BCL 等 DLL 中的符号（#34 之前必然失败）
+# 交叉核对：当前索引在这 6 个位置绑定到的文档注释 ID 与下面写的期望逐字相同，
+# 失败原因只是「没有元数据视图可落点」，即 #34 本身。
+
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-external-01"
+category = "external"
+file = "Assets/TFWCore/Script/UI/UICommonBluredBackground.cs"
+line = 126
+col = 29
+token = "GetComponent"
+anchor = 'm_BluredImage = GetComponent<RawImage>();'
+why = "无接收者的泛型 GetComponent<T>()，绑定到基类 UnityEngine.Component 上的泛型方法"
+source = "人工阅读：UICommonBluredBackground : UIBehaviour（UnityEngine.EventSystems.UIBehaviour : MonoBehaviour : Behaviour : Component），本类及 TFW 内没有自定义 GetComponent，因此隐式 this 调用绑定到 UnityEngine.Component.GetComponent<T>()（不是 GameObject 上的那个重载）。外部符号引用极多，只列查询点这一处。"
+[case.expect]
+external = "M:UnityEngine.Component.GetComponent``1"
+refs_include = [
+  { file = "Assets/TFWCore/Script/UI/UICommonBluredBackground.cs", line = 126, anchor = 'm_BluredImage = GetComponent<RawImage>();' },
+]
+
+[[case]]
+id = "l-external-02"
+category = "external"
+file = "Assets/Launch/Flow/LaunchUpgrader.cs"
+line = 98
+col = 23
+token = "Version"
+anchor = 'public static Version MinCompatibleVersion { get; private set; } = null;'
+why = "本文件第 22 行有 using Version = System.Version; 项目里同时存在 TFW.Version 结构体，不解析别名必错"
+source = "人工阅读：LaunchUpgrader.cs:22 写着 using Version = System.Version;，所以此处的 Version 是 BCL 的 System.Version（引用类型，第 98 行才能赋 null；项目自有的 Assets/Launch/Script/Common/Version.cs:14 是 struct TFW.Version，不可能赋 null）。引用列同文件第 103 行的同类声明。"
+[case.expect]
+external = "T:System.Version"
+refs_include = [
+  { file = "Assets/Launch/Flow/LaunchUpgrader.cs", line = 103, anchor = 'public static Version CurrentVersion { get; private set; } = new Version(AppInfos.FullVersion);' },
+]
+
+[[case]]
+id = "l-external-03"
+category = "external"
+file = "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs"
+line = 313
+col = 36
+token = "SetActive"
+anchor = 'm_ImgCDMask.gameObject.SetActive(false);'
+why = "经 Component.gameObject 得到 GameObject 后调用其 SetActive，项目内另有大量自定义 SetActive"
+source = "人工阅读：m_ImgCDMask 是 UI 组件（Component），.gameObject 得到 UnityEngine.GameObject，SetActive(bool) 是 GameObject 上的实例方法。rg -w SetActive --type cs 全项目上千处，含多个项目自定义的 SetActive 扩展/成员，故只列查询点这一处引用。"
+[case.expect]
+external = "M:UnityEngine.GameObject.SetActive(System.Boolean)"
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs", line = 313, anchor = 'm_ImgCDMask.gameObject.SetActive(false);' },
+]
+
+[[case]]
+id = "l-external-04"
+category = "external"
+file = "Assets/TFWCore/Script/Utils/UnityGameObjectWrap.cs"
+line = 181
+col = 22
+token = "position"
+anchor = 'go.transform.position = pos;'
+why = "位置是写入 Transform.position 属性；项目里 position 作为普通字段/属性名出现极多"
+source = "人工阅读：go 是 GameObject 参数，go.transform 为 UnityEngine.Transform，position 是 Transform 的世界坐标属性（不是 RectTransform/localPosition）。外部符号引用极多，只列查询点这一处。"
+[case.expect]
+external = "P:UnityEngine.Transform.position"
+refs_include = [
+  { file = "Assets/TFWCore/Script/Utils/UnityGameObjectWrap.cs", line = 181, anchor = 'go.transform.position = pos;' },
+]
+
+[[case]]
+id = "l-external-05"
+category = "external"
+file = "Assets/TFWCore/Script/Common/QualitySetting.cs"
+line = 16
+col = 35
+token = "MonoBehaviour"
+anchor = 'public class QualitySetting : MonoBehaviour'
+why = "继承列表里的外部基类型，考察类型引用是否能落到 DLL 符号"
+source = "人工阅读：QualitySetting 在 namespace TFW 下，using UnityEngine 后 MonoBehaviour 即 UnityEngine.MonoBehaviour；rg -w 'class MonoBehaviour' --type cs 在 Assets 下没有任何项目自定义的 MonoBehaviour 类型。另列一处同样继承该类型的位置作为引用。"
+[case.expect]
+external = "T:UnityEngine.MonoBehaviour"
+refs_include = [
+  { file = "Assets/TFWCore/Script/Common/QualitySetting.cs", line = 16, anchor = 'public class QualitySetting : MonoBehaviour' },
+  { file = "Assets/TFWCore/Script/Common/GameQualitySwitchRender.cs", line = 9, anchor = 'public class GameQualitySwitchRender : MonoBehaviour' },
+]
+
+[[case]]
+id = "l-external-06"
+category = "external"
+file = "Assets/X1/ScriptCore/Common/Camera/Mode/CameraModeFollow.cs"
+line = 125
+col = 45
+token = "deltaTime"
+anchor = 'm_RemainingLockTime -= Time.deltaTime;'
+why = "静态属性 Time.deltaTime；项目里 deltaTime 作为局部变量/参数名也很常见"
+source = "人工阅读：Time 是 UnityEngine.Time（本文件 using UnityEngine，项目内无同名类型），deltaTime 是其静态只读属性；同文件第 119 行另有一处 Time.deltaTime，作为第二处引用。"
+[case.expect]
+external = "P:UnityEngine.Time.deltaTime"
+refs_include = [
+  { file = "Assets/X1/ScriptCore/Common/Camera/Mode/CameraModeFollow.cs", line = 125, anchor = 'm_RemainingLockTime -= Time.deltaTime;' },
+  { file = "Assets/X1/ScriptCore/Common/Camera/Mode/CameraModeFollow.cs", line = 119, anchor = 'var p = Mathf.Clamp01(Time.deltaTime / m_RemainingLockTime);' },
+]
+
+# ---------------------------------------------------------------------------
+# local：同名局部变量 / 参数遮蔽、模式变量、foreach 变量、out var
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-local-01"
+category = "local"
+file = "Assets/X1/ScriptGame/Battle/UI/UIRaftBattleHud.cs"
+line = 111
+col = 25
+token = "team"
+anchor = 'team.HpChangedEvents -= OnHpChanged;'
+why = "foreach 变量 team，同文件第 409 行另有一个同名 foreach 变量，必须按作用域而非名称解析"
+source = "人工阅读：第 108 行 foreach (var team in defenseTeams) 开启作用域，defenseTeams 来自 MRaftBattle.GetBattleTeamsByCamp（MRaftBattle.cs:1389 返回 MBattleTeam[]）；该局部变量的作用域只到第 112 行，引用为第 110 行 if (team != null) 与第 111 行共 2 处，不含第 108 行声明处。第 409 行起的同名变量属于另一个作用域，不计入。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/UI/UIRaftBattleHud.cs", line = 108, anchor = 'foreach (var team in defenseTeams)' }]
+refs = 2
+
+[[case]]
+id = "l-local-02"
+category = "local"
+file = "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs"
+line = 609
+col = 21
+token = "soldier"
+anchor = 'soldier.DeadEvents += OnSoldierDead;'
+why = "同文件里 soldier 还分别是第 415 行的 foreach 变量和第 754 行的方法参数，按名称必错"
+source = "人工阅读：第 606 行 var soldier = entMgr.CreateModelEntity<MBattleSoldier>(...) 声明；rg -w soldier 在本文件共 8 处（415、416、606、607、608、609、610、754 以及 753 的 XML 注释不算），其中 415/416 属于另一个 foreach 作用域、753/754 属于 OnSoldierDead 的参数。第 606 行这个局部变量的引用为 607、608、609、610 共 4 处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs", line = 606, anchor = 'var soldier = entMgr.CreateModelEntity<MBattleSoldier>(unitInfo.EntityID, unitInfo.EntityType);' }]
+refs = 4
+
+[[case]]
+id = "l-local-03"
+category = "local"
+file = "Assets/X1/ScriptGame/Battle/Team/Factory/RaftBattleTeamFactory.cs"
+line = 32
+col = 24
+token = "pool"
+anchor = 'return pool.Pop();'
+why = "out var pool 在同文件三个方法里各声明一次（31/40/49），名称完全相同"
+source = "人工阅读：第 31 行 if (m_ModelTeamsPools.TryGetValue(teamType, out var pool) && pool.Count > 0) 用 out var 声明，作用域限于 CreateModelTeam；第 40、49 行是另外两个方法里的同名 out var。因为声明处（31 行）同一行上还有 pool.Count 这一处引用，精确引用数会与是否排除定义行纠缠，故只列第 32 行这处确认的引用。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Team/Factory/RaftBattleTeamFactory.cs", line = 31, anchor = 'if (m_ModelTeamsPools.TryGetValue(teamType, out var pool) && pool.Count > 0)' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Battle/Team/Factory/RaftBattleTeamFactory.cs", line = 32, anchor = 'return pool.Pop();' },
+]
+
+[[case]]
+id = "l-local-04"
+category = "local"
+file = "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs"
+line = 502
+col = 24
+token = "ui"
+anchor = 'while (ui.IsLoading)'
+why = "is 模式变量 ui，同文件第 521 行另有同形式的 uiWnd，且 ui 是全项目最常见的短标识符之一"
+source = "人工阅读：第 486 行 if (Activator.CreateInstance(uiType) is UIWnd ui) 声明模式变量，作用域是 486-506 的 if 分支；第 502 行的 ui 就是它。该变量另在第 488 行出现两次（赋值目标与实参），同一行多次出现会让精确计数有歧义，故改列 488、502 两处确认的引用。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs", line = 486, anchor = 'if (Activator.CreateInstance(uiType) is UIWnd ui)' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs", line = 488, anchor = 'ui = InitializeUI(ui, uiName, null, (uibase, isIgnoreAnim) =>' },
+  { file = "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs", line = 502, anchor = 'while (ui.IsLoading)' },
+]
+
+[[case]]
+id = "l-local-05"
+category = "local"
+file = "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleHero.cs"
+line = 95
+col = 13
+token = "team"
+anchor = 'team.HpChangedEvents += OnHpChanged;'
+why = "同文件 RegisterEvents/UnregisterEvents 各有一个同名局部 team，且基类还有属性 Team"
+source = "人工阅读：第 91 行 var team = Team.ModelTeam;（RBattleTeam.ModelTeam 为 MBattleTeam）声明本作用域的 team，第 110 行是 UnregisterEvents 里的另一个同名局部。第 91 行这个局部的引用为 93、94、95、96 共 4 处，不含第 91 行声明处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleHero.cs", line = 91, anchor = 'var team = Team.ModelTeam;' }]
+refs = 4
+
+[[case]]
+id = "l-local-06"
+category = "local"
+file = "Assets/X1/ScriptGame/City/Mgr/ACityOutline.cs"
+line = 243
+col = 29
+token = "xMin"
+anchor = 'this.xMin = xMin;'
+why = "构造函数参数 xMin 遮蔽同名字段，同一行上左右两个 xMin 指向不同符号"
+source = "人工阅读：RectRegion 结构体第 236 行有字段 public int xMin;，第 241 行构造函数 RectRegion(int xMin, ...) 的参数遮蔽了它；第 243 行赋值左侧 this.xMin 是字段，光标所在的右侧 xMin 是参数。该参数只在第 243 行被引用一次（第 251 行 Contains 里的 xMin 已不在构造函数作用域内，指字段）。rg -w xMin --type cs 全项目还命中大量 UnityEngine.Rect.xMin 与同名局部，正是按名称会错的原因。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/Mgr/ACityOutline.cs", line = 241, anchor = 'public RectRegion(int xMin, int yMin, int xMax, int yMax)' }]
+refs = 1
+
+# ---------------------------------------------------------------------------
+# event：+= / -= 的事件、委托类型、事件调用
+# MBattleTeam 与 MBattleSoldier 两个类里有多组同名事件，是本组的主要区分点。
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-event-01"
+category = "event"
+file = "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs"
+line = 315
+col = 20
+token = "HpChangedEvents"
+anchor = 'm_Team.HpChangedEvents += OnHpChanged;'
+why = "HpChangedEvents 在 MBattleTeam 与 MBattleSoldier 里各声明一次，接收者类型决定落点"
+source = "人工阅读：m_Team 声明为 MBattleTeam（本文件第 177 行），事件声明在 MBattleTeam.Events.cs:147（public event HpChangedEvent HpChangedEvents;）。rg -w HpChangedEvents --type cs 共 14 处：属于 MBattleSoldier 的 5 处（MBattleSoldier.Event.cs:79 定义、124、159，RRaftBattleSoldier.cs:31、43，接收者 MRaftSoldier 为 MRaftBattleSoldier : MBattleSoldier）排除后，属于 MBattleTeam 的引用是 UIRaftBattleHud.cs:111、413（team 来自 MRaftBattle.GetBattleTeamsByCamp，返回 MBattleTeam[]）、UIBattleHeroSkill.cs:315、372、MBattleTeam.Events.cs:422、MBattleTeam.cs:485、RRaftBattleHero.cs:95、113（team = Team.ModelTeam，RBattleTeam.ModelTeam 为 MBattleTeam）共 8 处，不含 147 定义处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs", line = 147, anchor = 'public event HpChangedEvent HpChangedEvents;' }]
+refs = 8
+
+[[case]]
+id = "l-event-02"
+category = "event"
+file = "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleSoldier.cs"
+line = 43
+col = 30
+token = "HpChangedEvents"
+anchor = 'MRaftSoldier.HpChangedEvents -= OnHpChanged;'
+why = "与 l-event-01 同名事件的另一半：接收者是士兵而不是小队，-= 注销"
+source = "人工阅读：MRaftSoldier 的类型是 MRaftBattleSoldier（本文件第 8 行属性），MRaftBattleSoldier : MBattleSoldier，事件声明在 MBattleSoldier.Event.cs:79（public event HpChanged HpChangedEvents;）。按上面同一次 rg 的 14 处划分，属于 MBattleSoldier 的引用是 RRaftBattleSoldier.cs:31、43 与 MBattleSoldier.Event.cs:124、159 共 4 处，不含 79 定义处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs", line = 79, anchor = 'public event HpChanged HpChangedEvents;' }]
+refs = 4
+
+[[case]]
+id = "l-event-03"
+category = "event"
+file = "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs"
+line = 372
+col = 43
+token = "OnHpChanged"
+anchor = 'm_Team.HpChangedEvents -= OnHpChanged;'
+why = "-= 右侧的方法组；OnHpChanged 在项目里有 8 处声明（含两个重载同在一类）"
+source = "人工阅读：光标处是方法组，应绑定到当前类 UIBattleHeroSkill 的 private void OnHpChanged(MBattleTeam mteam, BattleChangeHp changeHp)（第 388 行）。rg -w 'void OnHpChanged' --type cs 命中 8 处声明：UIRaftBattleHud.cs:433、UIBattleHeroSkill.cs:388、BattleActorBar.cs:114、RBattleActor.cs:630、RRaftBattleSoldier.cs:54 与 63、RRaftBattleHero.cs:249、RRaftBattleBomber.cs:42。本类那一个的引用只有第 315、372 两处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs", line = 388, anchor = 'private void OnHpChanged(MBattleTeam mteam, BattleChangeHp changeHp)' }]
+refs = 2
+
+[[case]]
+id = "l-event-04"
+category = "event"
+file = "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs"
+line = 609
+col = 29
+token = "DeadEvents"
+anchor = 'soldier.DeadEvents += OnSoldierDead;'
+why = "DeadEvents 同时存在于 MBattleTeam 与 MBattleSoldier；本行写在 MBattleTeam 里却是士兵的事件"
+source = "人工阅读：soldier 由第 606 行 CreateModelEntity<MBattleSoldier>() 得到，因此绑定 MBattleSoldier.Event.cs:55 的 public event SoldierDead DeadEvents;。rg -w DeadEvents --type cs 共 12 处：属于 MBattleTeam 的 6 处（UIBattleHeroSkill.cs:318、374，MBattleTeam.Events.cs:152 定义、412、423，MBattleLevel.cs:441、468 —— 共 6 处引用）排除后，属于 MBattleSoldier 的引用是 MTestBattleTeam.cs:83（soldier 同样来自 CreateModelEntity<MBattleSoldier>，见该文件第 80 行）、MBattleTeam.cs:609、MBattleSoldier.Event.cs:145、154 共 4 处，不含 55 定义处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs", line = 55, anchor = 'public event SoldierDead DeadEvents;' }]
+refs = 4
+
+[[case]]
+id = "l-event-05"
+category = "event"
+file = "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs"
+line = 157
+col = 22
+token = "CastSkillEvent"
+anchor = 'public event CastSkillEvent CastSkillEvents;'
+why = "事件声明里的委托类型；CastSkillEvent 在 MBattleTeam 与 MBattleSoldier 里各有一个同名嵌套委托"
+source = "人工阅读：本行在 MBattleTeam 内部，内层作用域优先，绑定同类第 107 行的 public delegate void CastSkillEvent(MBattleTeam team, in CastSkillEventData data)，而不是 MBattleSoldier.Event.cs:20 的 public delegate void CastSkillEvent(MBattleSoldier soldier)。rg -w CastSkillEvent --type cs 全项目只有 3 处：MBattleTeam.Events.cs:107（定义）、157（本处引用）、MBattleSoldier.Event.cs:20（另一个同名委托的定义，项目里没有被引用）。故该委托类型的引用只有 1 处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs", line = 107, anchor = 'public delegate void CastSkillEvent(MBattleTeam team, in CastSkillEventData data);' }]
+refs = 1
+
+[[case]]
+id = "l-event-06"
+category = "event"
+file = "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs"
+line = 107
+col = 13
+token = "CastSkillEvents"
+anchor = 'CastSkillEvents?.Invoke(this);'
+why = "无接收者的事件调用 ?.Invoke；CastSkillEvents 在 MBattleTeam 与 MBattleSoldier 里同名"
+source = "人工阅读：本行在 MBattleSoldier 的 NotifyCastSkill 里，隐式 this，绑定同类第 69 行的 public event SkillEndEvent CastSkillEvents;。rg -w CastSkillEvents --type cs 共 13 处：属于 MBattleTeam 的 7 处（UIRaftBattleBomberIcon.cs:109、188，UIBattleHeroSkill.cs:316，MBattleTeam.Events.cs:157 定义、325、424，RBattleHero.cs:59、69 —— 其中 157 是定义）排除后，属于 MBattleSoldier 的引用是 RBattleSoldier.cs:141、158（ModelSoldier 声明为 MBattleSoldier，见该文件第 56 行）与本文件 107、156 共 4 处，不含 69 定义处。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs", line = 69, anchor = 'public event SkillEndEvent CastSkillEvents;' }]
+refs = 4
+
+# ---------------------------------------------------------------------------
+# operator：光标放在运算符本身上，期望跳到项目里的 operator 声明
+# 当前索引不记录运算符使用处，引用一律只列查询点所在行（预期失败）。
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-operator-01"
+category = "operator"
+file = "Assets/X1/ScriptGame/Buff/BuffHolder.cs"
+line = 72
+col = 52
+token = "+"
+anchor = 'm_BuffValues[propType] = buffValue + changeBuffValue;'
+why = "两侧都是 PropValue 结构体，加号是自定义运算符而非内置整数加法"
+source = "人工阅读：buffValue 来自 m_BuffValues（Dictionary<int, PropValue>，第 24 行），changeBuffValue 声明为 PropValue（第 52 行），因此绑定 PropValue.cs:44 的 public static PropValue operator +(PropValue v1, PropValue v2)。PropValue 是 partial struct，但运算符只在 PropValue.cs 里声明这一次（rg 'operator \\+' 确认）。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Prop/PropValue.cs", line = 44, anchor = 'public static PropValue operator +(PropValue v1, PropValue v2)' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Buff/BuffHolder.cs", line = 72, anchor = 'm_BuffValues[propType] = buffValue + changeBuffValue;' },
+]
+
+[[case]]
+id = "l-operator-02"
+category = "operator"
+file = "Assets/X1/ScriptGame/Buff/BuffHolder.cs"
+line = 112
+col = 52
+token = "-"
+anchor = 'm_BuffValues[propType] = buffValue - changeBuffValue;'
+why = "与 l-operator-01 结构相同但是减法，考察运算符重载的按参数类型选择"
+source = "人工阅读：同文件 DelBuff 分支，buffValue/changeBuffValue 都是 PropValue，绑定 PropValue.cs:50 的 public static PropValue operator -(PropValue v1, PropValue v2)。PropValue 上只有这一个减法运算符重载。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Prop/PropValue.cs", line = 50, anchor = 'public static PropValue operator -(PropValue v1, PropValue v2)' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Buff/BuffHolder.cs", line = 112, anchor = 'm_BuffValues[propType] = buffValue - changeBuffValue;' },
+]
+
+[[case]]
+id = "l-operator-03"
+category = "operator"
+file = "Assets/X1/ScriptGame/Prop/PropMgr.Get.cs"
+line = 163
+col = 24
+token = "+"
+anchor = 'return val + PropUtils.ApplyDissatisfaction(propType);'
+why = "右操作数是方法调用的返回值，必须先知道返回类型才能确定是 PropValue 的加法"
+source = "人工阅读：val 由第 157 行 GetBuffAndPropVal(...) 推断得到 PropValue（PropMgr.Get.cs:298 声明 private PropValue GetBuffAndPropVal），PropUtils.ApplyDissatisfaction 的返回类型是 PropValue（PropUtils.cs:214），因此绑定 PropValue.cs:44 的 operator +。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Prop/PropValue.cs", line = 44, anchor = 'public static PropValue operator +(PropValue v1, PropValue v2)' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Prop/PropMgr.Get.cs", line = 163, anchor = 'return val + PropUtils.ApplyDissatisfaction(propType);' },
+]
+
+[[case]]
+id = "l-operator-04"
+category = "operator"
+file = "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs"
+line = 342
+col = 29
+token = "!="
+anchor = 'if (CurrentSeat != lastSeat)'
+why = "WorkerSeat 是结构体，!= 必须走自定义运算符而不是引用比较"
+source = "人工阅读：CurrentSeat 是 WorkerSeat 属性（本文件第 216 行），lastSeat 由第 339 行 var lastSeat = CurrentSeat; 推断同为 WorkerSeat；WorkerSeat 定义在同文件第 486 行，!= 重载在第 523 行。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs", line = 523, anchor = 'public static bool operator !=(WorkerSeat a, WorkerSeat b)' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs", line = 342, anchor = 'if (CurrentSeat != lastSeat)' },
+]
+
+[[case]]
+id = "l-operator-05"
+category = "operator"
+file = "Assets/Launch/Script/Common/Version.cs"
+line = 50
+col = 24
+token = "<"
+anchor = 'return lhs < new Version(rhs);'
+why = "同一个类型上有两个 operator <（Version,Version 与 Version,string），必须按实参类型选重载"
+source = "人工阅读：本行在 operator <(Version lhs, string rhs) 内部，右侧 new Version(rhs) 把 string 转成 Version，所以调用的是第 43 行的 operator <(Version lhs, Version rhs)，而不是正在定义的第 48 行那一个（否则会无限递归）。TFW.Version 是 struct，比较不会退化成内置比较。"
+[case.expect]
+defs = [{ file = "Assets/Launch/Script/Common/Version.cs", line = 43, anchor = 'public static bool operator <(Version lhs, Version rhs)' }]
+refs_include = [
+  { file = "Assets/Launch/Script/Common/Version.cs", line = 50, anchor = 'return lhs < new Version(rhs);' },
+]
+
+# ---------------------------------------------------------------------------
+# indexer：光标放在 [ 上，期望跳到项目里的 this[...] 声明
+# RuntimeConfig.GridMatrix 与 EditorConfig.GridMatrix 的索引器签名完全一样，
+# 只有接收者类型能区分，是本组的核心区分点。
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-indexer-01"
+category = "indexer"
+file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs"
+line = 71
+col = 40
+token = "["
+anchor = 'layerData.Grids[i, j] = regionId;'
+why = "上一行的 layer.Grids[i, j] 是 EditorConfig 的索引器，本行是 RuntimeConfig 的，签名一模一样"
+source = "人工阅读：layerData 由第 50 行 var layerData = new GridLayer(); 得到，本文件第 1 行 using RuntimeConfig; 且没有 using EditorConfig;，所以是 RuntimeConfig.GridLayer；其 Grids 属性类型为 RuntimeConfig.GridMatrix（MapGridLayer.cs:207），索引器声明在 Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14。运算符/索引器使用处当前索引不记录，引用只列查询点所在行。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs", line = 14, anchor = 'public int this[int x, int y]' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs", line = 71, anchor = 'layerData.Grids[i, j] = regionId;' },
+]
+
+[[case]]
+id = "l-indexer-02"
+category = "indexer"
+file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs"
+line = 23
+col = 35
+token = "["
+anchor = 'int id = grids[y, x];'
+why = "与 l-indexer-01 成对：同名同签名的索引器，这次应落在 EditorConfig 那一个"
+source = "人工阅读：grids 是第 9 行的参数 GridMatrix grids，本文件第 2 行 using EditorConfig; 且无 using RuntimeConfig;，故为 EditorConfig.GridMatrix，索引器声明在 Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:11。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs", line = 11, anchor = 'public int this[int x, int y]' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs", line = 23, anchor = 'int id = grids[y, x];' },
+]
+
+[[case]]
+id = "l-indexer-03"
+category = "indexer"
+file = "Assets/TFWCore/Script/Map/Layer/GridLayer.cs"
+line = 36
+col = 23
+token = "["
+anchor = 'id = Grids[z, x];'
+why = "无接收者前缀（隐式 this.Grids），更容易被按名称误判成数组下标"
+source = "人工阅读：本文件 namespace RuntimeConfig，GridLayer 的 Grids 属性声明在同命名空间的 MapGridLayer.cs:207，类型 RuntimeConfig.GridMatrix；它不是数组，取值走 Map/Layer/GridMatrix.cs:14 的索引器。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs", line = 14, anchor = 'public int this[int x, int y]' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Map/Layer/GridLayer.cs", line = 36, anchor = 'id = Grids[z, x];' },
+]
+
+[[case]]
+id = "l-indexer-04"
+category = "indexer"
+file = "Assets/X1/ScriptCore/Common/Timer/TimerMgr.cs"
+line = 349
+col = 31
+token = "["
+anchor = 'timer = timers[idx];'
+why = "timers 是自定义容器 ExtendArray<T> 的参数，看起来像普通数组"
+source = "人工阅读：timers 是第 339 行参数 ExtendArray<TimerNode> timers；ExtendArray<T> 定义在 Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs，索引器在第 36 行 public T this[int index]。ExtendArray 不是数组也不继承 List。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs", line = 36, anchor = 'public T this[int index]' }]
+refs_include = [
+  { file = "Assets/X1/ScriptCore/Common/Timer/TimerMgr.cs", line = 349, anchor = 'timer = timers[idx];' },
+]
+
+[[case]]
+id = "l-indexer-05"
+category = "indexer"
+file = "Assets/X1/ScriptCore/Common/Collections/SwapExtendArray.cs"
+line = 95
+col = 30
+token = "["
+anchor = 'get => m_ArrFront[index];'
+why = "本行就在 SwapExtendArray 自己的索引器体内，期望跳到内层字段类型的索引器而不是当前这个"
+source = "人工阅读：第 92 行是 SwapExtendArray<T> 自己的 public T this[int index]，其 get 体里访问的 m_ArrFront 声明为 ExtendArray<T>（第 21 行），因此绑定 ExtendArray.cs:36 的索引器，而不是第 92 行。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs", line = 36, anchor = 'public T this[int index]' }]
+refs_include = [
+  { file = "Assets/X1/ScriptCore/Common/Collections/SwapExtendArray.cs", line = 95, anchor = 'get => m_ArrFront[index];' },
+]
+
+# ---------------------------------------------------------------------------
+# type_ref：#37（L1）的验收口径
+# 主力是 RuntimeConfig.GridMatrix / EditorConfig.GridMatrix 这一对——两个
+# partial 类型同名、成员同名、连源码行文本都一样，只有命名空间与 using 能区分。
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "l-type_ref-01"
+category = "type_ref"
+file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs"
+line = 207
+col = 16
+token = "GridMatrix"
+anchor = 'public GridMatrix Grids { get; set; }'
+why = "属性声明里的类型名；EditorConfig 下有一行文本完全相同的同名属性，按名称无法区分"
+source = "人工阅读：本文件 namespace RuntimeConfig，所以这里的 GridMatrix 是 RuntimeConfig.GridMatrix；它是 partial，两处声明分别在 Map/Layer/GridMatrix.cs:12（手写部分，含索引器与构造函数）与本文件第 67 行（protobuf 生成部分），defs 两处都要列。rg -w GridMatrix --type cs 共 26 处，另一半属于 EditorConfig.GridMatrix（Editor/ 目录下）。引用不给精确数：两个 partial 里各有 public GridMatrix() 构造函数声明，是否计入引用口径不定，故只列两处明确的类型引用。"
+[case.expect]
+defs = [
+  { file = "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs", line = 12, anchor = 'public partial class GridMatrix' },
+  { file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 67, anchor = 'public partial class GridMatrix : Google.Protobuf.IMessageMap' },
+]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 345, anchor = 'Grids = new RuntimeConfig.GridMatrix();' },
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs", line = 65, anchor = 'layerData.Grids = new GridMatrix(layer.GridRowCnt, layer.GridColCnt);' },
+]
+
+[[case]]
+id = "l-type_ref-02"
+category = "type_ref"
+file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs"
+line = 279
+col = 16
+token = "GridMatrix"
+anchor = 'public GridMatrix Grids { get; set; }'
+why = "与 l-type_ref-01 行文本逐字相同，但在 EditorConfig 命名空间下，期望落在另一对 partial 上"
+source = "人工阅读：本文件 namespace EditorConfig（第 8 行），GridMatrix 的两处 partial 声明是 Editor/Map/LayerGrid/GridMatrix.cs:9（手写部分）与本文件第 12 行（生成部分）。引用同样不给精确数（两个 partial 各有同名构造函数），列 MapEditorData.GridLayer.cs:443 的 new EditorConfig.GridMatrix() 与 ContentProviderGridLayerEditor.GUI.cs:518（该文件 using EditorConfig，layer 为 EditorConfig.GridLayerData）两处。"
+[case.expect]
+defs = [
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs", line = 9, anchor = 'public partial class GridMatrix' },
+  { file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs", line = 12, anchor = 'public partial class GridMatrix : Google.Protobuf.IMessageMap' },
+]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs", line = 443, anchor = 'Grids = new EditorConfig.GridMatrix();' },
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.GUI.cs", line = 518, anchor = 'layer.Grids = new GridMatrix(layer.GridRowCnt, layer.GridColCnt);' },
+]
+
+[[case]]
+id = "l-type_ref-03"
+category = "type_ref"
+file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs"
+line = 9
+col = 58
+token = "GridMatrix"
+anchor = 'public static List<(int Id, int X, int Y)> Build(GridMatrix grids)'
+why = "参数声明里的类型名，且类型不在本文件命名空间（TFWEditor）里，要靠 using EditorConfig 解析"
+source = "人工阅读：本文件 namespace TFWEditor，第 2 行 using EditorConfig; 且无 using RuntimeConfig;，所以 GridMatrix 解析为 EditorConfig.GridMatrix，两处 partial 声明同 l-type_ref-02。引用列同为 EditorConfig.GridMatrix 的两处参数声明：GridLayerData.cs:50（该文件 namespace EditorConfig）与 ContentProviderGridLayerEditor.FillBlock.cs:34（写成全限定 EditorConfig.GridMatrix）。"
+[case.expect]
+defs = [
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs", line = 9, anchor = 'public partial class GridMatrix' },
+  { file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs", line = 12, anchor = 'public partial class GridMatrix : Google.Protobuf.IMessageMap' },
+]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridLayerData.cs", line = 50, anchor = 'public void SetGridData(int x, int y, int id, GridMatrix grids = null, Dictionary<Vector2Int, GridEntityGO> gridItem = null)' },
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.FillBlock.cs", line = 34, anchor = 'private int[,] BuildBlockMergedGrids(EditorConfig.GridMatrix baseGrids, int rowCnt, int colCnt,' },
+]
+
+[[case]]
+id = "l-type_ref-04"
+category = "type_ref"
+file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs"
+line = 65
+col = 39
+token = "GridMatrix"
+anchor = 'layerData.Grids = new GridMatrix(layer.GridRowCnt, layer.GridColCnt);'
+why = "new 表达式里的类型名；同一个 ContentProviderGridLayerEditor 的另一个分部文件里有一模一样的 new GridMatrix(...) 却是 EditorConfig 的"
+source = "人工阅读：本文件第 1 行只有 using RuntimeConfig;（没有 using EditorConfig），所以 new GridMatrix(...) 是 RuntimeConfig.GridMatrix；对照 ContentProviderGridLayerEditor.GUI.cs:518 行文本几乎相同，但那个文件 using EditorConfig。引用列同属 RuntimeConfig.GridMatrix 的 MapGridLayer.cs:207 与本文件第 133 行。"
+[case.expect]
+defs = [
+  { file = "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs", line = 12, anchor = 'public partial class GridMatrix' },
+  { file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 67, anchor = 'public partial class GridMatrix : Google.Protobuf.IMessageMap' },
+]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 207, anchor = 'public GridMatrix Grids { get; set; }' },
+  { file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs", line = 133, anchor = 'Grids = new GridMatrix(m_Data.GridRowCnt, m_Data.GridColCnt),' },
+]
+
+[[case]]
+id = "l-type_ref-05"
+category = "type_ref"
+file = "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs"
+line = 21
+col = 29
+token = "Row"
+anchor = 'Rows = new List<Row>(rowCount);'
+why = "泛型实参里的嵌套类型名 Row，项目里有十余个同名类型，且另一个 GridMatrix 下有逐字相同的一行"
+source = "人工阅读：本行在 EditorConfig.GridMatrix 的构造函数里，Row 解析为嵌套类型 EditorConfig.GridMatrix.Row，唯一声明在 Editor/Map/Data/MapEditorData.GridLayer.cs:77（缩进 8 空格，嵌套在第 12 行的 GridMatrix 内）。rg -n '(class|struct|enum|interface)\\s+Row' --type cs 全项目 10 处以上同名类型（RogueTowerAudioTunerWindow.cs:51、UICompetitorWnd.cs:50、MapGridLayer.cs:132 等）。引用列同类型的两处全限定使用：MapEditorData.GridLayer.cs:54、58。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs", line = 77, anchor = 'public partial class Row : Google.Protobuf.IMessageMap' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs", line = 54, anchor = 'EditorConfig.GridMatrix.Row o = null;' },
+  { file = "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs", line = 58, anchor = 'o = new EditorConfig.GridMatrix.Row();' },
+]
+
+[[case]]
+id = "l-type_ref-06"
+category = "type_ref"
+file = "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs"
+line = 24
+col = 29
+token = "Row"
+anchor = 'Rows = new List<Row>(rowCount);'
+why = "与 l-type_ref-05 行文本逐字相同，但在 RuntimeConfig.GridMatrix 里，期望落在另一个嵌套 Row"
+source = "人工阅读：本文件 namespace RuntimeConfig，Row 解析为 RuntimeConfig.GridMatrix.Row，唯一声明在 Map/Data/MapGridLayer.cs:132（嵌套在第 67 行的 GridMatrix 内，由第 109 行的全限定写法 RuntimeConfig.GridMatrix.Row 佐证）。引用列同类型的 MapGridLayer.cs:109、113。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 132, anchor = 'public partial class Row : Google.Protobuf.IMessageMap' }]
+refs_include = [
+  { file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 109, anchor = 'RuntimeConfig.GridMatrix.Row o = null;' },
+  { file = "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs", line = 113, anchor = 'o = new RuntimeConfig.GridMatrix.Row();' },
+]
+
+[[case]]
+id = "l-type_ref-07"
+category = "type_ref"
+file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs"
+line = 100
+col = 31
+token = "Row"
+anchor = 'private readonly List<Row> m_Rows = new List<Row>();'
+why = "字段声明里的泛型实参，Row 是本文件私有嵌套类，而项目里另有十余个同名 Row"
+source = "人工阅读：Row 是本文件第 51 行的 private sealed class Row，作用域只在 RogueTowerAudioTunerWindow 内，因此一定是它而不是 MapGridLayer.cs:132、UICompetitorWnd.cs:50、HeroEquipStarUpRewardPresentation.cs:130 等同名类型。本文件内该类型的引用在 100（两次）、114（两次）、253、304、422、530、642 行，同一行出现两次使精确计数有歧义，故只列 422、530 两处单次出现的引用。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 51, anchor = 'private sealed class Row' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 422, anchor = 'private IEnumerable<Row> VisibleRows()' },
+  { file = "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs", line = 530, anchor = 'private static void DrawResourceCell(Row r)' },
+]
+
+[[case]]
+id = "l-type_ref-08"
+category = "type_ref"
+file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs"
+line = 76
+col = 61
+token = "Para"
+anchor = 'D.Error($"Para type error, expected {typeof(Para)}, actual {paras.GetType()}");'
+why = "typeof 里的类型名；项目里有 60 多个同名的嵌套 struct Para，而且同一行字符串字面量里也有 Para 字样"
+source = "人工阅读：Para 是本类第 65 行的 public struct Para : IPara，嵌套在 UnifyWorldBossNameplate 内。rg -n '(struct|class) Para\\b' --type cs 全项目 63 处声明（每个 UI/Widget 类一个），按名称解析几乎必然落错类。引用列同文件第 74 行的 is 模式与本行。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs", line = 65, anchor = 'public struct Para : IPara' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs", line = 74, anchor = 'if (paras is not Para para)' },
+  { file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs", line = 76, anchor = 'D.Error($"Para type error, expected {typeof(Para)}, actual {paras.GetType()}");' },
+]
+
+[[case]]
+id = "l-type_ref-09"
+category = "type_ref"
+file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs"
+line = 74
+col = 30
+token = "Para"
+anchor = 'if (paras is not Para para)'
+why = "is 模式里的类型名，紧挨着同名小写的模式变量 para，同样面对 63 个同名 Para"
+source = "人工阅读：is not Para 检测的是本类第 65 行的嵌套 struct Para（paras 的静态类型是接口 IUnifyWidgetPara）；同行的 para 是模式变量，不是类型。引用同 l-type_ref-08。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs", line = 65, anchor = 'public struct Para : IPara' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs", line = 74, anchor = 'if (paras is not Para para)' },
+  { file = "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs", line = 76, anchor = 'D.Error($"Para type error, expected {typeof(Para)}, actual {paras.GetType()}");' },
+]
+
+[[case]]
+id = "l-type_ref-10"
+category = "type_ref"
+file = "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs"
+line = 315
+col = 37
+token = "Buff"
+anchor = 'public sealed class EnemyBuff : Buff'
+why = "继承列表里的基类型；本文件写着 using XCfg; 而 XCfg 下正好有一个同名的配置类 Buff"
+source = "人工阅读：本文件第 5 行 using XCfg;、第 12 行 namespace X1.ScriptGame.RoguelikeTower.GamePlay.Buff，同命名空间内第 14 行有 public abstract class Buff : ISnapshotable，当前命名空间优先于 using 导入，所以基类是它。rg -n '(class|struct) Buff\\b' --type cs 另有两个同名类型：XCfg/Buff.cs:8（配置表生成类）与 TFWConfig/FrameworkProtos/common.cs:1539（protobuf 消息）。引用列同文件另外两处继承（108、390）。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs", line = 14, anchor = 'public abstract class Buff : ISnapshotable' }]
+refs_include = [
+  { file = "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs", line = 108, anchor = 'public sealed class EnemyGroupBuff : Buff' },
+  { file = "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs", line = 390, anchor = 'public sealed class AddNewSkillBuff : Buff' },
+]

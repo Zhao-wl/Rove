@@ -120,6 +120,34 @@ docs: 补充索引格式的元数据段说明
 
 <!-- #39 追加：nav_check 用法 -->
 
+### 8.2 C# 导航准确率测试集（#39，`nav_check`）
+
+200 个人工整理的导航用例在 `tests/nav-cases/*.toml`（格式与分类见该目录的 `README.md`），由
+`rove-lang-cs` 的 example `nav_check` 运行。**只在本地跑，不进 CI**（CI 上没有测试项目）。
+
+- 需要 `ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE`（同上，路径不写进仓库）；未设置时跳过并说明原因，退出码 0。
+- 索引默认读 `target/nav-check/<medium|large>.idx`，也可用 `--index-medium` / `--index-large` 或环境变量
+  `ROVE_NAV_INDEX_MEDIUM` / `ROVE_NAV_INDEX_LARGE` 指定；加 `--build` 先用 `tools/rove-indexer-cs` 重建（需先
+  `dotnet build tools/rove-indexer-cs -c Release`；大型项目约 2–3 分钟、峰值数 GB 内存）。
+- 输出分类准确率（通过 / 失败 / 过期 / 不支持）与失败详情，写出 `target/nav-check/nav-check-<来源>.json`（机器可读）和 `.md`。
+- `--source l2`（默认，完整语义索引）/ `--source l1`（L1 快速声明索引，#37；`type_ref` 分类即其验收口径）。
+- 前后对比：`--baseline <上次的 json>` 列出状态变化，加 `--fail-on-regression` 时有“通过 → 失败”就以 1 退出。
+- 格式或查询接口变了，**只改** `crates/rove-lang-cs/examples/nav_check/adapter.rs`。
+
+```powershell
+cargo run --release -p rove-lang-cs --example nav_check -- --build            # 首次：建索引并跑全部
+cargo run --release -p rove-lang-cs --example nav_check -- --project medium   # 只跑中型
+cargo run --release -p rove-lang-cs --example nav_check -- --baseline target/nav-check/before.json --fail-on-regression
+cargo run --release -p rove-lang-cs --example nav_check -- --lint             # 只检查用例格式与锚点，不查询
+```
+
+**用例过期了怎么重新整理**（测试项目是真实项目，代码会变）：
+
+1. 运行器先按行列找；行文本与 `anchor` 对不上时在上下 40 行内按锚点重新定位（`--window` 可调），定位成功就用新位置。
+2. 定位失败的用例标为“过期”：计入统计但不算失败。`cargo run -p rove-lang-cs --example nav_check -- --lint` 列出全部过期与已重定位的用例；`cargo test -p rove-lang-cs --test nav_check` 在设置了环境变量时过期超过 10% 会失败。
+3. 逐条处理过期用例：打开报告里的文件，找到原来的代码（被移动、改名或删除）。还在 → 更新 `line` / `col` / `anchor`，并重新核对 `expect` 的期望位置与引用数；不在了 → 在同一分类里另选一个“按名称解析一定会错”的点替换，保持每类至少 5 个、每个项目 100 个。
+4. 期望值必须读源码独立得出，`source` 写清怎么确认的；**不要从被测索引里抄**。改完后跑一遍并更新 `tests/nav-cases/baseline-l2.md`。
+
 ## 9. 工具链与本地检查
 
 - **Rust 工具链固定 MSVC**：仓库里的 `rust-toolchain.toml` 指定 `stable-x86_64-pc-windows-msvc`。**gnu toolchain 编不过**（见 `M0_UI_SPIKE_REPORT` §2.2 坑 1），不要切换。
