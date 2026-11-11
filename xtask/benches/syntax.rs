@@ -52,8 +52,7 @@ fn benchmark(c: &mut Criterion) {
             |(text, inserted)| {
                 let edit = TextEdit {
                     version: previous.get(),
-                    range: Span::new(ByteOffset(byte as u64), ByteOffset(byte as u64 + 1))
-                        .unwrap(),
+                    range: Span::new(ByteOffset(byte as u64), ByteOffset(byte as u64 + 1)).unwrap(),
                     inserted: inserted.into(),
                 };
                 let version = text.version();

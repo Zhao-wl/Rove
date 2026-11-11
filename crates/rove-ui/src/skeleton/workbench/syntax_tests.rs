@@ -324,5 +324,8 @@ fn token_colors_use_the_most_specific_matching_selector() {
     };
     assert_eq!(color("if"), Some(rove_theme::Color(0, 0, 0xff, 0xff)));
     assert_eq!(color("else"), Some(rove_theme::Color(0, 0xff, 0, 0xff)));
-    assert_eq!(color("class"), Some(rove_theme::Color(0x44, 0x55, 0x66, 0xff)));
+    assert_eq!(
+        color("class"),
+        Some(rove_theme::Color(0x44, 0x55, 0x66, 0xff))
+    );
 }
