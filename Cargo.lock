@@ -4807,6 +4807,8 @@ dependencies = [
 name = "rove-ui"
 version = "0.0.1"
 dependencies = [
+ "async-channel 2.5.0",
+ "globset",
  "gpui",
  "memchr",
  "rove-base",
@@ -4820,6 +4822,7 @@ dependencies = [
  "rove-theme",
  "rove-workspace",
  "serde_json",
+ "serde_json_lenient",
  "tempfile",
  "unicode-segmentation",
 ]

@@ -23,6 +23,7 @@ impl Commands {
         // #16 工作台命令：标题与分类登记在同一张命令表里，执行由工作台分发。
         crate::shell::catalog::register_commands(&mut r)?;
         crate::code_view::commands::register(&mut r)?;
+        crate::editors::actions::register(&mut r)?;
         Ok(Self { registry: r })
     }
 }

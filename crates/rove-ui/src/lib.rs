@@ -11,3 +11,6 @@ pub mod skeleton;
 pub mod shell;
 
 pub mod code_view;
+
+pub(crate) mod editors;
+pub use editors::settings::register as editor_setting_defaults;

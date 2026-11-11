@@ -23,11 +23,49 @@ pub fn strings() -> Result<StringTable> {
         ("tree.open", "▾ {name}"),
         ("tree.closed", "▸ {name}"),
         ("workbench.statusTitle", "文件状态"),
+        ("editors.splitLeft", "←"),
+        ("editors.splitUp", "↑"),
+        ("editors.splitDown", "↓"),
+        ("editors.splitRight", "→"),
+        ("editors.lock", "◇"),
+        ("editors.unlock", "◆"),
+        ("editors.maximize", "□"),
+        ("editors.restore", "▣"),
+        ("editors.closeTab", "×"),
+        ("editors.pinned", "◆"),
+        ("editors.dirty", "●"),
+        ("editors.errorBadge", "!"),
+        ("editors.index", "{index}"),
+        (
+            "editors.watermark",
+            "快速打开 Ctrl+P　　命令面板 Ctrl+Shift+P",
+        ),
+        (
+            "editors.markdown",
+            "Markdown 预览尚未实现；带位置打开可查看源码。",
+        ),
+        ("editors.fileMissing", "无法打开编辑器：找不到文件。"),
+        ("editors.fileDenied", "无法打开编辑器：没有读取权限。"),
+        (
+            "editors.fileUnsupported",
+            "无法打开编辑器：文件格式或编码不受支持。",
+        ),
+        (
+            "editors.invalidLocation",
+            "无法定位：指定的行或列不在文件中。",
+        ),
+        (
+            "editors.fileUnavailable",
+            "无法打开编辑器：文件可能正被占用，或路径无效。",
+        ),
+        ("editors.retry", "重试"),
+        ("editors.reveal", "在资源管理器中显示"),
     ] {
         t.register(k, Arc::from(v))?;
     }
     crate::shell::catalog::register_strings(&mut t)?;
     crate::code_view::commands::register_strings(&mut t)?;
+    crate::editors::actions::strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

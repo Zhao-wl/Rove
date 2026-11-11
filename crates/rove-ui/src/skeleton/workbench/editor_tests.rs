@@ -1,0 +1,549 @@
+use super::*;
+use crate::code_view::{ScrollPosition, Selection};
+use crate::documents::{EditorTabKind, EditorTabState, OpenEvent, OpenTarget};
+use gpui::{Modifiers, TestAppContext, VisualTestContext};
+use rove_base::{Position, TextRange, Utf8Column};
+use std::sync::Mutex;
+
+fn resource(name: &str) -> Resource {
+    Resource::Workspace(WorkspacePath::new(name).unwrap())
+}
+
+fn pos(line: u64, column: u64) -> Position {
+    Position {
+        line: Line(line),
+        column: Utf8Column(column),
+    }
+}
+
+fn window(cx: &mut TestAppContext, root: PathBuf) -> (Entity<Workbench>, &mut VisualTestContext) {
+    let (view, cx) = cx.add_window_view(|_, cx| Workbench::new(root, Instant::now(), cx));
+    cx.update(|window, cx| {
+        cx.bind_keys(editor_actions::bindings());
+        window.focus(&view.read(cx).focus);
+    });
+    cx.run_until_parked();
+    (view, cx)
+}
+
+#[gpui::test]
+fn caller_reveals_utf8_selection_and_markdown_uses_source_for_locations(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("Readme.md"), "a你好b\n".repeat(300)).unwrap();
+    let (view, cx) = window(cx, folder.path().into());
+    cx.simulate_click(point(px(128.0), px(104.0)), Modifiers::default());
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert!(matches!(
+            v.editor.active().current().unwrap().kind,
+            EditorKind::Placeholder { ref id, .. } if id.as_ref() == crate::editors::settings::MARKDOWN
+        ));
+    });
+
+    let wanted = TextRange::new(pos(185, 1), pos(185, 7)).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let (request, _subscription) = cx.update(|_, app| {
+        view.update(app, |v, cx| {
+            let service = v.open_documents();
+            let subscription = service.events().subscribe(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+            let request = service
+                .open(
+                    Resource::File(folder.path().join("Readme.md")),
+                    OpenOptions {
+                        source: OpenSource::Search,
+                        location: Some(pos(0, 0)),
+                        selection: Some(wanted.clone()),
+                        preview_tab: false,
+                        ..Default::default()
+                    },
+                    Cancellation::default(),
+                )
+                .unwrap();
+            cx.notify();
+            (request, subscription)
+        })
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        let doc = v
+            .editor
+            .find(&resource("Readme.md"))
+            .expect("the document is open");
+        let tabs = v.editor.in_group(v.editor.focused);
+        assert_eq!(tabs.len(), 2, "each presentation gets its own snapshot");
+        assert!(matches!(&tabs[0].kind, EditorTabKind::Custom(_)));
+        assert_eq!(tabs[1].kind, EditorTabKind::Text);
+        assert_eq!(tab.kind, EditorKind::Text);
+        assert_eq!(tab.view.selection.as_ref(), Some(&wanted));
+        assert_eq!(tab.view.cursor, wanted.start());
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [OpenEvent::Ready { request: got, group, document }] if *got == request && *group == v.editor.focused && *document == doc.id
+        ));
+    });
+    assert_code_shows(cx, &view, &wanted, "a你好b");
+    cx.simulate_keystrokes("ctrl-pageup");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-pagedown");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.view.selection.as_ref(), Some(&wanted));
+    });
+    // Switching away and back restores the selection and keeps the target line on screen.
+    assert_code_shows(cx, &view, &wanted, "a你好b");
+}
+
+/// The focused group's code view shows `selection` with its first line inside the viewport.
+fn assert_code_shows(
+    cx: &mut VisualTestContext,
+    view: &Entity<Workbench>,
+    selection: &TextRange,
+    line_text: &str,
+) {
+    cx.update(|window, cx| {
+        window.refresh();
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    code.read_with(cx, |c, _| {
+        let s = c.selection();
+        assert_eq!((s.start(), s.end()), (selection.start(), selection.end()));
+        let line = selection.start().line.0;
+        let viewport = c.viewport().expect("code view laid out");
+        assert!(
+            viewport.first_line <= line && line <= viewport.last_line,
+            "line {line} outside {viewport:?}"
+        );
+        assert_eq!(c.painted_text(line).as_deref(), Some(line_text));
+    });
+}
+
+#[gpui::test]
+fn open_preview_keep_split_pin_and_restore_use_the_real_window(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["A.cs", "B.cs", "C.cs"] {
+        std::fs::write(
+            folder.path().join(name),
+            "public class Value {}\n".repeat(300),
+        )
+        .unwrap();
+    }
+    let (view, cx) = window(cx, folder.path().into());
+    let left = view.read_with(cx, |v, _| {
+        assert!(v
+            .command_registry()
+            .get("workbench.action.splitEditor")
+            .is_some());
+        v.editor.focused
+    });
+    cx.simulate_click(point(px(128.0), px(104.0)), Modifiers::default());
+    cx.run_until_parked();
+    let discarded = view.read_with(cx, |v, _| {
+        Arc::downgrade(&v.editor.find(&resource("A.cs")).unwrap())
+    });
+    cx.simulate_click(point(px(128.0), px(128.0)), Modifiers::default());
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.active().tabs.len(), 1);
+        assert!(v.editor.active().current().unwrap().preview);
+        assert!(
+            discarded.upgrade().is_none(),
+            "replacing preview releases the only document owner"
+        );
+    });
+    cx.simulate_keystrokes("ctrl-k enter");
+    cx.simulate_click(point(px(128.0), px(152.0)), Modifiers::default());
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.active().tabs.len(), 2);
+        assert!(!v.editor.active().tabs[0].preview);
+        assert!(v.editor.active().tabs[1].preview);
+    });
+    cx.simulate_keystrokes("ctrl-\\");
+    cx.run_until_parked();
+    let right = view.read_with(cx, |v, _| {
+        assert_ne!(v.editor.focused, left);
+        let right = v.editor.focused;
+        let left_tabs = v.editor.in_group(left);
+        let right_tabs = v.editor.in_group(right);
+        let EditorTabState::Ready(a) = &left_tabs.last().unwrap().state else {
+            panic!("left is not ready")
+        };
+        let EditorTabState::Ready(b) = &right_tabs.last().unwrap().state else {
+            panic!("right is not ready")
+        };
+        let (a, b) = (&a.text, &b.text);
+        assert!(Arc::ptr_eq(a, b), "both views own the same TextSource");
+        right
+    });
+    cx.update(|window, cx| {
+        window.refresh();
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, cx| {
+        let left_code = v.group_code(left, false).unwrap();
+        let right_code = v.group_code(right, false).unwrap();
+        assert_ne!(
+            left_code.entity_id(),
+            right_code.entity_id(),
+            "each group owns its code view"
+        );
+        let (a, b) = (left_code.read(cx).text(), right_code.read(cx).text());
+        assert!(
+            Arc::ptr_eq(a.unwrap(), b.unwrap()),
+            "both code views point at the one TextSource"
+        );
+    });
+    cx.simulate_keystrokes("ctrl-k ctrl-m");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert_eq!(v.editor.maximized, Some(right)));
+    cx.simulate_keystrokes("ctrl-k ctrl-m");
+    cx.simulate_keystrokes("ctrl-1");
+    cx.simulate_keystrokes("alt-1");
+    cx.simulate_keystrokes("ctrl-k shift-enter");
+    cx.simulate_keystrokes("ctrl-k ctrl-w");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.maximized, None);
+        assert_eq!(v.editor.focused, left);
+        assert_eq!(v.editor.active().tabs.len(), 1);
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.resource, resource("B.cs"));
+        assert!(tab.pinned);
+        assert!(!tab.preview);
+    });
+}
+
+#[gpui::test]
+fn navigation_reopens_closed_tab_across_groups_and_missing_files_fail_in_place(
+    cx: &mut TestAppContext,
+) {
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["A.cs", "B.cs", "C.cs"] {
+        std::fs::write(
+            folder.path().join(name),
+            "public class Value {}\n".repeat(250),
+        )
+        .unwrap();
+    }
+    let (view, cx) = window(cx, folder.path().into());
+    let open = |cx: &mut VisualTestContext, name, target, source, location| {
+        cx.update(|_, app| {
+            view.update(app, |v, cx| {
+                v.open_documents()
+                    .open(
+                        resource(name),
+                        OpenOptions {
+                            source,
+                            target,
+                            location,
+                            ..Default::default()
+                        },
+                        Cancellation::default(),
+                    )
+                    .unwrap();
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+    };
+    open(
+        cx,
+        "A.cs",
+        OpenTarget::Active,
+        OpenSource::QuickOpen,
+        Some(pos(71, 1)),
+    );
+    let left = view.read_with(cx, |v, _| v.editor.focused);
+    open(
+        cx,
+        "B.cs",
+        OpenTarget::Beside,
+        OpenSource::CodeNavigation,
+        Some(pos(80, 3)),
+    );
+    let right = view.read_with(cx, |v, _| {
+        assert!(!v.editor.active().current().unwrap().preview);
+        v.editor.focused
+    });
+    open(
+        cx,
+        "C.cs",
+        OpenTarget::Group(right),
+        OpenSource::Outline,
+        Some(pos(110, 2)),
+    );
+    cx.update(|_, app| {
+        view.update(app, |v, cx| {
+            let b = v.editor.find(&resource("B.cs")).unwrap().id;
+            assert_eq!(
+                v.open_documents().close(b, Some(right)).unwrap(),
+                crate::documents::CloseOutcome::Closed
+            );
+            cx.notify();
+        })
+    });
+    cx.simulate_keystrokes("alt-left");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(v.editor.focused, right);
+        assert_eq!(tab.resource, resource("B.cs"));
+        assert_eq!(tab.view.cursor, pos(80, 3));
+    });
+    cx.simulate_keystrokes("alt-left");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.focused, left);
+        assert_eq!(v.editor.active().current().unwrap().view.cursor, pos(71, 1));
+    });
+    cx.simulate_keystrokes("alt-right");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert_eq!(v.editor.focused, right));
+    open(
+        cx,
+        "Missing.cs",
+        OpenTarget::Active,
+        OpenSource::Explorer,
+        None,
+    );
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.resource, resource("Missing.cs"));
+        assert!(matches!(
+            tab.content,
+            Content::Failed(Error::Io {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            })
+        ));
+    });
+}
+
+#[gpui::test]
+fn superseded_opens_report_exactly_one_terminal_event(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["A.cs", "B.cs"] {
+        std::fs::write(folder.path().join(name), "public class Value {}\n").unwrap();
+    }
+    let (view, cx) = window(cx, folder.path().into());
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let parent = Cancellation::default();
+    let (group, first, same_tab, latest, _subscription) = cx.update(|_, app| {
+        view.update(app, |v, cx| {
+            let group = v.editor.focused;
+            let service = v.open_documents();
+            let subscription = service.events().subscribe(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+            let first = service
+                .open(resource("A.cs"), OpenOptions::default(), parent.clone())
+                .unwrap();
+            let tab = service.in_group(group)[0].id;
+            let same_tab = service
+                .open(resource("A.cs"), OpenOptions::default(), parent.clone())
+                .unwrap();
+            assert_eq!(service.in_group(group)[0].id, tab);
+            let latest = service
+                .open(resource("B.cs"), OpenOptions::default(), parent.clone())
+                .unwrap();
+            assert_ne!(service.in_group(group)[0].id, tab);
+            assert_eq!(parent.check(), Ok(()));
+            cx.notify();
+            (group, first, same_tab, latest, subscription)
+        })
+    });
+    cx.run_until_parked();
+    assert!(matches!(
+        events.lock().unwrap().as_slice(),
+        [
+            OpenEvent::Failed { request: a, group: a_group, error: Error::Cancelled },
+            OpenEvent::Failed { request: b, group: b_group, error: Error::Cancelled },
+            OpenEvent::Ready { request: c, group: c_group, .. }
+        ] if (*a, *b, *c) == (first, same_tab, latest) && [*a_group, *b_group, *c_group] == [group; 3]
+    ));
+    let beside = cx.update(|_, app| {
+        view.update(app, |v, cx| {
+            let request = v
+                .open_documents()
+                .open(
+                    resource("B.cs"),
+                    OpenOptions {
+                        target: OpenTarget::Beside,
+                        preserve_focus: true,
+                        ..Default::default()
+                    },
+                    parent.clone(),
+                )
+                .unwrap();
+            assert_eq!(v.editor.focused, group);
+            assert_eq!(v.editor.groups.len(), 2);
+            cx.notify();
+            request
+        })
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.focused, group);
+        let events = events.lock().unwrap();
+        let Some(OpenEvent::Ready {
+            request,
+            group: resolved,
+            ..
+        }) = events.last()
+        else {
+            panic!("beside request must report its resolved group")
+        };
+        assert_eq!(*request, beside);
+        assert_ne!(*resolved, group);
+        assert_eq!(v.editor.in_group(*resolved)[0].resource, resource("B.cs"));
+    });
+}
+
+#[gpui::test]
+fn unseen_alias_of_an_open_file_reuses_its_tab(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::create_dir(folder.path().join("sub")).unwrap();
+    std::fs::write(folder.path().join("A.cs"), "public class A {}\n".repeat(50)).unwrap();
+    let (view, cx) = window(cx, folder.path().into());
+    // Same file, but a spelling the loader has never seen: only canonicalization
+    // resolves it, which happens after the open request was accepted.
+    let alias = Resource::File(folder.path().join("sub").join("..").join("A.cs"));
+    for (target, options) in [
+        (
+            resource("A.cs"),
+            OpenOptions {
+                preview_tab: false,
+                ..Default::default()
+            },
+        ),
+        (
+            alias.clone(),
+            OpenOptions {
+                source: OpenSource::Search,
+                selection: Some(TextRange::new(pos(30, 7), pos(30, 12)).unwrap()),
+                ..Default::default()
+            },
+        ),
+    ] {
+        cx.update(|_, app| {
+            view.update(app, |v, cx| {
+                v.open_documents()
+                    .open(target, options, Cancellation::default())
+                    .unwrap();
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+    }
+    view.read_with(cx, |v, _| {
+        let group = v.editor.active();
+        assert_eq!(group.tabs.len(), 1, "the alias must not add a second tab");
+        let tab = group.current().unwrap();
+        assert_eq!(tab.resource, resource("A.cs"));
+        assert_eq!(tab.view.cursor, pos(30, 7));
+        assert_eq!(
+            tab.view.selection,
+            Some(TextRange::new(pos(30, 7), pos(30, 12)).unwrap())
+        );
+        assert!(v.editor.find(&alias).is_some());
+    });
+}
+
+#[gpui::test]
+fn switching_tabs_restores_each_tabs_scroll_and_selection_in_the_group_code_view(
+    cx: &mut TestAppContext,
+) {
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["A.cs", "B.cs"] {
+        std::fs::write(
+            folder.path().join(name),
+            "public class Value {}
+"
+            .repeat(400),
+        )
+        .unwrap();
+    }
+    let (view, cx) = window(cx, folder.path().into());
+    for name in ["A.cs", "B.cs"] {
+        cx.update(|_, app| {
+            view.update(app, |v, cx| {
+                v.open_documents()
+                    .open(
+                        resource(name),
+                        OpenOptions {
+                            preview_tab: false,
+                            ..Default::default()
+                        },
+                        Cancellation::default(),
+                    )
+                    .unwrap();
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+    }
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    let a_selection = Selection::new(pos(150, 7), pos(151, 5));
+    let b_selection = Selection::caret(pos(20, 3));
+    // B is active: give it its own state, then switch to A and give A a different one.
+    code.update(cx, |c, cx| {
+        c.set_scroll_position(ScrollPosition { top: 12.0, x: 0.0 }, false, cx);
+        c.set_selection(b_selection, None, cx);
+    });
+    cx.simulate_keystrokes("ctrl-pageup");
+    cx.run_until_parked();
+    let same_view = view.read_with(cx, |v, _| v.code_view().clone());
+    assert_eq!(
+        same_view.entity_id(),
+        code.entity_id(),
+        "tabs of one group share its code view"
+    );
+    code.read_with(cx, |c, _| {
+        assert_eq!(c.scroll_position().top, 0.0, "A starts at its own state");
+    });
+    code.update(cx, |c, cx| {
+        c.set_scroll_position(ScrollPosition { top: 140.0, x: 0.0 }, false, cx);
+        c.set_selection(a_selection, None, cx);
+    });
+    cx.update(|window, cx| {
+        window.refresh();
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-pagedown");
+    cx.run_until_parked();
+    code.read_with(cx, |c, _| {
+        assert_eq!(c.scroll_position().top, 12.0);
+        assert_eq!(c.selection(), b_selection);
+    });
+    cx.simulate_keystrokes("ctrl-pageup");
+    cx.run_until_parked();
+    code.read_with(cx, |c, _| {
+        assert_eq!(c.scroll_position().top, 140.0);
+        assert_eq!(c.selection(), a_selection);
+    });
+    // Closing A and reopening it restores its state (workbench.editor.restoreViewState).
+    cx.simulate_keystrokes("ctrl-w");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-shift-t");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(
+            v.editor.active().current().unwrap().resource,
+            resource("A.cs")
+        );
+    });
+    code.read_with(cx, |c, _| {
+        assert_eq!(c.scroll_position().top, 140.0);
+        assert_eq!(c.selection(), a_selection);
+    });
+}
