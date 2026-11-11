@@ -23,16 +23,12 @@ fn benchmark(c: &mut Criterion) {
     analyze(&syntax, rope("public class Warmup {}"));
     let mut group = c.benchmark_group("syntax");
 
-    let mut source = String::from("class Component {
-");
+    let mut source = String::from("class Component {\n");
     for index in 0..4_997 {
-        source.push_str(&format!("    int Method{index}() {{ return 1; }}
-"));
+        source.push_str(&format!("    int Method{index}() {{ return 1; }}\n"));
     }
-    source.push_str("}
-");
-    assert_eq!(source.split('
-').count(), 5_000);
+    source.push_str("}\n");
+    assert_eq!(source.split('\n').count(), 5_000);
     let byte = source.find("Method2498() { return 1;").unwrap() + "Method2498() { return ".len();
     let first = source.clone();
     source.replace_range(byte..byte + 1, "2");
@@ -75,12 +71,10 @@ fn benchmark(c: &mut Criterion) {
         )
     });
 
-    let mut source = String::from("class Messages {
-");
+    let mut source = String::from("class Messages {\n");
     for index in 0.. {
         let line = format!(
-            "    string Message{index}() {{ return \"The scene could not be initialized because a required component was missing from the selected prefab. Verify the prefab and try again.\"; }}
-"
+            "    string Message{index}() {{ return \"The scene could not be initialized because a required component was missing from the selected prefab. Verify the prefab and try again.\"; }}\n"
         );
         if source.len() + line.len() + 2 > 1_000_000 {
             break;
@@ -88,8 +82,7 @@ fn benchmark(c: &mut Criterion) {
         source.push_str(&line);
     }
     source.push_str(&" ".repeat(1_000_000 - source.len() - 2));
-    source.push_str("}
-");
+    source.push_str("}\n");
     assert_eq!(source.len(), 1_000_000);
     let cold = rope(&source);
     group.bench_function("csharp_initial_1mb", |b| {
