@@ -423,6 +423,66 @@ fn settings_change_reloads_and_notifies() {
     assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
 }
 
+/// 快速连续切换两次主题：先开始、后完成的旧加载不能覆盖后切的主题（#104，PR #99 审核意见）。
+#[test]
+fn a_slower_earlier_reload_never_overwrites_a_later_one() {
+    /// 第一次读取 `workbench.colorTheme` 时停住，直到测试放行，模拟较慢的旧加载。
+    struct Gated {
+        inner: UserSettings,
+        gate: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+    impl Settings for Gated {
+        fn read(&self, key: &str, scope: &Scope) -> Result<Value> {
+            let value = self.inner.read(key, scope);
+            if key == "workbench.colorTheme" {
+                let gate = self.gate.lock().unwrap().take();
+                if let Some((entered, release)) = gate {
+                    entered.send(()).unwrap();
+                    release.recv().unwrap();
+                }
+            }
+            value
+        }
+        fn write(&self, k: Arc<str>, s: Scope, v: Value, c: rove_base::Cancellation) -> Task<()> {
+            self.inner.write(k, s, v, c)
+        }
+        fn changes(&self) -> &dyn Events<SettingsChange> {
+            &self.inner
+        }
+    }
+    let settings = Arc::new(Gated {
+        inner: UserSettings::default(),
+        gate: Mutex::new(None),
+    });
+    let theme = ThemeService::new(settings.clone());
+    let set = |name: &str| {
+        settings
+            .inner
+            .values
+            .lock()
+            .unwrap()
+            .insert("workbench.colorTheme".into(), s(name));
+    };
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    *settings.gate.lock().unwrap() = Some((entered_tx, release_rx));
+
+    set("Dark+");
+    let slow = {
+        let theme = theme.clone();
+        std::thread::spawn(move || theme.reload())
+    };
+    entered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("slow reload started");
+    set("Light+");
+    theme.reload().expect("later reload applies");
+    assert_eq!(theme.current().id(), "Light+");
+    release.send(()).unwrap();
+    assert_eq!(slow.join().unwrap(), Err(Error::Stale));
+    assert_eq!(theme.current().id(), "Light+", "后切的主题必须保留");
+}
+
 #[test]
 fn snapshot_is_shareable_and_default_settings_work() {
     fn shareable<T: Send + Sync>() {}
