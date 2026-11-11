@@ -6,8 +6,8 @@
 //!   `list.*` command), [`tree::TreeModel`] (lazy children), [`quick_input::QuickInputService`]
 //!   (every `quickInput.*` command), [`history::InputHistory`], [`matcher`], [`options`].
 //! - GPUI views: [`view::ListView`], [`quick_input_view::QuickInputView`],
-//!   [`text_input::TextInput`]; [`keys::bind_default_keys`] installs the KEYBINDINGS.md table with
-//!   when-clauses translated to GPUI key contexts until #14's resolver takes over.
+//!   [`text_input::TextInput`]; keys reach them through #14's keybinding service (`crate::keys`),
+//!   which dispatches [`keys::action_for`] actions; the views publish VS Code context keys.
 //! - Registration: [`registry`] (commands, strings, colors, bindings), [`options`] (settings).
 //!
 //! Views supply data (a `ListModel` or `TreeSource`) and optionally a row renderer; the component

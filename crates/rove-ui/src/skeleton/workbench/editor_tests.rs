@@ -19,7 +19,6 @@ fn pos(line: u64, column: u64) -> Position {
 fn window(cx: &mut TestAppContext, root: PathBuf) -> (Entity<Workbench>, &mut VisualTestContext) {
     let (view, cx) = cx.add_window_view(|_, cx| Workbench::new(root, Instant::now(), cx));
     cx.update(|window, cx| {
-        cx.bind_keys(editor_actions::bindings());
         window.focus(&view.read(cx).focus);
     });
     cx.run_until_parked();

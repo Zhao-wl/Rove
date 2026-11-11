@@ -66,6 +66,9 @@ pub fn strings() -> Result<StringTable> {
     crate::shell::catalog::register_strings(&mut t)?;
     crate::code_view::commands::register_strings(&mut t)?;
     crate::editors::actions::strings(&mut t)?;
+    // #14：列表/快速输入的命令标题（它们的命令登记在键位服务的命令表里）、Rove 专有命令与和弦提示。
+    crate::list_widget::registry::register_strings(&mut t)?;
+    rove_commands::builtin::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

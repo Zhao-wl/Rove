@@ -143,43 +143,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
 /// 分类标题（命令面板里显示为“编辑器: …”）。
 pub const CATEGORY_KEY: &str = "codeView.category";
 
-/// 默认键位，取自 `docs/compat/KEYBINDINGS.md`（VS Code Windows 默认值）；GPUI 键名写法。
-/// 字体缩放三个命令在 VS Code 中没有默认键位，这里也不分配。
-pub const DEFAULT_KEYS: &[(&str, &str)] = &[
-    ("ctrl-up", "scrollLineUp"),
-    ("ctrl-down", "scrollLineDown"),
-    ("alt-pageup", "scrollPageUp"),
-    ("alt-pagedown", "scrollPageDown"),
-    ("up", "cursorUp"),
-    ("shift-up", "cursorUpSelect"),
-    ("ctrl-shift-up", "cursorUpSelect"),
-    ("down", "cursorDown"),
-    ("shift-down", "cursorDownSelect"),
-    ("ctrl-shift-down", "cursorDownSelect"),
-    ("left", "cursorLeft"),
-    ("shift-left", "cursorLeftSelect"),
-    ("right", "cursorRight"),
-    ("shift-right", "cursorRightSelect"),
-    ("home", "cursorHome"),
-    ("shift-home", "cursorHomeSelect"),
-    ("end", "cursorEnd"),
-    ("shift-end", "cursorEndSelect"),
-    ("ctrl-home", "cursorTop"),
-    ("ctrl-shift-home", "cursorTopSelect"),
-    ("ctrl-end", "cursorBottom"),
-    ("ctrl-shift-end", "cursorBottomSelect"),
-    ("pageup", "cursorPageUp"),
-    ("shift-pageup", "cursorPageUpSelect"),
-    ("pagedown", "cursorPageDown"),
-    ("shift-pagedown", "cursorPageDownSelect"),
-    ("ctrl-a", "editor.action.selectAll"),
-    ("ctrl-l", "expandLineSelection"),
-    ("escape", "cancelSelection"),
-    ("shift-escape", "cancelSelection"),
-    ("ctrl-c", "editor.action.clipboardCopyAction"),
-    ("ctrl-insert", "editor.action.clipboardCopyAction"),
-];
-
 /// 登记命令（已登记的 ID 跳过，便于 #14 先行登记全量 VS Code 命令）。
 pub fn register(registry: &mut CommandRegistry) -> Result<()> {
     for (id, title, _) in COMMANDS {
@@ -210,8 +173,8 @@ pub fn register_strings(table: &mut StringTable) -> Result<()> {
     Ok(())
 }
 
-// SKELETON(commands): GPUI action 桥与上面的默认键位表是临时装配，#14 的 Keybindings/
-// CommandExecutor 接管后改为按命令 ID 调用 `CodeView::execute`。
+// 命令 ID → GPUI action。默认键位来自 #14 生成的 VS Code 默认键位表，由键位服务（`crate::keys`）
+// 按 when 子句解析后分发到这里；代码视图在 key context 上发布 `editorTextFocus` 等上下文键。
 macro_rules! command_actions {
     ($($action:ident => $id:literal),* $(,)?) => {
         gpui::actions!(code_view, [$($action),*]);
@@ -219,12 +182,6 @@ macro_rules! command_actions {
         pub fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
             match id {
                 $($id => Some(Box::new($action)),)*
-                _ => None,
-            }
-        }
-        fn binding_for(keys: &str, id: &str) -> Option<gpui::KeyBinding> {
-            match id {
-                $($id => Some(gpui::KeyBinding::new(keys, $action, Some(KEY_CONTEXT))),)*
                 _ => None,
             }
         }
@@ -275,16 +232,14 @@ command_actions! {
     FontZoomReset => "editor.action.fontZoomReset",
 }
 
-/// 键位上下文（对应 VS Code 的 `textInputFocus` / `editorTextFocus`）。
+/// 键位上下文名，以及聚焦时发布的 VS Code 上下文键（只读代码视图）。
 pub const KEY_CONTEXT: &str = "CodeView";
-
-/// 把默认键位绑定到 GPUI（临时桥接，见上方 SKELETON 说明）。
-pub fn default_key_bindings() -> Vec<gpui::KeyBinding> {
-    DEFAULT_KEYS
-        .iter()
-        .filter_map(|(keys, id)| binding_for(keys, id))
-        .collect()
-}
+pub const FOCUS_CONTEXT_KEYS: &[&str] = &[
+    "editorTextFocus",
+    "editorFocus",
+    "textInputFocus",
+    "editorReadonly",
+];
 
 #[cfg(test)]
 mod tests {
@@ -302,10 +257,5 @@ mod tests {
             assert_eq!(&*r.get(id).unwrap().title_key, *key);
             assert!(t.get(key).is_some());
         }
-        for (_, id) in DEFAULT_KEYS {
-            assert!(COMMANDS.iter().any(|c| c.0 == *id), "{id} 未登记");
-        }
-        assert!(!DEFAULT_KEYS.iter().any(|(_, id)| id.contains("fontZoom")));
-        assert_eq!(default_key_bindings().len(), DEFAULT_KEYS.len());
     }
 }

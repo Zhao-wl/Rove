@@ -1,21 +1,21 @@
 //! GPUI action bridge for the list/quick-input commands (#18).
 //!
-//! Each VS Code command ID gets one GPUI action; [`bind_default_keys`] installs the
-//! KEYBINDINGS.md rows with their `when` clause translated into a GPUI key-context predicate
-//! (identical operators; quotes dropped). The views publish the context keys on their key
-//! context, so `ctrl+up` / `ctrl+down` stop at `listScrollAtBoundary` exactly as the when-clause
-//! says. When #14's resolver lands it can call `ListView::run_command` directly instead.
-use super::registry::KEYBINDINGS;
-use gpui::{actions, App, Context, InteractiveElement, KeyBinding, Window};
+//! Each VS Code command ID gets one GPUI action. Keys are resolved by #14's keybinding service
+//! (`crate::keys`) from the generated VS Code default table — the views publish the context keys
+//! (`listFocus`, `inQuickInput`, `listScrollAtBoundary`...) on their key context, so the `when`
+//! clauses evaluate exactly as in VS Code — and dispatched here through [`action_for`].
+//! Text-input editing keys (Backspace, arrows, clipboard) are not keybindings: they are the input
+//! box's native behaviour ([`native_text_input_action`]), reached only when no keybinding applies.
+use gpui::{actions, Action, Context, InteractiveElement, Keystroke, Window};
 
 macro_rules! command_actions {
     ($($group:ident { $($ty:ident => $id:literal),* $(,)? })*) => {
         actions!(rove_list, [$($($ty),*),*]);
 
-        /// Builds the GPUI binding for a registered command ID.
-        pub fn binding_for(command: &str, keystrokes: &str, context: Option<&str>) -> Option<KeyBinding> {
+        /// The GPUI action of a registered command ID.
+        pub fn action_for(command: &str) -> Option<Box<dyn Action>> {
             match command {
-                $($($id => Some(KeyBinding::new(keystrokes, $ty, context)),)*)*
+                $($($id => Some(Box::new($ty)),)*)*
                 _ => None,
             }
         }
@@ -108,76 +108,54 @@ actions!(
     ]
 );
 
-/// `ctrl+shift+enter` → `ctrl-shift-enter`; chords stay space separated.
-pub fn gpui_keystrokes(vscode: &str) -> String {
-    vscode
-        .split(' ')
-        .map(|part| part.replace('+', "-"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+/// List defaults that are not in VS Code's table (VS Code key syntax): opened through the
+/// keybinding service, so users can rebind or remove them.
+pub const EXTRA_DEFAULTS: &[(&str, &str, &str)] =
+    &[("shift+f10", "rove.list.contextMenu", "listFocus")];
 
-/// VS Code when-clause → GPUI predicate. The operators used by the list/quick-input bindings
-/// (`&&`, `||`, `!`, `==`, `!=`) have the same precedence in both; string literals lose quotes.
-pub fn gpui_predicate(when: &str) -> String {
-    when.replace('\'', "")
-}
-
-/// Context name the text input publishes; the generic `Right` yields to
-/// `quickInput.acceptInBackground` when the caret is at the end of a quick input box.
+/// Context name the text input publishes.
 pub const TEXT_INPUT_CONTEXT: &str = "RoveTextInput";
 
-/// Installs the default list / quick-input / text-input bindings on the app keymap.
-pub fn bind_default_keys(cx: &mut App) {
-    let mut bindings: Vec<KeyBinding> = KEYBINDINGS
-        .iter()
-        .filter_map(|(key, command, when)| {
-            let predicate = gpui_predicate(when);
-            binding_for(command, &gpui_keystrokes(key), Some(&predicate))
-        })
-        .collect();
-    bindings.push(KeyBinding::new(
-        "shift-f10",
-        ListContextMenu,
-        Some("listFocus"),
-    ));
-    let input = Some(TEXT_INPUT_CONTEXT);
-    bindings.extend([
-        KeyBinding::new("backspace", Backspace, input),
-        KeyBinding::new("delete", Delete, input),
-        KeyBinding::new("left", Left, input),
-        KeyBinding::new(
-            "right",
-            Right,
-            Some("RoveTextInput && !cursorAtEndOfQuickInputBox"),
-        ),
-        KeyBinding::new("shift-left", SelectLeft, input),
-        KeyBinding::new("shift-right", SelectRight, input),
-        KeyBinding::new("ctrl-a", SelectAll, input),
-        KeyBinding::new("home", Home, input),
-        KeyBinding::new("end", End, input),
-        KeyBinding::new("ctrl-v", Paste, input),
-        KeyBinding::new("ctrl-x", Cut, input),
-        KeyBinding::new("ctrl-c", Copy, input),
-    ]);
-    cx.bind_keys(bindings);
+/// Native editing keys of the text input (not keybindings; run only when no keybinding applied).
+pub fn native_text_input_action(k: &Keystroke) -> Option<Box<dyn Action>> {
+    let m = &k.modifiers;
+    let plain = !m.control && !m.alt && !m.platform && !m.shift;
+    let shift_only = m.shift && !m.control && !m.alt && !m.platform;
+    let ctrl_only = m.control && !m.alt && !m.platform && !m.shift;
+    let action: Box<dyn Action> = match k.key.as_str() {
+        "backspace" if plain => Box::new(Backspace),
+        "delete" if plain => Box::new(Delete),
+        "left" if plain => Box::new(Left),
+        "right" if plain => Box::new(Right),
+        "left" if shift_only => Box::new(SelectLeft),
+        "right" if shift_only => Box::new(SelectRight),
+        "home" if plain => Box::new(Home),
+        "end" if plain => Box::new(End),
+        "a" if ctrl_only => Box::new(SelectAll),
+        "v" if ctrl_only => Box::new(Paste),
+        "x" if ctrl_only => Box::new(Cut),
+        "c" if ctrl_only => Box::new(Copy),
+        _ => return None,
+    };
+    Some(action)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::KeyBindingContextPredicate;
 
     #[test]
-    fn every_default_binding_translates() {
-        for (key, command, when) in KEYBINDINGS {
-            assert!(
-                binding_for(command, &gpui_keystrokes(key), None).is_some(),
-                "{command} has no action"
-            );
-            KeyBindingContextPredicate::parse(&gpui_predicate(when))
-                .unwrap_or_else(|e| panic!("{when}: {e}"));
+    fn every_list_command_has_an_action() {
+        let mut r = rove_commands::CommandRegistry::default();
+        super::super::registry::register_commands(&mut r).unwrap();
+        for (id, _) in r.entries() {
+            assert!(action_for(id).is_some(), "{id} has no action");
         }
-        assert_eq!(gpui_keystrokes("ctrl+k ctrl+i"), "ctrl-k ctrl-i");
+        for (_, command, _) in EXTRA_DEFAULTS {
+            assert!(r.get(command).is_some(), "{command} is not registered");
+        }
+        let k = |s: &str| native_text_input_action(&Keystroke::parse(s).unwrap()).is_some();
+        assert!(k("backspace") && k("shift-left") && k("ctrl-v"));
+        assert!(!k("ctrl-p") && !k("enter") && !k("down"));
     }
 }

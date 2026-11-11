@@ -5,7 +5,6 @@ mod list_support;
 use gpui::{point, px, Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
 use rove_ui::{
     list_widget::{
-        keys::bind_default_keys,
         options::ListOptions,
         tree::{ChildCount, Children, TreeItem, TreeModel, TreeSource},
         view::ListView,
@@ -65,7 +64,7 @@ fn open(
     cx: &mut TestAppContext,
     big_children: usize,
 ) -> (Entity<ListView>, Arc<Source>, &mut VisualTestContext) {
-    cx.update(bind_default_keys);
+    cx.update(rove_ui::keys::init);
     let (theme, strings) = list_support::theme_and_strings();
     let source = Arc::new(Source {
         big_children,

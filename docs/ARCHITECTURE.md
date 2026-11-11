@@ -371,7 +371,7 @@ Rove 默认值只有 `compat/SETTINGS.md` §3 的四项（数据测试保证没�
 | `status.rs` | `StatusBar`：状态栏条目的运行期内容（`$(icon)` 文本、悬停提示、命令、普通 / prominent / warning / error） |
 | `icons.rs` | 打包的 codicons 字体与 `$(图标名)` / `$(图标名~spin)` 语法 |
 | `progress.rs` | 100 ms 后才显示的细进度条判定（#17 打开文件时用，绘制用 `view::progress_bar`） |
-| `view.rs` | `Shell` 状态、`ShellHost`、`run_command`、`report`、各部件绘制、`key_bindings()` |
+| `view.rs` | `Shell` 状态、`ShellHost`、`run_command`、`report`、各部件绘制、`action_for()`（命令 ID → GPUI action） |
 
 **登记方式（其他 issue 只追加，不改工作台代码）**
 
@@ -386,9 +386,11 @@ Rove 默认值只有 `compat/SETTINGS.md` §3 的四项（数据测试保证没�
   （`Receipt`/`Background` → 状态栏 3 秒；`NoResult` → 光标提示；`FileContext` → 编辑器提示条；
   `Global(severity)` → 通知；`DataLoss`/`SecurityConfirmation` → 模态）。正常后台工作用 `Background`，永不弹通知。
 
-**键位**：#14 的键位系统合并前，`view::key_bindings()` 把 `catalog::DEFAULT_KEYS` 装配成 GPUI KeyBinding；
-`statusBarFocused`、`notificationFocus`、`notificationToastsVisible`、`notificationCenterVisible` 以 GPUI key context 表达。
-GPUI 0.2.2 的 Windows 后端无法区分 `ctrl+numpad0` 与 `ctrl+0`，所以 `workbench.action.zoomReset` 暂不绑键（“查看”菜单可用）。
+**键位**：由 #14 的键位服务统一解析（见 §18），工作台不再自带键位表；`statusBarFocused`、`notificationFocus`、
+`notificationToastsVisible`、`notificationCenterVisible` 作为 VS Code 上下文键发布在 GPUI key context 上，菜单与悬停提示的
+键位文字取自生效的键位表（`catalog::key_label`，含用户覆盖）。GPUI 0.2.2 的 Windows 后端把 `ctrl+numpad0` 报成 `ctrl+0`，
+所以 `ctrl+numpad0`（zoomReset）实际按不出来，`ctrl+0` 仍聚焦侧边栏。`ctrl+shift+f` 在 VS Code 默认表中是
+`workbench.action.findInFiles`，搜索功能实现前由工作台打开搜索视图。模态框打开时独占键盘，Esc 按对话框原生行为取消。
 
 **缩放**：`workbench.action.zoomIn/zoomOut/zoomReset` 与 `window.zoomLevel` 同 VS Code（每级 ×1.2，范围 ±8，
 `window.zoomPerWindow` 为 true 时不写回设置）；工作台尺寸与代码视图行高一起缩放，只重新整形可见行，不重新扫描、不重新解析。
@@ -411,7 +413,7 @@ codicons 字体在 `launch` 中注册。
 | `registry.rs` | 命令、界面字符串、颜色键（Lists and trees、Quick picker、`input.*`、`inputValidation.*`）及 KEYBINDINGS.md 默认键位表（`default_bindings()` 供 #14） | 否 |
 | `view.rs` / `ListView` | 只构建与绘制可见行；行渲染闭包 `RowRenderer`、空状态/加载插槽、底部加载行、粘性行、缩进参考线、滚动条、查找框、拖放事件与 `list.drop*` 绘制、右键/`shift+f10` 菜单载体 | 是 |
 | `quick_input_view.rs`、`text_input.rs` | 快速输入框界面；支持 IME 的单行输入框（#21/#25 可复用，带 `InputHistory`） | 是 |
-| `keys.rs` | 每个命令一个 GPUI action；`bind_default_keys` 把默认键位的 `when` 原样转成 GPUI 键上下文谓词（同样的 `&&`/`||`/`!`/`==`/`!=` 优先级）。#14 的解析器接入后可直接调用 `ListView::run_command` | 是 |
+| `keys.rs` | 每个命令一个 GPUI action（`action_for`），由 #14 的键位服务分发；`EXTRA_DEFAULTS` 是不在 VS Code 表里的列表默认键位（`shift+f10` 上下文菜单）；文本框的编辑键（退格、方向键、剪贴板）是输入框原生行为，只在没有键位命中时处理 | 是 |
 
 接入方式：视图只提供数据（`ListModel` 或 `TreeSource`）与可选的行渲染闭包，列表不了解条目类型。
 重复登记（中心负责方 #10/#13/#14 已先登记同名颜色、设置或命令）按“保留已有条目”处理，默认值同为 VS Code 值。
@@ -460,9 +462,9 @@ CenterIfOutside, Top}`）；视口事件 `CodeViewEvent::ViewportChanged`；行�
 
 登记：装配时调用 `code_view::register(settings, colors, commands, strings)`；已被他人登记的键跳过而不报
 `Duplicate`（同一 VS Code 设置/颜色/命令可能有多个消费方）。颜色先读当前主题，主题未登记时用
-VS Code 内置默认值。默认键位表 `commands::DEFAULT_KEYS` 取自 `compat/KEYBINDINGS.md`，经 GPUI action
-临时桥接（`SKELETON(commands)`，#14 接管后改为按命令 ID 调 `CodeView::execute`）；字体缩放三个命令
-没有默认键位。
+VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位表，键位服务按 when 解析后经
+`commands::action_for` 分发；代码视图聚焦时在 key context 上发布 `editorTextFocus`、`editorFocus`、
+`textInputFocus`、`editorReadonly`，有选区时加 `editorHasSelection`。字体缩放三个命令没有默认键位。
 
 验证：`cargo test -p rove-ui`（单元测试）与 `cargo test -p rove-ui --test code_view`（入口集成测试，
 含装饰/选区/滚动定位/视口事件四类消费方示例、1429 万行合成文本源、7 种模式命中测试、设置逐项生效）。
@@ -479,7 +481,7 @@ VS Code 内置默认值。默认键位表 `commands::DEFAULT_KEYS` 取自 `compa
 |---|---|
 | `editors/mod.rs` | `EditorService`：组、标签、预览/固定、按组视图状态、请求终态事件、导航历史、文档按引用计数共享 |
 | `editors/layout.rs` | 网格布局树：任意方向分屏、多级嵌套、方向切换、展开组时只调整祖先链比例 |
-| `editors/actions.rs` | 编辑器组与标签命令（VS Code ID、标题字符串、默认键位、when）登记与执行 |
+| `editors/actions.rs` | 编辑器组与标签命令（VS Code ID、标题字符串）登记与执行；`context()` 发布 `multipleEditorGroups`、`activeEditorGroupEmpty`、`activeEditorIsPinned` 等上下文键，默认键位与 when 来自 VS Code 默认表 |
 | `editors/settings.rs` | `workbench.editor.*`、`workbench.editorAssociations`、`window.density.editorTabHeight` 登记与读取；编辑器类型登记表 + glob 解析 |
 | `editors/startup_settings.rs` | #13 设置服务装配到窗口前的只读 JSONC 启动适配器（不写回） |
 
@@ -514,6 +516,6 @@ VS Code 内置默认值。默认键位表 `commands::DEFAULT_KEYS` 取自 `compa
 
 默认键位表：`python scripts/compat/gen_default_keybindings.py` 按 `scripts/compat/rules.py` 的判定，从 `docs/compat/vscode/default-keybindings.json` 生成 `crates/rove-commands/data/default-keybindings.json`。表中包括 P0/P1/P2 全部“实现”条目（保持导出顺序），再追加人工补充的键位和 Rove 专有键位，编译时嵌入二进制。CI 的行尾检查任务运行 `--check`，校验生成物与源数据一致。P1/P2 键位通过“命令未登记就忽略”自然分批生效，不需要额外的开关。
 
-GPUI 接入：`Workbench` 根节点的 `on_key_down` 调用 `rove_ui::keys::KeyInput`。GPUI 会把 Shift 并入标点和数字的字符（`ctrl+shift+-` 上报为 `ctrl+_`），适配层按 US 布局还原成“键 + Shift”。GPUI 不区分小键盘与主键盘上的同一字符，`numpad_*` 键位目前无法从实际按键触发。用户目录暂由 `keys::vscode_user_dir` 解析（`--vscode-user-dir`、`ROVE_VSCODE_USER_DIR`、`%APPDATA%\Code\User`），#13 提供共享解析器后替换。
+GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入口。`keys::init` 安装 GPUI 全局 `Keys`（键位服务、上下文键服务、命令表 `CommandCenter`）和一个按键拦截器（`intercept_keystrokes`，先于 GPUI 自己的键位表运行）。拦截器把按键换成 VS Code 键名，用“焦点路径上各元素的 GPUI key context + 全局上下文键”求值 when，再把命中的命令派发为实现它的模块的 GPUI action（`keys::action_for`：工作台、代码视图、编辑器组、列表与快速输入）；没有模块 action 的命令派发为 `RunCommand`，交给窗口处理。焦点路径上没有处理者时，按键交给原生处理（例如输入框里的 `ctrl+c`）；和弦的最后一个键总是被消费。模态框打开时独占键盘。各模块不再调用 `bind_keys`，默认键位全部来自生成的 VS Code 表；少数不在表里的放在模块的 `EXTRA_DEFAULTS` 中，同样经键位服务登记，所以用户的 keybindings.json 可以覆盖或移除任何一条。各模块只在 key context 上发布 VS Code 上下文键（`editorTextFocus`、`listFocus`、`statusBarFocused`、`multipleEditorGroups` 等）。菜单与悬停提示的键位文字由 `keys::key_label` 从生效的表中取出。GPUI 会把 Shift 并入标点和数字的字符（`ctrl+shift+-` 上报为 `ctrl+_`），适配层按 US 布局还原成“键 + Shift”。GPUI 不区分小键盘与主键盘上的同一字符，`numpad_*` 键位目前无法从实际按键触发。用户目录由 #13 的 `rove_config::paths` 解析（依次为 `--vscode-user-dir`、`ROVE_VSCODE_USER_DIR`、`%APPDATA%\Code\User`）。
 
-验证：`cargo test -p rove-commands`（键表达式、when（移植 VS Code 用例）、裁决与移除、和弦、热加载；`tests/keybindings_integration.rs` 对照 KEYBINDINGS.md 检查 P0 是否漏项，并覆盖“读 keybindings.json → 按键 → 分发”；`builtin` 检查 Rove 键位与 VS Code 默认键位无冲突），以及 `cargo test -p rove-ui keybindings_json_keys_dispatch_commands`（真实 GPUI 键盘事件）。
+验证：`cargo test -p rove-commands`（键表达式、when（移植 VS Code 用例）、裁决与移除、和弦、热加载；`tests/keybindings_integration.rs` 对照 KEYBINDINGS.md 检查 P0 是否漏项，并覆盖“读 keybindings.json → 按键 → 分发”；`builtin` 检查 Rove 键位与 VS Code 默认键位无冲突），以及 `cargo test -p rove-ui keybindings_json_keys_dispatch_commands`（真实 GPUI 键盘事件：用户覆盖工作台键位、`-command`、未知命令、和弦的 Esc 与超时、菜单键位文字）和 `keys::tests::no_module_binds_keys_directly`（防止模块绕过键位服务直接 `bind_keys`）。

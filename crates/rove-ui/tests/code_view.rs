@@ -78,7 +78,7 @@ fn open_source<'a>(
         v
     });
     cx.update(|window, cx| {
-        cx.bind_keys(code_view::commands::default_key_bindings());
+        rove_ui::keys::init(cx);
         window.focus(&view.read(cx).focus_handle(cx));
     });
     settle(cx);
