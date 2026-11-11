@@ -48,6 +48,8 @@ globset = "0.4"
 unicode-segmentation = "1.12"
 async-channel = "2.5"
 serde_json_lenient = "0.2"
+# #8 超大文件：只读内存映射。
+memmap2 = "0.9"
 
 [profile.release]
 lto = "thin"

@@ -536,3 +536,29 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
   后台重载，`Workbench` 订阅主题的 `changes()` 刷新工作台明暗与代码视图配色。
 - 主题重载竞态：`ThemeService::reload` 在读设置前领取代次，只有不低于已应用代次的结果才替换快照，被取代的旧加载返回
   `Stale`；连续切换两次主题，最后生效的是后切的那个。
+
+## 19. 文件大小分级与超大文件（#8）
+
+位置：`crates/rove-buffer/src/{size,line_index,mapped}.rs`，入口 `rove_buffer::open_file(path, options, SizePolicy)`；
+不修改 #1 契约，超大文件同样以 `Arc<dyn TextSource>` 交给文档模型（`FileText::source()`）。骨架的
+`FileDocuments::open` 改为调用 `open_file`，`editors::settings::SizePolicy` 只负责从设置读两个键。
+
+- **分级**（`size.rs`，`UX_SPEC` §3.1）：`SizePolicy { huge_bytes, optimize }` 来自 `rove.largeFile.threshold`
+  与 `editor.largeFileOptimizations`。超大文件 ≥ 阈值（只读，追加 `ReadOnlyReason::HugeFile`，
+  `session_toggle_allowed` 为假）；否则 `optimize` 时 ≥ 20 MB 或 ≥ 30 万行为大文件。各级关闭的功能由
+  `disabled_features(SizeClass)` 给出（`ReducedFeature`，只有数据，界面字符串由 #22/#27 登记）。
+- **内存映射**（`mapped.rs`，`MappedText`）：UTF-8（含 BOM）直接 `memmap2` 映射；编码按显式指定 → BOM →
+  `files.encoding`，**不做全文猜测**；非 UTF-8 编码只能整体解码进内存。二进制判定与换行符统计只看头部 1 MiB。
+  不合法 UTF-8 字节逐字节显示为 `?`（字节长度不变，坐标仍对应）；映射内容被外部改写时只会读到新字节，不会 panic。
+  Windows 上被映射的文件不能被其他进程截断（系统拒绝），可以改写、追加、重命名。
+- **分块行索引**（`line_index.rs`）：每 256 行一个 `u64` 锚点，块内 `u32` 相对偏移（跨 4 GiB 的块退回绝对值表）。
+  65,536 行一段，写满即冻结为 `Arc` 段。打开时同步索引头部 1 MiB，其余由 `rove-line-index` 线程按 32 MiB 分块
+  扫描（`memchr`，64 KiB 子块先判断有无 CR）。`lines()` 的 `complete == false` 表示最终行数未知；未索引的行返回
+  `NotReady`，越界返回 `OutOfBounds`。`wait_for_lines` / `wait_complete` 供“转到行”等待（界面在 #22）。
+- **增量**：`MappedText::reload()` 用“大小 + 修改时间 + 头部 4 KiB 与旧末尾 4 KiB 的校验”判断：`Unchanged`、
+  `Appended`（新快照共享冻结段、只扫描新增部分；旧快照末尾单独的 CR 与新内容开头的 LF 合成 CRLF）、
+  `Replaced`（截断或中间改写，整体重建）。跟随文件末尾（R66）基于它实现。
+
+验证：`cargo test -p rove-buffer`（`tests/large_file.rs` 覆盖“打开超大文件 → 只读原因 → 进度 → 转到行”、
+真值表、追加/改写/截断、边界用例、单行 100 MB）；性能：`cargo xtask bench --filter huge/`（`xtask/benches/huge_file.rs`，
+1 GB 用例需要本地 `big1g.txt`）。

@@ -7,7 +7,10 @@
 //!   换行符统计与元信息；
 //! - [`settings`]：`files.encoding` 等三个设置键的登记与默认值读取。
 //!
-//! 不包含编辑、保存、mmap/分块行索引（#8）、文件监听（#15）与界面（#27）。
+//! - [`open_file`]（#8）：按文件大小分级（[`size`]）；超大文件走 [`MappedText`]
+//!   （内存映射 + 分块行索引 + 追加内容的增量索引）。
+//!
+//! 不包含编辑、保存、文件监听（#15）与界面（#22、#27）。
 
 pub mod contracts;
 pub use contracts::*;
@@ -20,3 +23,11 @@ mod text;
 pub use decode::Detection;
 pub use open::{open_bytes, open_path, LoadOptions, LoadedText};
 pub use text::RopeText;
+
+mod line_index;
+mod mapped;
+pub mod size;
+
+pub use mapped::{MappedText, Reload, INDEX_CHUNK_BYTES, SYNC_INDEX_BYTES};
+pub use open::{open_file, FileText, OpenedFile};
+pub use size::{disabled_features, session_toggle_allowed, ReducedFeature, SizePolicy};

@@ -313,6 +313,22 @@ pub(crate) fn detect_line_endings(text: &str) -> LineEndings {
     }
 }
 
+/// 超大文件（#8）的编码选择：显式指定 → BOM → `files.encoding`。
+///
+/// 不做自动识别：`chardetng` 与“候选编码无错解码”都要扫描全文，对 GB 级文件代价
+/// 太高（issue #8 明确的取舍）。`head` 只需要文件开头几个字节。
+pub(crate) fn huge_file_encoding(
+    head: &[u8],
+    preferences: &Preferences,
+    explicit: Option<&str>,
+) -> Result<(&'static RsEncoding, usize)> {
+    if let Some(id) = explicit {
+        let encoding = crate::settings::encoding_from_id(id).ok_or(Error::Unsupported)?;
+        return Ok((encoding, matching_bom_len(head, encoding)));
+    }
+    Ok(sniff_bom(head).unwrap_or((preferences.fallback, 0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

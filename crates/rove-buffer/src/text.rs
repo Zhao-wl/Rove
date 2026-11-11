@@ -17,6 +17,11 @@ use rove_base::*;
 /// 重新加载同一文件时不会复用旧版本号，缓存不会把旧快照误判成当前快照。
 static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
 
+/// 取一个新的快照版本号（[`RopeText`] 与超大文件的 `MappedText` 共用）。
+pub(crate) fn next_version() -> Version {
+    Version(NEXT_VERSION.fetch_add(1, Ordering::Relaxed))
+}
+
 /// 一个不可变的文本快照。构造后内容与版本都不再变化。
 #[derive(Debug)]
 pub struct RopeText {
@@ -38,7 +43,7 @@ impl RopeText {
     fn from_rope(rope: Rope) -> Self {
         Self {
             rope,
-            version: Version(NEXT_VERSION.fetch_add(1, Ordering::Relaxed)),
+            version: next_version(),
         }
     }
 

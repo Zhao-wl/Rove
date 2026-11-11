@@ -11,6 +11,7 @@ ropey.workspace = true
 chardetng.workspace = true
 encoding_rs.workspace = true
 memchr.workspace = true
+memmap2.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

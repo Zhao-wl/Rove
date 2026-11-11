@@ -1,8 +1,6 @@
 //! 文档加载走 `rove-buffer`（编码识别、BOM、换行符与 rope 快照）。
 use rove_base::*;
-use rove_buffer::{
-    open_bytes, Document, Documents, LoadOptions, ReadOnlyReason, SizeClass, TextSource,
-};
+use rove_buffer::{open_file, Document, Documents, LoadOptions};
 use rove_config::Settings;
 use std::{
     collections::BTreeMap,
@@ -107,27 +105,20 @@ impl Documents for FileDocuments {
                     return Ok(doc);
                 }
             }
-            let bytes = std::fs::read(&path)?;
-            let bytes_on_disk = bytes.len() as u64;
-            cancel.check()?;
             let language = rove_syntax::highlight::language_for_path(&path, None);
-            let mut options = LoadOptions::new(&language, &*settings);
-            if bytes_on_disk >= policy.huge_bytes {
-                options.size = SizeClass::Huge;
-                options.read_only = Arc::from([ReadOnlyReason::Session, ReadOnlyReason::HugeFile]);
-            }
-            let mut loaded = open_bytes(&bytes, &options)?;
-            if options.size == SizeClass::Normal
-                && policy.optimize
-                && (bytes_on_disk >= 20 * 1024 * 1024 || loaded.text.lines().known >= 300_000)
-            {
-                loaded.metadata.size = SizeClass::Large;
-            }
+            let options = LoadOptions::new(&language, &*settings);
+            // 分级（普通/大文件/超大文件）与超大文件的内存映射都在 rove-buffer（#8）。
+            let policy = rove_buffer::SizePolicy {
+                huge_bytes: policy.huge_bytes,
+                optimize: policy.optimize,
+            };
+            let loaded = open_file(&path, &options, policy)?;
+            cancel.check()?;
             let doc = Arc::new(Document {
                 id: DocumentId(next.fetch_add(1, Ordering::Relaxed)),
                 resource: resource.clone(),
                 metadata: loaded.metadata,
-                text: loaded.text,
+                text: loaded.text.source(),
             });
             cancel.check()?;
             let mut index = cache.lock().unwrap();
