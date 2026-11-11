@@ -27,6 +27,8 @@ rove-syntax.workspace = true
 futures-lite = "2"
 rove-test-support.workspace = true
 rove-theme.workspace = true
+# #18 列表基准（xtask 在 .github/ui-crates.txt 中，允许经 rove-ui 依赖 gpui）。
+rove-ui.workspace = true
 
 [[bench]]
 name = "text_source"
@@ -54,4 +56,8 @@ harness = false
 
 [[bench]]
 name = "theme"
+harness = false
+
+[[bench]]
+name = "lists"
 harness = false

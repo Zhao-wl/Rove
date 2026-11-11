@@ -4808,6 +4808,7 @@ name = "rove-ui"
 version = "0.0.1"
 dependencies = [
  "gpui",
+ "memchr",
  "rove-base",
  "rove-buffer",
  "rove-commands",
@@ -4820,6 +4821,7 @@ dependencies = [
  "rove-workspace",
  "serde_json",
  "tempfile",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -7388,6 +7390,7 @@ dependencies = [
  "rove-syntax",
  "rove-test-support",
  "rove-theme",
+ "rove-ui",
  "rove-workspace",
  "serde",
  "serde_json",

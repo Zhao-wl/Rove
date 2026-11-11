@@ -155,3 +155,11 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 
 许可：[Creative Commons Attribution 4.0 International（CC-BY-4.0）](https://creativecommons.org/licenses/by/4.0/)，
 © Microsoft Corporation。Rove 未修改字体本身，只读取其字形用于界面图标。
+
+## 列表与快速输入组件（#18）
+
+- `crates/rove-ui/src/list_widget/text_input.rs` 的单行输入框（含 IME 输入处理）改写自 GPUI 0.2.2 的
+  `examples/input.rs`（Zed Industries，Apache License 2.0，许可证见 `vendor/gpui/LICENSE-APACHE`）。
+- `crates/rove-ui/src/list_widget/registry.rs` 的颜色默认值、命令 ID、键位与 `when` 条件，以及
+  `widget.rs` 中翻页、全选、展开/折叠等行为，参照 Microsoft VS Code 1.145（`listWidget.ts`、
+  `listCommands.ts`、`colorRegistry` 的列表颜色，MIT，许可见上文）；为 Rove 重写，未复制源码。

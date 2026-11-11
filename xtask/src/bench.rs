@@ -27,7 +27,7 @@ struct BenchTarget {
     requires: &'static str,
 }
 
-const TARGETS: [BenchTarget; 7] = [
+const TARGETS: &[BenchTarget] = &[
     BenchTarget {
         name: "text_source",
         requires: "",
@@ -54,6 +54,10 @@ const TARGETS: [BenchTarget; 7] = [
     },
     BenchTarget {
         name: "theme",
+        requires: "",
+    },
+    BenchTarget {
+        name: "lists",
         requires: "",
     },
 ];
@@ -104,7 +108,7 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
             }
 
             let mut ran = 0usize;
-            for target in &TARGETS {
+            for target in TARGETS {
                 let ready = match target.name {
                     "cs_index" => cs_index.is_some(),
                     "scroll_unique" => uniq_ready,

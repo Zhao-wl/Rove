@@ -6,7 +6,12 @@ use super::{
 };
 use crate::{
     documents::{OpenDocuments, OpenOptions, OpenSource},
-    lists::{ItemId, ListController, ListModel, Navigation, Row},
+    list_widget::{
+        options::ListOptions,
+        tree::{ChildCount, Children, TreeItem, TreeModel, TreeSource},
+        widget::{ListWidget, RowHeight},
+    },
+    lists::{ItemId, ListController, ListModel, Row},
     shell::{
         self,
         catalog::{CONTAINER_FACTORY, FILE_VIEW, PROBLEMS, STATUS_FACTORY},
@@ -24,15 +29,14 @@ use gpui::{
     SharedString, Style, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rove_base::{
-    Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, Value, Version,
-    WorkspacePath,
+    Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, Value, WorkspacePath,
 };
 use rove_commands::{CommandExecutor, CommandRegistry, Invocation};
 use rove_config::{Key, Scope};
 use rove_i18n::{Message, StringTable, Strings};
 use rove_theme::{Color, Theme};
 use rove_workspace::{EntryKind, Workspace};
-use std::{borrow::Cow, collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
+use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Instant};
 const LINE_HEIGHT: f32 = 22.0;
 const FONT_SIZE: f32 = 14.0;
 fn color(c: Color) -> Hsla {
@@ -40,85 +44,44 @@ fn color(c: Color) -> Hsla {
 }
 
 // SKELETON(explorer): fixed expandable file tree; replaced by #23.
-// SKELETON(lists): virtualized tree data/control; replaced by #18.
-struct FileTree {
-    workspace: Arc<dyn Workspace>,
-    rows: Vec<Row>,
-    expanded: BTreeSet<ItemId>,
-    revision: Version,
-}
-impl FileTree {
-    fn new(workspace: Arc<dyn Workspace>) -> CoreResult<Self> {
-        let mut t = Self {
-            workspace,
-            rows: vec![],
-            expanded: BTreeSet::new(),
-            revision: Version(0),
-        };
-        t.rebuild()?;
-        Ok(t)
-    }
-    fn rebuild(&mut self) -> CoreResult<()> {
-        self.rows.clear();
-        let roots = self.workspace.children(None, 0..usize::MAX)?;
-        let mut pending: Vec<_> = roots.items.iter().rev().cloned().map(|e| (e, 0)).collect();
-        while let Some((e, depth)) = pending.pop() {
-            let id = ItemId(e.path.as_str().into());
-            let expandable = matches!(e.kind, EntryKind::Directory);
-            let expanded = self.expanded.contains(&id);
-            self.rows.push(Row {
-                id,
-                label: e.path.as_str().rsplit('/').next().unwrap().into(),
-                detail: None,
-                depth,
-                expandable,
-                expanded,
-                disabled: false,
-            });
-            if expandable && expanded {
-                let children = self.workspace.children(Some(&e.path), 0..usize::MAX)?;
-                pending.extend(children.items.iter().rev().cloned().map(|e| (e, depth + 1)));
+// Tree data/control use the #18 list component (lazy children, stable ItemId); only this
+// adapter and the fixed rendering below remain skeleton.
+struct WorkspaceTree(Arc<dyn Workspace>);
+impl TreeSource for WorkspaceTree {
+    fn children(&self, parent: Option<&ItemId>) -> Children {
+        let path = parent.and_then(|p| WorkspacePath::new(&p.0).ok());
+        match self.0.children(path.as_ref(), 0..usize::MAX) {
+            Ok(page) => Children::Ready(
+                page.items
+                    .iter()
+                    .map(|e| TreeItem {
+                        id: ItemId(e.path.as_str().into()),
+                        label: e.path.as_str().rsplit('/').next().unwrap().into(),
+                        detail: None,
+                        children: if matches!(e.kind, EntryKind::Directory) {
+                            ChildCount::Unknown
+                        } else {
+                            ChildCount::None
+                        },
+                    })
+                    .collect(),
+            ),
+            Err(e) => {
+                eprintln!("workspace: {e}");
+                Children::Ready(Arc::from([]))
             }
         }
-        Ok(())
     }
 }
-impl ListModel for FileTree {
-    fn revision(&self) -> Version {
-        self.revision
-    }
-    fn count(&self) -> usize {
-        self.rows.len()
-    }
-    fn rows(&self, r: std::ops::Range<usize>) -> CoreResult<Arc<[Row]>> {
-        if r.start > r.end || r.start > self.rows.len() {
-            return Err(Error::OutOfBounds);
-        }
-        Ok(Arc::from(&self.rows[r.start..r.end.min(self.rows.len())]))
-    }
-}
-impl ListController for FileTree {
-    fn navigate(&mut self, _: Navigation) -> CoreResult<()> {
-        Err(Error::Unsupported)
-    }
-    fn filter(&mut self, _: Arc<str>, _: Cancellation) -> CoreResult<()> {
-        Err(Error::Unsupported)
-    }
-    fn selection(&self) -> Arc<[ItemId]> {
-        Arc::from([])
-    }
-    fn expand(&mut self, id: &ItemId, expanded: bool) -> CoreResult<()> {
-        if !self.rows.iter().any(|r| &r.id == id && r.expandable) {
-            return Err(Error::NotFound);
-        }
-        if expanded {
-            self.expanded.insert(id.clone());
-        } else {
-            self.expanded.remove(id);
-        }
-        self.revision.0 += 1;
-        self.rebuild()
-    }
+type FileTree = ListWidget;
+fn file_tree(workspace: Arc<dyn Workspace>) -> CoreResult<FileTree> {
+    // Surface a failing root listing as a scan failure, as before.
+    workspace.children(None, 0..1)?;
+    Ok(ListWidget::tree(
+        TreeModel::new(Arc::new(WorkspaceTree(workspace))),
+        RowHeight::Fixed(24.0),
+        ListOptions::default(),
+    ))
 }
 
 #[cfg(test)]
@@ -307,7 +270,7 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {
-                match result.and_then(FileTree::new) {
+                match result.and_then(file_tree) {
                     Ok(tree) => view.tree = Some(tree),
                     Err(e) => {
                         eprintln!("workspace: {e}");
