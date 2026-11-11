@@ -117,7 +117,7 @@ fn choose_encoding<'a>(
         });
     }
     if preferences.auto_guess {
-        return Ok(guess_without_bom(bytes, preferences, detect(bytes)));
+        return Ok(guess_without_bom(bytes, preferences, detect));
     }
     Ok(EncodingChoice {
         encoding: preferences.fallback,
@@ -147,8 +147,9 @@ fn matching_bom_len(bytes: &[u8], encoding: &'static RsEncoding) -> usize {
     }
 }
 
-/// 无 BOM、开启自动识别时的选编码逻辑。`detected` 是 `chardetng` 有把握的推断结果
-/// （见 [`detect`]），单独作为参数是为了让测试能注入“误判成同族编码”之类难以构造的结果。
+/// 无 BOM、开启自动识别时的选编码逻辑。`detect` 给出 `chardetng` 有把握的推断结果
+/// （生产代码传 [`detect`]），作为参数是为了让测试能注入“误判成同族编码”之类难以构造的结果。
+/// 它是惰性的：只在字节不是合法 UTF-8 时才调用，UTF-8 / ASCII 文件不跑 chardetng。
 ///
 /// 取舍（issue #91）：
 /// - 推断结果不在候选里时**先试 `files.encoding`**，所以显式的 `windows1251` 不会被
@@ -159,7 +160,7 @@ fn matching_bom_len(bytes: &[u8], encoding: &'static RsEncoding) -> usize {
 fn guess_without_bom<'a>(
     bytes: &'a [u8],
     preferences: &Preferences,
-    detected: Option<&'static RsEncoding>,
+    detect: impl FnOnce(&[u8]) -> Option<&'static RsEncoding>,
 ) -> EncodingChoice<'a> {
     let fallback = preferences.fallback;
     if let Ok(text) = std::str::from_utf8(bytes) {
@@ -178,7 +179,7 @@ fn guess_without_bom<'a>(
         };
     }
     let candidates = &preferences.candidates;
-    if let Some(detected) = detected {
+    if let Some(detected) = detect(bytes) {
         if let Some(candidate) = candidates
             .iter()
             .copied()
@@ -566,11 +567,36 @@ mod tests {
         let text = "// 这是一段 GBK 编码的中文注释，用来验证自动识别。\r\n";
         let bytes = gbk(text);
         for misdetected in [encoding_rs::BIG5, encoding_rs::EUC_KR] {
-            let choice = guess_without_bom(&bytes, &preferences(true, "utf8"), Some(misdetected));
+            let choice =
+                guess_without_bom(&bytes, &preferences(true, "utf8"), |_| Some(misdetected));
             assert_eq!(choice.encoding, encoding_rs::GBK);
             assert!(choice.guessed);
             assert_eq!(choice.decoded.as_deref(), Some(text));
         }
+    }
+
+    #[test]
+    fn utf8_fast_path_does_not_run_detection() {
+        // 合法 UTF-8 / 纯 ASCII（长度超过 MIN_GUESS_BYTES）走快路径，不调用 chardetng；
+        // 非 UTF-8 时才调用且只调用一次。
+        let calls = std::cell::Cell::new(0);
+        let counting = |bytes: &[u8]| {
+            calls.set(calls.get() + 1);
+            detect(bytes)
+        };
+        let ascii = b"public class Plain { public int Value = 1; }\r\n";
+        let utf8 = "// 这是一段 UTF-8 编码的中文注释。\r\n".as_bytes();
+        for bytes in [&ascii[..], utf8] {
+            assert!(bytes.len() >= MIN_GUESS_BYTES);
+            let choice = guess_without_bom(bytes, &preferences(true, "gbk"), counting);
+            assert!(choice.decoded.is_some());
+        }
+        assert_eq!(calls.get(), 0, "UTF-8 快路径不应调用 detect");
+
+        let gbk_bytes = gbk("// 这是一段 GBK 编码的中文注释，用来验证自动识别。\r\n");
+        let choice = guess_without_bom(&gbk_bytes, &preferences(true, "utf8"), counting);
+        assert_eq!(choice.encoding, encoding_rs::GBK);
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
@@ -585,13 +611,13 @@ mod tests {
         let first_gbk = guess_without_bom(
             &bytes,
             &ordered(vec![encoding_rs::GBK, encoding_rs::WINDOWS_1252]),
-            None,
+            |_| None,
         );
         assert_eq!(first_gbk.encoding, encoding_rs::GBK);
         let first_1252 = guess_without_bom(
             &bytes,
             &ordered(vec![encoding_rs::WINDOWS_1252, encoding_rs::GBK]),
-            None,
+            |_| None,
         );
         assert_eq!(first_1252.encoding, encoding_rs::WINDOWS_1252);
     }
@@ -602,11 +628,9 @@ mod tests {
         // 反过来候选写 gb18030、推断成 GBK 时报告 GB18030。
         let text = "// 中文注释\r\n";
         let bytes = gbk(text);
-        let choice = guess_without_bom(
-            &bytes,
-            &preferences(true, "windows1251"),
-            Some(encoding_rs::GB18030),
-        );
+        let choice = guess_without_bom(&bytes, &preferences(true, "windows1251"), |_| {
+            Some(encoding_rs::GB18030)
+        });
         assert_eq!(choice.encoding, encoding_rs::GBK);
         assert!(choice.guessed);
         let gb18030 = Preferences {
@@ -614,7 +638,7 @@ mod tests {
             candidates: vec![encoding_rs::GB18030],
             fallback: UTF_8,
         };
-        let choice = guess_without_bom(&bytes, &gb18030, Some(encoding_rs::GBK));
+        let choice = guess_without_bom(&bytes, &gb18030, |_| Some(encoding_rs::GBK));
         assert_eq!(choice.encoding, encoding_rs::GB18030);
         // 两者解码结果一致。
         assert_eq!(decode(&bytes, &gb18030, None, false).unwrap().text, text);
