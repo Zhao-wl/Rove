@@ -501,6 +501,12 @@ impl ListWidget {
         }
     }
 
+    /// Row under content-space `y` (scroll offset already added); None past the last row.
+    pub fn index_at(&self, y: f32) -> Option<usize> {
+        let i = self.heights.index_at(y);
+        (y >= 0.0 && i < self.len()).then_some(i)
+    }
+
     /// Display rows intersecting the viewport (the only rows the view lays out and paints).
     pub fn visible_range(&self) -> Range<usize> {
         let n = self.len();

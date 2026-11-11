@@ -187,6 +187,10 @@ pub fn default_row(ctx: &RowContext, _: &mut Window, _: &mut App) -> AnyElement 
             .child(ctx.loading_text.clone().unwrap_or_default())
             .into_any_element();
     }
+    // Plain flat rows are the hot path (quick open, search results): a single text element.
+    if !ctx.is_tree && ctx.row.detail.is_none() {
+        return highlighted_label(ctx).into_any_element();
+    }
     let mut el = div()
         .flex()
         .items_center()
@@ -426,6 +430,17 @@ impl ListView {
         k
     }
 
+    /// Row under a window position and the x offset inside the list.
+    fn row_at(&self, p: Point<Pixels>) -> Option<(usize, f32)> {
+        let b = self.bounds?;
+        let x = f32::from(p.x - b.left());
+        let y = f32::from(p.y - b.top());
+        if x < 0.0 || y < 0.0 || y > f32::from(b.size.height) {
+            return None;
+        }
+        Some((self.widget.index_at(y + self.widget.scroll_top())?, x))
+    }
+
     fn now_ms(&self) -> f64 {
         self.epoch.elapsed().as_secs_f64() * 1000.0
     }
@@ -500,8 +515,9 @@ impl ListView {
         } else {
             (None, None)
         };
+        // Rows carry no listeners or hitboxes: the list root maps pointer positions to rows,
+        // which keeps per-frame element work proportional to visible rows only.
         let mut el = div()
-            .id(("list-row", i))
             .absolute()
             .top(px(top))
             .left(px(-w.scroll_left()))
@@ -512,8 +528,6 @@ impl ListView {
             .items_center()
             .pl(px(6.0 + indent))
             .pr(px(12.0))
-            .border_1()
-            .border_color(gpui::transparent_black())
             .overflow_hidden()
             .child(content);
         if let Some(bg) = bg {
@@ -529,7 +543,16 @@ impl ListView {
                 colors.inactive_focus_outline
             };
             if let Some(o) = outline {
-                el = el.border_color(o);
+                // Outline overlay: does not shift the row content.
+                el = el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .border_1()
+                        .border_color(o),
+                );
             }
         }
         if let Some((_, pos)) = self.drag_over.filter(|d| d.0 == i) {
@@ -593,40 +616,6 @@ impl ListView {
                 }
             }
         }
-        let twistie_end = 6.0 + indent + 16.0;
-        el = el
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |v, e: &MouseDownEvent, window, cx| {
-                    window.focus(&v.focus);
-                    let x = v.bounds.map_or(0.0, |b| f32::from(e.position.x - b.left()));
-                    let on_twistie = v.widget.is_tree() && x < twistie_end;
-                    v.widget.click(
-                        i,
-                        Self::modifiers(&e.modifiers),
-                        e.click_count as u32,
-                        on_twistie,
-                    );
-                    v.flush(cx);
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |v, _: &MouseDownEvent, window, cx| {
-                    window.focus(&v.focus);
-                    if !v.widget.is_selected(i) {
-                        v.widget.click(i, Modifiers::default(), 0, false);
-                    }
-                    v.widget.context_menu();
-                    v.flush(cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(move |v, _: &MouseMoveEvent, _, cx| {
-                if v.hovered != Some(i) {
-                    v.hovered = Some(i);
-                    cx.notify();
-                }
-            }));
         if self.drag_and_drop && kind == RowKind::Item {
             let ids: Arc<[ItemId]> = if selected {
                 w.selected_ids()
@@ -637,7 +626,8 @@ impl ListView {
                 ids,
                 label: row.label.to_string().into(),
             };
-            el = el
+            return el
+                .id(("list-row", i))
                 .on_drag(payload, |d: &DraggedItems, _: Point<Pixels>, _, cx| {
                     let label = d.label.clone();
                     cx.new(|_| DragPreview(label))
@@ -672,7 +662,8 @@ impl ListView {
                         position,
                     });
                     cx.notify();
-                }));
+                }))
+                .into_any_element();
         }
         el.into_any_element()
     }
@@ -1059,7 +1050,43 @@ impl Render for ListView {
                 }
                 cx.notify();
             }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, e: &MouseDownEvent, window, cx| {
+                    window.focus(&v.focus);
+                    if let Some((i, x)) = v.row_at(e.position) {
+                        let depth = v.widget.row(i).map_or(0, |r| r.depth);
+                        let twistie_end = 6.0 + indent_px(v.widget.options(), depth) + 16.0;
+                        let on_twistie = v.widget.is_tree() && x < twistie_end;
+                        v.widget.click(
+                            i,
+                            Self::modifiers(&e.modifiers),
+                            e.click_count as u32,
+                            on_twistie,
+                        );
+                        v.flush(cx);
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|v, e: &MouseDownEvent, window, cx| {
+                    window.focus(&v.focus);
+                    if let Some((i, _)) = v.row_at(e.position) {
+                        if !v.widget.is_selected(i) {
+                            v.widget.click(i, Modifiers::default(), 0, false);
+                        }
+                    }
+                    v.widget.context_menu();
+                    v.flush(cx);
+                }),
+            )
             .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _, cx| {
+                let hovered = v.row_at(e.position).map(|r| r.0);
+                if v.hovered != hovered && v.thumb_drag.is_none() {
+                    v.hovered = hovered;
+                    cx.notify();
+                }
                 if let (Some(grab), Some(b)) = (v.thumb_drag, v.bounds) {
                     if e.pressed_button == Some(MouseButton::Left) {
                         let total = v.widget.total_height();
