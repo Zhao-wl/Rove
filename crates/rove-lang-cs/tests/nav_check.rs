@@ -303,3 +303,22 @@ fn medium_project_anchors_resolve() {
 fn large_project_anchors_resolve() {
     anchors_resolve(rove_test_support::UnityProject::Large, Project::Large);
 }
+
+/// L1 适配（#37）：光标处写出的类型名带上左侧限定与泛型实参个数。
+#[test]
+fn l1_adapter_reads_written_type_name() {
+    let t = adapter::type_text_at;
+    assert_eq!(t("var p = new Player();", 12).as_deref(), Some("Player"));
+    assert_eq!(
+        t("x = new Game.Player();", 13).as_deref(),
+        Some("Game.Player")
+    );
+    assert_eq!(t("global::A.B c;", 10).as_deref(), Some("global::A.B"));
+    assert_eq!(
+        t("Dictionary<int, List<string>> d;", 2).as_deref(),
+        Some("Dictionary<,>")
+    );
+    assert_eq!(t("typeof(Foo<>)", 7).as_deref(), Some("Foo<>"));
+    assert_eq!(t("if (a < b) {", 4).as_deref(), Some("a"));
+    assert_eq!(t("a + b", 2), None);
+}

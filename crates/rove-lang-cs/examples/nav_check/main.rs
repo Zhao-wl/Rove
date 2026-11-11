@@ -143,7 +143,7 @@ fn build_index(project_root: &Path, idx: &Path) -> Result<(), String> {
 
 fn open_source(o: &Opts, p: Project, root: &Path) -> Result<Box<dyn NavSource>, String> {
     match o.source.as_str() {
-        "l1" => Ok(Box::new(L1Decls)),
+        "l1" => Ok(Box::new(L1Decls::open(root)?)),
         _ => {
             let idx = index_path(o, p);
             if o.build {

@@ -486,3 +486,78 @@ fn bom_and_utf16_sources_use_decoded_utf8_columns() {
     assert_eq!(field.value[0].locations[0].selection.start(), pos(0, 26));
     assert_eq!(field.value[0].locations[0].selection.end(), pos(0, 28));
 }
+
+#[test]
+fn class_header_split_from_body_by_preprocessor_is_recovered() {
+    // tree-sitter 不做预处理：`{` 落在 `#if` / `#else` 两个分支里时整段是 ERROR。
+    let src = "namespace N\n{\n    public abstract class P : S\n#if E\n    {\n        private class Q : A { }\n    }\n#else\n    {\n    }\n#endif\n\n    public abstract class P<T> : P\n    {\n    }\n}\n";
+    let f = Fixture::new(&[("P.cs", src)]);
+    let index = f.index();
+    assert!(index.find_type("N.P").is_some());
+    assert!(
+        index.find_type("N.P.Q").is_some(),
+        "#if 分支里的嵌套类型保留"
+    );
+    assert!(
+        index.find_type("N.P<>").is_some(),
+        "后面的兄弟声明仍在命名空间里"
+    );
+    assert_eq!(resolve(&index, &f, "P.cs", ": P\n", 0, "P"), ["N.P`0"]);
+    // 没有语法错误的文件不走涂抹，`#else` 分支里的声明照常索引。
+    let g = Fixture::new(&[(
+        "Q.cs",
+        "namespace M {\n#if E\n  class A {}\n#else\n  class B {}\n#endif\n}\n",
+    )]);
+    let index = g.index();
+    assert!(index.find_type("M.A").is_some() && index.find_type("M.B").is_some());
+}
+
+#[test]
+fn source_copies_resolve_to_the_nearest_one_but_partials_stay() {
+    let f = Fixture::new(&[
+        ("Assets/Game/Role.cs", "namespace G { enum Role { A } }"),
+        (
+            ".backup/run1/Assets/Game/Role.cs",
+            "namespace G { enum Role { A } }",
+        ),
+        (
+            "Assets/Game/Unit.cs",
+            "namespace G { partial class Unit { Role r; } }",
+        ),
+        (
+            "Assets/Game/Net/Unit.Net.cs",
+            "namespace G { partial class Unit {} }",
+        ),
+        (
+            "Assets/View/Hud.cs",
+            "namespace G { class Hud { Unit u; } }",
+        ),
+    ]);
+    let index = f.index();
+    assert_eq!(index.find_type("G.Role").unwrap().locations.len(), 2);
+    let at = find(f.root(), "Assets/Game/Unit.cs", "Role", 0);
+    let r = index
+        .resolve_type(
+            &wp("Assets/Game/Unit.cs"),
+            at,
+            "Role",
+            &Cancellation::default(),
+        )
+        .unwrap();
+    let files: Vec<&str> = r.value[0].locations.iter().map(path_of).collect();
+    assert_eq!(files, ["Assets/Game/Role.cs"]);
+    let at = find(f.root(), "Assets/View/Hud.cs", "Unit", 0);
+    let r = index
+        .resolve_type(
+            &wp("Assets/View/Hud.cs"),
+            at,
+            "Unit",
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        r.value[0].locations.len(),
+        2,
+        "文件名不同的 partial 部分都保留"
+    );
+}

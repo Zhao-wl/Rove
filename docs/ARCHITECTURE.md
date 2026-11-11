@@ -729,14 +729,14 @@ Markdown 局部更新与回退、可见区域优先、按文档基线、设置�
 | 入口 | 结果 | 精确度 |
 |---|---|---|
 | `workspace_symbols(query, limit, cancel)` | `L1Symbol`（名字、容器、种类、参数个数、全部声明位置）；`to_workspace_symbols()` 转成契约类型，partial 每个位置一条 | `Syntax` |
-| `resolve_type(file, position, text, cancel)` | `text` 是引用处写出的类型（`List<int>`、`Dictionary<,>`、`A.B`、`global::X`），按参数个数区分重名泛型 | `Approximate` |
+| `resolve_type(file, position, text, cancel)` | `text` 是引用处写出的类型（`List<int>`、`Dictionary<,>`、`A.B`、`global::X`），按参数个数区分重名泛型；同一符号的位置中文件名相同、目录不同的视为源码副本（备份、迁移目录），只保留与引用处目录公共前缀最长的那份 | `Approximate` |
 | `member_candidates(name, cancel)` | 同名成员（重载各自一条） | **一律** `Approximate` |
 | `find_type(qualified)` / `progress()` / `is_scanned(path)` / `stats()` / `generation()` | 按完整名查类型、构建进度、文件是否已扫描、规模与常驻内存估算、索引代次（= 结果的 `index_generation`） | — |
 
 `reason` 统一为 `ApproximationReason::Other("l1-declaration-index")`；何时用 L1、是否改写原因由 #38 决定。
 
-边界（`LANGUAGE_INTELLIGENCE` §2.1）：不做绑定和类型推断，不看继承链（基类里的嵌套类型查不到），不处理 `#if`（两侧声明都收集，由 #38 决定是否使用），不处理特性名省略 `Attribute` 后缀。非 UTF-8 且无 BOM 的文件按有损 UTF-8 解码：同一行中非 ASCII 字节之后的列可能偏移。
+边界（`LANGUAGE_INTELLIGENCE` §2.1）：不做绑定和类型推断，不看继承链（基类里的嵌套类型查不到），不处理 `#if`（两侧声明都收集，由 #38 决定是否使用；例外：`#if` 把类型头和 `{` 分在两个分支、整段解析失败的文件，会只取每个 `#if` 的第一个分支重新解析一次，无错才采用），不处理特性名省略 `Attribute` 后缀。非 UTF-8 且无 BOM 的文件按有损 UTF-8 解码：同一行中非 ASCII 字节之后的列可能偏移。
 
 与 #26 大纲的关系：大纲和面包屑使用 `rove-syntax` 的文档符号（单个打开文件、随编辑增量更新）；L1 是全工作区的磁盘声明表（跨文件、持久化）。两者都基于 tree-sitter C# grammar，但数据各自独立，不互相替代：打开文件里的结构以 #26 为准，跨文件查找以 L1 为准。
 
-验证：`cargo test -p rove-lang-cs`（`src/l1/tests.rs`：partial 三文件聚合、嵌套/泛型重名/record/文件级命名空间、using static 与别名、成员种类与“一律近似”、持久化与增量的扫描计数、缓存损坏回退、BOM/UTF-16 列；`tests/l1_workspace.rs`：工作区扫描 → 符号搜索 → 类型跳转 → 文件事件增量 → 重新打开不重扫，以及中型/大型 Unity 项目往返）。性能：`cargo xtask bench --filter l1/`（预算 `l1_*`），真实项目数字用 `cargo run --release -p rove-lang-cs --example l1_bench -- <项目>`。
+验证：`cargo test -p rove-lang-cs`（`src/l1/tests.rs`：partial 三文件聚合、嵌套/泛型重名/record/文件级命名空间、using static 与别名、成员种类与“一律近似”、持久化与增量的扫描计数、缓存损坏回退、BOM/UTF-16 列；`tests/l1_workspace.rs`：工作区扫描 → 符号搜索 → 类型跳转 → 文件事件增量 → 重新打开不重扫，以及中型/大型 Unity 项目往返）。准确率：`cargo run --release -p rove-lang-cs --example nav_check -- --source l1`（#39 测试集的 `type_ref` 分类即验收口径；其余分类需要语义信息，不由 L1 回答）。性能：`cargo xtask bench --filter l1/`（预算 `l1_*`），真实项目数字用 `cargo run --release -p rove-lang-cs --example l1_bench -- <项目>`。

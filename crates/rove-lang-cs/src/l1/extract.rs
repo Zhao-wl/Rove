@@ -85,11 +85,29 @@ pub(crate) fn new_parser() -> Parser {
 }
 
 /// 解析一份已解码的 UTF-8 源码。解析失败（被取消或 grammar 异常）时返回 None。
+///
+/// tree-sitter 不做预处理：`#if` 把类型头与 `{` 分在不同分支时（`class A : B` / `#if X` / `{ ... }` /
+/// `#else` / `{ }` / `#endif`）整段解析成 ERROR，类型和后面的兄弟声明都会丢或落错命名空间。
+/// 所以有语法错误且含条件编译指令时，只保留每个 `#if` 的第一个分支、其余涂成空格再解析一次，
+/// 重新解析没有错误才采用——只取第一个分支的近似，只在原解析已经坏掉时启用。
 pub(crate) fn extract(parser: &mut Parser, source: &str) -> Option<Parsed<String>> {
-    let tree = parser.parse(source, None)?;
+    let mut tree = parser.parse(source, None)?;
+    let blanked;
+    let mut src = source.as_bytes();
+    if tree.root_node().has_error() {
+        if let Some(b) = blank_alternative_branches(src) {
+            if let Some(t) = parser.parse(&b, None) {
+                if !t.root_node().has_error() {
+                    tree = t;
+                    blanked = b;
+                    src = &blanked;
+                }
+            }
+        }
+    }
     let root = tree.root_node();
     let mut walker = Walker {
-        src: source.as_bytes(),
+        src,
         eof: root.end_position(),
         out: Parsed::default(),
     };
@@ -100,6 +118,56 @@ pub(crate) fn extract(parser: &mut Parser, source: &str) -> Option<Parsed<String
     });
     walker.children(root, 0, NONE, 0);
     Some(walker.out)
+}
+
+/// 只保留每个 `#if` 的第一个分支：`#if` / `#elif` / `#else` / `#endif` 指令行与备选分支的内容涂成空格
+/// （换行保留，字节偏移不变）。没有条件编译指令时返回 None。
+fn blank_alternative_branches(src: &[u8]) -> Option<Vec<u8>> {
+    let mut out = src.to_vec();
+    // 每层 `#if` 是否已进入备选分支。
+    let mut stack: Vec<bool> = Vec::new();
+    let mut changed = false;
+    let mut start = 0;
+    while start < out.len() {
+        let end = memchr::memchr(b'\n', &out[start..]).map_or(out.len(), |i| start + i);
+        let line = &out[start..end];
+        let trimmed = line.trim_ascii_start();
+        let directive = trimmed
+            .strip_prefix(b"#")
+            .map(|d| d.trim_ascii_start())
+            .unwrap_or(b"");
+        let word_is = |w: &[u8]| {
+            directive.starts_with(w)
+                && directive
+                    .get(w.len())
+                    .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_')
+        };
+        let in_alt = |stack: &[bool]| stack.iter().any(|&alt| alt);
+        let blank = if word_is(b"if") {
+            stack.push(false);
+            true
+        } else if word_is(b"elif") || word_is(b"else") {
+            if let Some(top) = stack.last_mut() {
+                *top = true;
+            }
+            true
+        } else if word_is(b"endif") {
+            stack.pop();
+            true
+        } else {
+            in_alt(&stack)
+        };
+        if blank {
+            for b in &mut out[start..end] {
+                if *b != b'\r' {
+                    *b = b' ';
+                }
+            }
+            changed = true;
+        }
+        start = end + 1;
+    }
+    changed.then_some(out)
 }
 
 /// 递归只沿声明容器走；深度上限防止病态的 ERROR 嵌套耗尽栈。

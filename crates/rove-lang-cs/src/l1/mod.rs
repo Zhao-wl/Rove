@@ -581,6 +581,49 @@ fn is_cs(path: &WorkspacePath) -> bool {
     p.len() > 3 && p[p.len() - 3..].eq_ignore_ascii_case(".cs")
 }
 
+/// 见 `L1Index::resolve_type`：文件名相同、目录不同的位置是源码副本，只留离 `from` 最近的。
+fn nearest_copies(from: &WorkspacePath, locations: &Arc<[Target]>) -> Arc<[Target]> {
+    fn split(t: &Target) -> Option<(&str, &str)> {
+        match &t.resource {
+            Resource::Workspace(p) => {
+                let p = p.as_str();
+                Some(p.rsplit_once('/').unwrap_or(("", p)))
+            }
+            _ => None,
+        }
+    }
+    if locations.len() < 2 {
+        return locations.clone();
+    }
+    let from = from.as_str();
+    // 公共目录前缀的段数。
+    let shared = |dir: &str| {
+        from.split('/')
+            .zip(dir.split('/'))
+            .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+            .count()
+    };
+    let mut best: FxMap<String, usize> = FxMap::default();
+    for t in locations.iter() {
+        if let Some((dir, name)) = split(t) {
+            let score = shared(dir);
+            let e = best.entry(name.to_ascii_lowercase()).or_insert(score);
+            *e = (*e).max(score);
+        }
+    }
+    if best.len() == locations.len() {
+        return locations.clone();
+    }
+    locations
+        .iter()
+        .filter(|t| match split(t) {
+            Some((dir, name)) => best.get(&name.to_ascii_lowercase()) == Some(&shared(dir)),
+            None => true,
+        })
+        .cloned()
+        .collect()
+}
+
 /// 解码为 UTF-8：去掉 UTF-8 BOM（与 rove-buffer 一样，坐标不含 BOM）、按 BOM 解 UTF-16，
 /// 其余非 UTF-8 内容（如 GBK 注释）有损替换——标识符是 ASCII，只有同一行里非 ASCII 字符之后的列会偏。
 fn decode(bytes: &[u8]) -> Cow<'_, str> {
@@ -996,6 +1039,10 @@ impl L1Index {
     /// `Dictionary<,>`、`global::X.Y`），`position` 是它在 `file` 中的位置。按“外层类型的嵌套类型 →
     /// 由内到外的命名空间 + 该层的 using / using static / using 别名 → 全局 using”查找，泛型按参数个数区分。
     /// 同一层有多个匹配时全部返回（有歧义）。文件不在索引中返回 `NotReady`。精确度为 `Approximate`。
+    ///
+    /// 工作区里常有整份源码的副本（备份、迁移目录、样例工程），同名同命名空间的类型会被当成 partial
+    /// 聚合到一起。所以同一个符号的多个位置里，文件名相同、目录不同的视为副本，只保留与引用处目录
+    /// 公共前缀最长的那份；文件名各不相同的 partial 部分不受影响。
     pub fn resolve_type(
         &self,
         file: &WorkspacePath,
@@ -1014,7 +1061,14 @@ impl L1Index {
         let line = u32::try_from(position.line.0).unwrap_or(u32::MAX);
         let col = u32::try_from(position.column.0).unwrap_or(u32::MAX);
         let sids = resolve::resolve(&state, fid, line, col, &reference);
-        let value: Arc<[L1Symbol]> = sids.into_iter().map(|s| state.symbol(s)).collect();
+        let value: Arc<[L1Symbol]> = sids
+            .into_iter()
+            .map(|s| {
+                let mut sym = state.symbol(s);
+                sym.locations = nearest_copies(file, &sym.locations);
+                sym
+            })
+            .collect();
         Ok(self.result(value, Precision::Approximate, state.generation))
     }
 
