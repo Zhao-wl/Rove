@@ -11,6 +11,7 @@ use serde_json::{json, Map, Value};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
@@ -237,6 +238,28 @@ impl LayoutStore {
     }
 }
 
+/// 布局写入的串行闸门：所有写入（后台防抖写入与关窗时的同步写入）都在同一把锁里执行，
+/// 并且只有代次比已落盘代次新的快照才会写；旧快照的后台写入即使延迟完成，也不会覆盖新快照。
+/// 代次只增不减。
+#[derive(Clone, Debug, Default)]
+pub struct SaveGate(Arc<Mutex<u64>>);
+impl SaveGate {
+    /// 持锁比较代次后执行 `write`；返回是否写入。
+    pub fn write(&self, generation: u64, write: impl FnOnce()) -> bool {
+        let mut written = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if generation <= *written {
+            return false;
+        }
+        write();
+        *written = generation;
+        true
+    }
+    /// 已落盘的最新代次。
+    pub fn written(&self) -> u64 {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// 后台写入：先写临时文件再替换，避免写到一半崩溃留下半个文件。
 pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -302,6 +325,32 @@ mod tests {
         assert_eq!(store.load(), LayoutState::default());
         write_json(&path, &json!({ "sideBar": { "width": 5 } })).unwrap();
         assert_eq!(store.load().sidebar_width, MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn stale_background_write_cannot_overwrite_newer_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LayoutStore::with_base(Some(dir.path().into()), Path::new("D:/W"));
+        let path = store.layout_path().unwrap();
+        let gate = SaveGate::default();
+        let state = |width: f32| LayoutState {
+            sidebar_width: width,
+            ..Default::default()
+        };
+        // 代次 1 的后台写入取了快照，但在关窗（代次 2，save_now）之后才执行。
+        let stale = state(400.0).to_json();
+        let fresh = state(250.0).to_json();
+        assert!(gate.write(2, || write_json(&path, &fresh).unwrap()));
+        let background = {
+            let gate = gate.clone();
+            let path = path.clone();
+            std::thread::spawn(move || gate.write(1, || write_json(&path, &stale).unwrap()))
+        };
+        assert!(!background.join().unwrap(), "旧代次被拒绝");
+        assert_eq!(store.load().sidebar_width, 250.0);
+        assert_eq!(gate.written(), 2);
+        // 代次只增不减：同代次重复写也被拒绝。
+        assert!(!gate.write(2, || panic!("不应重复写入")));
     }
 
     #[test]

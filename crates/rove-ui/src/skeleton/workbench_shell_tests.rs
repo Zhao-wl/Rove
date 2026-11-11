@@ -562,3 +562,73 @@ fn hub_is_usable_without_a_window() {
     .unwrap();
     assert_eq!(hub.toasts().count(), 1);
 }
+
+#[gpui::test]
+fn top_right_notifications_have_a_title_bar_entry(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    // 默认右下角：入口是状态栏铃铛。
+    view.read_with(cx, |v, _| {
+        assert!(!v.shell.notifications_in_title_bar());
+        assert!(v
+            .shell
+            .status_bar
+            .get(catalog::STATUS_NOTIFICATIONS)
+            .is_some());
+    });
+    redraw(cx);
+    assert!(cx.debug_bounds("titlebar-notifications").is_none());
+
+    // 右上角 + showInTitleBar（默认 true）：入口移到标题栏，状态栏不再显示铃铛。
+    view.update(cx, |v, cx| {
+        v.shell.override_setting(
+            "workbench.notifications.position",
+            Value::String("top-right".into()),
+        );
+        shell::view::report(
+            v,
+            "index.failed",
+            Reason::Global(Severity::Error),
+            Message::key("view.problems"),
+            none(),
+            cx,
+        )
+        .unwrap();
+    });
+    redraw(cx);
+    view.read_with(cx, |v, _| {
+        assert!(v.shell.notifications_in_title_bar());
+        assert!(v
+            .shell
+            .status_bar
+            .get(catalog::STATUS_NOTIFICATIONS)
+            .is_none());
+    });
+    let bell = cx
+        .debug_bounds("titlebar-notifications")
+        .expect("标题栏有通知入口");
+    let title = cx.debug_bounds("titlebar").unwrap();
+    assert!(bell.origin.y >= title.origin.y && bell.bottom() <= title.bottom());
+    // 点击铃铛打开通知中心，再点关闭。
+    cx.simulate_click(bell.center(), Modifiers::default());
+    view.read_with(cx, |v, _| assert!(v.shell.feedback.center_visible()));
+    redraw(cx);
+    let bell = cx.debug_bounds("titlebar-notifications").unwrap();
+    cx.simulate_click(bell.center(), Modifiers::default());
+    view.read_with(cx, |v, _| assert!(!v.shell.feedback.center_visible()));
+
+    // showInTitleBar 关掉后回到状态栏铃铛。
+    view.update(cx, |v, _| {
+        v.shell
+            .override_setting("workbench.notifications.showInTitleBar", Value::Bool(false))
+    });
+    redraw(cx);
+    view.read_with(cx, |v, _| {
+        assert!(!v.shell.notifications_in_title_bar());
+        assert!(v
+            .shell
+            .status_bar
+            .get(catalog::STATUS_NOTIFICATIONS)
+            .is_some());
+    });
+}
