@@ -1,0 +1,783 @@
+project = "medium"
+
+# 中型 Unity 项目（GRF2Unity）的导航用例，分类：var / chain / overload / extension /
+# generic / inheritance / interface / partial。
+# 选点原则：每个查询点的成员名在项目里都有多个同名声明（rg -w 核对），按名称解析必然出错。
+# 期望值全部由人工阅读源码推导，引用数用 rg -w 在 Assets + Packages + Library/PackageCache
+# （索引实际编译的 7718 个文件所在的三个目录）范围内交叉核对。
+
+# ---------------------------------------------------------------- var 推断
+
+[[case]]
+id = "m-var-01"
+category = "var"
+file = 'Assets/Football/Runtime/Core/AnimationSampling/AnimationSampler.cs'
+line = 15
+col = 19
+token = 'Read'
+anchor = 'cache.Read(track, frameCount, before, out orientation, out position);'
+why = '前一行 var cache = AnimationIntegerSampleCache.For(track)，Read 在项目里有 69 处同名声明，不知道 For 的返回类型就选不对'
+source = '人工阅读：AnimationIntegerSampleCache.For 声明返回 AnimationIntegerSampleCache（AnimationIntegerSampleCache.cs:14），该类唯一的 Read 在同文件 24 行；rg -w AnimationIntegerSampleCache 全项目只有 AnimationSampler.cs:14 一处外部使用，所以这个 Read 的引用只有 AnimationSampler.cs 的 15、17 两行'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/AnimationSampling/AnimationIntegerSampleCache.cs', line = 24, anchor = 'internal void Read(AnimationTrack track, int frameCount, int frame, out Q4 orientation, out V3 position)' }]
+refs = 2
+
+[[case]]
+id = "m-var-02"
+category = "var"
+file = 'Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs'
+line = 183
+col = 46
+token = 'Read'
+anchor = 'string formatted = entry.Read(index - entry.Start);'
+why = '上一行 var entry = m_Entries[low]（List<Entry> 的元素），同一个方法体里还有 m_Batch.Read / m_Scores.Read 两个别的 Read'
+source = '人工阅读：m_Entries 声明为 List<Entry>（SelectionTrace.cs:148），Entry 的 Read 在同文件 126 行；rg -w Read 全项目 69 处同名声明，SelectionTrace.cs 内另有 CrudeSelectionTraceBatch.Read / SelectionScoreTraceBatch.Read 两个同名但不同类型的调用（128、129 行），已逐条排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs', line = 126, anchor = 'internal string Read(int offset)' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs', line = 183, anchor = 'string formatted = entry.Read(index - entry.Start);' }]
+
+[[case]]
+id = "m-var-03"
+category = "var"
+file = 'Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Adapters/GoalkeeperElizaSource.cs'
+line = 147
+col = 25
+token = 'Validate'
+anchor = 'history.Validate(m_Player.Generation);'
+why = 'history 来自 var history = m_Source.ReadTouchHistory()，要经接口方法的返回类型才知道是 KeeperTouchHistory；Validate 在项目里有 53 处同名声明'
+source = '人工阅读：m_Source 是 IGoalkeeperSource，ReadTouchHistory 声明返回 KeeperTouchHistory（IGoalkeeperSource.cs:7），该结构的 Validate 在 KeeperTouchHistory.cs:37；rg -w Validate 命中的其余 52 处分属 GrfHairRenderBinding、MatchPoseBatch 等别的类型，已排除。KeeperDeflectCommand.cs:12 是同一个 Validate 的另一处引用'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Records/KeeperTouchHistory.cs', line = 37, anchor = 'public void Validate(long generation)' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Adapters/GoalkeeperElizaSource.cs', line = 147, anchor = 'history.Validate(m_Player.Generation);' },
+    { file = 'Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Commands/KeeperDeflectCommand.cs', line = 12, anchor = 'history.Validate(input.Self.Id.Generation);' },
+]
+
+[[case]]
+id = "m-var-04"
+category = "var"
+file = 'Assets/Football/Runtime/Core/MatchComposition/MatchFormalStep.cs'
+line = 71
+col = 39
+token = 'Read'
+anchor = 'return events.Read();'
+why = 'events 在 6 行以外的 var 声明里（65 行 new MatchExactEvents(...)），而且查询点在一个 lambda 内部，Read 全项目有 69 处同名声明'
+source = '人工阅读：MatchFormalStep.cs:65 var events = new MatchExactEvents(...)，MatchExactEvents 的唯一 Read 在 MatchExactEvents.cs:31；同文件上方还有 m_World.History.Refresh 等别的类型调用，已排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/MatchComposition/Events/MatchExactEvents.cs', line = 31, anchor = 'internal IReadOnlyList<MatchTimelineEvent> Read()' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/MatchComposition/MatchFormalStep.cs', line = 71, anchor = 'return events.Read();' }]
+
+[[case]]
+id = "m-var-05"
+category = "var"
+file = 'Assets/Football/Runtime/Core/LogicalRig/LogicalRigState.cs'
+line = 134
+col = 20
+token = 'Restore'
+anchor = 'result.Restore(Capture());'
+why = 'result 是 var 推断出的 LogicalRigState，Restore 在项目里有 19 处同名声明（PlayerFatigueState、NativeTeamKitLease、PredictedBall 等都有）'
+source = '人工阅读：133 行 var result = new LogicalRigState(Definition)，LogicalRigState 的 Restore 在同文件 138 行；rg -w Restore 命中的 Fatigue.Restore、slot.Restore、ball.Restore 等都属于别的类型，已排除；MotionPoseView.cs:16 copy.Restore(snapshot) 是同一个方法的另一处引用（copy 为 new LogicalRigState(...)）'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/LogicalRig/LogicalRigState.cs', line = 138, anchor = 'internal void Restore(LogicalRigSnapshot snapshot)' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/LogicalRig/LogicalRigState.cs', line = 134, anchor = 'result.Restore(Capture());' },
+    { file = 'Assets/Football/Runtime/Core/Observations/Motion/MotionPoseView.cs', line = 16, anchor = 'copy.Restore(snapshot);' },
+]
+
+[[case]]
+id = "m-var-06"
+category = "var"
+file = 'Assets/Football/Runtime/Core/BodyCollisions/Diagnostics/CollisionDiagnosticPipeline.cs'
+line = 62
+col = 24
+token = 'Process'
+anchor = 'player.Process(context, interrupt => interrupt == ActionInterrupt.Trip'
+why = 'player 来自 52 行 var player = m_Players[i]（PlayerMovementController[]），Process 全项目有 37 处同名声明，而且同一方法里还有 m_Collisions.Process 这个别的 Process'
+source = '人工阅读：m_Players 声明为 PlayerMovementController[]（CollisionDiagnosticPipeline.cs:8），PlayerMovementController.Process 是该类唯一的 Process；rg -w Process 的其余命中分属 HumanoidCollisionProcessor、BodyBallCollisionProcessor、MatchStages 等，已排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/PlayerMovement/PlayerMovementController.cs', line = 159, anchor = 'public void Process(ActionSelectionContext context,' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/BodyCollisions/Diagnostics/CollisionDiagnosticPipeline.cs', line = 62, anchor = 'player.Process(context, interrupt => interrupt == ActionInterrupt.Trip' }]
+
+# ---------------------------------------------------------------- 链式调用
+
+[[case]]
+id = "m-chain-01"
+category = "chain"
+file = 'Assets/Football/Runtime/Core/MatchComposition/MatchSession.cs'
+line = 66
+col = 61
+token = 'Read'
+anchor = 'return World.Roster.Get(index / 11, index % 11).Read();'
+why = 'World 到 Roster 到 Get(...) 三段才知道类型；陷阱是 PlayerRoster 自己也有一个无参 Read()，只看名字会落到它身上'
+source = '人工阅读：PlayerRoster.Get 声明返回 PlayerRuntime（PlayerRoster.cs:49），PlayerRuntime.Read 在 PlayerRuntime.cs:39；PlayerRoster.cs:56 另有一个 public PlayerAttributeView[] Read()，是必须排除的同名项。rg -n "\.Read\(\)" Assets 共 286 行，逐条看接收者类型后，以 PlayerRuntime 为接收者的只有三处：MatchSession.cs:66、PlayerRoster.cs:61（m_Players[i]）与 PlayerIntegrationTests.cs:163（inactive = roster.Get(1, 0)）'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Players/PlayerRuntime.cs', line = 39, anchor = 'public PlayerAttributeView Read() => new PlayerAttributeView(this);' }]
+refs = 3
+
+[[case]]
+id = "m-chain-02"
+category = "chain"
+file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs'
+line = 28
+col = 37
+token = 'Capture'
+anchor = 'Images = stages.History.Capture();'
+why = '同一段里 stages.Ball.Capture / stages.Possession.Capture 的 Capture 各属不同类型；这一处还要在 MentalImageHistory 的两个 Capture 重载中选无参的那个'
+source = '人工阅读：stages 是 CombinedMotionStages，History 字段声明为 MentalImageHistory（CombinedMotionStages.cs:24），无参调用对应 MentalImageHistory.cs:32 的 Capture()，而不是 25 行的 Capture(ResolvedMatchConfig, long)；rg -w Capture 全项目 49 处同名声明'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs', line = 32, anchor = 'internal MentalImage[] Capture()' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs', line = 28, anchor = 'Images = stages.History.Capture();' },
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionObservation.cs', line = 44, anchor = 'var images = stages.History.Capture();' },
+]
+
+[[case]]
+id = "m-chain-03"
+category = "chain"
+file = 'Assets/Football/Runtime/Core/MatchComposition/Officials/MatchOfficials.cs'
+line = 152
+col = 41
+token = 'Read'
+anchor = 'var image = m_World.History.Read(m_World.ProcessingScope, 0);'
+why = 'm_World 到 History 两跳才到 MentalImageHistory；Read 全项目 69 处同名声明，MentalImageHistory 自身也不是唯一有 Read 的感知类型'
+source = '人工阅读：MatchWorld.History 声明为 MentalImageHistory，两参数调用对应 MentalImageHistory.cs:135 的 Read(MatchProcessingScope, int)；MatchPlayerProcessing.cs:70、ElizaController.cs:66 是同一个方法的另外两处引用（均为 History/Perception.Read(scope, ...)）'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs', line = 135, anchor = 'public MentalImage Read(MatchProcessingScope scope, int historyMs)' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/MatchComposition/Officials/MatchOfficials.cs', line = 152, anchor = 'var image = m_World.History.Read(m_World.ProcessingScope, 0);' },
+    { file = 'Assets/Football/Runtime/Core/MatchComposition/Players/MatchPlayerProcessing.cs', line = 70, anchor = 'MentalImage processImage = m_World.History.Read(scope, actors.Controllers[i].MentalImageTime);' },
+]
+
+[[case]]
+id = "m-chain-04"
+category = "chain"
+file = 'Assets/Football/Runtime/Core/Possession/SimpleArrivalCalculator.cs'
+line = 7
+col = 73
+token = 'Calculate'
+anchor = 'return new PreparedArrival(position, movement, maxVelocity).Calculate(target);'
+why = '直接对构造表达式取成员，没有中间变量；Calculate 在项目里有 41 处同名声明（TeamTactics、DefensiveLine、SupportPosition 等静态工具类都叫 Calculate）'
+source = '人工阅读：new PreparedArrival(...) 的类型是 PreparedArrival（PreparedArrival.cs:6），单参 Calculate(V3) 在 PreparedArrival.cs:23；同结构另有 Usual(V3)，不同名。rg -w PreparedArrival 另外两处构造在 FormalBallArrivalCalculator.cs:11、FormalBallPursuit.cs:35'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Possession/PreparedArrival.cs', line = 23, anchor = 'internal TimeToBallResult Calculate(V3 target)' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/Possession/SimpleArrivalCalculator.cs', line = 7, anchor = 'return new PreparedArrival(position, movement, maxVelocity).Calculate(target);' },
+    { file = 'Assets/Football/Runtime/Core/Possession/FormalBallArrivalCalculator.cs', line = 22, anchor = 'TimeToBallResult arrival = trajectory.Calculate(ball.Get2D());' },
+]
+
+[[case]]
+id = "m-chain-05"
+category = "chain"
+file = 'Assets/Football/Runtime/Core/Players/PlayerAttributeView.cs'
+line = 26
+col = 44
+token = 'Capture'
+anchor = 'FatigueFactor = player.Fatigue.Capture();'
+why = 'player 到 Fatigue 两跳；Capture 全项目 49 处同名声明，附近的 MatchRulesBinding/CombinedMotionCapture 里的 Capture 都是别的类型'
+source = '人工阅读：PlayerRuntime.Fatigue 声明为 PlayerFatigueState，其无参 Capture 在 PlayerFatigueState.cs:42；rg -w Capture 的其余命中（world.Possession.Capture、stages.History.Capture、group.Capture 等）属于 PossessionOwner、MentalImageHistory、MotionCaptureGroup，已排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Players/Fatigue/PlayerFatigueState.cs', line = 42, anchor = 'public float Capture() => m_Factor;' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/Players/PlayerAttributeView.cs', line = 26, anchor = 'FatigueFactor = player.Fatigue.Capture();' }]
+
+[[case]]
+id = "m-chain-06"
+category = "chain"
+file = 'Assets/Football/Runtime/Core/Players/PlayerAttributeView.cs'
+line = 34
+col = 54
+token = 'Stat'
+anchor = 'm_Effective[i] = player.Capabilities.Stat((PlayerStat)i);'
+why = 'player 到 Capabilities 两跳；Stat 有 8 处同名声明，其中 FootballPlayerAccess.Stat 与 CollisionPlayerAccess.Stat 都是抽象方法，只看名字会落错'
+source = '人工阅读：PlayerRuntime.Capabilities 声明为 PlayerCapabilities，其 Stat 在 Attributes/PlayerCapabilities.cs:26；rg -w Stat 的其余 7 处是 FootballPlayerAccess.cs:24、CollisionPlayerAccess.cs:18 两个抽象声明与 5 个 override（MovementFootballPlayer、MovementCollisionPlayer 与 3 个测试替身），均不是这里的目标'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Players/Attributes/PlayerCapabilities.cs', line = 26, anchor = 'public float Stat(PlayerStat stat)' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/Players/PlayerAttributeView.cs', line = 34, anchor = 'm_Effective[i] = player.Capabilities.Stat((PlayerStat)i);' }]
+
+# ---------------------------------------------------------------- 方法重载
+
+[[case]]
+id = "m-overload-01"
+category = "overload"
+file = 'Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs'
+line = 87
+col = 17
+token = 'Apply'
+anchor = 'Apply(current, pitch);'
+why = '无接收者的自调用，出现在 4 参 Apply 的函数体内，必须按实参个数与类型选到 2 参重载；Apply 全项目 54 处同名声明'
+source = '人工阅读：MatchPoseRigInstance 有两个 Apply：70 行 (previous, current, alpha, pitch) 与 107 行 (frame, pitch)。87 行传 (current, pitch) 两个实参，只能匹配 107 行那个。同文件 93 行是同一个重载的另一处引用'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs', line = 107, anchor = 'internal void Apply(MatchPlayerPoseFrame frame, Transform pitch)' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs', line = 93, anchor = 'Apply(previous, pitch);' },
+    { file = 'Assets/Football/Runtime/Presentation/MatchPose/MatchPoseBatch.cs', line = 114, anchor = 'm_Rigs[i].Apply(frame.Player(i), pitch);' },
+]
+
+[[case]]
+id = "m-overload-02"
+category = "overload"
+file = 'Assets/Football/Runtime/Presentation/MatchPose/MatchPoseBatch.cs'
+line = 106
+col = 27
+token = 'Apply'
+anchor = 'm_Rigs[i].Apply(previous?.Player(i), current.Player(i), alpha, pitch);'
+why = '调用方 MatchPoseBatch 自己也有两个同名 Apply 重载，被调方 MatchPoseRigInstance 又有两个，必须按 4 个实参挑对'
+source = '人工阅读：m_Rigs 声明为 MatchPoseRigInstance[]（MatchPoseBatch.cs:10），4 实参匹配 MatchPoseRigInstance.cs:70 的 Apply(previous, current, alpha, pitch)。rg -w Apply 在 Assets/Football/Runtime/Presentation/MatchPose 与 Tests/Editor/MatchPose 下逐条看过，4 参重载只有这一处调用（81、83 行的 m_Retarget.Apply 是 3 参、属 MatchRetargetBinding）'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs', line = 70, anchor = 'internal void Apply(MatchPlayerPoseFrame previous, MatchPlayerPoseFrame current, float alpha, Transform pitch)' }]
+refs = 1
+
+[[case]]
+id = "m-overload-03"
+category = "overload"
+file = 'Assets/Football/Runtime/Core/MatchConfiguration/BuiltinMatchScenarios.cs'
+line = 19
+col = 80
+token = 'Build'
+anchor = 'public static MatchScenarioDefinition Build(string id, int episode) => Build(new ScenarioId(id), episode);'
+why = '同一行上既有 Build(string, int) 的声明又有对 Build(ScenarioId, int) 的调用，两个重载参数个数相同、只差第一个参数类型；Build 全项目 40 处同名声明'
+source = '人工阅读：new ScenarioId(id) 的类型是 ScenarioId（ScenarioId.cs），所以 19 行末尾的调用只能是 21 行的 Build(ScenarioId id, int episode)；同一文件 19 行自身是 Build(string, int) 的声明，必须排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/MatchConfiguration/BuiltinMatchScenarios.cs', line = 21, anchor = 'public static MatchScenarioDefinition Build(ScenarioId id, int episode)' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/MatchConfiguration/BuiltinMatchScenarios.cs', line = 19, anchor = 'public static MatchScenarioDefinition Build(string id, int episode) => Build(new ScenarioId(id), episode);' }]
+
+[[case]]
+id = "m-overload-04"
+category = "overload"
+file = 'Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs'
+line = 69
+col = 44
+token = 'IndexOf'
+anchor = 'public int IndexOf(string name) => IndexOf(new RigNodeId(name));'
+why = '同一行既声明 IndexOf(string) 又调用 IndexOf(RigNodeId)；项目里还有 string.IndexOf、Array.IndexOf、List.IndexOf、ScenarioCatalog.IndexOf 等大量同名项'
+source = '人工阅读：new RigNodeId(name) 的类型是 RigNodeId，所以调用匹配 RigDefinition.cs:71 的 IndexOf(RigNodeId node)，而不是 69 行自身；rg -w IndexOf 在 Assets 的命中里，MatchRetargetArmReach、AnimationNodeIndices 等处传的是 RigNodeId/RigNodeTokens，调用点多且类型混杂，因此只断言关键引用不断言总数'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs', line = 71, anchor = 'public int IndexOf(RigNodeId node)' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs', line = 69, anchor = 'public int IndexOf(string name) => IndexOf(new RigNodeId(name));' }]
+
+[[case]]
+id = "m-overload-05"
+category = "overload"
+file = 'Assets/Football/Runtime/MatchApplication/Interface/MatchHudCallTip.cs'
+line = 35
+col = 13
+token = 'Read'
+anchor = 'Read(packet.Generation, packet.State?.Presentation?.LastRefereeCall, now);'
+why = '在 Read(MatchObservation, double) 的函数体里调用另一个 Read 重载，看起来像递归；Read 全项目 69 处同名声明'
+source = '人工阅读：MatchHudCallTip 有 31 行 Read(MatchObservation, double) 与 38 行 Read(long, RefereeCall, double) 两个重载，35 行传 3 个实参（long、RefereeCall、double），只能匹配 38 行那个。rg -n "MatchHudCallTip|CallTip" Assets 找出全部使用者：运行时只有 MatchApplicationHud 调 Draw，3 参 Read 的引用是 MatchHudCallTip.cs:35 与 MatchHudCallTipTests.cs 的 13、15、22、31、36，共 6 处；106 行的 Read(packet, now) 是 2 参那个重载，已排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/MatchApplication/Interface/MatchHudCallTip.cs', line = 38, anchor = 'public void Read(long generation, RefereeCall call, double now)' }]
+refs = 6
+
+[[case]]
+id = "m-overload-06"
+category = "overload"
+file = 'Assets/Football/Runtime/Core/Perception/MentalImage.cs'
+line = 103
+col = 75
+token = 'Player'
+anchor = 'return IsExact ? PlayerExact(context.ActualTimeUnits, live) : Player(context.ActualTimeMs, live);'
+why = '同一行里 PlayerExact 与 Player 两个相似名字并排，而 Player 的两个重载参数个数相同、只差第一个参数类型（MatchStepContext 与 long）；Player 全项目 17 处同名声明'
+source = '人工阅读：context.ActualTimeMs 是 long，所以 103 行的调用匹配 MentalImage.cs:144 的 Player(long actual, PerceivedPlayer live)，而不是 100 行的 Player(MatchStepContext, PerceivedPlayer)（即当前方法自身）'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Perception/MentalImage.cs', line = 144, anchor = 'public PerceivedPlayer Player(long actual, PerceivedPlayer live)' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/Perception/MentalImage.cs', line = 103, anchor = 'return IsExact ? PlayerExact(context.ActualTimeUnits, live) : Player(context.ActualTimeMs, live);' }]
+
+# ---------------------------------------------------------------- 扩展方法
+
+[[case]]
+id = "m-extension-01"
+category = "extension"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs'
+line = 1104
+col = 40
+token = 'Inverse'
+anchor = 'var newScale = parentScale.Inverse();'
+why = '项目自定义扩展方法：Inverse(this Vector3) 在两个不同命名空间里各声明了一份，选哪一份完全取决于当前文件的 using'
+source = '人工阅读：Utils.cs:30 的 Inverse 在命名空间 Coffee.UIParticleExtensions，Vector3Extensions.cs:7 的同签名 Inverse 在 Coffee.UIParticleInternal；UIParticle.cs 只 using Coffee.UIParticleExtensions，所以落在 Utils.cs:30。rg -w Inverse 全项目 100 行命中，排除 Quaternion.Inverse / Matrix4x4.Inverse / FbxQuaternion.Inverse / BallPhysics 的 Inverse(CurveVector) / 注释后，Vector3 版本的引用是 UIParticle.cs 的 1055、1104、1131，UIParticle.UITK.cs:298，UIParticleAttractor.cs 的 187、189、196、203，UIParticleRenderer.cs 的 888、889、954、962，共 12 处（这些文件都 using Coffee.UIParticleExtensions）'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs', line = 30, anchor = 'public static Vector3 Inverse(this Vector3 self)' }]
+refs = 12
+
+[[case]]
+id = "m-extension-02"
+category = "extension"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.cs'
+line = 1344
+col = 44
+token = 'GetScaled'
+anchor = 'var baseScale = scale3DForCalc.GetScaled(parentScale);'
+why = '自定义扩展方法 GetScaled 在两个命名空间各有 3 个重载（共 6 处同名声明），既要按 using 选命名空间又要按实参个数选重载'
+source = '人工阅读：Utils.cs（Coffee.UIParticleExtensions）38/44/51 行与 Vector3Extensions.cs（Coffee.UIParticleInternal）15/21/28 行是两套同签名重载；UIParticle.RT.cs 只 using Coffee.UIParticleExtensions，单实参对应 Utils.cs:38。rg -w GetScaled 全项目 26 行命中，去掉 6 个声明后共 20 处调用：UIParticleRenderer.cs:887 跨行传了 3 个实参（888-890）属 3 参重载，UIParticleAttractor.cs 189 与 203 是 2 参，其余 17 处是单实参（UIParticle.cs:385，UIParticle.UITK.cs 297/298，UIParticle.RT.cs 1344/1349/1611/1616，UIParticleRenderer.cs 390/526/674/682/731/843/850/895/954/962）'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs', line = 38, anchor = 'public static Vector3 GetScaled(this Vector3 self, Vector3 other1)' }]
+refs = 17
+
+[[case]]
+id = "m-extension-03"
+category = "extension"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleAttractor.cs'
+line = 189
+col = 33
+token = 'GetScaled'
+anchor = 'dstPos = dstPos.GetScaled(inverseScale, scale3d.Inverse());'
+why = '同一行上既有 2 实参的 GetScaled 又有 Inverse，必须挑中 3 个 GetScaled 重载里的 2 参那个（并且是 Coffee.UIParticleExtensions 的那一套）'
+source = '人工阅读：2 实参匹配 Utils.cs:44 的 GetScaled(this Vector3, Vector3, Vector3)；UIParticleAttractor.cs:2 using Coffee.UIParticleExtensions，排除 Vector3Extensions.cs:21 的同签名版本。rg -w GetScaled 的 20 处调用逐条数实参后，2 实参的只有 UIParticleAttractor.cs 的 189 与 203（UIParticleRenderer.cs:887 跨 888-890 行传了 3 个实参，属 51 行的 3 参重载）'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs', line = 44, anchor = 'public static Vector3 GetScaled(this Vector3 self, Vector3 other1, Vector3 other2)' }]
+refs = 2
+
+[[case]]
+id = "m-extension-04"
+category = "extension"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRenderer.cs'
+line = 390
+col = 76
+token = 'IsVisible'
+anchor = '|| !transform.lossyScale.GetScaled(_parent.scale3DForCalc).IsVisible() // Scale is not visible.'
+why = '扩展方法接在另一个扩展方法的返回值后面；IsVisible 这个名字在项目里还有 Type.IsVisible 与一堆 bool IsVisible 属性'
+source = '人工阅读：GetScaled 返回 Vector3，所以 IsVisible 绑定到 Vector3 的扩展方法；UIParticleRenderer.cs:16 using Coffee.UIParticleExtensions，落在 Utils.cs:59，排除 Vector3Extensions.cs:36 的同签名版本。rg -w IsVisible 在 Assets+Packages+Library/PackageCache 的命中里，除两处声明外只有 UIParticleRenderer.cs:390 调用的是 Vector3 版本，其余都是 collab-proxy 的 bool IsVisible 属性与 Type.IsVisible'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs', line = 59, anchor = 'public static bool IsVisible(this Vector3 self)' }]
+refs = 1
+
+[[case]]
+id = "m-extension-05"
+category = "extension"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs'
+line = 78
+col = 62
+token = 'PreloadedProjectSettings'
+anchor = '.Select(AssetDatabase.LoadAssetAtPath<PreloadedProjectSettings>)'
+why = 'LINQ：光标在传给 Select 的方法组的泛型实参上，而 PreloadedProjectSettings 这个名字在同一文件里还有一个泛型版本 PreloadedProjectSettings<T>'
+source = '人工阅读：同文件 14 行是非泛型 PreloadedProjectSettings，128 行是 PreloadedProjectSettings<T>；这里没有写类型实参，所以是非泛型的那个（14 行）。该行处于 #if UNITY_EDITOR 内，Coffee.UIParticle.csproj 的 DefineConstants 含 UNITY_EDITOR，属于生效分支'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs', line = 14, anchor = 'public abstract class PreloadedProjectSettings : ScriptableObject' }]
+refs_include = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs', line = 78, anchor = '.Select(AssetDatabase.LoadAssetAtPath<PreloadedProjectSettings>)' }]
+
+[[case]]
+id = "m-extension-06"
+category = "extension"
+file = 'Packages/com.unity.shadergraph/Editor/Drawing/Views/MaterialGraphView.cs'
+line = 808
+col = 68
+token = 'node'
+anchor = 'var node = selection.OfType<IShaderNodeView>().First().node;'
+why = 'LINQ：成员类型要经 OfType<T>() 再经 First() 两层泛型推导才得到 IShaderNodeView；node 这个成员名在 shadergraph 里有 5 处同名声明，同一行左边还有一个叫 node 的局部变量'
+source = '人工阅读：OfType<IShaderNodeView>() 得到 IEnumerable<IShaderNodeView>，First() 得到 IShaderNodeView，其 node 属性声明在 IShaderNodeView.cs:14；rg -w node 的属性声明还有 MaterialNodeView.cs:342、PropertyNodeView.cs:77、RedirectNodeView.cs:62、ShaderStringBuilder.cs:13，都是同名但不同类型。Assets 下项目自身代码几乎不用 System.Linq（全仓只有 2 个文件 using System.Linq），所以 LINQ 用例取自同样被索引的 Packages 源码'
+[case.expect]
+defs = [{ file = 'Packages/com.unity.shadergraph/Editor/Drawing/Views/IShaderNodeView.cs', line = 14, anchor = 'AbstractMaterialNode node { get; }' }]
+refs_include = [
+    { file = 'Packages/com.unity.shadergraph/Editor/Drawing/Views/MaterialGraphView.cs', line = 808, anchor = 'var node = selection.OfType<IShaderNodeView>().First().node;' },
+    { file = 'Packages/com.unity.shadergraph/Editor/Drawing/Views/MaterialGraphView.cs', line = 823, anchor = 'if (selection.OfType<IShaderNodeView>().First().node.documentationURL == null)' },
+]
+
+[[case]]
+id = "m-extension-07"
+category = "extension"
+file = 'Packages/com.unity.shadergraph/Editor/Generation/Processors/PropertyCollector.cs'
+line = 257
+col = 26
+token = 'referenceName'
+anchor = 'if (prop.referenceName != null)'
+why = 'LINQ：prop 的类型来自 foreach (var prop in properties.OfType<Texture2DShaderProperty>())，而 referenceName 还要沿 Texture2DShaderProperty 到 AbstractShaderProperty<T> 到 ShaderInput 的继承链才找得到'
+source = '人工阅读：Texture2DShaderProperty 声明为 AbstractShaderProperty<SerializableTexture> 的子类（Texture2DShaderProperty.cs:11），referenceName 的唯一属性声明在 ShaderInput.cs:144；rg -w referenceName 另有 ShaderGraphMetadata.cs 13/25、KeywordEntry.cs:11、PassDescriptor.cs:8、KeywordDescriptor.cs:7、OutputMetadata.cs:29 等同名字段，都属于别的类型。引用数远超 20，只断言关键位置'
+[case.expect]
+defs = [{ file = 'Packages/com.unity.shadergraph/Editor/Data/Graphs/ShaderInput.cs', line = 144, anchor = 'public string referenceName' }]
+refs_include = [{ file = 'Packages/com.unity.shadergraph/Editor/Generation/Processors/PropertyCollector.cs', line = 257, anchor = 'if (prop.referenceName != null)' }]
+
+# ---------------------------------------------------------------- 泛型
+
+[[case]]
+id = "m-generic-01"
+category = "generic"
+file = 'Assets/Football/Editor/ArtMigration/Assemblies/ArtObjectAssemblyBuilder.cs'
+line = 68
+col = 57
+token = 'Configure'
+anchor = 'root.AddComponent<GrfGoalNetView>().Configure(sourceObject,'
+why = '直接在 AddComponent<T>() 的返回值上取成员，T 必须替换成项目类型 GrfGoalNetView 才行；Configure 在项目里有 18 处同名声明'
+source = '人工阅读：AddComponent<GrfGoalNetView>() 返回 GrfGoalNetView，该类唯一的 Configure 在 GrfGoalNetView.cs:21（三参 GrfObjectInstance/MeshFilter[]/float）；rg -w Configure 的其余声明分属 GrfSceneElement（两个重载）、GrfObjectInstance、GrfLightParameters、FootballArtCatalog、GrfSourceRenderAssets 等，已逐个排除'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Presentation/Netting/GrfGoalNetView.cs', line = 21, anchor = 'public void Configure(GrfObjectInstance sourceObject, MeshFilter[] meshes, float halfLength)' }]
+refs_include = [{ file = 'Assets/Football/Editor/ArtMigration/Assemblies/ArtObjectAssemblyBuilder.cs', line = 68, anchor = 'root.AddComponent<GrfGoalNetView>().Configure(sourceObject,' }]
+
+[[case]]
+id = "m-generic-02"
+category = "generic"
+file = 'Assets/Football/Editor/ArtMigration/Assemblies/ArtObjectAssemblyBuilder.cs'
+line = 95
+col = 62
+token = 'Configure'
+anchor = 'light.AddComponent<GrfLightParameters>().Configure(new Color((float)element.color[0],'
+why = '同一个文件里 56、64、68、95 四行都写 Configure，接收者分别是四个不同的项目组件类型，只有展开 AddComponent<T> 才分得清'
+source = '人工阅读：AddComponent<GrfLightParameters>() 返回 GrfLightParameters，其 Configure(Color, float, bool, bool) 在 GrfLightParameters.cs:19；同文件 56 行是 GrfSceneElement.Configure、64 行是 GrfObjectInstance.Configure、68 行是 GrfGoalNetView.Configure，都是同名干扰项'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Presentation/SceneObjects/GrfLightParameters.cs', line = 19, anchor = 'public void Configure(Color color, float radius, bool directional, bool shadow)' }]
+refs_include = [{ file = 'Assets/Football/Editor/ArtMigration/Assemblies/ArtObjectAssemblyBuilder.cs', line = 95, anchor = 'light.AddComponent<GrfLightParameters>().Configure(new Color((float)element.color[0],' }]
+
+[[case]]
+id = "m-generic-03"
+category = "generic"
+file = 'Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs'
+line = 35
+col = 22
+token = 'Dispose'
+anchor = 'view.Dispose();'
+why = 'view 由 var view = root.AddComponent<GrfPitchTextureView>() 推断而来；Dispose 是全项目最泛滥的名字，有 128 处同名声明'
+source = '人工阅读：26 行 AddComponent<GrfPitchTextureView>() 返回 GrfPitchTextureView，该类实现 IDisposable，自身的 Dispose 在同文件 146 行；184 行 void OnDestroy() => Dispose(); 是同一方法的另一处引用。rg -w Dispose 的其余 127 处声明属别的类型，不可能靠名字区分'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs', line = 146, anchor = 'public void Dispose()' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs', line = 35, anchor = 'view.Dispose();' },
+    { file = 'Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs', line = 184, anchor = 'void OnDestroy() => Dispose();' },
+]
+
+[[case]]
+id = "m-generic-04"
+category = "generic"
+file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs'
+line = 262
+col = 33
+token = 'NextPeriodic'
+anchor = 'if (IsDue(spawn.NextPeriodic, time)) periodic.Add(spawn);'
+why = 'spawn 来自 foreach (var spawn in m_Spawns.Values)，要把 Dictionary<InstanceId, SpawnedEntityState> 的值类型参数替换出来；NextPeriodic 这个名字在 BuffInstance 上也有一份'
+source = '人工阅读：m_Spawns 声明为 Dictionary<InstanceId, SpawnedEntityState>（SpawnModule.cs:20），Values 的元素是 SpawnedEntityState，其 NextPeriodic 在 SpawnedEntityState.cs:44；rg -w NextPeriodic 共 12 行命中，另一份声明是 BuffInstance.cs:15，BuffModule.cs 的 42/466/491/501/734 行都是 BuffInstance 的那一份，已排除。SpawnedEntityState.NextPeriodic 的引用是 SpawnModule.cs 的 59、262、278 与 SpawnedEntityState.cs:25，共 4 处'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnedEntityState.cs', line = 44, anchor = 'internal LogicTime? NextPeriodic { get; set; }' }]
+refs = 4
+
+[[case]]
+id = "m-generic-05"
+category = "generic"
+file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs'
+line = 274
+col = 56
+token = 'Definition'
+anchor = 'DispatchOrQueue(spawn, time, spawn.Definition.Triggers.Periodic, FilterTargets(spawn),'
+why = 'spawn 来自 foreach (var spawn in periodic)，periodic 是 List<SpawnedEntityState>；Definition 这个成员名在项目里有 8 处以上同名声明'
+source = '人工阅读：258 行 var periodic = new List<SpawnedEntityState>()，所以 spawn 是 SpawnedEntityState，Definition 在 SpawnedEntityState.cs:37；rg 出的其余 Definition 属性属 SpawnSnapshot、SkillTimelineInstance、CreateSpawnAction、ApplyBuffAction、MatchSkillStart、SpawnBuffCondition、SkillTimelineValidationException 等类型，已排除。引用数较多，只断言关键位置'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnedEntityState.cs', line = 37, anchor = 'internal SpawnDefinition Definition { get; }' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs', line = 274, anchor = 'DispatchOrQueue(spawn, time, spawn.Definition.Triggers.Periodic, FilterTargets(spawn),' },
+    { file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs', line = 332, anchor = 'var conditions = spawn.Definition.SelfConditions;' },
+]
+
+[[case]]
+id = "m-generic-06"
+category = "generic"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Internal/Extensions/ComponentExtensions.cs'
+line = 21
+col = 47
+token = 'Rent'
+anchor = 'var results = InternalListPool<T>.Rent();'
+why = '项目自定义泛型静态类的成员访问：Rent 在项目里有 4 处声明，其中 InternalListPool<T> 自己就有两份（分别在 #if 的生效侧与不生效侧）'
+source = '人工阅读：InternalListPool<T> 在 ObjectPool.cs:106，其 Rent 有两份——113 行在 #if UNITY_2021_1_OR_NEWER 内、139 行在 #else 内；Coffee.UIParticle.csproj 的 DefineConstants 含 UNITY_2021_1_OR_NEWER，所以生效的是 113 行。另两处 Rent 是 InternalObjectPool<T> 的实例方法（ObjectPool.cs 25、71）。rg -w Rent 在 Assets 的调用只有 ComponentExtensions.cs:21 与 FastAction.cs:26（后者是 s_NodePool.Rent，属 InternalObjectPool），所以这里引用数为 1'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/Internal/Utilities/ObjectPool.cs', line = 113, anchor = 'public static List<T> Rent()' }]
+refs = 1
+
+[[case]]
+id = "m-generic-07"
+category = "generic"
+file = 'Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs'
+line = 138
+col = 28
+token = 'Handle'
+anchor = 'active.Handle.Dispose();'
+why = 'active 来自 foreach (var active in m_Active.Values)，需要把 Dictionary<InstanceId, ActivePlayback> 的值类型取出来；Handle 这个成员名在 SkillTimelineInstance 里还有一份类型完全不同的声明'
+source = '人工阅读：m_Active 声明为 Dictionary<InstanceId, ActivePlayback>（SkillPlaybackConsumer.cs:15），ActivePlayback 是同文件的嵌套类，其 Handle 在 154 行；rg -w Handle 的另一处属性声明是 SkillTimelineInstance.cs:267 的 InstanceId? Handle，已排除。同文件 85、106 行是同一个 Handle 的另外两处引用'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs', line = 154, anchor = 'public ISkillPlaybackHandle Handle { get; }' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs', line = 138, anchor = 'active.Handle.Dispose();' },
+    { file = 'Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs', line = 106, anchor = 'pair.Value.Handle.Dispose();' },
+]
+
+# ---------------------------------------------------------------- 继承与重写
+
+[[case]]
+id = "m-inheritance-01"
+category = "inheritance"
+file = 'Assets/Football/Runtime/Core/FootballActions/Execution/FootballActionProcessor.cs'
+line = 186
+col = 34
+token = 'LastTouchBias'
+anchor = 'float own = m_Player.LastTouchBias(1500);'
+why = '经抽象基类引用调用，期望落在基类的抽象声明而不是任何一个 override；LastTouchBias 在项目里有 12 处同名声明（两个接口、两个抽象类、若干 override 与一个委托属性）'
+source = '人工阅读：m_Player 字段声明为 FootballPlayerAccess（FootballActionProcessor.cs:9），其抽象 LastTouchBias 在 FootballPlayerAccess.cs:25；rg -w LastTouchBias 全项目逐条看过：ICollisionPlayerSignals.cs:13 与 IFootballPlayerSignals.cs:15 是接口声明，CollisionBallAccess.cs:14 是另一个抽象类，MovementFootballPlayer.cs:51 等是 override，BodyBallCollisionProcessor 里的 ball./player.Signals. 调用属 CollisionBallAccess/ICollisionPlayerSignals，FootballPlanningInputs.cs:13 是同名委托属性。以 FootballPlayerAccess 为静态类型的调用只有这一处'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/FootballActions/Access/FootballPlayerAccess.cs', line = 25, anchor = 'public abstract float LastTouchBias(int windowMs);' }]
+refs = 1
+
+[[case]]
+id = "m-inheritance-02"
+category = "inheritance"
+file = 'Assets/Football/Runtime/Core/FootballActions/Execution/FootballActionProcessor.cs'
+line = 187
+col = 37
+token = 'TeamLastTouchBias'
+anchor = 'float opponent = m_Ball.TeamLastTouchBias(1 - m_Player.TeamId, 240);'
+why = '经抽象基类 FootballBallAccess 调用；TeamLastTouchBias 有 13 处同名声明，其中 CollisionBallAccess 也有一个同签名的抽象方法，PossessionOwner 还有一个 3 参同名方法'
+source = '人工阅读：m_Ball 字段声明为 FootballBallAccess（FootballActionProcessor.cs:12），抽象声明在 FootballBallAccess.cs:21；rg -w TeamLastTouchBias 逐条核对：CollisionBallAccess.cs:13 是另一个抽象类，PossessionOwner.cs:322 是 3 参重载，MatchBallAccess.cs:34 / CombinedBallAccess.cs:19 / FootballCollisionBallAdapter.cs:37 等是 override，BodyBallCollisionProcessor 的 ball.TeamLastTouchBias 接收者是 CollisionBallAccess。引用点类型不易穷举，只断言关键位置'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/FootballActions/Access/FootballBallAccess.cs', line = 21, anchor = 'public abstract float TeamLastTouchBias(int teamId, int windowMs);' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/FootballActions/Execution/FootballActionProcessor.cs', line = 187, anchor = 'float opponent = m_Ball.TeamLastTouchBias(1 - m_Player.TeamId, 240);' }]
+
+[[case]]
+id = "m-inheritance-03"
+category = "inheritance"
+file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs'
+line = 335
+col = 40
+token = 'IsSatisfied'
+anchor = 'if (!conditions[index].IsSatisfied(m_Buffs, spawn.Entity)) return false;'
+why = '经 IReadOnlyList<SpawnCondition> 的元素调用抽象方法，期望落在抽象声明而不是唯一的那个 override'
+source = '人工阅读：conditions 来自 spawn.Definition.SelfConditions，元素类型是 SpawnCondition，抽象声明在 SpawnCondition.cs:7；唯一 override 在 SpawnBuffCondition.cs:33。rg -w IsSatisfied 全项目 14 行命中：两处声明、SpawnModule.cs 335/346 两处经基类调用，其余 10 处在 SpawnBuffConditionTests.cs，那里的接收者 condition 是 new SpawnBuffCondition(...)（测试第 36 行等），绑定的是 override，所以抽象方法的引用是 2 处'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Definitions/SpawnCondition.cs', line = 7, anchor = 'public abstract bool IsSatisfied(IBuffQuery query, EntityId holder);' }]
+refs = 2
+
+[[case]]
+id = "m-inheritance-04"
+category = "inheritance"
+file = 'Assets/Football/Runtime/Core/FootballActions/Retention/BallRetentionProcessor.cs'
+line = 34
+col = 18
+token = 'FollowPosition'
+anchor = 'ball.FollowPosition(position);'
+why = '经基类引用调用一个 virtual 方法，项目里同名的还有 PredictedBall.FollowPosition 与 MatchBallAccess 的 override，三者签名完全一样'
+source = '人工阅读：ball 是方法参数，声明类型 FootballBallAccess（BallRetentionProcessor.cs:25），virtual 声明在 FootballBallAccess.cs:27；rg -w FollowPosition 全项目 7 行命中——PredictedBall.cs:227 与 MatchBallAccess.cs:56 是另外两处声明，ExactBallTimingTests.cs 244/568 的接收者由 Create() 返回 PredictedBall（该文件 15 行），MatchBallAccess.cs:58 调的是 m_World.Ball（PredictedBall）。所以 FootballBallAccess.FollowPosition 的引用只有这一处'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/FootballActions/Access/FootballBallAccess.cs', line = 27, anchor = 'public virtual void FollowPosition(V3 position) => SetPosition(position);' }]
+refs = 1
+
+[[case]]
+id = "m-inheritance-05"
+category = "inheritance"
+file = 'Assets/Football/Runtime/Core/MatchComposition/Ball/MatchBallAccess.cs'
+line = 58
+col = 26
+token = 'FollowPosition'
+anchor = 'm_World.Ball.FollowPosition(position);'
+why = '在 override void FollowPosition 的函数体里调同名方法，但接收者是另一个类型（PredictedBall），既不是基类声明也不是自己'
+source = '人工阅读：MatchWorld.Ball 声明为 PredictedBall，其 FollowPosition 在 PredictedBall.cs:227；外层 56 行是 MatchBallAccess 对 FootballBallAccess.cs:27 的 override，是最容易误落的干扰项。PredictedBall.FollowPosition 的引用：MatchBallAccess.cs:58 与 ExactBallTimingTests.cs 的 244、568（该文件 Create() 返回 PredictedBall），共 3 处'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/BallPhysics/Prediction/PredictedBall.cs', line = 227, anchor = 'public void FollowPosition(V3 position)' }]
+refs = 3
+
+[[case]]
+id = "m-inheritance-06"
+category = "inheritance"
+file = 'Assets/Football/Tests/Editor/MatchApplication/MatchApplicationIntegrationTests.cs'
+line = 23
+col = 28
+token = 'EvidenceDirectory'
+anchor = ': base.EvidenceDirectory;'
+why = 'base. 访问被当前类覆盖的虚属性，必须跳到基类声明而不是同文件 16 行自己的 override；项目里还有一个同名的静态属性 MatchAcceptanceFixture.EvidenceDirectory'
+source = '人工阅读：MatchApplicationIntegrationTests 继承 MatchApplicationTestEvidence（该文件 13 行），虚属性声明在 MatchApplicationTestEvidence.cs:8；rg -w EvidenceDirectory 命中的大量 MatchAcceptanceFixture.EvidenceDirectory 是另一个静态属性，已排除。基类内部 14、15 行的无限定引用绑定的就是这个虚属性'
+[case.expect]
+defs = [{ file = 'Assets/Football/Tests/Editor/MatchApplication/MatchApplicationTestEvidence.cs', line = 8, anchor = 'protected virtual string EvidenceDirectory => MatchApplicationTests.Evidence;' }]
+refs_include = [
+    { file = 'Assets/Football/Tests/Editor/MatchApplication/MatchApplicationIntegrationTests.cs', line = 23, anchor = ': base.EvidenceDirectory;' },
+    { file = 'Assets/Football/Tests/Editor/MatchApplication/MatchApplicationTestEvidence.cs', line = 14, anchor = 'Directory.CreateDirectory(EvidenceDirectory);' },
+]
+
+# ---------------------------------------------------------------- 接口实现
+
+[[case]]
+id = "m-interface-01"
+category = "interface"
+file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs'
+line = 154
+col = 60
+token = 'IsActive'
+anchor = 'if (player.Id.Team == team && m_Source.IsActive(player.Id))'
+why = '经接口字段调用，期望落在接口声明；IsActive 是全项目最混乱的名字之一，既有十几个 bool IsActive 属性，又有 ITeamAiSource / IRestartSource 两个同签名的接口方法，还有一处显式接口实现'
+source = '人工阅读：m_Source 字段声明为 IPerceptionSource（MentalImageHistory.cs:8），IsActive(RulePlayerId) 声明在 IPerceptionSource.cs:15；rg -w IsActive 逐条核对：ITeamAiSource.cs:21 与 IRestartSource.cs:20 是另两个接口的同签名方法，CombinedMotionStages.Perception.cs:23 是隐式实现，AiHarness.cs:133 是显式实现，PlayerRuntime.cs:14 等是同名布尔属性。同文件 222 行是同一接口方法的另一处引用'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Perception/IPerceptionSource.cs', line = 15, anchor = 'bool IsActive(RulePlayerId id);' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs', line = 154, anchor = 'if (player.Id.Team == team && m_Source.IsActive(player.Id))' },
+    { file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs', line = 222, anchor = 'if (player.Id.Team != team || !m_Source.IsActive(player.Id))' },
+]
+
+[[case]]
+id = "m-interface-02"
+category = "interface"
+file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs'
+line = 219
+col = 33
+token = 'ActivePlayers'
+anchor = 'var live = m_Source.ActivePlayers(team) ?? throw new InvalidOperationException("Missing active roster.");'
+why = '经接口调用；ActivePlayers 这个名字在 ITeamAiSource 上有一个签名相同（int team）但返回类型不同的方法，另外还有 PassAssistanceInput.ActivePlayers 这个同名属性'
+source = '人工阅读：m_Source 是 IPerceptionSource，ActivePlayers(int) 声明在 IPerceptionSource.cs:12（返回 IReadOnlyList<PerceivedPlayer>）；rg -w ActivePlayers 核对：ITeamAiSource.cs:17 返回 IReadOnlyList<TacticalPlayer>（TeamAiController.cs:251 用的是它），PassAssistanceInput.cs:21 是同名属性，AiHarness.cs:93 与 CombinedMotionStages.Perception.cs:8 是实现'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Perception/IPerceptionSource.cs', line = 12, anchor = 'IReadOnlyList<PerceivedPlayer> ActivePlayers(int team);' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs', line = 219, anchor = 'var live = m_Source.ActivePlayers(team) ?? throw new InvalidOperationException("Missing active roster.");' }]
+
+[[case]]
+id = "m-interface-03"
+category = "interface"
+file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Definitions/SpawnBuffCondition.cs'
+line = 37
+col = 31
+token = 'Read'
+anchor = 'var state = query.Read(holder, Definition);'
+why = '经接口参数调用，期望落在 IBuffQuery 的声明；Read 全项目 69 处同名声明，BuffModule 等实现类上也各有一个同签名的 Read'
+source = '人工阅读：query 是参数，声明类型 IBuffQuery（SpawnBuffCondition.cs:33），其唯一成员 Read(EntityId, DefinitionId) 在 IBuffQuery.cs:7；BuffModule.cs:87 的 public BuffState Read(EntityId, DefinitionId) 是实现，是最容易误落的同名项'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/SkillSystem/Contracts/Buffs/IBuffQuery.cs', line = 7, anchor = 'BuffState Read(EntityId holder, DefinitionId definition);' }]
+refs_include = [{ file = 'Assets/Football/Runtime/SkillSystem/SpawnedEntities/Definitions/SpawnBuffCondition.cs', line = 37, anchor = 'var state = query.Read(holder, Definition);' }]
+
+[[case]]
+id = "m-interface-04"
+category = "interface"
+file = 'Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs'
+line = 211
+col = 56
+token = 'GetEnumerator'
+anchor = 'IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();'
+why = '显式接口实现的转发行：同一行左边是 IEnumerable.GetEnumerator 的显式实现声明，右边的调用必须绑定到 199 行那个公开的泛型版本，否则就是无限递归'
+source = '人工阅读：EntryView 实现 IReadOnlyList<string>，199 行 public IEnumerator<string> GetEnumerator() 是公开成员；211 行箭头右侧无限定调用在类内查找，只会找到 199 行的公开版本（显式实现不参与非接口调用的名称查找）'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs', line = 199, anchor = 'public IEnumerator<string> GetEnumerator()' }]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs', line = 211, anchor = 'IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();' }]
+
+[[case]]
+id = "m-interface-05"
+category = "interface"
+file = 'Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs'
+line = 107
+col = 27
+token = 'CapturePerceptionTrajectory'
+anchor = 'return source.CapturePerceptionTrajectory();'
+why = 'source 是上一行 is 模式产生的变量（m_Source is IPerceptionTrajectorySource source），类型只能从模式匹配得到；项目里还有 MatchWorld 上的同名实现'
+source = '人工阅读：106 行 if (!(m_Source is IPerceptionTrajectorySource source)) return null; 所以 source 的类型是 IPerceptionTrajectorySource，成员声明在 IPerceptionTrajectorySource.cs:7；rg -w CapturePerceptionTrajectory 全项目仅 3 行：接口声明、这处调用、MatchWorld.cs:21 的隐式实现声明，所以接口成员的引用数为 1'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/Perception/IPerceptionTrajectorySource.cs', line = 7, anchor = 'ExactBallPrediction CapturePerceptionTrajectory();' }]
+refs = 1
+
+[[case]]
+id = "m-interface-06"
+category = "interface"
+file = 'Assets/Football/Tests/Editor/PlayerAI/AiHarness.cs'
+line = 133
+col = 32
+token = 'IsActive'
+anchor = 'bool IPerceptionSource.IsActive(RulePlayerId id) => !Inactive.Contains(id);'
+why = '显式接口实现本身：同一个类里 20 行还有一个 public bool IsActive 属性，按名字解析必然和它、和接口声明混在一起'
+source = '人工阅读：这一行是 AiHarness 对 IPerceptionSource.IsActive 的显式实现，定义就是它自己（AiHarness.cs:133）；显式接口实现只能经接口调用，不能按名字引用，所以它自身的引用数为 0（经 IPerceptionSource 的调用引用的是 IPerceptionSource.cs:15）。同名干扰项：AiHarness.cs:20 的 public bool IsActive 属性、IPerceptionSource.cs:15、ITeamAiSource.cs:21、IRestartSource.cs:20、CombinedMotionStages.Perception.cs:23'
+[case.expect]
+defs = [{ file = 'Assets/Football/Tests/Editor/PlayerAI/AiHarness.cs', line = 133, anchor = 'bool IPerceptionSource.IsActive(RulePlayerId id) => !Inactive.Contains(id);' }]
+refs = 0
+
+# ---------------------------------------------------------------- partial
+
+[[case]]
+id = "m-partial-01"
+category = "partial"
+file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs'
+line = 18
+col = 40
+token = 'CombinedMotionStages'
+anchor = 'internal CombinedMotionCapture(CombinedMotionStages stages, MotionCaptureGroup group,'
+why = 'partial 类型的引用：CombinedMotionStages 分布在 4 个文件里，正确答案必须同时列出全部 4 处声明'
+source = '人工阅读 + rg -n partial class CombinedMotionStages：CombinedMotionStages.cs:7（带基类型列表）、CombinedMotionStages.Processing.cs:6、CombinedMotionStages.Perception.cs:6、CombinedMotionStages.ActiveRoster.cs:5，四处都是同一个类型的声明，没有第五处'
+[case.expect]
+defs = [
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.cs', line = 7, anchor = 'internal sealed partial class CombinedMotionStages : IMatchStepStages, IMatchProcessingScopeOwner, IPerceptionSource' },
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.ActiveRoster.cs', line = 5, anchor = 'internal sealed partial class CombinedMotionStages' },
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Perception.cs', line = 6, anchor = 'internal sealed partial class CombinedMotionStages' },
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs', line = 6, anchor = 'internal sealed partial class CombinedMotionStages' },
+]
+refs_include = [{ file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs', line = 18, anchor = 'internal CombinedMotionCapture(CombinedMotionStages stages, MotionCaptureGroup group,' }]
+
+[[case]]
+id = "m-partial-02"
+category = "partial"
+file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs'
+line = 39
+col = 28
+token = 'ActiveCollisionPlayers'
+anchor = 'm_Body.Process(ActiveCollisionPlayers(), m_CollisionBall, Time, records.Add);'
+why = 'partial 类型的跨文件私有成员：无限定调用，声明在另一个 partial 文件里'
+source = '人工阅读：ActiveCollisionPlayers 只在 CombinedMotionStages.ActiveRoster.cs:7 声明（私有，无 override）；rg -w ActiveCollisionPlayers 全项目 3 行命中：该声明与 CombinedMotionStages.Processing.cs 的 39、175 两处调用，所以引用数为 2'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.ActiveRoster.cs', line = 7, anchor = 'IReadOnlyList<CollisionPlayerAccess> ActiveCollisionPlayers()' }]
+refs = 2
+
+[[case]]
+id = "m-partial-03"
+category = "partial"
+file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs'
+line = 15
+col = 40
+token = 'History'
+anchor = 'public int MentalImageCount => History.Count;'
+why = 'partial 类型的跨文件字段：History 在主文件里声明，这里是另一个 partial 文件中的无限定引用；History 这个名字在 MatchWorld、ElizaController 等类型上也有'
+source = '人工阅读：CombinedMotionStages.cs:24 internal readonly MentalImageHistory History; 是唯一声明，Processing.cs 属同一个 partial 类，所以无限定的 History 绑定到它。rg -w History 在项目里还命中 m_World.History、m_Source.Perception 等别的类型成员，已排除；引用较多，只断言关键位置'
+[case.expect]
+defs = [{ file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.cs', line = 24, anchor = 'internal readonly MentalImageHistory History;' }]
+refs_include = [
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs', line = 15, anchor = 'public int MentalImageCount => History.Count;' },
+    { file = 'Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs', line = 28, anchor = 'Images = stages.History.Capture();' },
+]
+
+[[case]]
+id = "m-partial-04"
+category = "partial"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.cs'
+line = 921
+col = 39
+token = 'UIParticle'
+anchor = 'var uip = go.GetComponent<UIParticle>();'
+why = 'partial 类型同时出现在泛型实参位置：UIParticle 分布在 6 个文件里，正确答案要把 6 处声明都列出来'
+source = '人工阅读 + rg -n class UIParticle（限定词边界）：UIParticle.cs:30（带基类型列表）、UIParticle.RT.cs:135、UIParticle.RT.Bounds.cs:19、UIParticle.RT.Rendering.cs:15、UIParticle.UITK.cs:19、UIParticle.UVShare.cs:18，共 6 处，没有第七处（UIParticleRenderer / UIParticleAttractor 等是别的类型名）'
+[case.expect]
+defs = [
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs', line = 30, anchor = 'public partial class UIParticle : MaskableGraphic, ISerializationCallbackReceiver' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.cs', line = 135, anchor = 'public partial class UIParticle' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Bounds.cs', line = 19, anchor = 'public partial class UIParticle' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs', line = 15, anchor = 'public partial class UIParticle' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.UITK.cs', line = 19, anchor = 'public partial class UIParticle' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.UVShare.cs', line = 18, anchor = 'public partial class UIParticle' },
+]
+refs_include = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.cs', line = 921, anchor = 'var uip = go.GetComponent<UIParticle>();' }]
+
+[[case]]
+id = "m-partial-05"
+category = "partial"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs'
+line = 36
+col = 18
+token = 'useRTSampling'
+anchor = 'if (!useRTSampling)'
+why = 'partial 类型的跨文件属性：无限定引用，声明在 UIParticle.cs 里；同名的 useRTSampling 在 UIParticleStrategyBDebugRect 的嵌套结构体上还有一个字段，UguiParticleView 里还有多个同名局部变量与参数'
+source = '人工阅读：UIParticle.cs:222 public bool useRTSampling 是 UIParticle 这个 partial 类的唯一声明；rg -n "bool useRTSampling" 另外命中 UIParticleStrategyBDebugRect.cs:382（嵌套结构体字段）与 UguiParticleView.cs 的 1912/1918/1933/2340（方法参数），都是同名干扰项。引用较多，只断言关键位置'
+[case.expect]
+defs = [{ file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs', line = 222, anchor = 'public bool useRTSampling' }]
+refs_include = [
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs', line = 36, anchor = 'if (!useRTSampling)' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs', line = 327, anchor = 'if (useRTSampling && !UITKCanvasFreeBakeMesh)' },
+]
+
+[[case]]
+id = "m-partial-06"
+category = "partial"
+file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UIParticleUITKTicker.cs'
+line = 34
+col = 38
+token = 'UguiParticleView'
+anchor = 'private static readonly List<UguiParticleView> s_Views = new List<UguiParticleView>();'
+why = 'partial 类型作为泛型实参出现，同一行里还出现两次；正确答案要同时列出 2 处 partial 声明'
+source = '人工阅读 + rg -n partial class UguiParticleView：UguiParticleView.cs:24（带基类 VisualElement）与 UguiParticleView.Geometry.cs:10，共 2 处'
+[case.expect]
+defs = [
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.cs', line = 24, anchor = 'public partial class UguiParticleView : VisualElement' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.Geometry.cs', line = 10, anchor = 'public partial class UguiParticleView' },
+]
+refs_include = [
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UIParticleUITKTicker.cs', line = 34, anchor = 'private static readonly List<UguiParticleView> s_Views = new List<UguiParticleView>();' },
+    { file = 'Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UIParticleUITKTicker.cs', line = 41, anchor = 'private static readonly List<UguiParticleView> s_RenderableViews = new List<UguiParticleView>(64);' },
+]

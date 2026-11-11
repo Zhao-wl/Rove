@@ -1,0 +1,4523 @@
+{
+  "format": 1,
+  "source": "l2",
+  "sources": [
+    "medium：完整语义索引（格式 v2，索引进程 1.0.2.0，7718 个文件）",
+    "large：完整语义索引（格式 v2，索引进程 1.0.2.0，21221 个文件）"
+  ],
+  "skipped": [],
+  "summary": [
+    {
+      "project": "large",
+      "category": "var",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "chain",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "overload",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "extension",
+      "pass": 7,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "generic",
+      "pass": 7,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "inheritance",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "interface",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "partial",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "lambda",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "conditional",
+      "pass": 3,
+      "fail": 3,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "external",
+      "pass": 0,
+      "fail": 6,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "local",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "event",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "operator",
+      "pass": 0,
+      "fail": 5,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "indexer",
+      "pass": 0,
+      "fail": 5,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "large",
+      "category": "type_ref",
+      "pass": 10,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "var",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "chain",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "overload",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "extension",
+      "pass": 7,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "generic",
+      "pass": 7,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "inheritance",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "interface",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "partial",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "lambda",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "conditional",
+      "pass": 3,
+      "fail": 3,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "external",
+      "pass": 0,
+      "fail": 6,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "local",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "event",
+      "pass": 6,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "operator",
+      "pass": 0,
+      "fail": 5,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "indexer",
+      "pass": 0,
+      "fail": 5,
+      "stale": 0,
+      "unsupported": 0
+    },
+    {
+      "project": "medium",
+      "category": "type_ref",
+      "pass": 10,
+      "fail": 0,
+      "stale": 0,
+      "unsupported": 0
+    }
+  ],
+  "cases": [
+    {
+      "id": "m-var-01",
+      "project": "medium",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/AnimationSampling/AnimationSampler.cs:15:19",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/AnimationSampling/AnimationIntegerSampleCache.cs:24"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/AnimationSampling/AnimationIntegerSampleCache.cs:24"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void AnimationIntegerSampleCache.Read(AnimationTrack track, int frameCount, int frame, out Q4 orientation, out V3 position) [Football.Core|M:Football.Core.AnimationIntegerSampleCache.Read(Football.Core.AnimationTrack,System.Int32,System.Int32,Football.Core.Q4@,Football.Core.V3@)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-var-02",
+      "project": "medium",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:183:46",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:126"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:126"
+      ],
+      "actual_external": null,
+      "actual_symbol": "string Entry.Read(int offset) [Football.Core|M:Football.Core.SelectionTrace.Entry.Read(System.Int32)]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-var-03",
+      "project": "medium",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Adapters/GoalkeeperElizaSource.cs:147:25",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Records/KeeperTouchHistory.cs:37"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Records/KeeperTouchHistory.cs:37"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void KeeperTouchHistory.Validate(long generation) [Football.Core|M:Football.Core.KeeperTouchHistory.Validate(System.Int64)]",
+      "expected_refs": null,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-var-04",
+      "project": "medium",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchComposition/MatchFormalStep.cs:71:39",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchComposition/Events/MatchExactEvents.cs:31"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchComposition/Events/MatchExactEvents.cs:31"
+      ],
+      "actual_external": null,
+      "actual_symbol": "IReadOnlyList<MatchTimelineEvent> MatchExactEvents.Read() [Football.Core|M:Football.Core.MatchExactEvents.Read]",
+      "expected_refs": null,
+      "actual_refs": 23,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-var-05",
+      "project": "medium",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/LogicalRig/LogicalRigState.cs:134:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/LogicalRigState.cs:138"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/LogicalRigState.cs:138"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void LogicalRigState.Restore(LogicalRigSnapshot snapshot) [Football.Core|M:Football.Core.LogicalRigState.Restore(Football.Core.LogicalRigSnapshot)]",
+      "expected_refs": null,
+      "actual_refs": 5,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-var-06",
+      "project": "medium",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/BodyCollisions/Diagnostics/CollisionDiagnosticPipeline.cs:62:24",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/PlayerMovement/PlayerMovementController.cs:159"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/PlayerMovement/PlayerMovementController.cs:159"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void PlayerMovementController.Process(ActionSelectionContext context, Func<ActionInterrupt, IReadOnlyList<ActionCommand>> commands, Action<PlayerActionScheduler, ActionSelectionContext> football) [Football.Core|M:Football.Core.PlayerMovementController.Process(Football.Core.ActionSelectionContext,System.Func{Football.Core.ActionInterrupt,System.Collections.Generic.IReadOnlyList{Football.Core.ActionCommand}},System.Action{Football.Core.PlayerActionScheduler,Football.Core.ActionSelectionContext})]",
+      "expected_refs": null,
+      "actual_refs": 19,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-chain-01",
+      "project": "medium",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchComposition/MatchSession.cs:66:61",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Players/PlayerRuntime.cs:39"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Players/PlayerRuntime.cs:39"
+      ],
+      "actual_external": null,
+      "actual_symbol": "PlayerAttributeView PlayerRuntime.Read() [Football.Core|M:Football.Core.PlayerRuntime.Read]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-chain-02",
+      "project": "medium",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs:28:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:32"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:32"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MentalImage[] MentalImageHistory.Capture() [Football.Core|M:Football.Core.MentalImageHistory.Capture]",
+      "expected_refs": null,
+      "actual_refs": 18,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-chain-03",
+      "project": "medium",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchComposition/Officials/MatchOfficials.cs:152:41",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:135"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:135"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MentalImage MentalImageHistory.Read(MatchProcessingScope scope, int historyMs) [Football.Core|M:Football.Core.MentalImageHistory.Read(Football.Core.MatchProcessingScope,System.Int32)]",
+      "expected_refs": null,
+      "actual_refs": 26,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-chain-04",
+      "project": "medium",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Possession/SimpleArrivalCalculator.cs:7:73",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Possession/PreparedArrival.cs:23"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Possession/PreparedArrival.cs:23"
+      ],
+      "actual_external": null,
+      "actual_symbol": "TimeToBallResult PreparedArrival.Calculate(V3 target) [Football.Core|M:Football.Core.PreparedArrival.Calculate(Football.Core.V3)]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-chain-05",
+      "project": "medium",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Players/PlayerAttributeView.cs:26:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Players/Fatigue/PlayerFatigueState.cs:42"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Players/Fatigue/PlayerFatigueState.cs:42"
+      ],
+      "actual_external": null,
+      "actual_symbol": "float PlayerFatigueState.Capture() [Football.Core|M:Football.Core.PlayerFatigueState.Capture]",
+      "expected_refs": null,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-chain-06",
+      "project": "medium",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Players/PlayerAttributeView.cs:34:54",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Players/Attributes/PlayerCapabilities.cs:26"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Players/Attributes/PlayerCapabilities.cs:26"
+      ],
+      "actual_external": null,
+      "actual_symbol": "float PlayerCapabilities.Stat(PlayerStat stat) [Football.Core|M:Football.Core.PlayerCapabilities.Stat(Football.Core.PlayerStat)]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-overload-01",
+      "project": "medium",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs:87:17",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs:107"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs:107"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void MatchPoseRigInstance.Apply(MatchPlayerPoseFrame frame, Transform pitch) [Football.Presentation|M:Football.Presentation.MatchPoseRigInstance.Apply(Football.Presentation.MatchPlayerPoseFrame,UnityEngine.Transform)]",
+      "expected_refs": null,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-overload-02",
+      "project": "medium",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/MatchPose/MatchPoseBatch.cs:106:27",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs:70"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/MatchPose/MatchPoseRigInstance.cs:70"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void MatchPoseRigInstance.Apply(MatchPlayerPoseFrame previous, MatchPlayerPoseFrame current, float alpha, Transform pitch) [Football.Presentation|M:Football.Presentation.MatchPoseRigInstance.Apply(Football.Presentation.MatchPlayerPoseFrame,Football.Presentation.MatchPlayerPoseFrame,System.Single,UnityEngine.Transform)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-overload-03",
+      "project": "medium",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchConfiguration/BuiltinMatchScenarios.cs:19:80",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/BuiltinMatchScenarios.cs:21"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/BuiltinMatchScenarios.cs:21"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MatchScenarioDefinition BuiltinMatchScenarios.Build(ScenarioId id, int episode) [Football.Core|M:Football.Core.BuiltinMatchScenarios.Build(Football.Core.ScenarioId,System.Int32)]",
+      "expected_refs": null,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-overload-04",
+      "project": "medium",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs:69:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs:71"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs:71"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int RigDefinition.IndexOf(RigNodeId node) [Football.Core|M:Football.Core.RigDefinition.IndexOf(Football.Core.RigNodeId)]",
+      "expected_refs": null,
+      "actual_refs": 17,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-overload-05",
+      "project": "medium",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/MatchApplication/Interface/MatchHudCallTip.cs:35:13",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/MatchApplication/Interface/MatchHudCallTip.cs:38"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/MatchApplication/Interface/MatchHudCallTip.cs:38"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void MatchHudCallTip.Read(long generation, RefereeCall call, double now) [Football.MatchApplication|M:Football.MatchApplication.MatchHudCallTip.Read(System.Int64,Football.Core.RefereeCall,System.Double)]",
+      "expected_refs": 6,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-overload-06",
+      "project": "medium",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Perception/MentalImage.cs:103:75",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Perception/MentalImage.cs:144"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Perception/MentalImage.cs:144"
+      ],
+      "actual_external": null,
+      "actual_symbol": "PerceivedPlayer MentalImage.Player(long actual, PerceivedPlayer live) [Football.Core|M:Football.Core.MentalImage.Player(System.Int64,Football.Core.PerceivedPlayer)]",
+      "expected_refs": null,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-01",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs:1104:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:30"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:30"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Vector3 Vector3Extensions.Inverse(Vector3 self) [Coffee.UIParticle|M:Coffee.UIParticleExtensions.Vector3Extensions.Inverse(UnityEngine.Vector3)]",
+      "expected_refs": 12,
+      "actual_refs": 12,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-02",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.cs:1344:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:38"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:38"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Vector3 Vector3Extensions.GetScaled(Vector3 self, Vector3 other1) [Coffee.UIParticle|M:Coffee.UIParticleExtensions.Vector3Extensions.GetScaled(UnityEngine.Vector3,UnityEngine.Vector3)]",
+      "expected_refs": 17,
+      "actual_refs": 17,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-03",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleAttractor.cs:189:33",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:44"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:44"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Vector3 Vector3Extensions.GetScaled(Vector3 self, Vector3 other1, Vector3 other2) [Coffee.UIParticle|M:Coffee.UIParticleExtensions.Vector3Extensions.GetScaled(UnityEngine.Vector3,UnityEngine.Vector3,UnityEngine.Vector3)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-04",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRenderer.cs:390:76",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:59"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Utils.cs:59"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool Vector3Extensions.IsVisible(Vector3 self) [Coffee.UIParticle|M:Coffee.UIParticleExtensions.Vector3Extensions.IsVisible(UnityEngine.Vector3)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-05",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:78:62",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:14"
+      ],
+      "actual_external": null,
+      "actual_symbol": "PreloadedProjectSettings [Coffee.UIParticle|T:Coffee.UIParticleInternal.PreloadedProjectSettings]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-06",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Packages/com.unity.shadergraph/Editor/Drawing/Views/MaterialGraphView.cs:808:68",
+      "relocated": false,
+      "expected_defs": [
+        "Packages/com.unity.shadergraph/Editor/Drawing/Views/IShaderNodeView.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Packages/com.unity.shadergraph/Editor/Drawing/Views/IShaderNodeView.cs:14"
+      ],
+      "actual_external": null,
+      "actual_symbol": "AbstractMaterialNode IShaderNodeView.node [Unity.ShaderGraph.Editor|P:UnityEditor.ShaderGraph.IShaderNodeView.node]",
+      "expected_refs": null,
+      "actual_refs": 50,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-extension-07",
+      "project": "medium",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Packages/com.unity.shadergraph/Editor/Generation/Processors/PropertyCollector.cs:257:26",
+      "relocated": false,
+      "expected_defs": [
+        "Packages/com.unity.shadergraph/Editor/Data/Graphs/ShaderInput.cs:144"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Packages/com.unity.shadergraph/Editor/Data/Graphs/ShaderInput.cs:144"
+      ],
+      "actual_external": null,
+      "actual_symbol": "string ShaderInput.referenceName [Unity.ShaderGraph.Editor|P:UnityEditor.ShaderGraph.Internal.ShaderInput.referenceName]",
+      "expected_refs": null,
+      "actual_refs": 190,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-01",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Editor/ArtMigration/Assemblies/ArtObjectAssemblyBuilder.cs:68:57",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/Netting/GrfGoalNetView.cs:21"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/Netting/GrfGoalNetView.cs:21"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void GrfGoalNetView.Configure(GrfObjectInstance sourceObject, MeshFilter[] meshes, float halfLength) [Football.Presentation|M:Football.Presentation.GrfGoalNetView.Configure(Football.Presentation.GrfObjectInstance,UnityEngine.MeshFilter[],System.Single)]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-02",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Editor/ArtMigration/Assemblies/ArtObjectAssemblyBuilder.cs:95:62",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/SceneObjects/GrfLightParameters.cs:19"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/SceneObjects/GrfLightParameters.cs:19"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void GrfLightParameters.Configure(Color color, float radius, bool directional, bool shadow) [Football.Presentation|M:Football.Presentation.GrfLightParameters.Configure(UnityEngine.Color,System.Single,System.Boolean,System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 25,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-03",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:35:22",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:146"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:146"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void GrfPitchTextureView.Dispose() [Football.Presentation|M:Football.Presentation.GrfPitchTextureView.Dispose]",
+      "expected_refs": null,
+      "actual_refs": 11,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-04",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs:262:33",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnedEntityState.cs:44"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnedEntityState.cs:44"
+      ],
+      "actual_external": null,
+      "actual_symbol": "LogicTime? SpawnedEntityState.NextPeriodic [Football.SpawnedEntities|P:Football.SkillSystem.SpawnedEntities.SpawnedEntityState.NextPeriodic]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-05",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs:274:56",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnedEntityState.cs:37"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnedEntityState.cs:37"
+      ],
+      "actual_external": null,
+      "actual_symbol": "SpawnDefinition SpawnedEntityState.Definition [Football.SpawnedEntities|P:Football.SkillSystem.SpawnedEntities.SpawnedEntityState.Definition]",
+      "expected_refs": null,
+      "actual_refs": 11,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-06",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/Extensions/ComponentExtensions.cs:21:47",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/Utilities/ObjectPool.cs:113"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/Utilities/ObjectPool.cs:113"
+      ],
+      "actual_external": null,
+      "actual_symbol": "List<T> InternalListPool<T>.Rent() [Coffee.UIParticle|M:Coffee.UIParticleInternal.InternalListPool`1.Rent]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-generic-07",
+      "project": "medium",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs:138:28",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs:154"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/Skills/Playback/SkillPlaybackConsumer.cs:154"
+      ],
+      "actual_external": null,
+      "actual_symbol": "ISkillPlaybackHandle ActivePlayback.Handle [Football.Presentation|P:Football.Presentation.Skills.SkillPlaybackConsumer.ActivePlayback.Handle]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-inheritance-01",
+      "project": "medium",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/FootballActions/Execution/FootballActionProcessor.cs:186:34",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/FootballActions/Access/FootballPlayerAccess.cs:25"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/FootballActions/Access/FootballPlayerAccess.cs:25"
+      ],
+      "actual_external": null,
+      "actual_symbol": "float FootballPlayerAccess.LastTouchBias(int windowMs) [Football.Core|M:Football.Core.FootballPlayerAccess.LastTouchBias(System.Int32)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-inheritance-02",
+      "project": "medium",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/FootballActions/Execution/FootballActionProcessor.cs:187:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/FootballActions/Access/FootballBallAccess.cs:21"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/FootballActions/Access/FootballBallAccess.cs:21"
+      ],
+      "actual_external": null,
+      "actual_symbol": "float FootballBallAccess.TeamLastTouchBias(int teamId, int windowMs) [Football.Core|M:Football.Core.FootballBallAccess.TeamLastTouchBias(System.Int32,System.Int32)]",
+      "expected_refs": null,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-inheritance-03",
+      "project": "medium",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs:335:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Definitions/SpawnCondition.cs:7"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Definitions/SpawnCondition.cs:7"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool SpawnCondition.IsSatisfied(IBuffQuery query, EntityId holder) [Football.SpawnedEntities|M:Football.SkillSystem.SpawnedEntities.SpawnCondition.IsSatisfied(Football.SkillSystem.IBuffQuery,Football.SkillSystem.EntityId)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-inheritance-04",
+      "project": "medium",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/FootballActions/Retention/BallRetentionProcessor.cs:34:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/FootballActions/Access/FootballBallAccess.cs:27"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/FootballActions/Access/FootballBallAccess.cs:27"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void FootballBallAccess.FollowPosition(V3 position) [Football.Core|M:Football.Core.FootballBallAccess.FollowPosition(Football.Core.V3)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-inheritance-05",
+      "project": "medium",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchComposition/Ball/MatchBallAccess.cs:58:26",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/BallPhysics/Prediction/PredictedBall.cs:227"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/BallPhysics/Prediction/PredictedBall.cs:227"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void PredictedBall.FollowPosition(V3 position) [Football.Core|M:Football.Core.PredictedBall.FollowPosition(Football.Core.V3)]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-inheritance-06",
+      "project": "medium",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Tests/Editor/MatchApplication/MatchApplicationIntegrationTests.cs:23:28",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Tests/Editor/MatchApplication/MatchApplicationTestEvidence.cs:8"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Tests/Editor/MatchApplication/MatchApplicationTestEvidence.cs:8"
+      ],
+      "actual_external": null,
+      "actual_symbol": "string MatchApplicationTestEvidence.EvidenceDirectory [Football.Editor.Tests|P:Football.Tests.Editor.MatchApplication.MatchApplicationTestEvidence.EvidenceDirectory]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-interface-01",
+      "project": "medium",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:154:60",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Perception/IPerceptionSource.cs:15"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Perception/IPerceptionSource.cs:15"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool IPerceptionSource.IsActive(RulePlayerId id) [Football.Core|M:Football.Core.IPerceptionSource.IsActive(Football.Core.RulePlayerId)]",
+      "expected_refs": null,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-interface-02",
+      "project": "medium",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:219:33",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Perception/IPerceptionSource.cs:12"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Perception/IPerceptionSource.cs:12"
+      ],
+      "actual_external": null,
+      "actual_symbol": "IReadOnlyList<PerceivedPlayer> IPerceptionSource.ActivePlayers(int team) [Football.Core|M:Football.Core.IPerceptionSource.ActivePlayers(System.Int32)]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-interface-03",
+      "project": "medium",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Definitions/SpawnBuffCondition.cs:37:31",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/SkillSystem/Contracts/Buffs/IBuffQuery.cs:7"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/SkillSystem/Contracts/Buffs/IBuffQuery.cs:7"
+      ],
+      "actual_external": null,
+      "actual_symbol": "BuffState IBuffQuery.Read(EntityId holder, DefinitionId definition) [Football.SkillContracts|M:Football.SkillSystem.IBuffQuery.Read(Football.SkillSystem.EntityId,Football.SkillSystem.DefinitionId)]",
+      "expected_refs": null,
+      "actual_refs": 18,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-interface-04",
+      "project": "medium",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:211:56",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:199"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:199"
+      ],
+      "actual_external": null,
+      "actual_symbol": "IEnumerator<string> EntryView.GetEnumerator() [Football.Core|M:Football.Core.SelectionTrace.EntryView.GetEnumerator]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-interface-05",
+      "project": "medium",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/Perception/MentalImageHistory.cs:107:27",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Perception/IPerceptionTrajectorySource.cs:7"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Perception/IPerceptionTrajectorySource.cs:7"
+      ],
+      "actual_external": null,
+      "actual_symbol": "ExactBallPrediction IPerceptionTrajectorySource.CapturePerceptionTrajectory() [Football.Core|M:Football.Core.IPerceptionTrajectorySource.CapturePerceptionTrajectory]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-interface-06",
+      "project": "medium",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Tests/Editor/PlayerAI/AiHarness.cs:133:32",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Tests/Editor/PlayerAI/AiHarness.cs:133"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Tests/Editor/PlayerAI/AiHarness.cs:133"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool AiHarness.IsActive(RulePlayerId id) [Football.Editor.Tests|M:Football.Tests.PlayerAI.AiHarness.Football#Core#IPerceptionSource#IsActive(Football.Core.RulePlayerId)]",
+      "expected_refs": 0,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-partial-01",
+      "project": "medium",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionCapture.cs:18:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.ActiveRoster.cs:5",
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Perception.cs:6",
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs:6",
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.cs:7"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.ActiveRoster.cs:5",
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Perception.cs:6",
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs:6",
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.cs:7"
+      ],
+      "actual_external": null,
+      "actual_symbol": "CombinedMotionStages [Football.Core|T:Football.Core.CombinedMotionStages]",
+      "expected_refs": null,
+      "actual_refs": 14,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-partial-02",
+      "project": "medium",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs:39:28",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.ActiveRoster.cs:7"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.ActiveRoster.cs:7"
+      ],
+      "actual_external": null,
+      "actual_symbol": "IReadOnlyList<CollisionPlayerAccess> CombinedMotionStages.ActiveCollisionPlayers() [Football.Core|M:Football.Core.CombinedMotionStages.ActiveCollisionPlayers]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-partial-03",
+      "project": "medium",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.Processing.cs:15:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.cs:24"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MotionComposition/CombinedMotionStages.cs:24"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MentalImageHistory CombinedMotionStages.History [Football.Core|F:Football.Core.CombinedMotionStages.History]",
+      "expected_refs": null,
+      "actual_refs": 10,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-partial-04",
+      "project": "medium",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.cs:921:39",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Bounds.cs:19",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs:15",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.cs:135",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.UITK.cs:19",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.UVShare.cs:18",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs:30"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Bounds.cs:19",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs:15",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.cs:135",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.UITK.cs:19",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.UVShare.cs:18",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs:30"
+      ],
+      "actual_external": null,
+      "actual_symbol": "UIParticle [Coffee.UIParticle|T:Coffee.UIExtensions.UIParticle]",
+      "expected_refs": null,
+      "actual_refs": 198,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-partial-05",
+      "project": "medium",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.RT.Rendering.cs:36:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs:222"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticle.cs:222"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool UIParticle.useRTSampling [Coffee.UIParticle|P:Coffee.UIExtensions.UIParticle.useRTSampling]",
+      "expected_refs": null,
+      "actual_refs": 54,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-partial-06",
+      "project": "medium",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UIParticleUITKTicker.cs:34:38",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.Geometry.cs:10",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.cs:24"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.Geometry.cs:10",
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIToolKit/UguiParticleView.cs:24"
+      ],
+      "actual_external": null,
+      "actual_symbol": "UguiParticleView [Coffee.UIParticle|T:Render.UguiParticleView]",
+      "expected_refs": null,
+      "actual_refs": 16,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-lambda-01",
+      "project": "medium",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:62:78",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:203"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:203"
+      ],
+      "actual_external": null,
+      "actual_symbol": "GrfPitchChunkReference Slot.Chunk [Football.Presentation|F:Football.Presentation.GrfPitchTextureView.Slot.Chunk]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-lambda-02",
+      "project": "medium",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs:26:47",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs:116"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs:116"
+      ],
+      "actual_external": null,
+      "actual_symbol": "double Sample.Time [Football.Presentation|F:Football.Presentation.UnityPowerKickTrail.Sample.Time]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-lambda-03",
+      "project": "medium",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/LogicalRig/RigDefinition.cs:40:79",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/RigNodeDefinition.cs:7"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/RigNodeDefinition.cs:7"
+      ],
+      "actual_external": null,
+      "actual_symbol": "RigNodeId RigNodeDefinition.Id [Football.Core|P:Football.Core.RigNodeDefinition.Id]",
+      "expected_refs": null,
+      "actual_refs": 12,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-lambda-04",
+      "project": "medium",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Integration/Skills/Timelines/Session/MatchTimelineRuntime.cs:132:63",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/SkillSystem/Contracts/Effects/EffectRequest.cs:8"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/SkillSystem/Contracts/Effects/EffectRequest.cs:8"
+      ],
+      "actual_external": null,
+      "actual_symbol": "EffectContext EffectRequest.Context [Football.SkillContracts|P:Football.SkillSystem.EffectRequest.Context]",
+      "expected_refs": null,
+      "actual_refs": 171,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-lambda-05",
+      "project": "medium",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/AnimationResources/AnimationDefinition.cs:30:80",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/AnimationResources/AnimationTrack.cs:9"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/AnimationResources/AnimationTrack.cs:9"
+      ],
+      "actual_external": null,
+      "actual_symbol": "RigNodeId AnimationTrack.NodeId [Football.Core|P:Football.Core.AnimationTrack.NodeId]",
+      "expected_refs": null,
+      "actual_refs": 17,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-lambda-06",
+      "project": "medium",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/AnimationResources/Loading/RigResourceLoader.cs:38:51",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/BodyGeometryDefinition.cs:8"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/LogicalRig/BodyGeometryDefinition.cs:8"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int BodyGeometryDefinition.Parent [Football.Core|P:Football.Core.BodyGeometryDefinition.Parent]",
+      "expected_refs": null,
+      "actual_refs": 12,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-conditional-01",
+      "project": "medium",
+      "category": "conditional",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:2551:60",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:24"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:24"
+      ],
+      "actual_external": null,
+      "actual_symbol": "string UIParticleRTDebugLogger.LogFileName [Coffee.UIParticle|F:Coffee.UIExtensions.UIParticleRTDebugLogger.LogFileName]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-conditional-02",
+      "project": "medium",
+      "category": "conditional",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:142:21",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:131"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:131"
+      ],
+      "actual_external": null,
+      "actual_symbol": "T PreloadedProjectSettings<T>.s_Instance [Coffee.UIParticle|F:Coffee.UIParticleInternal.PreloadedProjectSettings`1.s_Instance]",
+      "expected_refs": null,
+      "actual_refs": 18,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-conditional-03",
+      "project": "medium",
+      "category": "conditional",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Tests/PlayMode/MatchPresentation/MatchDisplayPlayLifecycleTests.cs:28:57",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/ArtResources/FootballArtCatalog.cs:8"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/ArtResources/FootballArtCatalog.cs:8"
+      ],
+      "actual_external": null,
+      "actual_symbol": "FootballArtCatalog [Football.Presentation|T:Football.Presentation.FootballArtCatalog]",
+      "expected_refs": null,
+      "actual_refs": 107,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-conditional-04",
+      "project": "medium",
+      "category": "conditional",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:24]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：期望 2 处，实际 0 处"
+      ],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:2553:70",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:24"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": 2,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-conditional-05",
+      "project": "medium",
+      "category": "conditional",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:2717]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：期望 2 处，实际 0 处"
+      ],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:2929:77",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/UIParticleRTDebugLogger.cs:2717"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": 2,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-conditional-06",
+      "project": "medium",
+      "category": "conditional",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:131]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:177, Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:197]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:177:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:131"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-external-01",
+      "project": "medium",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 M:UnityEngine.GameObject.GetComponent``1，实际没有落点（无元数据视图）；绑定到 T GameObject.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.GameObject.GetComponent``1]"
+      ],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:22:22",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "M:UnityEngine.GameObject.GetComponent``1",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "T GameObject.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.GameObject.GetComponent``1]",
+      "expected_refs": null,
+      "actual_refs": 389,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-external-02",
+      "project": "medium",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 T:UnityEngine.MonoBehaviour，实际没有落点（无元数据视图）；绑定到 MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]"
+      ],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:7:47",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "T:UnityEngine.MonoBehaviour",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]",
+      "expected_refs": null,
+      "actual_refs": 115,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-external-03",
+      "project": "medium",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 P:UnityEngine.Transform.position，实际没有落点（无元数据视图）；绑定到 Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]"
+      ],
+      "query": "Assets/Football/Runtime/Presentation/Rendering/GrfDeferredLighting.cs:63:47",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "P:UnityEngine.Transform.position",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]",
+      "expected_refs": null,
+      "actual_refs": 367,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-external-04",
+      "project": "medium",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 M:UnityEngine.Debug.Log(System.Object)，实际没有落点（无元数据视图）；绑定到 void Debug.Log(object message) [UnityEngine.CoreModule|M:UnityEngine.Debug.Log(System.Object)]"
+      ],
+      "query": "Assets/Football/Editor/AnimationDiagnostics/LogicalPoseWindow.cs:45:19",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "M:UnityEngine.Debug.Log(System.Object)",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "void Debug.Log(object message) [UnityEngine.CoreModule|M:UnityEngine.Debug.Log(System.Object)]",
+      "expected_refs": null,
+      "actual_refs": 198,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-external-05",
+      "project": "medium",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 M:UnityEngine.Mathf.RoundToInt(System.Single)，实际没有落点（无元数据视图）；绑定到 int Mathf.RoundToInt(float f) [UnityEngine.CoreModule|M:UnityEngine.Mathf.RoundToInt(System.Single)]"
+      ],
+      "query": "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs:150:32",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "M:UnityEngine.Mathf.RoundToInt(System.Single)",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "int Mathf.RoundToInt(float f) [UnityEngine.CoreModule|M:UnityEngine.Mathf.RoundToInt(System.Single)]",
+      "expected_refs": null,
+      "actual_refs": 68,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-external-06",
+      "project": "medium",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 M:System.Math.Sqrt(System.Double)，实际没有落点（无元数据视图）；绑定到 double Math.Sqrt(double d) [netstandard|M:System.Math.Sqrt(System.Double)]"
+      ],
+      "query": "Assets/Football/Runtime/Core/Mathematics/V3.cs:42:44",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "M:System.Math.Sqrt(System.Double)",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "double Math.Sqrt(double d) [netstandard|M:System.Math.Sqrt(System.Double)]",
+      "expected_refs": null,
+      "actual_refs": 57,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-local-01",
+      "project": "medium",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/TeamAI/Tactics/TacticModifierParser.cs:25:58",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/TeamAI/Tactics/TacticModifierParser.cs:23"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/TeamAI/Tactics/TacticModifierParser.cs:23"
+      ],
+      "actual_external": null,
+      "actual_symbol": "TacticParameter parameter [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-local-02",
+      "project": "medium",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchScheduling/MatchStepPipeline.cs:112:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchScheduling/MatchStepPipeline.cs:110"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchScheduling/MatchStepPipeline.cs:110"
+      ],
+      "actual_external": null,
+      "actual_symbol": "IMatchExactStepStages exact [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-local-03",
+      "project": "medium",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs:120:36",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs:118"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs:118"
+      ],
+      "actual_external": null,
+      "actual_symbol": "CreateSpawnRequest spawn [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-local-04",
+      "project": "medium",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:125:32",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:123"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:123"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Slot slot [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-local-05",
+      "project": "medium",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchConfiguration/MatchPlayerConfig.cs:19:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/MatchPlayerConfig.cs:15"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/MatchPlayerConfig.cs:15"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int slot [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-local-06",
+      "project": "medium",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:57:79",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:55"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:55"
+      ],
+      "actual_external": null,
+      "actual_symbol": "GrfPitchChunkReference chunk [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-event-01",
+      "project": "medium",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Editor/FootballDebugWindow.cs:47:21",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/PitchView.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/PitchView.cs:14"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event Action<PlayerView> PitchView.Selected [Football.Presentation|E:Football.Presentation.PitchView.Selected]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-event-02",
+      "project": "medium",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Editor/MotionDiagnostics/MotionDiagnosticWindow.cs:65:21",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/Motion/MotionPitchView.cs:19"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/Motion/MotionPitchView.cs:19"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event Action<PlayerMotionView> MotionPitchView.Selected [Football.Presentation|E:Football.Presentation.MotionPitchView.Selected]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-event-03",
+      "project": "medium",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Editor/FootballDebugWindow.cs:78:28",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Editor/FootballSample.cs:16"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Editor/FootballSample.cs:16"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event Action FootballSample.Rebuilt [Football.Editor|E:Football.Editor.FootballSample.Rebuilt]",
+      "expected_refs": 8,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-event-04",
+      "project": "medium",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs:112:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationLogic.cs:23"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationLogic.cs:23"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event Action MatchApplicationLogic.ProcessingStepCompleted [Football.MatchApplication|E:Football.MatchApplication.MatchApplicationLogic.ProcessingStepCompleted]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-event-05",
+      "project": "medium",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs:112:62",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs:46"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/MatchApplication/Session/MatchApplicationRun.cs:46"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event Action MatchApplicationRun.ProcessingStepCompleted [Football.MatchApplication|E:Football.MatchApplication.MatchApplicationRun.ProcessingStepCompleted]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-event-06",
+      "project": "medium",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/MatchFlow/Completion/MatchFlowNotifications.cs:41:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchFlow/Completion/MatchFlowNotifications.cs:12"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchFlow/Completion/MatchFlowNotifications.cs:12"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event Action<MatchScheduleResult> MatchFlowNotifications.Published [Football.Core|E:Football.Core.MatchFlowNotifications.Published]",
+      "expected_refs": null,
+      "actual_refs": 21,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-operator-01",
+      "project": "medium",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/V3.cs:21]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:26]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:26:31",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/V3.cs:21"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-operator-02",
+      "project": "medium",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/V3.cs:20]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:35]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:35:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/V3.cs:20"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-operator-03",
+      "project": "medium",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/V3.cs:22]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/FootballActions/Calculations/BallControlCalculator.cs:53]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/FootballActions/Calculations/BallControlCalculator.cs:53:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/V3.cs:22"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-operator-04",
+      "project": "medium",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/Q4.cs:45]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Tests/Editor/MatchPresentation/MatchRootMappingTests.cs:22]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Tests/Editor/MatchPresentation/MatchRootMappingTests.cs:22:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/Q4.cs:45"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-operator-05",
+      "project": "medium",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs:21]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/Activation.cs:58]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/Activation.cs:58:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs:21"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-indexer-01",
+      "project": "medium",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:12]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/TeamAI/Formation/AdaptedFormation.cs:173]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/TeamAI/Formation/AdaptedFormation.cs:173:34",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:12"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-indexer-02",
+      "project": "medium",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs:27]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:18]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:18:61",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs:27"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-indexer-03",
+      "project": "medium",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs:20]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Tests/Editor/MatchAnalytics/MatchMetricsCollectorTests.cs:54]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Tests/Editor/MatchAnalytics/MatchMetricsCollectorTests.cs:54:39",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs:20"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-indexer-04",
+      "project": "medium",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:161]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:205]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:205:38",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:161"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-indexer-05",
+      "project": "medium",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs:30]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Football/Runtime/Core/MatchConfiguration/MatchConfigResolver.cs:57]（实际共 0 处）"
+      ],
+      "query": "Assets/Football/Runtime/Core/MatchConfiguration/MatchConfigResolver.cs:57:26",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs:30"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-01",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs:205:22",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs:213"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs:213"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Inventory [Football.Editor|T:Football.Editor.VisualMotion.VisualMotionPublication.Inventory]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-02",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:89:22",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:198"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:198"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Slot [Football.Presentation|T:Football.Presentation.GrfPitchTextureView.Slot]",
+      "expected_refs": null,
+      "actual_refs": 13,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-03",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:128:57",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/ThirdParty/UIParticle/Runtime/Internal/ProjectSettings/PreloadedProjectSettings.cs:14"
+      ],
+      "actual_external": null,
+      "actual_symbol": "PreloadedProjectSettings [Coffee.UIParticle|T:Coffee.UIParticleInternal.PreloadedProjectSettings]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-04",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/PlayerView.cs:25:27",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Entry.cs:8"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Entry.cs:8"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Entry [Football.Core|T:Football.Core.Entry]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-05",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:10:23",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:60"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:60"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Entry [Football.Core|T:Football.Core.SelectionTrace.Entry]",
+      "expected_refs": null,
+      "actual_refs": 9,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-06",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Tests/Editor/MatchPose/PublishedNativeRootMotionTests.cs:148:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Tests/Editor/MatchPose/PublishedNativeRootMotionTests.cs:152"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Tests/Editor/MatchPose/PublishedNativeRootMotionTests.cs:152"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Entry [Football.Editor.Tests|T:Football.Tests.Editor.MatchPose.PublishedNativeRootMotionTests.Entry]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-07",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs:18:23",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs:112"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Presentation/Skills/PowerKicks/UnityPowerKickTrail.cs:112"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Sample [Football.Presentation|T:Football.Presentation.UnityPowerKickTrail.Sample]",
+      "expected_refs": null,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-08",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs:18:13",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs:40"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/AnimationSampling/AnimationNodeIndices.cs:40"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Bindings [Football.Core|T:Football.Core.AnimationNodeIndices.Bindings]",
+      "expected_refs": null,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-09",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Core/PlayerView.cs:30:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/Core/Role.cs:5"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Role.cs:5"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Role [Football.Core|T:Football.Core.Role]",
+      "expected_refs": null,
+      "actual_refs": 256,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "m-type_ref-10",
+      "project": "medium",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/Football/Runtime/Integration/Skills/Session/SkillSessionScope.cs:87:27",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs:8"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Football/Runtime/SkillSystem/SpawnedEntities/Runtime/SpawnModule.cs:8"
+      ],
+      "actual_external": null,
+      "actual_symbol": "SpawnModule [Football.SpawnedEntities|T:Football.SkillSystem.SpawnedEntities.SpawnModule]",
+      "expected_refs": null,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-var-01",
+      "project": "large",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:188:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:150"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:150"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool Act.Start() [ScriptCore|M:TFW.Act.Act.Start]",
+      "expected_refs": null,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-var-02",
+      "project": "large",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:240:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:173"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:173"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool Act.Update(TimeDeltaInfo info) [ScriptCore|M:TFW.Act.Act.Update(TimeDeltaInfo)]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-var-03",
+      "project": "large",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:157:28",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:90"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:90"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool Act.Cancel() [ScriptCore|M:TFW.Act.Act.Cancel]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-var-04",
+      "project": "large",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:230:32",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:131"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:131"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void Act.End(bool isCancel = false) [ScriptCore|M:TFW.Act.Act.End(System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-var-05",
+      "project": "large",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs:149:31",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/UIWnd/Container/UIContainer.cs:199"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/UI/UIWnd/Container/UIContainer.cs:199"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void UIContainer.SetEnable(bool enable, bool isNotify = true) [Framework|M:TFW.UI.UIContainer.SetEnable(System.Boolean,System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 402,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-var-06",
+      "project": "large",
+      "category": "var",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs:58:65",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:83"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:83"
+      ],
+      "actual_external": null,
+      "actual_symbol": "List<IDVal> AssetAddsExt.ToProto(List<AssetAdd> self) [ScriptGame|M:X1.ScriptGame.AssetList.AssetAddsExt.ToProto(System.Collections.Generic.List{XCfg.AssetAdd})]",
+      "expected_refs": null,
+      "actual_refs": 5,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-chain-01",
+      "project": "large",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs:128:46",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptAuto/Config/XCfg/Worker.cs:18"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptAuto/Config/XCfg/Worker.cs:18"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int Worker.Occupation [ScriptAuto|P:XCfg.Worker.Occupation]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-chain-02",
+      "project": "large",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs:279:87",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptAuto/Config/XCfg/WorkerStatusControl.cs:42"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptAuto/Config/XCfg/WorkerStatusControl.cs:42"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int WorkerStatusControl.Occupation [ScriptAuto|P:XCfg.WorkerStatusControl.Occupation]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-chain-03",
+      "project": "large",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:34:75",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/CityWorker/LCityWorker.cs:18"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/CityWorker/LCityWorker.cs:18"
+      ],
+      "actual_external": null,
+      "actual_symbol": "WorkerJobModel LCityWorker.WorkerJobModel [ScriptGame|P:X1.ScriptGame.City.LCityWorker.WorkerJobModel]",
+      "expected_refs": null,
+      "actual_refs": 11,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-chain-04",
+      "project": "large",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:28:47",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Incident/Entity/LInvasion.cs:27"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Incident/Entity/LInvasion.cs:27"
+      ],
+      "actual_external": null,
+      "actual_symbol": "WorkerActionModel LInvasion.WorkerActionModel [ScriptGame|P:X1.ScriptGame.City.LInvasion.WorkerActionModel]",
+      "expected_refs": null,
+      "actual_refs": 22,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-chain-05",
+      "project": "large",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs:55:71",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:58"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:58"
+      ],
+      "actual_external": null,
+      "actual_symbol": "List<AssetAdd> AssetAddsExt.SortByQuality(List<AssetAdd> self) [ScriptGame|M:X1.ScriptGame.AssetList.AssetAddsExt.SortByQuality(System.Collections.Generic.List{XCfg.AssetAdd})]",
+      "expected_refs": null,
+      "actual_refs": 11,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-chain-06",
+      "project": "large",
+      "category": "chain",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Extend.cs:248:87",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:35"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:35"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int LCityEntity.UnitType [ScriptGame|P:X1.ScriptGame.City.LCityEntity.UnitType]",
+      "expected_refs": null,
+      "actual_refs": 33,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-overload-01",
+      "project": "large",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActTrackEffect.cs:479:25",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActSet/ActSetEnvVariables.cs:93"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActSet/ActSetEnvVariables.cs:93"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool ActSetEnvVariables.TryGetValue(string name, out float value) [ScriptCore|M:TFW.Act.ActSetEnvVariables.TryGetValue(System.String,System.Single@)]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-overload-02",
+      "project": "large",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerRender/WorkerRender.cs:133:49",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActSet/ActSetEnvVariables.cs:42"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActSet/ActSetEnvVariables.cs:42"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void ActSetEnvVariables.Add(string name, float value) [ScriptCore|M:TFW.Act.ActSetEnvVariables.Add(System.String,System.Single)]",
+      "expected_refs": null,
+      "actual_refs": 14,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-overload-03",
+      "project": "large",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs:113:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:18"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:18"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void WorkerCodeAIRest.ReInit(long workerId, WorkerAIFactory aiFactory, bool immediatelyRoam = false) [ScriptGame|M:X1.ScriptGame.Worker.WorkerCodeAIRest.ReInit(System.Int64,X1.ScriptGame.Worker.WorkerAIFactory,System.Boolean)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-overload-04",
+      "project": "large",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:34:28",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIWait.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIWait.cs:14"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void WorkerCodeAIWait.ReInit(long m_WorkerId, float minTime, float maxTime) [ScriptGame|M:X1.ScriptGame.Worker.WorkerCodeAIWait.ReInit(System.Int64,System.Single,System.Single)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-overload-05",
+      "project": "large",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs:51:62",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Common/UIComponent/UIPlayerAvatar.cs:156"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Common/UIComponent/UIPlayerAvatar.cs:156"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void UIPlayerAvatar.SetAvatar(UnifyPlayerHead playerHead, bool showFrame = true, long unionId = 0, Action<long, int, long, GameObject> onCustomClick = null, bool showRaftLevel = true, bool flip = false) [ScriptGame|M:UI.UIPlayerAvatar.SetAvatar(cspb.UnifyPlayerHead,System.Boolean,System.Int64,System.Action{System.Int64,System.Int32,System.Int64,UnityEngine.GameObject},System.Boolean,System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 177,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-overload-06",
+      "project": "large",
+      "category": "overload",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs:577:13",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs:586"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs:586"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void ActMultiTrackEffect.UpdateEffecTimeScale(Effect effect, float timeScale, IMutiTrackTargetFollower multiTrackTargetFollower) [ScriptCore|M:TFW.Act.ActMultiTrackEffect.UpdateEffecTimeScale(Render.Effect,System.Single,TFW.Act.IMutiTrackTargetFollower)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-01",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs:55:59",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:54"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:54"
+      ],
+      "actual_external": null,
+      "actual_symbol": "List<AssetAdd> AssetAddsExt.Normalize(List<AssetAdd> self) [ScriptGame|M:X1.ScriptGame.AssetList.AssetAddsExt.Normalize(System.Collections.Generic.List{XCfg.AssetAdd})]",
+      "expected_refs": null,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-02",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs:144:36",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:58"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/AssetList/AssetAddsExt.cs:58"
+      ],
+      "actual_external": null,
+      "actual_symbol": "List<AssetAdd> AssetAddsExt.SortByQuality(List<AssetAdd> self) [ScriptGame|M:X1.ScriptGame.AssetList.AssetAddsExt.SortByQuality(System.Collections.Generic.List{XCfg.AssetAdd})]",
+      "expected_refs": null,
+      "actual_refs": 11,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-03",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActEffect.cs:429:47",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Data/ActDataDef.cs:148"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Data/ActDataDef.cs:148"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Vector3 Extensions.Position(TargetType targetType, ActCommonInfo commonInfo) [ScriptCore|M:TFW.Act.Extensions.Position(TFW.Act.TargetType,TFW.Act.ActCommonInfo)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-04",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActTrackEffect.cs:490:41",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Data/ActDataDef.cs:131"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Data/ActDataDef.cs:131"
+      ],
+      "actual_external": null,
+      "actual_symbol": "long Extensions.ActorId(TargetType targetType, Act act) [ScriptCore|M:TFW.Act.Extensions.ActorId(TFW.Act.TargetType,TFW.Act.Act)]",
+      "expected_refs": null,
+      "actual_refs": 24,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-05",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:48:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:25"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:25"
+      ],
+      "actual_external": null,
+      "actual_symbol": "long LCityEntity.ID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.ID]",
+      "expected_refs": null,
+      "actual_refs": 503,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-06",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs:174:70",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:30"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:30"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int LCityEntity.CfgID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.CfgID]",
+      "expected_refs": null,
+      "actual_refs": 207,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-ext-07",
+      "project": "large",
+      "category": "extension",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerBubble/AWorkerDialogBubble.cs:196:32",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:25"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:25"
+      ],
+      "actual_external": null,
+      "actual_symbol": "long LCityEntity.ID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.ID]",
+      "expected_refs": null,
+      "actual_refs": 503,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-01",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Map/MapEntity/MapUnionBuild/RenderLayer/UnionBoss/UIUnionBossRecordItem.cs:51:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Common/UIComponent/UIPlayerAvatar.cs:35"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Common/UIComponent/UIPlayerAvatar.cs:35"
+      ],
+      "actual_external": null,
+      "actual_symbol": "UIPlayerAvatar [ScriptGame|T:UI.UIPlayerAvatar]",
+      "expected_refs": null,
+      "actual_refs": 271,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-02",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewList.cs:148:79",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Common/ScrollRectFilter.cs:24"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Common/ScrollRectFilter.cs:24"
+      ],
+      "actual_external": null,
+      "actual_symbol": "ScrollRectFilter [Framework|T:TFW.ScrollRectFilter]",
+      "expected_refs": null,
+      "actual_refs": 600,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-03",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerSatisfy/UIWorkerCountChangeWnd.cs:150:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWText.cs:20"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWText.cs:20"
+      ],
+      "actual_external": null,
+      "actual_symbol": "TFWText [Framework|T:TFW.UI.TFWText]",
+      "expected_refs": null,
+      "actual_refs": 4611,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-04",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:556:60",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs:26"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs:26"
+      ],
+      "actual_external": null,
+      "actual_symbol": "float GroupTimeScale.TimeScale [ScriptCore|F:TFW.Act.ActMgr.GroupTimeScale.TimeScale]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-05",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs:100:31",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs:69"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs:69"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void StateMachine<T>.ChangeState(T newState) [ScriptCore|M:X1.ScriptCore.StateMachine`1.ChangeState(`0)]",
+      "expected_refs": null,
+      "actual_refs": 79,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-06",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs:15:61",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs:11"
+      ],
+      "actual_external": null,
+      "actual_symbol": "T StateMachine<T>.CurrentState [ScriptCore|P:X1.ScriptCore.StateMachine`1.CurrentState]",
+      "expected_refs": null,
+      "actual_refs": 19,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-generic-07",
+      "project": "large",
+      "category": "generic",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs:114:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:56"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:56"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void WorkerCodeAIRest.Execute(Action onComplete) [ScriptGame|M:X1.ScriptGame.Worker.WorkerCodeAIRest.Execute(System.Action)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-inheritance-01",
+      "project": "large",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Behaviour/BehaviorTreeMgr.cs:31:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Module/ModuleBase.cs:67"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Module/ModuleBase.cs:67"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void SingletonActivableModule<T>.Init() [Framework|M:TFW.Module.SingletonActivableModule`1.Init]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-inheritance-02",
+      "project": "large",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActGroup.cs:100:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:161"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:161"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void Act.OnEnd(bool isCancel = false) [ScriptCore|M:TFW.Act.Act.OnEnd(System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-inheritance-03",
+      "project": "large",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:20:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAI.cs:16"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAI.cs:16"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void WorkerCodeAI.ReInit(long workerId) [ScriptGame|M:X1.ScriptGame.Worker.WorkerCodeAI.ReInit(System.Int64)]",
+      "expected_refs": null,
+      "actual_refs": 5,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-inheritance-04",
+      "project": "large",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAI.cs:18:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAI.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAI.cs:11"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void WorkerAI.ReInit(long workerId) [ScriptGame|M:X1.ScriptGame.Worker.WorkerAI.ReInit(System.Int64)]",
+      "expected_refs": null,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-inheritance-05",
+      "project": "large",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerCodeAIRest.cs:58:18",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAI.cs:16"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAI.cs:16"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void WorkerAI.Execute(Action onComplete) [ScriptGame|M:X1.ScriptGame.Worker.WorkerAI.Execute(System.Action)]",
+      "expected_refs": null,
+      "actual_refs": 9,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-inheritance-06",
+      "project": "large",
+      "category": "inheritance",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:167:24",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:154"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Act.cs:154"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void Act.SetActive(bool isActive) [ScriptCore|M:TFW.Act.Act.SetActive(System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 10,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-interface-01",
+      "project": "large",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:556:26",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/IActTimeScaleListener.cs:13"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/IActTimeScaleListener.cs:13"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void IActTimeScaleListener.OnTimeScaleChanged(float timeScale) [ScriptCore|M:TFW.Act.IActTimeScaleListener.OnTimeScaleChanged(System.Single)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-interface-02",
+      "project": "large",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:580:26",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/IActSkillFireListener.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/IActSkillFireListener.cs:11"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void IActSkillFireListener.OnSkillFire(int index) [ScriptCore|M:TFW.Act.IActSkillFireListener.OnSkillFire(System.Int32)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-interface-03",
+      "project": "large",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs:592:42",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Utility/MultiTrackEffect/IMutiTrackTargetFollower.cs:26"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Utility/MultiTrackEffect/IMutiTrackTargetFollower.cs:26"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void IMutiTrackTargetFollower.OnTimeScaleChanged(float timeScale) [ScriptCore|M:TFW.Act.IMutiTrackTargetFollower.OnTimeScaleChanged(System.Single)]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-interface-04",
+      "project": "large",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActMultiTrackEffect.cs:591:77",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Utility/MultiTrackEffect/IMutiTrackTargetFollower.cs:37"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/Utility/MultiTrackEffect/IMutiTrackTargetFollower.cs:37"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool IMutiTrackTargetFollower.IsValid() [ScriptCore|M:TFW.Act.IMutiTrackTargetFollower.IsValid]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-interface-05",
+      "project": "large",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Launch/AplLayer/AplLayerMgr.cs:27:34",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Launch/Flow/IContract.cs:20"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/Launch/Flow/IContract.cs:20"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void IAplLayer.DeInit() [Launch|M:X1.ScriptGame.Launch.IAplLayer.DeInit]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-interface-06",
+      "project": "large",
+      "category": "interface",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSequence.cs:277:36",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActSequence.cs:277"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActSequence.cs:277"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void ActSequence.OnSkillFire(int index) [ScriptCore|M:TFW.Act.ActSequence.TFW#Act#IActSkillFireListener#OnSkillFire(System.Int32)]",
+      "expected_refs": 0,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-partial-01",
+      "project": "large",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:185:26",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.Preload.cs:10",
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs:11",
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.cs:20"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.Preload.cs:10",
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs:11",
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.cs:20"
+      ],
+      "actual_external": null,
+      "actual_symbol": "ActMgr [ScriptCore|T:TFW.Act.ActMgr]",
+      "expected_refs": null,
+      "actual_refs": 125,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-partial-02",
+      "project": "large",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerBubble/WorkerBubbleMgr.cs:70:26",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs:18",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Effect.cs:11",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.JobExtend.cs:12",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs:6",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Timeline.cs:6",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs:18",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Effect.cs:11",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.JobExtend.cs:12",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs:6",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Timeline.cs:6",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:11"
+      ],
+      "actual_external": null,
+      "actual_symbol": "WorkerMgr [ScriptGame|T:X1.ScriptGame.Worker.WorkerMgr]",
+      "expected_refs": null,
+      "actual_refs": 277,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-partial-03",
+      "project": "large",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:32:16",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Build.cs:5",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Extend.cs:9",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Gather.cs:3",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Incident.cs:8",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Build.cs:5",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Extend.cs:9",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Gather.cs:3",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.Incident.cs:8",
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs:11"
+      ],
+      "actual_external": null,
+      "actual_symbol": "WorkerJobModel [ScriptGame|T:X1.ScriptGame.Worker.WorkerJobModel]",
+      "expected_refs": null,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-partial-04",
+      "project": "large",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WorkerCommand/WorkerJobCommandMgr.cs:76:17",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.Cfg.cs:13",
+        "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.Extend.cs:3",
+        "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.Cfg.cs:13",
+        "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.Extend.cs:3",
+        "Assets/X1/ScriptGame/Worker/Common/WorkerUtil.cs:11"
+      ],
+      "actual_external": null,
+      "actual_symbol": "WorkerUtil [ScriptGame|T:X1.ScriptGame.Worker.WorkerUtil]",
+      "expected_refs": null,
+      "actual_refs": 34,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-partial-05",
+      "project": "large",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs:515:39",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs:16"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Act/Act/ActMgr.TimeGroup.cs:16"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int ActMgr.InvalidTimeGroup [ScriptCore|F:TFW.Act.ActMgr.InvalidTimeGroup]",
+      "expected_refs": null,
+      "actual_refs": 23,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-partial-06",
+      "project": "large",
+      "category": "partial",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.cs:58:41",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs:119"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Cfg.cs:119"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int WorkerMgr.GetWorkerOccupation(long workerId) [ScriptGame|M:X1.ScriptGame.Worker.WorkerMgr.GetWorkerOccupation(System.Int64)]",
+      "expected_refs": 12,
+      "actual_refs": 12,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-lambda-01",
+      "project": "large",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:662:43",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:75"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:75"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool Row.Dirty [ScriptGame|P:X1.ScriptGame.Audio.RogueTowerAudioTunerWindow.Row.Dirty]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-lambda-02",
+      "project": "large",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:681:44",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:95"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:95"
+      ],
+      "actual_external": null,
+      "actual_symbol": "bool GroupRow.Dirty [ScriptGame|P:X1.ScriptGame.Audio.RogueTowerAudioTunerWindow.GroupRow.Dirty]",
+      "expected_refs": 3,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-lambda-03",
+      "project": "large",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:494:62",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:86"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:86"
+      ],
+      "actual_external": null,
+      "actual_symbol": "string GroupRow.GroupName [ScriptGame|F:X1.ScriptGame.Audio.RogueTowerAudioTunerWindow.GroupRow.GroupName]",
+      "expected_refs": null,
+      "actual_refs": 7,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-lambda-04",
+      "project": "large",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs:173:73",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs:32"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs:32"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int WorkerExceptionStateInfo.Count [ScriptGame|P:UI.WorkerExceptionStateInfo.Count]",
+      "expected_refs": 12,
+      "actual_refs": 12,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-lambda-05",
+      "project": "large",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs:267:60",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs:31"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/WorkerExceptionState/UI/UIWorkerExceptionState.cs:31"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int WorkerExceptionStateInfo.StateType [ScriptGame|P:UI.WorkerExceptionStateInfo.StateType]",
+      "expected_refs": 11,
+      "actual_refs": 11,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-lambda-06",
+      "project": "large",
+      "category": "lambda",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Worker/WokerJob/WorkerMgr.Sort.cs:174:70",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:30"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/EntityBase/LCityEntity.cs:30"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int LCityEntity.CfgID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.CfgID]",
+      "expected_refs": null,
+      "actual_refs": 207,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-conditional-01",
+      "project": "large",
+      "category": "conditional",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:97:4",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:33"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:33"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void CustomGradient.Refresh() [ScriptCore|M:UnityEngine.UI.CustomGradient.Refresh]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-conditional-02",
+      "project": "large",
+      "category": "conditional",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:33]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:97]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:101:5",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Common/UI/Component/FontEffect/CustomGradient.cs:33"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-conditional-03",
+      "project": "large",
+      "category": "conditional",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:21:17",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:29"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:29"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void TFWCanvasScaler.ScaleWithScreenSize() [Framework|M:TFW.UI.TFWCanvasScaler.ScaleWithScreenSize]",
+      "expected_refs": null,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-conditional-04",
+      "project": "large",
+      "category": "conditional",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:29]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:21]（实际共 0 处）"
+      ],
+      "query": "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:25:13",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWCanvasScaler.cs:29"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-conditional-05",
+      "project": "large",
+      "category": "conditional",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/UI/Component/TFWSwitchButtonGroup.cs:182:30",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWSwitchButton.cs:419"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWSwitchButton.cs:419"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void TFWSwitchButton.SetWithoutGroup(bool value, bool sendCallback = true) [Framework|M:TFW.UI.TFWSwitchButton.SetWithoutGroup(System.Boolean,System.Boolean)]",
+      "expected_refs": 9,
+      "actual_refs": 9,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-conditional-06",
+      "project": "large",
+      "category": "conditional",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/TFWCore/Script/UI/Component/TFWInputField.cs:25]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/TFWCore/Script/UI/Component/TFWInputField.cs:136]（实际共 0 处）"
+      ],
+      "query": "Assets/TFWCore/Script/UI/Component/TFWInputField.cs:141:17",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/Component/TFWInputField.cs:25"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-external-01",
+      "project": "large",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 M:UnityEngine.Component.GetComponent``1，实际没有落点（无元数据视图）；绑定到 T Component.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.Component.GetComponent``1]"
+      ],
+      "query": "Assets/TFWCore/Script/UI/UICommonBluredBackground.cs:126:29",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "M:UnityEngine.Component.GetComponent``1",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "T Component.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.Component.GetComponent``1]",
+      "expected_refs": null,
+      "actual_refs": 1517,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-external-02",
+      "project": "large",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 T:System.Version，实际没有落点（无元数据视图）；绑定到 Version [netstandard|T:System.Version]"
+      ],
+      "query": "Assets/Launch/Flow/LaunchUpgrader.cs:98:23",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "T:System.Version",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "Version [netstandard|T:System.Version]",
+      "expected_refs": null,
+      "actual_refs": 23,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-external-03",
+      "project": "large",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 M:UnityEngine.GameObject.SetActive(System.Boolean)，实际没有落点（无元数据视图）；绑定到 void GameObject.SetActive(bool value) [UnityEngine.CoreModule|M:UnityEngine.GameObject.SetActive(System.Boolean)]"
+      ],
+      "query": "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs:313:36",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "M:UnityEngine.GameObject.SetActive(System.Boolean)",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "void GameObject.SetActive(bool value) [UnityEngine.CoreModule|M:UnityEngine.GameObject.SetActive(System.Boolean)]",
+      "expected_refs": null,
+      "actual_refs": 7812,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-external-04",
+      "project": "large",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 P:UnityEngine.Transform.position，实际没有落点（无元数据视图）；绑定到 Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]"
+      ],
+      "query": "Assets/TFWCore/Script/Utils/UnityGameObjectWrap.cs:181:22",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "P:UnityEngine.Transform.position",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]",
+      "expected_refs": null,
+      "actual_refs": 2003,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-external-05",
+      "project": "large",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 T:UnityEngine.MonoBehaviour，实际没有落点（无元数据视图）；绑定到 MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]"
+      ],
+      "query": "Assets/TFWCore/Script/Common/QualitySetting.cs:16:35",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "T:UnityEngine.MonoBehaviour",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]",
+      "expected_refs": null,
+      "actual_refs": 954,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-external-06",
+      "project": "large",
+      "category": "external",
+      "status": "fail",
+      "reasons": [
+        "定义：期望外部符号 P:UnityEngine.Time.deltaTime，实际没有落点（无元数据视图）；绑定到 float Time.deltaTime [UnityEngine.CoreModule|P:UnityEngine.Time.deltaTime]"
+      ],
+      "query": "Assets/X1/ScriptCore/Common/Camera/Mode/CameraModeFollow.cs:125:45",
+      "relocated": false,
+      "expected_defs": [],
+      "expected_external": "P:UnityEngine.Time.deltaTime",
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "float Time.deltaTime [UnityEngine.CoreModule|P:UnityEngine.Time.deltaTime]",
+      "expected_refs": null,
+      "actual_refs": 322,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-local-01",
+      "project": "large",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/UI/UIRaftBattleHud.cs:111:25",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/UI/UIRaftBattleHud.cs:108"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/UI/UIRaftBattleHud.cs:108"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MBattleTeam team [<局部符号>]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-local-02",
+      "project": "large",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs:609:21",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs:606"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs:606"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MBattleSoldier soldier [<局部符号>]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-local-03",
+      "project": "large",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Team/Factory/RaftBattleTeamFactory.cs:32:24",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/Factory/RaftBattleTeamFactory.cs:31"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/Factory/RaftBattleTeamFactory.cs:31"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Stack<MRaftBattleTeam> pool [<局部符号>]",
+      "expected_refs": null,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-local-04",
+      "project": "large",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs:502:24",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs:486"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/UI/UIWnd/WndMgr.cs:486"
+      ],
+      "actual_external": null,
+      "actual_symbol": "UIWnd ui [<局部符号>]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-local-05",
+      "project": "large",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleHero.cs:95:13",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleHero.cs:91"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleHero.cs:91"
+      ],
+      "actual_external": null,
+      "actual_symbol": "MBattleTeam team [<局部符号>]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-local-06",
+      "project": "large",
+      "category": "local",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/City/Mgr/ACityOutline.cs:243:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/Mgr/ACityOutline.cs:241"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/Mgr/ACityOutline.cs:241"
+      ],
+      "actual_external": null,
+      "actual_symbol": "int xMin [<局部符号>]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-event-01",
+      "project": "large",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs:315:20",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs:147"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs:147"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event HpChangedEvent MBattleTeam.HpChangedEvents [ScriptGame|E:X1.ScriptGame.Battle.MBattleTeam.HpChangedEvents]",
+      "expected_refs": 8,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-event-02",
+      "project": "large",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Entity/Actor/RaftBattle/RRaftBattleSoldier.cs:43:30",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:79"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:79"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event HpChanged MBattleSoldier.HpChangedEvents [ScriptGame|E:X1.ScriptGame.Battle.MBattleSoldier.HpChangedEvents]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-event-03",
+      "project": "large",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs:372:43",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs:388"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs:388"
+      ],
+      "actual_external": null,
+      "actual_symbol": "void UIBattleHeroSkill.OnHpChanged(MBattleTeam mteam, BattleChangeHp changeHp) [ScriptGame|M:UI.UIBattleHeroSkill.OnHpChanged(X1.ScriptGame.Battle.MBattleTeam,X1.ScriptGame.Battle.BattleChangeHp)]",
+      "expected_refs": 2,
+      "actual_refs": 2,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-event-04",
+      "project": "large",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.cs:609:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:55"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:55"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event SoldierDead MBattleSoldier.DeadEvents [ScriptGame|E:X1.ScriptGame.Battle.MBattleSoldier.DeadEvents]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-event-05",
+      "project": "large",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs:157:22",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs:107"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Team/BattleTeam/MBattleTeam.Events.cs:107"
+      ],
+      "actual_external": null,
+      "actual_symbol": "CastSkillEvent [ScriptGame|T:X1.ScriptGame.Battle.MBattleTeam.CastSkillEvent]",
+      "expected_refs": 1,
+      "actual_refs": 1,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-event-06",
+      "project": "large",
+      "category": "event",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:107:13",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:69"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Battle/Entity/Actor/MBattleSoldier.Event.cs:69"
+      ],
+      "actual_external": null,
+      "actual_symbol": "event SkillEndEvent MBattleSoldier.CastSkillEvents [ScriptGame|E:X1.ScriptGame.Battle.MBattleSoldier.CastSkillEvents]",
+      "expected_refs": 4,
+      "actual_refs": 4,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-operator-01",
+      "project": "large",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptGame/Prop/PropValue.cs:44]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptGame/Buff/BuffHolder.cs:72]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptGame/Buff/BuffHolder.cs:72:52",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Prop/PropValue.cs:44"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-operator-02",
+      "project": "large",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptGame/Prop/PropValue.cs:50]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptGame/Buff/BuffHolder.cs:112]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptGame/Buff/BuffHolder.cs:112:52",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Prop/PropValue.cs:50"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-operator-03",
+      "project": "large",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptGame/Prop/PropValue.cs:44]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptGame/Prop/PropMgr.Get.cs:163]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptGame/Prop/PropMgr.Get.cs:163:24",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Prop/PropValue.cs:44"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-operator-04",
+      "project": "large",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:523]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:342]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:342:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:523"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-operator-05",
+      "project": "large",
+      "category": "operator",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/Launch/Script/Common/Version.cs:43]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/Launch/Script/Common/Version.cs:50]（实际共 0 处）"
+      ],
+      "query": "Assets/Launch/Script/Common/Version.cs:50:24",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/Launch/Script/Common/Version.cs:43"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-indexer-01",
+      "project": "large",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs:71]（实际共 0 处）"
+      ],
+      "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs:71:40",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-indexer-02",
+      "project": "large",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:11]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs:23]（实际共 0 处）"
+      ],
+      "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs:23:35",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:11"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-indexer-03",
+      "project": "large",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/TFWCore/Script/Map/Layer/GridLayer.cs:36]（实际共 0 处）"
+      ],
+      "query": "Assets/TFWCore/Script/Map/Layer/GridLayer.cs:36:23",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-indexer-04",
+      "project": "large",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptCore/Common/Timer/TimerMgr.cs:349]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptCore/Common/Timer/TimerMgr.cs:349:31",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-indexer-05",
+      "project": "large",
+      "category": "indexer",
+      "status": "fail",
+      "reasons": [
+        "定义：期望 [Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36]，实际 []；绑定到 <该位置没有出现位置记录>",
+        "引用：缺少 [Assets/X1/ScriptCore/Common/Collections/SwapExtendArray.cs:95]（实际共 0 处）"
+      ],
+      "query": "Assets/X1/ScriptCore/Common/Collections/SwapExtendArray.cs:95:30",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36"
+      ],
+      "expected_external": null,
+      "actual_defs": [],
+      "actual_external": null,
+      "actual_symbol": "<该位置没有出现位置记录>",
+      "expected_refs": null,
+      "actual_refs": 0,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-01",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:207:16",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:67",
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:12"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:67",
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:12"
+      ],
+      "actual_external": null,
+      "actual_symbol": "GridMatrix [Framework|T:RuntimeConfig.GridMatrix]",
+      "expected_refs": null,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-02",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:279:16",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:12",
+        "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:9"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:12",
+        "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:9"
+      ],
+      "actual_external": null,
+      "actual_symbol": "GridMatrix [Framework.Editor|T:EditorConfig.GridMatrix]",
+      "expected_refs": null,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-03",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs:9:58",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:12",
+        "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:9"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:12",
+        "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:9"
+      ],
+      "actual_external": null,
+      "actual_symbol": "GridMatrix [Framework.Editor|T:EditorConfig.GridMatrix]",
+      "expected_refs": null,
+      "actual_refs": 8,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-04",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs:65:39",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:67",
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:12"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:67",
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:12"
+      ],
+      "actual_external": null,
+      "actual_symbol": "GridMatrix [Framework|T:RuntimeConfig.GridMatrix]",
+      "expected_refs": null,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-05",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:21:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:77"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Editor/Map/Data/MapEditorData.GridLayer.cs:77"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Row [Framework.Editor|T:EditorConfig.GridMatrix.Row]",
+      "expected_refs": null,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-06",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:24:29",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:132"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/TFWCore/Script/Map/Data/MapGridLayer.cs:132"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Row [Framework|T:RuntimeConfig.GridMatrix.Row]",
+      "expected_refs": null,
+      "actual_refs": 6,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-07",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:100:31",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:51"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Audio/TFWAudio/RogueTowerAudioTunerWindow.cs:51"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Row [ScriptGame|T:X1.ScriptGame.Audio.RogueTowerAudioTunerWindow.Row]",
+      "expected_refs": null,
+      "actual_refs": 9,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-08",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs:76:61",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs:65"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs:65"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Para [ScriptGame|T:X1.ScriptGame.Common.UnifyWorldBossNameplate.Para]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-09",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs:74:30",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs:65"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Common/UnifyWidget/Runtime/Presenter/UnifyWorldBossNameplate.cs:65"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Para [ScriptGame|T:X1.ScriptGame.Common.UnifyWorldBossNameplate.Para]",
+      "expected_refs": null,
+      "actual_refs": 3,
+      "source_newer_than_index": false
+    },
+    {
+      "id": "l-type_ref-10",
+      "project": "large",
+      "category": "type_ref",
+      "status": "pass",
+      "reasons": [],
+      "query": "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs:315:37",
+      "relocated": false,
+      "expected_defs": [
+        "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs:14"
+      ],
+      "expected_external": null,
+      "actual_defs": [
+        "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs:14"
+      ],
+      "actual_external": null,
+      "actual_symbol": "Buff [ScriptGame.RoguelikeTower|T:X1.ScriptGame.RoguelikeTower.GamePlay.Buff.Buff]",
+      "expected_refs": null,
+      "actual_refs": 91,
+      "source_newer_than_index": false
+    }
+  ]
+}
