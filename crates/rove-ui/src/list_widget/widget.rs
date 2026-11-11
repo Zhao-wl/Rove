@@ -1234,7 +1234,7 @@ impl ListWidget {
         };
         let matcher = self.matcher.clone();
         match &mut self.backing {
-            Backing::Tree(t) => t.set_filter(filter.as_deref().map(|q| (&*matcher, q))),
+            Backing::Tree(t) => t.set_filter(filter.as_deref().map(|q| (matcher.clone(), q))),
             Backing::Flat { model, filtered } => {
                 *filtered = filter.map(|q| {
                     let n = model.count();
