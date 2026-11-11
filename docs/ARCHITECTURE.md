@@ -653,3 +653,52 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 Markdown 局部更新与回退、可见区域优先、按文档基线、设置层；`csharp_parts` 单元测试覆盖 Unity 特征分区、不安全边界与分区重解析）；
 `cargo test -p rove-ui syntax_tests`（真实窗口：大文件先显示后着色、版本不符与关闭后的结果、`files.associations`、
 主题按选择器特异性取色）。性能：`cargo xtask bench --filter syntax/ --check-budgets`，用 `RopeText` 计入缓冲区读取与取行开销。
+
+## 22. 文档符号、大纲、面包屑与转到符号（#26）
+
+位置：核心层 `crates/rove-syntax/src/symbols/`（不依赖 gpui，`lib.rs` 只追加 `pub mod symbols;`，不改 `contracts.rs`）；
+界面 `crates/rove-ui/src/outline/`；骨架装配 `crates/rove-ui/src/skeleton/workbench/outline_host.rs`（`workbench.rs` 只追加字段、
+渲染调用与 action 监听，`editor_panes.rs` 在标签栏与正文之间插入面包屑）。
+
+**符号数据（供 #24 `@`、R54 粘性滚动、R65 上下文篮子复用）**
+
+| 入口 | 用途 |
+|---|---|
+| `symbols::availability(language, size)` | 是否提供符号：`Unsupported`（不是五种语言）/ `TooLarge`（`SizeClass::Huge`）/ `Available`；UI 线程 O(1) |
+| `symbols::SymbolService::analyze(text, language, size, previous, cancel)` | 后台 `Task<SymbolUpdate>`：读 `TextSource` → tree-sitter 完整解析 → 提取 → 与上一版比较；内容相同的子树复用上一版的 `Arc<[Symbol]>`，`changed` 列出变化/新增节点，`removed` 列出消失的键 |
+| `symbols::extract(language, text, cancel)` | 同步提取契约 `Symbol` 树（后台或测试） |
+| `symbols::DocumentSymbols` | 先序编号 `SymbolId`、父子、深度、容器名（VS Code `containerName`）、跨版本稳定键（父键 + 种类 + 名称 + 同名序号）；`path_at` / `path_from` 按位置二分查找符号路径（O(深度 · log 兄弟数)，`path_from` 复用上一条路径） |
+| `symbols::kinds` | 契约 `SymbolKind` 没有的 VS Code 种类走 `SymbolKind::Other(名称)`：`enumMember`、`operator`、`string`、`number`、`boolean`、`null`、`document`（YAML 多文档） |
+
+语言：C#（命名空间含文件范围命名空间、类/结构/接口/枚举/记录/委托、字段（多变量拆开）、常量、属性、索引器 `this[int]`、
+事件、构造/析构函数、方法 `Move(Vector3, float)`、运算符；`#if` 分支照常列出；未闭合的类型从 ERROR 节点恢复）、Markdown
+（`#`–`######` 与 setext，按层级嵌套，区间是整节）、JSON/JSONC（键 + 值种类，数组元素以下标命名）、YAML（同 JSON；多文档各成
+子树，界面显示“文档 N”）、XML（元素名）。数据文件最多 `DATA_SYMBOL_LIMIT`（5 万）个符号，超出时大纲提示只显示前若干个。
+增量：只读阅读器阶段没有编辑，符号在后台对新快照完整解析；“只重建受影响的子树”体现为按子树比较后复用未变化的子树并报告变化节点。
+
+**界面**
+
+- 大纲小节：`outline::registry` 以 `Placement::Sidebar { container: workbench.view.explorer }`、`order = 20`、工厂 `outline`
+  登记（文件夹 10 之后）。树与键盘导航复用 #18 的 `ListView`（`find_mode = Filter`：直接输入即过滤）；节点 ID 是符号稳定键，
+  新版本到达后焦点、选择、滚动与用户的展开/折叠保留。遵循 `outline.collapseItems`、`outline.icons`、`outline.show*`（隐藏的种类连同
+  子树隐藏）；图标颜色取 `symbolIcon.*`。小节顶部工具条：跟随光标（`outline.followCursor`，视图开关，不是设置项）、全部折叠
+  （`outline.collapse`）。单击/回车经 `OpenDocuments`（`OpenSource::Outline`）定位到符号名称起点；回车后焦点回到编辑器。
+  空状态：不支持的文件与无编辑器显示「活动编辑器无法提供大纲信息。」，超大文件显示原因，首次分析时显示加载中。
+- 面包屑：每个编辑器组标签栏下方；文件路径段 + 光标所在符号路径，遵循 `breadcrumbs.enabled/filePath/symbolPath/icons/show*/
+  symbolSortOrder/symbolPathSeparator`（`copyPath` 使用分隔符）。点击段或 `breadcrumbs.selectFocused` 弹出选择器
+  （`breadcrumbPicker.background`）：符号段列同级符号，文件段列所在目录（文件夹逐层进入，文件经 `OpenSource::Breadcrumb` 打开）。
+  命令 `breadcrumbs.focus/focusAndSelect/focusNext/focusPrevious/...WithPicker/revealFocused/revealFocusedFromTreeAside/
+  selectFocused/selectEditor/toggleToOn/toggle/copyPath`，默认键位全部来自 VS Code 默认表；上下文键 `breadcrumbsPossible`、
+  `breadcrumbsVisible`（窗口根 key context）、`breadcrumbsActive`（面包屑栏及其选择器），`config.breadcrumbs.enabled` 发布在
+  #14 的全局上下文键服务上。
+- 转到文件中的符号：`workbench.action.gotoSymbol`（`Ctrl+Shift+O`）用 #18 的 `QuickInputView`，`QuickPickConfig::filter = None`，
+  候选与排序由 `outline::goto::symbol_picks` 计算（无查询按位置；有查询按分数、同分按位置；`:` 前缀按种类分组）。
+  **#24 接入 `@` 时调用同一个函数并传入自己的 `fuzzyScorer`**，两处结果与顺序即一致。
+
+光标移动时面包屑与跟随光标只做 `path_from`，不遍历整棵树；基准 `cargo xtask bench --filter outline/`
+（`perf/budgets.toml` 的 `breadcrumb_cursor_move_5000_lines`，< 1 ms）。
+
+验证：`cargo test -p rove-syntax symbols`（五种语言含嵌套、空文件、语法错误；索引、路径、增量、取消、超大文件）、
+`cargo test -p rove-ui outline`（设置读取、过滤、面包屑段、选择器排序、转到符号排序、登记完整性，以及
+`skeleton/workbench/outline_tests.rs` 的真实窗口入口测试：打开 `.cs` → 大纲节点与面包屑文本、跟随光标、键盘定位、
+`Ctrl+Shift+O`、面包屑键位与选择器、设置热加载）。

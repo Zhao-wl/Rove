@@ -99,6 +99,7 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::code_view::commands::register(&mut registry)?;
     crate::editors::actions::register(&mut registry)?;
     crate::list_widget::registry::register_commands(&mut registry)?;
+    crate::outline::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -129,6 +130,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::editors::actions::action_for(id))
         .or_else(|| crate::list_widget::keys::action_for(id))
         .or_else(|| crate::index_status::action_for(id))
+        .or_else(|| crate::outline::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

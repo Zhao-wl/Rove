@@ -78,6 +78,7 @@ pub fn strings() -> Result<StringTable> {
     rove_commands::builtin::register_strings(&mut t)?;
     // #36：C# 索引状态的文案。
     crate::index_status::register_strings(&mut t)?;
+    crate::outline::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -95,6 +96,7 @@ pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
 pub fn contributions() -> Result<ContributionRegistry> {
     let mut r = ContributionRegistry::default();
     crate::shell::catalog::register_contributions(&mut r)?;
+    crate::outline::registry::register_contributions(&mut r)?;
     r.register(
         STATUS_FILE,
         Contribution {

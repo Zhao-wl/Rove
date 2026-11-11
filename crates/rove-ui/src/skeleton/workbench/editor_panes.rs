@@ -297,7 +297,9 @@ impl Workbench {
                 .border_1()
                 .border_color(self.ui_color("editorGroup.focusedEmptyBorder"));
         }
-        result.child(header).child(body)
+        // #26: breadcrumbs between the tab strip and the editor body.
+        let breadcrumbs = self.render_breadcrumbs(group, cx);
+        result.child(header).children(breadcrumbs).child(body)
     }
 
     fn tab_strip<'a>(
