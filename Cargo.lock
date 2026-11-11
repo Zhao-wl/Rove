@@ -4704,6 +4704,8 @@ name = "rove-app"
 version = "0.0.1"
 dependencies = [
  "gpui",
+ "rove-commands",
+ "rove-i18n",
  "rove-ui",
  "windows-sys 0.61.2",
 ]
@@ -4816,6 +4818,7 @@ dependencies = [
  "rove-syntax",
  "rove-theme",
  "rove-workspace",
+ "serde_json",
  "tempfile",
 ]
 

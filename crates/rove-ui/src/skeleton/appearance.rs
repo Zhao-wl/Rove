@@ -27,6 +27,7 @@ pub fn strings() -> Result<StringTable> {
     ] {
         t.register(k, Arc::from(v))?;
     }
+    crate::shell::catalog::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -39,36 +40,24 @@ pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
     };
     tr!(t, &m).expect("registered skeleton string")
 }
-/// SKELETON(workbench): registered fixed placements; replaced by #16.
+/// 工作台自带的视图容器、小节、面板与状态栏条目由 #16 的 `shell::catalog` 登记。
 /// SKELETON(status): fixed filename/line-count/encoding status; replaced by #27.
 pub fn contributions() -> Result<ContributionRegistry> {
     let mut r = ContributionRegistry::default();
-    for (id, key, placement) in [
-        (
-            "workbench.view.explorer",
-            "workbench.explorer",
-            Placement::Sidebar {
-                container: "workbench.view.explorer".into(),
-            },
-        ),
-        (
-            "rove.status.file",
-            "workbench.statusTitle",
-            Placement::StatusLeft,
-        ),
-    ] {
-        r.register(
-            id,
-            Contribution {
-                title: Message::key(key),
-                placement,
-                order: 0,
-                icon: None,
-                command: None,
-                when: None,
-                factory_key: id.into(),
-            },
-        )?;
-    }
+    crate::shell::catalog::register_contributions(&mut r)?;
+    r.register(
+        STATUS_FILE,
+        Contribution {
+            title: Message::key("workbench.statusTitle"),
+            placement: Placement::StatusLeft,
+            order: 0,
+            icon: None,
+            command: None,
+            when: None,
+            factory_key: crate::shell::catalog::STATUS_FACTORY.into(),
+        },
+    )?;
     Ok(r)
 }
+/// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。
+pub const STATUS_FILE: &str = "rove.status.file";

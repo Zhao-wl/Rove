@@ -144,3 +144,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Codicons 产品图标（#16）
+
+`crates/rove-ui/assets/codicons/codicon.ttf` 是 Microsoft [vscode-codicons](https://github.com/microsoft/vscode-codicons)
+的图标字体（npm 包 `@vscode/codicons` 0.0.45，字体内部版本 1.15，SHA-256
+`2bb558cb693451e73c28c33fe64aa89bc19b1a4b70f95948322c243f93476920`），取自本机 VS Code 扩展
+GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `package.json` 依赖 `@vscode/codicons` 0.0.45）。
+`mapping.json` 由 `scripts/codicons/gen_mapping.py` 从字体 cmap 生成（图标名 → 码位）。
+
+许可：[Creative Commons Attribution 4.0 International（CC-BY-4.0）](https://creativecommons.org/licenses/by/4.0/)，
+© Microsoft Corporation。Rove 未修改字体本身，只读取其字形用于界面图标。

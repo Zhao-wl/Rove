@@ -6,3 +6,5 @@ pub mod feedback;
 pub mod lists;
 
 pub mod skeleton;
+
+pub mod shell;

@@ -14,3 +14,7 @@ gpui.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[dev-dependencies]
+rove-commands.workspace = true
+rove-i18n.workspace = true
