@@ -149,21 +149,53 @@ pub enum Resource {
     Workspace(WorkspacePath),
     Virtual(Arc<str>),
 }
-/// Cooperative cancellation; clones share state. O(1), Send + Sync, no callbacks or blocking.
+/// Cooperative cancellation; clones share state. Send + Sync, no callbacks or blocking.
 #[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
-impl Cancellation {
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release)
-    }
-    pub fn check(&self) -> Result<()> {
-        if self.0.load(Ordering::Acquire) {
-            Err(Error::Cancelled)
-        } else {
-            Ok(())
+pub struct Cancellation(Arc<CancellationState>);
+
+#[derive(Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    parent: Option<Arc<CancellationState>>,
+}
+
+impl Drop for CancellationState {
+    fn drop(&mut self) {
+        // Release exclusively owned ancestors without recursing on deep scope chains.
+        let mut parent = self.parent.take();
+        while let Some(link) = parent {
+            parent = Arc::into_inner(link).and_then(|mut state| state.parent.take());
         }
     }
 }
+
+impl Cancellation {
+    /// Creates an independently cancellable scope. Cancelling any ancestor also cancels this
+    /// scope; cancelling this scope leaves its ancestors and siblings untouched.
+    pub fn child(&self) -> Self {
+        Self(Arc::new(CancellationState {
+            cancelled: AtomicBool::new(false),
+            parent: Some(self.0.clone()),
+        }))
+    }
+
+    pub fn cancel(&self) {
+        self.0.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Checks this scope and its ancestors in O(scope depth).
+    pub fn check(&self) -> Result<()> {
+        let mut scope = Some(self.0.as_ref());
+        while let Some(state) = scope {
+            if state.cancelled.load(Ordering::Acquire) {
+                return Err(Error::Cancelled);
+            }
+            scope = state.parent.as_deref();
+        }
+        Ok(())
+    }
+}
+
 /// RAII listener ownership. Dropping unregisters; a callback already in flight may complete.
 /// Cleanup must not block or panic. UI owners drop before their view is destroyed.
 #[derive(Default)]
@@ -288,5 +320,32 @@ mod tests {
             let _s = Subscription::new(move || copy.store(true, Ordering::Relaxed));
         }
         assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cancellation_propagates_only_to_descendants() {
+        let root = Cancellation::default();
+        let first = root.child();
+        let second = root.child();
+        let nested = second.child();
+        let same_scope = first.clone();
+        first.cancel();
+        assert_eq!(same_scope.check(), Err(Error::Cancelled));
+        assert_eq!(root.check(), Ok(()));
+        assert_eq!(nested.check(), Ok(()));
+        root.cancel();
+        assert_eq!(second.check(), Err(Error::Cancelled));
+        assert_eq!(nested.check(), Err(Error::Cancelled));
+        assert_eq!(root.child().check(), Err(Error::Cancelled));
+    }
+
+    #[test]
+    fn dropping_a_deep_cancellation_scope_does_not_recurse() {
+        let mut leaf = Cancellation::default();
+        for _ in 0..50_000 {
+            leaf = leaf.child();
+        }
+        assert_eq!(leaf.check(), Ok(()));
+        drop(leaf);
     }
 }

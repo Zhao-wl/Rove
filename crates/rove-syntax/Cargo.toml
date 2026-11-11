@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 rove-base.workspace = true
 rove-buffer.workspace = true
+fancy-regex.workspace = true
+jsonc-parser.workspace = true
+serde_json.workspace = true
 rove-config.workspace = true
 tree-sitter.workspace = true
 tree-sitter-c-sharp.workspace = true
