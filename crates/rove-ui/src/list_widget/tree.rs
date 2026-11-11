@@ -67,6 +67,9 @@ enum Flat {
 }
 
 struct Filter {
+    /// Kept so nodes loaded while filtering (sync expand or async `set_children`) are evaluated.
+    matcher: Arc<dyn Matcher>,
+    query: String,
     /// Per node: visible under the current query (matches or has a visible descendant).
     visible: Vec<bool>,
     /// Per node: shown expanded only because a descendant matches.
@@ -82,7 +85,7 @@ pub struct TreeModel {
     flat: Vec<Flat>,
     /// node -> flat position + 1 (0 = not displayed).
     position: Vec<u32>,
-    filter: Option<Filter>,
+    filter: Option<Box<Filter>>,
     revision: Version,
 }
 
@@ -216,6 +219,7 @@ impl TreeModel {
 
     fn changed(&mut self) {
         self.revision.0 += 1;
+        self.extend_filter();
         self.rebuild();
     }
 
@@ -238,7 +242,7 @@ impl TreeModel {
             };
             for n in children {
                 if let Some(f) = &t.filter {
-                    if !f.visible[n as usize] {
+                    if !f.visible.get(n as usize).copied().unwrap_or(false) {
                         continue;
                     }
                 }
@@ -428,30 +432,49 @@ impl TreeModel {
     /// Applies a filter over the *loaded* nodes (VS Code does not load to filter). Matching nodes
     /// and their ancestors stay visible; ancestors are shown expanded. `None` restores the user's
     /// own expansion state untouched.
-    pub fn set_filter(&mut self, filter: Option<(&dyn Matcher, &str)>) {
-        self.filter = filter.map(|(m, q)| {
-            let len = self.nodes.len();
-            let mut visible = vec![false; len];
-            let mut forced = vec![false; len];
-            for n in (0..len).rev() {
-                let node = &self.nodes[n];
-                if !node.alive {
-                    continue;
-                }
-                if m.is_match(q, &node.item.label) {
-                    visible[n] = true;
-                }
-                if visible[n] {
-                    // Children are always added after their parent, so reverse order sees them first.
-                    if let Some(p) = node.parent {
-                        visible[p as usize] = true;
-                        forced[p as usize] = true;
-                    }
-                }
-            }
-            Filter { visible, forced }
+    pub fn set_filter(&mut self, filter: Option<(Arc<dyn Matcher>, &str)>) {
+        self.filter = filter.map(|(matcher, query)| {
+            Box::new(Filter {
+                matcher,
+                query: query.to_string(),
+                visible: vec![],
+                forced: vec![],
+            })
         });
         self.changed();
+    }
+
+    /// Evaluates nodes appended since the filter was computed (all nodes on a fresh filter).
+    /// Matching nodes make their whole ancestor chain visible and shown expanded.
+    fn extend_filter(&mut self) {
+        let Some(f) = self.filter.as_mut() else {
+            return;
+        };
+        let old = f.visible.len();
+        let len = self.nodes.len();
+        if old >= len {
+            return;
+        }
+        f.visible.resize(len, false);
+        f.forced.resize(len, false);
+        for n in (old..len).rev() {
+            let node = &self.nodes[n];
+            if !node.alive || !f.matcher.is_match(&f.query, &node.item.label) {
+                continue;
+            }
+            f.visible[n] = true;
+            let mut parent = node.parent;
+            while let Some(p) = parent {
+                let p = p as usize;
+                let done = f.visible[p] && f.forced[p];
+                f.visible[p] = true;
+                f.forced[p] = true;
+                if done {
+                    break;
+                }
+                parent = self.nodes[p].parent;
+            }
+        }
     }
 }
 
@@ -624,7 +647,7 @@ pub(crate) mod tests {
         t.set_expanded_at(1, true);
         t.set_expanded_at(0, false);
         assert_eq!(labels(&t), ["a", "z.cs"]);
-        t.set_filter(Some((&ContiguousMatcher, "needle")));
+        t.set_filter(Some((Arc::new(ContiguousMatcher), "needle")));
         assert_eq!(labels(&t), ["a", "  b", "    needle.cs"]);
         t.set_filter(None);
         assert_eq!(labels(&t), ["a", "z.cs"]);
@@ -633,5 +656,53 @@ pub(crate) mod tests {
             labels(&t),
             ["a", "  b", "    needle.cs", "  other.cs", "z.cs"]
         );
+    }
+
+    /// Regression (PR #102 review): nodes loaded while a filter is active used to index past
+    /// the filter vectors in `rebuild` and panic.
+    #[test]
+    fn nodes_loaded_while_filtering_are_evaluated_sync() {
+        let src = Arc::new(PathSource::new(&[
+            "src",
+            "src/src_a.cs",
+            "src/b.cs",
+            "z.cs",
+        ]));
+        let mut t = TreeModel::new(src);
+        t.set_filter(Some((Arc::new(ContiguousMatcher), "src")));
+        assert_eq!(labels(&t), ["src"]);
+        // Synchronous load under the filter: expand -> load -> add_children.
+        assert!(t.set_expanded_at(0, true));
+        assert_eq!(labels(&t), ["src", "  src_a.cs"]);
+        t.set_filter(None);
+        assert_eq!(labels(&t), ["src", "  src_a.cs", "  b.cs", "z.cs"]);
+    }
+
+    #[test]
+    fn nodes_loaded_while_filtering_are_evaluated_async() {
+        let mut s = PathSource::new(&[
+            "dir",
+            "dir/hit.cs",
+            "dir/other.cs",
+            "dir/deep",
+            "dir/deep/hit2.cs",
+        ]);
+        s.pending = vec!["dir"];
+        let s = Arc::new(s);
+        let mut t = TreeModel::new(s.clone());
+        t.set_filter(Some((Arc::new(ContiguousMatcher), "dir")));
+        t.set_expanded_at(0, true);
+        assert_eq!(t.row_kind(1), Some(RowKind::Loading));
+        // Pending children arrive while the filter is still active.
+        t.set_children(Some(&ItemId("dir".into())), s.items(Some("dir")))
+            .unwrap();
+        assert_eq!(labels(&t), ["dir"], "new non-matching children stay hidden");
+        t.set_filter(Some((Arc::new(ContiguousMatcher), "hit")));
+        assert_eq!(labels(&t), ["dir", "  hit.cs"]);
+        // A deeper sync load under the new filter reveals the matching grandchild's chain.
+        t.set_filter(Some((Arc::new(ContiguousMatcher), "hit2")));
+        let deep = ItemId("dir/deep".into());
+        t.set_expanded(&deep, true).unwrap();
+        assert_eq!(labels(&t), ["dir", "  deep", "    hit2.cs"]);
     }
 }

@@ -183,10 +183,12 @@ impl TextInput {
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        self.content[..offset.min(self.content.len())]
-            .chars()
-            .map(char::len_utf16)
-            .sum()
+        // Defensive: never slice inside a char even if a caller hands us a stale offset.
+        let mut offset = offset.min(self.content.len());
+        while !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        self.content[..offset].chars().map(char::len_utf16).sum()
     }
 
     fn range_to_utf16(&self, r: &Range<usize>) -> Range<usize> {
@@ -210,6 +212,18 @@ impl TextInput {
         }
         k
     }
+}
+
+/// UTF-16 offset in `s` → UTF-8 byte offset, clamped to the end and to char boundaries.
+fn utf16_to_utf8(s: &str, offset: usize) -> usize {
+    let mut utf16 = 0;
+    for (i, ch) in s.char_indices() {
+        if utf16 >= offset {
+            return i;
+        }
+        utf16 += ch.len_utf16();
+    }
+    s.len()
 }
 
 impl Focusable for TextInput {
@@ -283,10 +297,12 @@ impl EntityInputHandler for TextInput {
             .unwrap_or(self.selected.clone());
         self.content.replace_range(range.clone(), text);
         self.marked = (!text.is_empty()).then(|| range.start..range.start + text.len());
+        // `new_selected` is relative to the composition `text` (UTF-16), not to the content.
         self.selected = new_selected
             .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .map(|r| r.start + range.start..r.end + range.start)
+            .map(|r| {
+                range.start + utf16_to_utf8(text, r.start)..range.start + utf16_to_utf8(text, r.end)
+            })
             .unwrap_or_else(|| range.start + text.len()..range.start + text.len());
         // Composition text is not a committed edit: no Changed event until commit.
         cx.notify();
@@ -588,6 +604,54 @@ impl Element for TextElement {
         self.input.update(cx, |input, _| {
             input.last_layout = (!empty).then_some(line);
             input.last_bounds = Some(bounds);
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[test]
+    fn utf16_offsets_convert_within_the_composition() {
+        assert_eq!(utf16_to_utf8("中", 0), 0);
+        assert_eq!(utf16_to_utf8("中", 1), 3);
+        assert_eq!(utf16_to_utf8("a😀b", 3), 5);
+        assert_eq!(utf16_to_utf8("a😀b", 99), 6);
+    }
+
+    /// Regression (PR #102 review): the IME selection was converted against the whole content
+    /// and then offset again, landing inside `中` and panicking in `selected_text_range`.
+    #[gpui::test]
+    fn ime_composition_after_text_keeps_selection_on_char_boundaries(cx: &mut TestAppContext) {
+        let colors = TextInputColors {
+            text: gpui::white(),
+            placeholder: gpui::white(),
+            caret: gpui::white(),
+            selection: gpui::blue(),
+        };
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(cx, colors));
+        cx.update(|window, cx| {
+            input.update(cx, |v, cx| {
+                v.replace_text_in_range(None, "a", window, cx);
+                // Windows IME: composition "中" with the caret after it (UTF-16 offset 1).
+                v.replace_and_mark_text_in_range(None, "中", Some(1..1), window, cx);
+                assert_eq!(v.content, "a中");
+                assert_eq!(v.selected, 4..4);
+                assert_eq!(v.marked, Some(1..4));
+                let sel = v.selected_text_range(false, window, cx).unwrap();
+                assert_eq!(sel.range, 2..2);
+                assert_eq!(v.marked_text_range(window, cx), Some(1..2));
+                // Caret inside a longer composition.
+                v.replace_and_mark_text_in_range(None, "中文", Some(1..1), window, cx);
+                assert_eq!(v.content, "a中文");
+                assert_eq!(v.selected, 4..4);
+                v.replace_text_in_range(None, "中文", window, cx);
+                assert_eq!((v.content.as_str(), v.selected.clone()), ("a中文", 7..7));
+                // A stale mid-char offset is clamped instead of panicking.
+                assert_eq!(v.offset_to_utf16(2), 1);
+            })
         });
     }
 }
