@@ -1,73 +1,8 @@
-//! SKELETON(theme): Dark 2026 subset, replaced by #10. Source/license: THIRD_PARTY_NOTICES.md.
+//! Skeleton strings and contribution registrations. The theme comes from `rove_theme::ThemeService` (#10).
 use crate::contributions::*;
 use rove_base::*;
 use rove_i18n::*;
-use rove_theme::*;
 use std::sync::Arc;
-pub const KEYWORD: Color = Color(0xff, 0x7b, 0x72, 255);
-pub struct DarkTheme {
-    colors: ColorRegistry,
-}
-impl DarkTheme {
-    pub fn new() -> Result<Self> {
-        let mut colors = ColorRegistry::default();
-        for (key, value) in [
-            ("editor.background", 0x121314),
-            ("editor.foreground", 0xbbbebf),
-            ("sideBar.background", 0x191a1b),
-            ("sideBar.foreground", 0xbfbfbf),
-            ("statusBar.background", 0x191a1b),
-            ("statusBar.foreground", 0x8c8c8c),
-            ("editorLineNumber.foreground", 0x858889),
-        ] {
-            let c = Some(Color(
-                (value >> 16) as u8,
-                (value >> 8) as u8,
-                value as u8,
-                255,
-            ));
-            colors.register(
-                key,
-                ColorDefaults {
-                    dark: c,
-                    light: c,
-                    high_contrast_dark: c,
-                    high_contrast_light: c,
-                },
-            )?;
-        }
-        Ok(Self { colors })
-    }
-}
-impl Theme for DarkTheme {
-    fn color(&self, id: &str) -> Result<Option<Color>> {
-        self.colors.get(id).map(|v| v.dark).ok_or(Error::NotFound)
-    }
-    fn token_style(&self, scopes: &[Arc<str>]) -> TokenStyle {
-        // TextMate selectors match a scope and its dot-separated descendants.
-        const RULES: [(&str, Color); 5] = [
-            ("keyword", KEYWORD),
-            ("storage", KEYWORD),
-            ("comment", Color(0x8b, 0x94, 0x9e, 255)),
-            ("string", Color(0xa5, 0xd6, 0xff, 255)),
-            ("constant.numeric", Color(0x79, 0xc0, 0xff, 255)),
-        ];
-        let color = scopes.iter().rev().find_map(|s| {
-            RULES.iter().find_map(|&(prefix, color)| {
-                s.strip_prefix(prefix)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
-                    .then_some(color)
-            })
-        });
-        TokenStyle {
-            foreground: color,
-            ..Default::default()
-        }
-    }
-    fn changes(&self) -> &dyn Events<Version> {
-        &NoEvents
-    }
-}
 pub fn strings() -> Result<StringTable> {
     let mut t = chinese()?;
     for (k, v) in [
@@ -136,25 +71,4 @@ pub fn contributions() -> Result<ContributionRegistry> {
         )?;
     }
     Ok(r)
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn token_style_matches_textmate_scope_prefixes() {
-        let theme = DarkTheme::new().unwrap();
-        let style = |scope: &str| theme.token_style(&[Arc::from(scope)]).foreground;
-        assert_eq!(style("storage.type.class.cs"), Some(KEYWORD));
-        assert_eq!(style("keyword.control.flow.return.cs"), Some(KEYWORD));
-        assert_eq!(
-            style("comment.line.double-slash.cs"),
-            Some(Color(0x8b, 0x94, 0x9e, 255))
-        );
-        assert_eq!(
-            style("string.quoted.double.cs"),
-            Some(Color(0xa5, 0xd6, 0xff, 255))
-        );
-        assert_eq!(style("storagex.cs"), None);
-    }
 }

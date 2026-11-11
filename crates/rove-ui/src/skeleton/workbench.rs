@@ -1,5 +1,5 @@
 use super::{
-    appearance::{self, DarkTheme},
+    appearance,
     commands::{Commands, StatusFeedback},
     editor::{Pending, SingleEditor},
     text::{default_settings, FileDocuments},
@@ -207,7 +207,7 @@ impl Workbench {
                 rove_syntax::highlight::TreeSitterSyntax::default(),
                 schedule,
             ),
-            theme: Arc::new(DarkTheme::new().unwrap()),
+            theme: rove_theme::ThemeService::new(default_settings()),
             strings: appearance::strings().unwrap(),
             contributions: appearance::contributions().unwrap(),
             commands: Arc::new(Commands::new().unwrap()),
@@ -813,7 +813,9 @@ mod tests {
             assert_eq!(line.text, "public class First {}");
             let keyword = line.spans.iter().find(|s| s.range == (0..6)).unwrap();
             assert_eq!(keyword.scope.as_ref(), "storage.modifier.public.cs");
-            assert_eq!(keyword.color, appearance::KEYWORD);
+            // Dark 2026（#10 正式主题引擎）：include 链中 dark_vs 的 `storage.modifier`
+            // 比 2026-dark 的 `storage` 更具体，与 VS Code 一致取 #569cd6。
+            assert_eq!(keyword.color, Color(0x56, 0x9c, 0xd6, 255));
             assert_eq!(line.shape.len(), line.text.len());
             assert!(v.status().contains("UTF-8"));
         });
