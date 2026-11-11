@@ -93,3 +93,13 @@ SOFTWARE.
 （`csharp`、`json`、`yaml`、`xml`、`markdown-basics`，Microsoft，MIT，许可见上文）。
 
 Markdown 围栏注入查询的节点关系参考 [tree-sitter-md 0.5.4 的块级注入查询](https://github.com/tree-sitter-grammars/tree-sitter-markdown/blob/v0.5.4/tree-sitter-markdown/queries/injections.scm)（MIT）。
+
+## VS Code 默认设置（#13）
+
+`crates/rove-config/data/settings-catalog.json` 中的设置键名、VS Code 默认值与默认语言覆盖
+（`"[csharp]": {...}` 等）取自 Microsoft VS Code **1.145.2** 导出的默认设置
+（`docs/compat/vscode/default-settings.jsonc`），由 `scripts/compat/gen_settings_catalog.py`
+按 `scripts/compat/rules.py` 过滤生成；说明文字不进入该文件。`rove.*` 设置项为 Rove 自有。
+
+来源：<https://github.com/microsoft/vscode/tree/1.145.2>
+原始许可证：MIT（Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。
