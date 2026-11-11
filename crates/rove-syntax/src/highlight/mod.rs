@@ -550,6 +550,10 @@ fn highlight(
         }
     };
     trace.mark("query");
+    // Full builds of large documents assemble rows on several threads.
+    let permit = (incremental.is_none() && ranges.len() >= 8192)
+        .then(|| pool.and_then(|pool| pool.acquire(16)))
+        .flatten();
     let rows = rows::assemble(
         ranges,
         source,
@@ -557,8 +561,10 @@ fn highlight(
         captures,
         incremental,
         line_limit,
+        permit.as_ref().map_or(1, |permit| permit.workers),
         work,
     );
+    drop(permit);
     trace.mark("tokens");
     rows
 }

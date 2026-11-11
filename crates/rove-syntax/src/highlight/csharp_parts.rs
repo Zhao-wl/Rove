@@ -59,7 +59,7 @@ impl WorkerPool {
         SHARED.clone()
     }
 
-    fn acquire(&self, want: usize) -> Option<Permit<'_>> {
+    pub(super) fn acquire(&self, want: usize) -> Option<Permit<'_>> {
         let mut free = self.free.load(Ordering::Acquire);
         loop {
             let take = free.min(want);
@@ -84,9 +84,9 @@ impl WorkerPool {
     }
 }
 
-struct Permit<'a> {
+pub(super) struct Permit<'a> {
     pool: &'a WorkerPool,
-    workers: usize,
+    pub(super) workers: usize,
 }
 
 impl Drop for Permit<'_> {
@@ -714,7 +714,13 @@ impl<'a> Lexer<'a> {
                 0xe2 if self.peek(1) == Some(0x80) && matches!(self.peek(2), Some(0xa8 | 0xa9)) => {
                     return Ok(None)
                 }
-                _ => self.at += 1,
+                _ => {
+                    // Identifiers, operators and spaces inside a line: skip the run.
+                    self.at += 1;
+                    while self.peek(0).is_some_and(|b| !SPECIAL[b as usize]) {
+                        self.at += 1;
+                    }
+                }
             }
         }
         Ok(
@@ -729,6 +735,18 @@ impl<'a> Lexer<'a> {
         }
     }
 }
+
+/// Bytes the lexer must look at; everything else is skipped in runs.
+static SPECIAL: [bool; 256] = {
+    let mut table = [false; 256];
+    let bytes = b"\n\r\"'$@/#\\()[]{}\xc2\xe2";
+    let mut i = 0;
+    while i < bytes.len() {
+        table[bytes[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
 
 fn is_identifier_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80

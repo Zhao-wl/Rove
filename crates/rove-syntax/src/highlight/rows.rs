@@ -244,6 +244,7 @@ pub(super) static EMPTY_LINE: LazyLock<Arc<[Token]>> = LazyLock::new(|| Arc::fro
 
 pub(super) type Rows = (Vec<LineTokens>, Option<Arc<[LineRange]>>);
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn assemble(
     ranges: &RowRanges,
     source: &Source,
@@ -251,10 +252,21 @@ pub(super) fn assemble(
     mut captures: Vec<Capture>,
     baseline: Option<Incremental<'_>>,
     limit: usize,
+    workers: usize,
     work: &Work<'_>,
 ) -> Result<Rows> {
     if !captures.is_sorted_by_key(|c| (c.start, Reverse(c.end), c.priority)) {
         super::csharp_parts::sort_captures(&mut captures);
+    }
+    if baseline.is_none()
+        && scan == (0..ranges.len())
+        && workers > 1
+        && ranges.len() >= PARALLEL_ROWS
+    {
+        return Ok((
+            assemble_parallel(ranges, source, &captures, limit, workers, work)?,
+            None,
+        ));
     }
 
     let mut lines = Vec::with_capacity(ranges.len());
@@ -285,21 +297,7 @@ pub(super) fn assemble(
                 active.push(capture);
             }
         }
-        let tokens = if !active.is_empty()
-            && !range.is_empty()
-            && (range.len() <= limit
-                || (range.len() <= limit.saturating_mul(3)
-                    && source
-                        .text(range.clone())
-                        .encode_utf16()
-                        .take(limit + 1)
-                        .count()
-                        <= limit))
-        {
-            project_line(range, &active)
-        } else {
-            EMPTY_LINE.clone()
-        };
+        let tokens = row_tokens(range, &active, source, limit);
         let current = LineTokens {
             origin: range.start,
             tokens,
@@ -324,6 +322,108 @@ pub(super) fn assemble(
             .collect()
     });
     Ok((lines, changed))
+}
+
+/// Tokens of one row from the captures that overlap it; empty past the line limit.
+fn row_tokens(
+    range: &Range<usize>,
+    active: &[&Capture],
+    source: &Source,
+    limit: usize,
+) -> Arc<[Token]> {
+    if !active.is_empty()
+        && !range.is_empty()
+        && (range.len() <= limit
+            || (range.len() <= limit.saturating_mul(3)
+                && source
+                    .text(range.clone())
+                    .encode_utf16()
+                    .take(limit + 1)
+                    .count()
+                    <= limit))
+    {
+        project_line(range, active)
+    } else {
+        EMPTY_LINE.clone()
+    }
+}
+
+/// Rows per thread below which a full build assembles on one thread.
+const PARALLEL_ROWS: usize = 4096;
+
+/// Full build: split the rows into blocks, one per thread. A block starts with the
+/// captures that began earlier and still cover its first row, found through the running
+/// maximum of capture ends, so the result equals the sequential pass.
+fn assemble_parallel(
+    ranges: &RowRanges,
+    source: &Source,
+    captures: &[Capture],
+    limit: usize,
+    workers: usize,
+    work: &Work<'_>,
+) -> Result<Vec<LineTokens>> {
+    let rows = &ranges.0;
+    let mut reach = Vec::with_capacity(captures.len());
+    let mut furthest = 0;
+    for capture in captures {
+        furthest = furthest.max(capture.end);
+        reach.push(furthest);
+    }
+    let blocks = workers.min(rows.len() / (PARALLEL_ROWS / 4)).max(1);
+    let size = rows.len().div_ceil(blocks);
+    let block = |first: usize| -> Result<Vec<LineTokens>> {
+        let last = (first + size).min(rows.len());
+        let origin = rows[first].start;
+        let next = captures.partition_point(|c| c.start < origin);
+        let mut active = Vec::new();
+        let mut index = next;
+        while index > 0 && reach[index - 1] > origin {
+            index -= 1;
+            if captures[index].end > origin {
+                active.push(&captures[index]);
+            }
+        }
+        active.reverse();
+        let mut pending = captures[next..].iter().peekable();
+        let mut lines = Vec::with_capacity(last - first);
+        for (offset, range) in rows[first..last].iter().enumerate() {
+            if offset % 256 == 0 {
+                work.check()?;
+            }
+            active.retain(|c| c.end > range.start);
+            while pending.peek().is_some_and(|c| c.start < range.end) {
+                let capture = pending.next().unwrap();
+                if capture.end > range.start {
+                    active.push(capture);
+                }
+            }
+            lines.push(LineTokens {
+                origin: range.start,
+                tokens: row_tokens(range, &active, source, limit),
+            });
+        }
+        Ok(lines)
+    };
+    let starts: Vec<_> = (0..rows.len()).step_by(size).collect();
+    let parts: Vec<Result<Vec<LineTokens>>> = std::thread::scope(|scope| {
+        let block = &block;
+        let helpers: Vec<_> = starts[1..]
+            .iter()
+            .map(|&first| scope.spawn(move || block(first)))
+            .collect();
+        std::iter::once(block(starts[0]))
+            .chain(
+                helpers
+                    .into_iter()
+                    .map(|helper| helper.join().unwrap_or(Err(Error::NotReady))),
+            )
+            .collect()
+    });
+    let mut lines = Vec::with_capacity(rows.len());
+    for part in parts {
+        lines.extend(part?);
+    }
+    Ok(lines)
 }
 
 /// Convert overlapping tree captures into disjoint tokens with outer-to-inner scope stacks.

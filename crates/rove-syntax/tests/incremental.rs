@@ -488,3 +488,34 @@ fn csharp_line_limit_follows_settings_layers() {
 fn patient() -> TreeSitterSyntax {
     TreeSitterSyntax::default().with_refresh_budget(Duration::from_secs(30))
 }
+
+#[test]
+fn parallel_assembly_matches_one_thread() {
+    // More than 8192 rows, with captures that span rows (block comments, verbatim strings).
+    let mut source = String::from("namespace N {\n");
+    for i in 0..1_200 {
+        write!(
+            source,
+            "    class C{i} {{\n        /* a\n           b */\n        string s = @\"x\n y\";\n        int M() {{ return {i}; }}\n    }}\n"
+        )
+        .unwrap();
+    }
+    source.push_str("}\n");
+    let text: Arc<dyn TextSource> = Arc::new(RopeText::from_text(&source));
+    assert!(text.lines().known > 8_192);
+    let lines = text.lines().known;
+    let parallel = run(
+        &TreeSitterSyntax::default().with_parallelism(4),
+        "csharp",
+        text.clone(),
+    );
+    let single = run(
+        &TreeSitterSyntax::default().with_parallelism(0),
+        "csharp",
+        text,
+    );
+    assert_eq!(
+        dump(parallel.snapshot.as_ref(), &source, lines),
+        dump(single.snapshot.as_ref(), &source, lines)
+    );
+}
