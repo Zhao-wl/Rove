@@ -20,9 +20,11 @@ sealed class IndexOptions
 {
     public bool Generators;
     public string? DiagAssembly;
-    /// 同时读文件的线程数。机械硬盘上过高会把顺序读打散成随机读。
-    public int IoConcurrency = 4;
-    /// 同时处于"已解析未释放"状态的项目，其文件数之和的上限（单个项目超限时独占运行）。
+    /// 同时读文件的线程数。实测（docs/M2_INDEXER_PERF_REPORT.md）机械硬盘与 SSD 都是并发越深越快：
+    /// 深队列让 NCQ 与系统 I/O 调度合并寻道；32 之后不再改善。
+    public int IoConcurrency = 32;
+    /// 同时处于"已解析未释放"状态的项目，其文件数之和的上限。单个项目超限时独占运行；
+    /// 关键路径上的项目（优先级不低于任何尚未开工的项目）不受此限。
     public int MaxActiveFiles = 6000;
     /// 预读缓冲上限（字节）。
     public long PrefetchBytes = 256L << 20;
@@ -152,7 +154,7 @@ static class Pipeline
         ctx.Prefetch.Stop();
     }
 
-    /// 前段（读取、解析、编译、镜像）在线程池上以正常优先级运行：它在关键路径上，决定下游何时能开工。
+    /// 前段（读取、解析、编译、镜像）在线程池上运行，期间临时提到高于正常的线程优先级（Boost）：它在关键路径上，决定下游何时能开工。
     /// 绑定拆成逐文件的工作项交给 BindWorkers，按项目优先级排队，最后一个文件完成时项目结束。
     static void RunProject(IndexContext ctx, BindWorkers workers, long priority, ProjectInfo proj, List<string> owned,
         MetadataReference?[] depImages, bool hasDependents, Action<MetadataReference?> imageReady, Action done)

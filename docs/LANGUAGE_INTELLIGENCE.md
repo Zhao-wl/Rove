@@ -121,6 +121,13 @@ LSP 的准确性没有问题（底层都是 Roslyn 编译器），问题在于**
 - 如果某个符号的签名或可见性变了，可能影响其他文件的绑定，这时把受影响的文件加入后台队列逐步重建。
 - 定期（或在 git 切换分支、大量文件变化时）后台全量重建，并原子替换索引文件。
 
+**Source Generators（`--generators`，默认关闭）：**
+
+- 每个分析器目录使用独立的加载上下文，依赖从同目录解析。M0 用默认加载上下文，Entities 生成器的依赖解析不到，所以静默失败、生成 0 个文件。
+- 修正后，在大型项目上实测：Entities 的 `SystemGenerator` / `AspectGenerator` 为 `ISystem` 实现生成了 17 个文件。`Unity.Properties` 的生成器加载成功，但没有程序集声明 `[assembly: GeneratePropertyBagsForAssembly]`，所以没有产出。未解析名称占比不变，耗时约 +7 s。
+- 默认关闭。以下情形建议打开：用户代码直接引用生成的成员（Entities 的 Aspect `Lookup` / `TypeHandle`、`[GeneratePropertyBag]` 生成的属性包等），或者需要在生成代码里跳转。
+- 数据见 [M2_INDEXER_PERF_REPORT](M2_INDEXER_PERF_REPORT.md) §5。
+
 **分发：**
 
 - 以 self-contained 方式发布，内置 .NET 运行时，用户无需安装 SDK。体积估计 60–90 MB，所以作为可选组件，与主程序（< 30 MB）分开。（已确认接受，2026-11-09）

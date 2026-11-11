@@ -74,7 +74,7 @@ static class IndexWriter
                 byKey.TryGetValue(local, out target);
             if (target == null)
             {
-                var fallback = SymbolKey.Global(rec.ParameterFallback ?? rec.Key.Text);
+                var fallback = SymbolKey.Global(rec.ParameterFallback ?? text);
                 if (!byKey.TryGetValue(fallback, out target))
                 {
                     target = new SymRec
