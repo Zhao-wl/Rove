@@ -277,14 +277,24 @@ impl Shell {
     pub fn setting_bool(&self, key: &'static str) -> bool {
         matches!(self.setting(key), Some(Value::Bool(true)))
     }
-    /// 切换类命令：先尝试写设置（#13 合并后生效）；不支持写入时只改当前窗口。
-    fn set_setting(&mut self, key: &'static str, value: Value) {
-        let _ = self.settings.write(
+    /// 切换类命令：在后台写用户设置（#13 合并后生效，失败不弹通知）；
+    /// 当前窗口立即使用新值，不等写入完成，也不因写入不支持而失效。
+    fn set_setting<T: ShellHost>(&mut self, key: &'static str, value: Value, cx: &mut Context<T>) {
+        let write = self.settings.write(
             key.into(),
             Scope::default(),
             value.clone(),
             Default::default(),
         );
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = write.await {
+                    if e != rove_base::Error::Unsupported {
+                        eprintln!("settings: 无法写入 {key}: {e}");
+                    }
+                }
+            })
+            .detach();
         self.overrides.insert(key, value);
     }
 
@@ -616,6 +626,7 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
             shell.set_setting(
                 "workbench.sideBar.location",
                 Value::String(next.as_setting().into()),
+                cx,
             );
         }
         "workbench.action.togglePanel" => {
@@ -696,7 +707,7 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
         "workbench.action.focusStatusBar" => focus_part(shell, Part::StatusBar, &editor, window),
         "workbench.action.toggleStatusbarVisibility" => {
             let visible = !shell.status_bar_visible();
-            shell.set_setting("workbench.statusBar.visible", Value::Bool(visible));
+            shell.set_setting("workbench.statusBar.visible", Value::Bool(visible), cx);
             if !visible && part == Part::StatusBar {
                 window.focus(&editor);
             }
@@ -745,7 +756,7 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
             }
             .clamp(MIN_ZOOM, MAX_ZOOM);
             if !shell.setting_bool("window.zoomPerWindow") {
-                shell.set_setting("window.zoomLevel", Value::Number(shell.zoom_level));
+                shell.set_setting("window.zoomLevel", Value::Number(shell.zoom_level), cx);
             }
             host.zoom_changed(window, cx);
             cx.notify();
