@@ -161,13 +161,13 @@ fn zoom_scales_ui_without_rescan_or_reparse(cx: &mut TestAppContext) {
     let folder = csharp_folder();
     let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
     open_first_file(cx);
-    let code = view.read_with(cx, |v, _| v.code.clone());
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
     let (scans, document, syntax) = view.read_with(cx, |v, _| {
-        let o = v.editor.current.as_ref().unwrap();
+        let o = v.editor.active().current().and_then(Tab::opened).unwrap();
         (
             v.scans,
             Arc::as_ptr(&o.document),
-            Arc::as_ptr(&o.syntax) as *const (),
+            Arc::as_ptr(o.syntax.as_ref().unwrap()) as *const (),
         )
     });
     let line_height = code.read_with(cx, |c, _| c.line_height());
@@ -178,11 +178,11 @@ fn zoom_scales_ui_without_rescan_or_reparse(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         assert_eq!(v.shell.zoom_level(), 1.0);
         assert!((v.shell.zoom() - 1.2).abs() < 1e-6);
-        let o = v.editor.current.as_ref().unwrap();
+        let o = v.editor.active().current().and_then(Tab::opened).unwrap();
         assert_eq!(v.scans, scans, "缩放不得重新扫描");
         assert_eq!(Arc::as_ptr(&o.document), document, "缩放不得重新打开文档");
         assert_eq!(
-            Arc::as_ptr(&o.syntax) as *const (),
+            Arc::as_ptr(o.syntax.as_ref().unwrap()) as *const (),
             syntax,
             "缩放不得重新解析"
         );

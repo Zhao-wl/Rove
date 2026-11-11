@@ -1,15 +1,19 @@
 use super::{
     appearance,
     commands::Commands,
-    editor::{Pending, SingleEditor},
     text::{default_settings, FileDocuments},
 };
 use crate::{
     code_view::{
-        self, CodeView, CodeViewServices, DecorationProvider, InlineDecoration, LayerId,
-        LineDecorations, TextStyle,
+        self, CodeView, CodeViewEvent, CodeViewServices, DecorationProvider, InlineDecoration,
+        LayerId, LineDecorations, Reveal, ScrollPosition, Selection, TextStyle,
     },
-    documents::{OpenDocuments, OpenOptions, OpenSource},
+    documents::{EditorGroupId, OpenDocuments, OpenOptions, OpenSource},
+    editors::{
+        actions as editor_actions,
+        settings::{EditorKind, EditorSettings},
+        Axis, Content, Direction, EditorService, Layout, OpenJob, Tab, TabId, ViewState,
+    },
     list_widget::{
         options::ListOptions,
         tree::{ChildCount, Children, TreeItem, TreeModel, TreeSource},
@@ -26,19 +30,32 @@ use crate::{
     },
 };
 use gpui::{
-    actions, div, point, prelude::*, px, rgba, size, uniform_list, AnyElement, App, Application,
-    Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, KeyBinding, Render,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, relative, rgba, size, uniform_list, AnyElement, App,
+    Application, Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, KeyBinding,
+    Render, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rove_base::{
-    Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, Value, WorkspacePath,
+    Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, TextRange, Value,
+    Version, WorkspacePath,
 };
 use rove_commands::{CommandExecutor, CommandRegistry, Invocation};
 use rove_config::{Key, Scope};
 use rove_i18n::{Message, StringTable, Strings};
 use rove_theme::{Color, Theme, ThemeKind};
-use rove_workspace::{EntryKind, Workspace};
-use std::{borrow::Cow, cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
+use rove_workspace::{EntryKind, FileEvent, Workspace};
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+mod editor_panes;
+#[cfg(test)]
+mod editor_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
@@ -133,11 +150,58 @@ impl DecorationProvider for SyntaxColors {
 // SKELETON(commands): temporary GPUI action bridge and hardcoded keys, replaced by #14.
 actions!(skeleton_actions, [QuickOpen, ShowCommands]);
 
+/// What a code view currently displays: a tab's document at one text version.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Shown {
+    tab: TabId,
+    document: DocumentId,
+    version: Version,
+}
+
+/// One code view of an editor group, with its own syntax colouring layer.
+struct CodeSlot {
+    code: Entity<CodeView>,
+    colors: Rc<SyntaxColors>,
+    layer: LayerId,
+    shown: Option<Shown>,
+    _events: gpui::Subscription,
+}
+
+/// Each editor group owns one code view; the in-group side-by-side editor
+/// (`splitEditorInGroup`) adds a second one for the same tab.
+struct GroupViews {
+    primary: CodeSlot,
+    secondary: Option<CodeSlot>,
+}
+
+fn selection_of(state: &ViewState) -> Selection {
+    match &state.selection {
+        Some(range) if range.start() == state.cursor => Selection::new(range.end(), range.start()),
+        Some(range) => Selection::new(range.start(), range.end()),
+        None => Selection::caret(state.cursor),
+    }
+}
+
+fn apply_zoom(code: &mut CodeView, zoom: f64, cx: &mut Context<CodeView>) {
+    code.reload_options(cx);
+    let mut options = code.options().clone();
+    options.font_size *= zoom;
+    // 0 表示按字号自动计算，乘以系数仍是 0。
+    options.line_height_setting *= zoom;
+    code.set_options(options, cx);
+}
+
 /// 骨架窗口：工作台（标题栏、活动栏、侧边栏、面板、状态栏、反馈）由 #16 的 `shell` 提供，
-/// 这里装配骨架的文件树、单编辑区与代码视图。
+/// 编辑器组网格、标签与打开文档服务由 #17 的 `editors` 提供，每个组的正文是 #19 的代码视图。
 pub struct Workbench {
     tree: Option<FileTree>,
-    editor: SingleEditor,
+    editor: EditorService,
+    root: PathBuf,
+    views: BTreeMap<EditorGroupId, GroupViews>,
+    /// The group whose code view last received keyboard focus from the editor area.
+    focus_group: Option<EditorGroupId>,
+    trace_switch: bool,
+    switch_started: Option<(TabId, Instant)>,
     theme: Arc<dyn Theme>,
     strings: StringTable,
     shell: Shell,
@@ -146,10 +210,7 @@ pub struct Workbench {
     /// 工作区扫描次数（缩放等界面操作不得触发重新扫描）。
     scans: u32,
     scan_failed: bool,
-    error_path: Option<String>,
-    code: Entity<CodeView>,
-    syntax_colors: Rc<SyntaxColors>,
-    syntax_layer: LayerId,
+    workspace_events: Option<rove_base::Subscription>,
     started: Instant,
     first_frame: bool,
 }
@@ -169,39 +230,58 @@ impl Workbench {
         store: LayoutStore,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::build(root, started, store, EditorSettings::default(), cx)
+    }
+    /// Builds a window using the registered editor preferences from a supplied settings service.
+    pub fn with_editor_settings(
+        root: PathBuf,
+        started: Instant,
+        store: LayoutStore,
+        settings: &dyn rove_config::Settings,
+        cx: &mut Context<Self>,
+    ) -> CoreResult<Self> {
+        Ok(Self::build(
+            root,
+            started,
+            store,
+            EditorSettings::read(settings)?,
+            cx,
+        ))
+    }
+    fn build(
+        root: PathBuf,
+        started: Instant,
+        store: LayoutStore,
+        settings: EditorSettings,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let owner = cx.entity().downgrade();
         let app = cx.to_async();
         let background = cx.background_executor().clone();
-        let schedule = move |job: Pending| {
-            let Pending { id, resource, task } = job;
+        let schedule = move |job: OpenJob| {
+            let OpenJob { id, task } = job;
             let read = background.spawn(task);
+            let progress = background.timer(Duration::from_millis(100));
+            let loading_owner = owner.clone();
+            app.spawn(async move |cx| {
+                progress.await;
+                let _ = loading_owner.update(cx, |view, cx| {
+                    if view.editor.slow(id) {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
             let owner = owner.clone();
             app.spawn(async move |cx| {
                 let result = read.await;
                 let _ = owner.update(cx, |view, cx| {
-                    match view.editor.complete(id, result) {
-                        Ok(true) => {
-                            view.show_current(cx);
-                            view.editor.ready(id);
-                            view.error_path = None;
-                        }
-                        Ok(false) => return,
-                        Err(Error::Cancelled) => {}
-                        Err(error) => {
-                            eprintln!("open {resource:?}: {error}");
-                            if view.editor.current.is_none() {
-                                let path = match &resource {
-                                    Resource::Workspace(path) => path.as_str().to_owned(),
-                                    Resource::File(path) => path.display().to_string(),
-                                    Resource::Virtual(name) => name.to_string(),
-                                };
-                                view.error_path = Some(path);
-                                view.code
-                                    .update(cx, |code, cx| code.set_text(None, false, cx));
-                            }
-                        }
+                    if view.editor.finish(id, result) {
+                        // Ready is reported once the location is in the group's code view.
+                        view.sync_views(cx);
+                        view.editor.flush_ready();
+                        cx.notify();
                     }
-                    cx.notify();
                 });
             })
             .detach();
@@ -215,33 +295,22 @@ impl Workbench {
         );
         // #10 的主题服务同时供给骨架与代码视图（#19）。
         let theme: Arc<dyn Theme> = rove_theme::ThemeService::new(default_settings());
-        let syntax_colors = Rc::new(SyntaxColors {
-            current: RefCell::new(None),
-            theme: theme.clone(),
-        });
-        let provider: Rc<dyn DecorationProvider> = syntax_colors.clone();
-        let mut syntax_layer = None;
-        let code = cx.new(|cx| {
-            let mut code = CodeView::new(
-                CodeViewServices {
-                    settings: default_settings(),
-                    theme: theme.clone(),
-                    theme_kind: ThemeKind::Dark,
-                },
-                cx,
-            );
-            syntax_layer = code
-                .add_decorations("rove.syntax", code_view::priority::SYNTAX, provider, cx)
-                .ok();
-            code
-        });
+        let size = settings.size;
         let mut view = Self {
             tree: None,
-            editor: SingleEditor::new(
-                Arc::new(FileDocuments::new(root.clone(), default_settings())),
-                rove_syntax::highlight::TreeSitterSyntax::default(),
+            editor: EditorService::new(
+                Arc::new(
+                    FileDocuments::new(root.clone(), default_settings()).with_size_policy(size),
+                ),
+                Arc::new(rove_syntax::highlight::TreeSitterSyntax::default()),
+                settings,
                 schedule,
             ),
+            root: root.clone(),
+            views: BTreeMap::new(),
+            focus_group: None,
+            trace_switch: std::env::var_os("ROVE_EDITOR_SWITCH_TRACE").is_some(),
+            switch_started: None,
             theme,
             strings: appearance::strings().unwrap(),
             shell,
@@ -249,10 +318,7 @@ impl Workbench {
             focus: cx.focus_handle(),
             scans: 0,
             scan_failed: false,
-            error_path: None,
-            code,
-            syntax_colors,
-            syntax_layer: syntax_layer.expect("syntax decoration layer"),
+            workspace_events: None,
             started,
             first_frame: false,
         };
@@ -273,6 +339,7 @@ impl Workbench {
                 );
             }
         }
+        view.sync_views(cx);
         view.scan(root, cx);
         view
     }
@@ -302,7 +369,11 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {
-                match result.and_then(file_tree) {
+                let tree = result.and_then(|workspace| {
+                    view.watch_workspace(&workspace, cx);
+                    file_tree(workspace)
+                });
+                match tree {
                     Ok(tree) => view.tree = Some(tree),
                     Err(e) => {
                         eprintln!("workspace: {e}");
@@ -311,6 +382,47 @@ impl Workbench {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+    /// `workbench.editor.closeOnFileDelete`: close tabs whose file was removed or renamed away.
+    fn watch_workspace(&mut self, workspace: &Arc<dyn Workspace>, cx: &mut Context<Self>) {
+        if !self.editor.settings.close_on_delete {
+            return;
+        }
+        let (send, receive) = async_channel::unbounded();
+        self.workspace_events = Some(workspace.changes().subscribe(Arc::new(move |batch| {
+            let _ = send.try_send(batch);
+        })));
+        cx.spawn(async move |this, cx| {
+            while let Ok(first) = receive.recv().await {
+                let mut removed = BTreeSet::new();
+                for batch in
+                    std::iter::once(first).chain(std::iter::from_fn(|| receive.try_recv().ok()))
+                {
+                    for event in batch.events.iter() {
+                        if let FileEvent::Removed(path) | FileEvent::Renamed { from: path, .. } =
+                            event
+                        {
+                            removed.insert(path.clone());
+                        }
+                    }
+                }
+                if this
+                    .update(cx, |view, cx| {
+                        let mut changed = false;
+                        for path in removed {
+                            changed |= view.editor.file_removed(&Resource::Workspace(path));
+                        }
+                        if changed {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
         })
         .detach();
     }
@@ -326,36 +438,75 @@ impl Workbench {
         }
         let path = row.id.0.to_string();
         let resource = Resource::Workspace(WorkspacePath::new(&path).expect("workspace path"));
-        self.open(resource, path, cx);
-    }
-    /// The installed service schedules its own work.
-    pub fn open_documents(&mut self) -> &mut dyn OpenDocuments {
-        &mut self.editor
-    }
-
-    fn open(&mut self, resource: Resource, path: String, cx: &mut Context<Self>) {
-        self.error_path = None;
         let _ = crate::feedback::FeedbackService::dismiss(
             &mut self.shell.feedback,
             "command.placeholder",
         );
-        if let Err(error) = self.open_documents().open(
-            resource,
-            OpenOptions {
-                source: OpenSource::Explorer,
-                ..Default::default()
-            },
-            Cancellation::default(),
-        ) {
-            eprintln!("open: {error}");
-            self.error_path = Some(path);
+        let options = OpenOptions {
+            source: OpenSource::Explorer,
+            preserve_focus: self.editor.settings.explorer_preserve_focus,
+            ..Default::default()
+        };
+        if let Err(error) = self
+            .open_documents()
+            .open(resource, options, Cancellation::default())
+        {
+            eprintln!("open {path}: {error}");
         }
         cx.notify();
     }
+    /// The installed, window-owned service. Subscribe to events before opening.
+    pub fn open_documents(&mut self) -> &mut dyn OpenDocuments {
+        &mut self.editor
+    }
 
-    /// 工作台没有实现的命令交给骨架的命令执行器（#14 的执行桥合并后替换）；
-    /// 占位命令返回标题，作为状态栏临时消息显示（3 秒后消失）。
+    /// Installs a placeholder for a registered editor type until its view factory is available.
+    pub fn register_editor_placeholder(
+        &mut self,
+        id: &str,
+        label_key: &'static str,
+    ) -> CoreResult<()> {
+        self.strings.text(&Message::key(label_key))?;
+        self.editor
+            .settings
+            .editors
+            .register_placeholder(id, label_key)
+    }
+
+    fn note_switch(&mut self, previous: Option<TabId>, start: Instant) {
+        if self.trace_switch {
+            self.switch_started = self
+                .editor
+                .active()
+                .current()
+                .filter(|tab| previous != Some(tab.id) && tab.opened().is_some())
+                .map(|tab| (tab.id, start));
+        }
+    }
+
+    fn switch_tab(&mut self, group: EditorGroupId, tab: TabId) {
+        let start = Instant::now();
+        let previous = self.editor.active().active;
+        self.editor.activate(group, tab, true);
+        self.note_switch(previous, start);
+    }
+
+    /// Shared by the command palette and shortcut dispatch.
+    pub fn command_registry(&self) -> &CommandRegistry {
+        &self.commands.registry
+    }
+
+    /// 编辑器组与标签命令由 #17 的服务直接执行；其余工作台没有实现的命令交给骨架的命令执行器
+    /// （#14 的执行桥合并后替换）；占位命令返回标题，作为状态栏临时消息显示（3 秒后消失）。
     fn command(&mut self, id: &str, cx: &mut Context<Self>) {
+        let start = Instant::now();
+        let previous = self.editor.active().active;
+        if self.commands.registry.get(id).is_some() && editor_actions::execute(&mut self.editor, id)
+        {
+            self.note_switch(previous, start);
+            cx.notify();
+            return;
+        }
         let executor: Arc<dyn CommandExecutor> = self.commands.clone();
         let task = executor.execute(
             Invocation {
@@ -382,33 +533,221 @@ impl Workbench {
         })
         .detach();
     }
-    /// 把当前文档交给代码视图（文本源、语言、语法着色层与打开位置）。
-    fn show_current(&mut self, cx: &mut Context<Self>) {
-        let Some(opened) = self.editor.current.as_ref() else {
+
+    // ------------------------------------------------------------- code views per group
+
+    fn new_slot(&self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) -> CodeSlot {
+        let colors = Rc::new(SyntaxColors {
+            current: RefCell::new(None),
+            theme: self.theme.clone(),
+        });
+        let provider: Rc<dyn DecorationProvider> = colors.clone();
+        let theme = self.theme.clone();
+        let zoom = self.shell.zoom() as f64;
+        let mut layer = None;
+        let code = cx.new(|cx| {
+            let mut code = CodeView::new(
+                CodeViewServices {
+                    settings: default_settings(),
+                    theme,
+                    theme_kind: ThemeKind::Dark,
+                },
+                cx,
+            );
+            layer = code
+                .add_decorations("rove.syntax", code_view::priority::SYNTAX, provider, cx)
+                .ok();
+            if zoom != 1.0 {
+                apply_zoom(&mut code, zoom, cx);
+            }
+            code
+        });
+        let events = cx.subscribe(&code, move |this, _, event: &CodeViewEvent, _| {
+            this.code_event(group, secondary, event)
+        });
+        CodeSlot {
+            code,
+            colors,
+            layer: layer.expect("syntax decoration layer"),
+            shown: None,
+            _events: events,
+        }
+    }
+
+    /// Writes the shown tab's live scroll and selection back to its `ViewState`.
+    fn code_event(&mut self, group: EditorGroupId, secondary: bool, event: &CodeViewEvent) {
+        let Some(slot) = self.views.get(&group).and_then(|views| {
+            if secondary {
+                views.secondary.as_ref()
+            } else {
+                Some(&views.primary)
+            }
+        }) else {
             return;
         };
-        let text = opened.document.text.clone();
-        let language: Arc<str> = opened.document.metadata.language.clone();
-        let position = opened.position;
-        *self.syntax_colors.current.borrow_mut() = Some((text.clone(), opened.syntax.clone()));
-        let layer = self.syntax_layer.clone();
-        self.code.update(cx, |code, cx| {
-            code.set_text(Some(text), false, cx);
-            code.set_language(Some(language), cx);
-            code.invalidate_decorations(&layer, None, cx);
-            if let Some(p) = position {
-                code.set_selection(
-                    code_view::Selection::caret(p),
-                    Some(code_view::Reveal::CenterIfOutside),
-                    cx,
+        let Some(shown) = slot.shown else { return };
+        let Some(pane) = self.editor.groups.get_mut(&group) else {
+            return;
+        };
+        if let CodeViewEvent::ViewportChanged(viewport) = event {
+            if !secondary {
+                pane.rows = (viewport.last_line.saturating_sub(viewport.first_line) + 1) as f64;
+            }
+        }
+        let Some(tab) = pane.tab_mut(shown.tab) else {
+            return;
+        };
+        let state = if secondary {
+            match tab.secondary.as_mut() {
+                Some(state) => state,
+                None => return,
+            }
+        } else {
+            &mut tab.view
+        };
+        match event {
+            CodeViewEvent::SelectionChanged { selection, .. } => {
+                state.cursor = selection.active;
+                state.selection = if selection.is_empty() {
+                    None
+                } else {
+                    TextRange::new(selection.start(), selection.end()).ok()
+                };
+            }
+            CodeViewEvent::ViewportChanged(viewport) => {
+                state.scroll = viewport.top;
+                state.scroll_x = viewport.scroll_x;
+            }
+            CodeViewEvent::TextChanged => {}
+        }
+    }
+
+    /// Loads each group's active tab into that group's code view. The outgoing tab's state is
+    /// already in its `ViewState` (see [`Self::code_event`]); the incoming tab's state is restored
+    /// from its own, and a pending reveal from a completed open is applied last.
+    fn sync_views(&mut self, cx: &mut Context<Self>) {
+        let groups: Vec<_> = self.editor.groups.keys().copied().collect();
+        self.views.retain(|group, _| groups.contains(group));
+        for group in groups {
+            if !self.views.contains_key(&group) {
+                let primary = self.new_slot(group, false, cx);
+                self.views.insert(
+                    group,
+                    GroupViews {
+                        primary,
+                        secondary: None,
+                    },
                 );
+            }
+            let side_by_side = self.editor.groups[&group]
+                .current()
+                .is_some_and(|tab| tab.secondary.is_some());
+            match (side_by_side, self.views[&group].secondary.is_some()) {
+                (true, false) => {
+                    let slot = self.new_slot(group, true, cx);
+                    self.views.get_mut(&group).unwrap().secondary = Some(slot);
+                }
+                (false, true) => self.views.get_mut(&group).unwrap().secondary = None,
+                _ => {}
+            }
+            self.sync_slot(group, false, cx);
+            if side_by_side {
+                self.sync_slot(group, true, cx);
+            }
+        }
+    }
+
+    fn sync_slot(&mut self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) {
+        let Self { editor, views, .. } = self;
+        let pane = editor.groups.get_mut(&group).unwrap();
+        let views = views.get_mut(&group).unwrap();
+        let slot = if secondary {
+            views.secondary.as_mut().unwrap()
+        } else {
+            &mut views.primary
+        };
+        let tab = pane
+            .current_mut()
+            .filter(|tab| tab.kind == EditorKind::Text && tab.opened().is_some());
+        let target = tab.as_ref().map(|tab| {
+            let opened = tab.opened().unwrap();
+            Shown {
+                tab: tab.id,
+                document: opened.document.id,
+                version: opened.document.text.version(),
+            }
+        });
+        let reveal = !secondary && tab.as_ref().is_some_and(|tab| tab.reveal);
+        if slot.shown == target && !reveal {
+            return;
+        }
+        let previous = std::mem::replace(&mut slot.shown, target);
+        let Some(tab) = tab else {
+            *slot.colors.current.borrow_mut() = None;
+            slot.code
+                .update(cx, |code, cx| code.set_text(None, false, cx));
+            return;
+        };
+        let opened = tab.opened().unwrap();
+        let text = opened.document.text.clone();
+        let language = opened.document.metadata.language.clone();
+        *slot.colors.current.borrow_mut() = opened.syntax.clone().map(|s| (text.clone(), s));
+        let state = if secondary {
+            tab.secondary.clone().unwrap_or_default()
+        } else {
+            tab.view.clone()
+        };
+        tab.reveal &= secondary;
+        // A new snapshot of the document already shown keeps the live view state.
+        let same = matches!((previous, target), (Some(p), Some(t)) if p.tab == t.tab && p.document == t.document);
+        let changed = previous != target;
+        let layer = slot.layer.clone();
+        slot.code.update(cx, |code, cx| {
+            if changed {
+                code.set_text(Some(text), same, cx);
+                code.set_language(Some(language), cx);
+                code.invalidate_decorations(&layer, None, cx);
+                if !same {
+                    code.set_scroll_position(
+                        ScrollPosition {
+                            top: state.scroll,
+                            x: state.scroll_x,
+                        },
+                        false,
+                        cx,
+                    );
+                    if !reveal {
+                        code.set_selection(selection_of(&state), None, cx);
+                    }
+                }
+            }
+            if reveal {
+                code.set_selection(selection_of(&state), Some(Reveal::CenterIfOutside), cx);
             }
         });
     }
 
-    /// 代码视图实体（供嵌入方订阅事件、登记装饰）。
+    /// The focused group's code view (the active editor).
     pub fn code_view(&self) -> &Entity<CodeView> {
-        &self.code
+        &self.views[&self.editor.focused].primary.code
+    }
+
+    /// The code view of a group, if the group exists.
+    fn group_code(&self, group: EditorGroupId, secondary: bool) -> Option<&Entity<CodeView>> {
+        let views = self.views.get(&group)?;
+        if secondary {
+            views.secondary.as_ref().map(|slot| &slot.code)
+        } else {
+            Some(&views.primary.code)
+        }
+    }
+
+    /// Moves keyboard focus into a group's code view (tab clicks, group focus changes).
+    fn focus_group_code(&self, group: EditorGroupId, window: &mut Window, cx: &App) {
+        match self.group_code(group, false) {
+            Some(code) => window.focus(&code.focus_handle(cx)),
+            None => window.focus(&self.focus),
+        }
     }
 
     /// 状态栏左侧最显眼的文字：临时消息优先，否则是骨架的文件状态条目（测试用）。
@@ -418,16 +757,22 @@ impl Workbench {
     }
     // SKELETON(status): fixed filename/line-count/encoding content; replaced by #27.
     fn file_status(&self) -> String {
-        if let Some(path) = &self.error_path {
-            return self.label("workbench.failed", &[("path", path.clone())]);
-        }
         if self.scan_failed {
             return self.label("workbench.scanFailed", &[]);
         }
-        if self.editor.loading || self.tree.is_none() {
+        let current = self.editor.active().current();
+        if current.is_some_and(Tab::show_progress) || self.tree.is_none() {
             return self.label("common.loading", &[]);
         }
-        if let Some(o) = &self.editor.current {
+        if let Some(tab) = current.filter(|tab| matches!(tab.content, Content::Failed(_))) {
+            let path = match &tab.resource {
+                Resource::Workspace(p) => p.as_str().to_string(),
+                Resource::File(p) => p.display().to_string(),
+                Resource::Virtual(p) => p.to_string(),
+            };
+            return self.label("workbench.failed", &[("path", path)]);
+        }
+        if let Some(o) = current.and_then(Tab::opened) {
             let name = match &o.document.resource {
                 Resource::Workspace(p) => p.as_str().to_string(),
                 Resource::File(p) => p.display().to_string(),
@@ -497,6 +842,7 @@ impl Workbench {
         .into_any_element()
     }
 }
+
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
 const KNOWN_FACTORIES: [&str; 4] = [CONTAINER_FACTORY, STATUS_FACTORY, FILE_VIEW, PROBLEMS];
 impl ShellHost for Workbench {
@@ -515,7 +861,7 @@ impl ShellHost for Workbench {
     fn commands(&self) -> &CommandRegistry {
         &self.commands.registry
     }
-    fn render_editor(&mut self, _: &mut Window, _: &mut Context<Self>) -> AnyElement {
+    fn render_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("editor")
             .size_full()
@@ -523,8 +869,7 @@ impl ShellHost for Workbench {
             .track_focus(&self.focus)
             .bg(self.ui_color("editor.background"))
             .text_color(self.ui_color("editor.foreground"))
-            .font_family("Consolas")
-            .child(self.code.clone())
+            .child(self.editor_grid(cx))
             .into_any_element()
     }
     fn render_view(
@@ -543,7 +888,11 @@ impl ShellHost for Workbench {
         (id == FILE_VIEW).then(|| self.shell.title.clone())
     }
     fn active_document(&self) -> Option<DocumentId> {
-        self.editor.current.as_ref().map(|o| o.document.id)
+        self.editor
+            .active()
+            .current()
+            .and_then(Tab::opened)
+            .map(|o| o.document.id)
     }
     fn editor_focus(&self) -> FocusHandle {
         self.focus.clone()
@@ -555,14 +904,15 @@ impl ShellHost for Workbench {
         // #16 的窗口缩放（window.zoomLevel）同步到 #19 的代码视图：先按设置重读基准字号，
         // 再乘上窗口缩放系数。只重新整形可见行：文档、语法快照与工作区扫描结果都不变。
         let zoom = self.shell.zoom() as f64;
-        self.code.update(cx, |code, cx| {
-            code.reload_options(cx);
-            let mut options = code.options().clone();
-            options.font_size *= zoom;
-            // 0 表示按字号自动计算，乘以系数仍是 0。
-            options.line_height_setting *= zoom;
-            code.set_options(options, cx);
-        });
+        let codes: Vec<_> = self
+            .views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
+            .map(|slot| slot.code.clone())
+            .collect();
+        for code in codes {
+            code.update(cx, |code, cx| apply_zoom(code, zoom, cx));
+        }
         cx.notify();
     }
 }
@@ -573,6 +923,31 @@ impl Focusable for Workbench {
 }
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Groups, active tabs and reveals change through commands, clicks and the open service;
+        // load them into the per-group code views before drawing.
+        self.sync_views(cx);
+        // A tab that finished loading in the background reports Ready once it is shown here.
+        self.editor.flush_ready();
+        if self.focus_group != Some(self.editor.focused) {
+            let moved = self.focus_group.is_some();
+            self.focus_group = Some(self.editor.focused);
+            // Follow the focused group only while the keyboard is in the editor area.
+            if moved && self.focus.contains_focused(window, cx) {
+                self.focus_group_code(self.editor.focused, window, cx);
+            }
+        }
+        if let Some((tab, start)) = self.switch_started {
+            let shown = self.views[&self.editor.focused].primary.shown;
+            if shown.is_some_and(|shown| shown.tab == tab) {
+                self.switch_started = None;
+                window.on_next_frame(move |_, _| {
+                    println!(
+                        "EDITOR_SWITCH_TO_PAINT_MS {:.3}",
+                        start.elapsed().as_secs_f64() * 1000.0
+                    );
+                });
+            }
+        }
         if !self.first_frame {
             self.first_frame = true;
             let start = self.started;
@@ -595,6 +970,12 @@ impl Render for Workbench {
         div()
             .size_full()
             .font_family("Segoe UI")
+            .key_context(editor_actions::context(&self.editor).as_str())
+            .on_action(
+                cx.listener(|v, action: &editor_actions::EditorAction, _, cx| {
+                    v.command(action.0, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|v, _: &QuickOpen, _, cx| v.command("workbench.action.quickOpen", cx)),
             )
@@ -606,6 +987,8 @@ impl Render for Workbench {
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
 pub fn launch(root: PathBuf, started: Instant) {
+    // #13 的设置服务装配到窗口之前，编辑器设置由只读启动适配器读取（editors::startup_settings）。
+    let editors = crate::editors::startup_settings::load(crate::editor_setting_defaults().unwrap());
     Application::new().run(move |cx: &mut App| {
         if let Err(e) = cx
             .text_system()
@@ -619,6 +1002,7 @@ pub fn launch(root: PathBuf, started: Instant) {
         ]);
         cx.bind_keys(shell::view::key_bindings());
         cx.bind_keys(code_view::commands::default_key_bindings());
+        cx.bind_keys(editor_actions::bindings());
         // 布局文件只有几百字节：首帧前读取，用来恢复窗口位置、大小与最大化状态。
         let store = LayoutStore::for_workspace(&root);
         let layout = store.load();
@@ -661,7 +1045,9 @@ pub fn launch(root: PathBuf, started: Instant) {
                 },
                 |window, cx| {
                     cx.new(|cx| {
-                        let mut view = Workbench::with_store(root, started, store, cx);
+                        let mut view =
+                            Workbench::with_editor_settings(root, started, store, &editors, cx)
+                                .expect("valid editor settings");
                         Shell::attach_window(&mut view, window, cx);
                         view
                     })
@@ -717,16 +1103,16 @@ mod tests {
                     WorkspacePath::new("First.cs").unwrap()
                 ))
                 .is_some());
-            let opened = v.editor.current.as_ref().unwrap();
+            let opened = v.editor.active().current().and_then(Tab::opened).unwrap();
             assert_eq!(opened.document.text.lines().known, 3);
-            let token = opened.syntax.tokens(Line(0)).unwrap();
+            let token = opened.syntax.as_ref().unwrap().tokens(Line(0)).unwrap();
             assert!(token.iter().any(|t| t.range.start().0 == 0
                 && t.range.end().0 == 6
                 && t.scopes.last().map(|s| s.as_ref()) == Some("storage.modifier.public.cs")));
             assert!(v.status().contains("UTF-8"));
         });
         // 代码视图已绘制首行：正文已整形，关键字区间按主题着色。
-        let code = view.read_with(cx, |v, _| v.code.clone());
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
         code.read_with(cx, |c, _| {
             let viewport = c.viewport().expect("code view laid out");
             assert_eq!(viewport.first_line, 0);
@@ -761,8 +1147,9 @@ mod tests {
         view.read_with(cx, |v, _| {
             assert_eq!(
                 v.editor
-                    .current
-                    .as_ref()
+                    .active()
+                    .current()
+                    .and_then(Tab::opened)
                     .unwrap()
                     .document
                     .text
@@ -771,7 +1158,7 @@ mod tests {
                 501
             );
         });
-        let code = view.read_with(cx, |v, _| v.code.clone());
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
         code.read_with(cx, |c, _| {
             let frame = c.last_frame();
             assert!(frame.visible_lines > 0);
