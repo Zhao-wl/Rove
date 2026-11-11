@@ -4795,7 +4795,10 @@ version = "0.0.1"
 name = "rove-theme"
 version = "0.0.1"
 dependencies = [
+ "jsonc-parser",
  "rove-base",
+ "rove-config",
+ "serde_json",
 ]
 
 [[package]]
