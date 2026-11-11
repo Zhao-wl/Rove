@@ -107,8 +107,9 @@ metric = "连续滚动时每帧 CPU（整形缓存命中）"
 value = 1
 unit = "ms"
 owner = "#19"
-status = "pending"
-reason = "M0 的 GPUI 原型在 small.txt 上 823 µs；要 #19 的代码视图 Element（整形缓存 + 预取）把整形移出绘制关键路径"
+status = "enforced"
+bench = "scroll/frame_cpu_cache_hit"
+reason = "#19 落地：真实窗口中 small.txt 300 帧 × 3 行，prepaint 开始到 paint 结束（不含 present）。开发机实测 mean 0.41–0.44 ms（M0 原型 823 µs），为 #20 的 token 应用留出约 0.5 ms 余量。无法创建窗口的环境整组跳过（未测量，不失败）"
 
 [[budget]]
 id = "frame_cpu_cache_miss"
@@ -116,8 +117,10 @@ metric = "连续滚动时帧间隔 p99（整形缓存全未命中，uniq.txt）"
 value = 12.5
 unit = "ms"
 owner = "#19"
-status = "pending"
-reason = "CHARTER §6：缓存全未命中时帧间隔 p99 ≤ 1.5 倍刷新间隔（1.5 × 8.33 ms ≈ 12.5 ms）。M0 实测 16.83 ms，两条路线都漏 vsync；等 #19 落地后由 scroll_unique 用例接管"
+status = "recorded"
+bench = "scroll/frame_interval_cache_miss"
+aggregate = "p99"
+reason = "CHARTER §6：缓存全未命中时帧间隔 p99 ≤ 1.5 倍刷新间隔（1.5 × 8.33 ms ≈ 12.5 ms）。M0 实测 16.83 ms；#19 在 120 Hz 开发机上实测 p99 11.3–11.7 ms（uniq.txt 400 帧 × 37 行，见 PR）。帧间隔由显示器刷新率与 vsync 决定，托管 runner 没有物理显示器，所以只记录、不在 CI 上判定；参考设备上的判定按本条数值人工核对"
 
 # ---------------------------------------------------------------- 语言导航
 # 这两条在语义索引就绪时才可测：cargo xtask bench --cs-index <idx>

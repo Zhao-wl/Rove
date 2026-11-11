@@ -5,6 +5,10 @@ use super::{
     text::{default_settings, FileDocuments},
 };
 use crate::{
+    code_view::{
+        self, CodeView, CodeViewServices, DecorationProvider, InlineDecoration, LayerId,
+        LineDecorations, TextStyle,
+    },
     documents::{OpenDocuments, OpenOptions, OpenSource},
     list_widget::{
         options::ListOptions,
@@ -22,11 +26,9 @@ use crate::{
     },
 };
 use gpui::{
-    actions, div, point, prelude::*, px, relative, rgba, size, uniform_list, AnyElement, App,
-    Application, Bounds, ContentMask, Context, Element, ElementId, Entity, FocusHandle, Focusable,
-    Font, FontFeatures, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, KeyBinding, LayoutId, Pixels, Render, ScrollDelta, ScrollWheelEvent, ShapedLine,
-    SharedString, Style, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, rgba, size, uniform_list, AnyElement, App, Application,
+    Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, KeyBinding, Render,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rove_base::{
     Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, Value, WorkspacePath,
@@ -34,11 +36,11 @@ use rove_base::{
 use rove_commands::{CommandExecutor, CommandRegistry, Invocation};
 use rove_config::{Key, Scope};
 use rove_i18n::{Message, StringTable, Strings};
-use rove_theme::{Color, Theme};
+use rove_theme::{Color, Theme, ThemeKind};
 use rove_workspace::{EntryKind, Workspace};
-use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Instant};
-const LINE_HEIGHT: f32 = 22.0;
-const FONT_SIZE: f32 = 14.0;
+use std::{borrow::Cow, cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
+// 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
+// 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
     rgba(((c.0 as u32) << 24) | ((c.1 as u32) << 16) | ((c.2 as u32) << 8) | c.3 as u32).into()
 }
@@ -84,23 +86,50 @@ fn file_tree(workspace: Arc<dyn Workspace>) -> CoreResult<FileTree> {
     ))
 }
 
-#[cfg(test)]
-#[derive(Clone)]
-struct ColoredSpan {
-    range: std::ops::Range<usize>,
-    scope: Arc<str>,
-    color: Color,
+// SKELETON(code-features): SyntaxSnapshot/Theme → 代码视图装饰层的投影；#20 替换为正式的
+// token 着色（主题 token 规则、语义 token、括号着色等）。
+type CurrentSyntax = (
+    Arc<dyn rove_buffer::TextSource>,
+    Arc<dyn rove_syntax::SyntaxSnapshot>,
+);
+struct SyntaxColors {
+    current: RefCell<Option<CurrentSyntax>>,
+    theme: Arc<dyn Theme>,
 }
-#[derive(Clone)]
-struct PreparedLine {
-    number: usize,
-    #[cfg(test)]
-    text: String,
-    #[cfg(test)]
-    spans: Vec<ColoredSpan>,
-    shape: ShapedLine,
-    gutter: ShapedLine,
+impl DecorationProvider for SyntaxColors {
+    fn decorate(&self, line: u64, _: &str, out: &mut LineDecorations) {
+        let current = self.current.borrow();
+        let Some((text, syntax)) = current.as_ref() else {
+            return;
+        };
+        let (Ok(range), Ok(tokens)) = (text.line_range(Line(line)), syntax.tokens(Line(line)))
+        else {
+            return;
+        };
+        for token in tokens.iter() {
+            let start = token.range.start().0.max(range.start().0) - range.start().0;
+            let end = token
+                .range
+                .end()
+                .0
+                .min(range.end().0)
+                .saturating_sub(range.start().0);
+            if start >= end {
+                continue;
+            }
+            if let Some(c) = self.theme.token_style(&token.scopes).foreground {
+                out.inline.push(InlineDecoration {
+                    range: start as u32..end as u32,
+                    style: TextStyle {
+                        foreground: Some(c),
+                        ..Default::default()
+                    },
+                });
+            }
+        }
+    }
 }
+
 // SKELETON(commands): temporary GPUI action bridge and hardcoded keys, replaced by #14.
 actions!(skeleton_actions, [QuickOpen, ShowCommands]);
 
@@ -118,12 +147,9 @@ pub struct Workbench {
     scans: u32,
     scan_failed: bool,
     error_path: Option<String>,
-    scroll: f64,
-    prepared: Vec<PreparedLine>,
-    painted: Vec<PreparedLine>,
-    dirty: bool,
-    preparing: bool,
-    viewport_height: f32,
+    code: Entity<CodeView>,
+    syntax_colors: Rc<SyntaxColors>,
+    syntax_layer: LayerId,
     started: Instant,
     first_frame: bool,
 }
@@ -155,16 +181,9 @@ impl Workbench {
                 let _ = owner.update(cx, |view, cx| {
                     match view.editor.complete(id, result) {
                         Ok(true) => {
-                            view.scroll = view
-                                .editor
-                                .current
-                                .as_ref()
-                                .and_then(|opened| opened.position)
-                                .map_or(0.0, |position| position.line.0 as f64);
+                            view.show_current(cx);
                             view.editor.ready(id);
                             view.error_path = None;
-                            view.dirty = true;
-                            view.prepared.clear();
                         }
                         Ok(false) => return,
                         Err(Error::Cancelled) => {}
@@ -177,8 +196,8 @@ impl Workbench {
                                     Resource::Virtual(name) => name.to_string(),
                                 };
                                 view.error_path = Some(path);
-                                view.prepared.clear();
-                                view.painted.clear();
+                                view.code
+                                    .update(cx, |code, cx| code.set_text(None, false, cx));
                             }
                         }
                     }
@@ -194,6 +213,28 @@ impl Workbench {
             store,
             cx,
         );
+        // #10 的主题服务同时供给骨架与代码视图（#19）。
+        let theme: Arc<dyn Theme> = rove_theme::ThemeService::new(default_settings());
+        let syntax_colors = Rc::new(SyntaxColors {
+            current: RefCell::new(None),
+            theme: theme.clone(),
+        });
+        let provider: Rc<dyn DecorationProvider> = syntax_colors.clone();
+        let mut syntax_layer = None;
+        let code = cx.new(|cx| {
+            let mut code = CodeView::new(
+                CodeViewServices {
+                    settings: default_settings(),
+                    theme: theme.clone(),
+                    theme_kind: ThemeKind::Dark,
+                },
+                cx,
+            );
+            syntax_layer = code
+                .add_decorations("rove.syntax", code_view::priority::SYNTAX, provider, cx)
+                .ok();
+            code
+        });
         let mut view = Self {
             tree: None,
             editor: SingleEditor::new(
@@ -201,7 +242,7 @@ impl Workbench {
                 rove_syntax::highlight::TreeSitterSyntax::default(),
                 schedule,
             ),
-            theme: rove_theme::ThemeService::new(default_settings()),
+            theme,
             strings: appearance::strings().unwrap(),
             shell,
             commands: Arc::new(Commands::new().unwrap()),
@@ -209,12 +250,9 @@ impl Workbench {
             scans: 0,
             scan_failed: false,
             error_path: None,
-            scroll: 0.0,
-            prepared: vec![],
-            painted: vec![],
-            dirty: true,
-            preparing: false,
-            viewport_height: 0.0,
+            code,
+            syntax_colors,
+            syntax_layer: syntax_layer.expect("syntax decoration layer"),
             started,
             first_frame: false,
         };
@@ -237,12 +275,6 @@ impl Workbench {
         }
         view.scan(root, cx);
         view
-    }
-    fn line_height(&self) -> f32 {
-        LINE_HEIGHT * self.shell.zoom()
-    }
-    fn font_size(&self) -> f32 {
-        FONT_SIZE * self.shell.zoom()
     }
     fn label(&self, key: &str, args: &[(&str, String)]) -> String {
         appearance::message(&self.strings, key, args)
@@ -350,127 +382,35 @@ impl Workbench {
         })
         .detach();
     }
-    fn on_scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let delta = match e.delta {
-            ScrollDelta::Lines(p) => p.y as f64,
-            ScrollDelta::Pixels(p) => p.y.to_f64() / self.line_height() as f64,
-        };
-        let count = self
-            .editor
-            .current
-            .as_ref()
-            .map_or(0, |o| o.document.text.lines().known);
-        let rows = ((self.viewport_height - 56.0) / self.line_height()).max(1.0) as f64;
-        self.scroll = (self.scroll - delta).clamp(0.0, (count as f64 - rows).max(0.0));
-        self.dirty = true;
-        cx.notify();
-    }
-    // SKELETON(code-view): visible-line preparation/scrolling, replaced by #19.
-    // SKELETON(code-features): scope/color projection, replaced by #20.
-    fn prepare(&mut self, window: &mut Window) -> CoreResult<()> {
-        self.prepared.clear();
+    /// 把当前文档交给代码视图（文本源、语言、语法着色层与打开位置）。
+    fn show_current(&mut self, cx: &mut Context<Self>) {
         let Some(opened) = self.editor.current.as_ref() else {
-            return Ok(());
+            return;
         };
-        let text = &opened.document.text;
-        let visible =
-            ((self.viewport_height - 56.0).max(0.0) / self.line_height()).ceil() as usize + 2;
-        let first = self.scroll.floor() as usize;
-        let font = Font {
-            family: "Consolas".into(),
-            features: FontFeatures::default(),
-            fallbacks: None,
-            weight: FontWeight::default(),
-            style: FontStyle::default(),
-        };
-        let default = self.theme.color("editor.foreground")?.unwrap();
-        for line in first..(first + visible).min(text.lines().known as usize) {
-            let range = text.line_range(Line(line as u64))?;
-            let mut value = String::new();
-            text.visit_chunks(range.clone(), &mut |s| value.push_str(s))?;
-            #[cfg(test)]
-            let mut spans = vec![];
-            let mut runs = vec![];
-            let mut consumed = 0;
-            for token in opened.syntax.tokens(Line(line as u64))?.iter() {
-                let start = (token.range.start().0.max(range.start().0) - range.start().0) as usize;
-                let end = (token.range.end().0.min(range.end().0) - range.start().0) as usize;
-                if start >= end || start < consumed || end > value.len() {
-                    continue;
-                }
-                if start > consumed {
-                    runs.push(TextRun {
-                        len: start - consumed,
-                        font: font.clone(),
-                        color: color(default),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    });
-                }
-                let c = self
-                    .theme
-                    .token_style(&token.scopes)
-                    .foreground
-                    .unwrap_or(default);
-                runs.push(TextRun {
-                    len: end - start,
-                    font: font.clone(),
-                    color: color(c),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-                #[cfg(test)]
-                spans.push(ColoredSpan {
-                    range: start..end,
-                    scope: token.scopes.last().cloned().unwrap_or_default(),
-                    color: c,
-                });
-                consumed = end;
+        let text = opened.document.text.clone();
+        let language: Arc<str> = opened.document.metadata.language.clone();
+        let position = opened.position;
+        *self.syntax_colors.current.borrow_mut() = Some((text.clone(), opened.syntax.clone()));
+        let layer = self.syntax_layer.clone();
+        self.code.update(cx, |code, cx| {
+            code.set_text(Some(text), false, cx);
+            code.set_language(Some(language), cx);
+            code.invalidate_decorations(&layer, None, cx);
+            if let Some(p) = position {
+                code.set_selection(
+                    code_view::Selection::caret(p),
+                    Some(code_view::Reveal::CenterIfOutside),
+                    cx,
+                );
             }
-            if consumed < value.len() {
-                runs.push(TextRun {
-                    len: value.len() - consumed,
-                    font: font.clone(),
-                    color: color(default),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            let number = self.label("line.number", &[("line", (line + 1).to_string())]);
-            let gutter = window.text_system().shape_line(
-                number.clone().into(),
-                px(self.font_size()),
-                &[TextRun {
-                    len: number.len(),
-                    font: font.clone(),
-                    color: self.ui_color("editorLineNumber.foreground"),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            );
-            let shape = window.text_system().shape_line(
-                value.clone().into(),
-                px(self.font_size()),
-                &runs,
-                None,
-            );
-            self.prepared.push(PreparedLine {
-                number: line,
-                #[cfg(test)]
-                text: value,
-                #[cfg(test)]
-                spans,
-                shape,
-                gutter,
-            });
-        }
-        Ok(())
+        });
     }
+
+    /// 代码视图实体（供嵌入方订阅事件、登记装饰）。
+    pub fn code_view(&self) -> &Entity<CodeView> {
+        &self.code
+    }
+
     /// 状态栏左侧最显眼的文字：临时消息优先，否则是骨架的文件状态条目（测试用）。
     #[cfg(test)]
     fn status(&self) -> String {
@@ -575,7 +515,7 @@ impl ShellHost for Workbench {
     fn commands(&self) -> &CommandRegistry {
         &self.commands.registry
     }
-    fn render_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_editor(&mut self, _: &mut Window, _: &mut Context<Self>) -> AnyElement {
         div()
             .id("editor")
             .size_full()
@@ -584,8 +524,7 @@ impl ShellHost for Workbench {
             .bg(self.ui_color("editor.background"))
             .text_color(self.ui_color("editor.foreground"))
             .font_family("Consolas")
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
-            .child(CodeElement { view: cx.entity() })
+            .child(self.code.clone())
             .into_any_element()
     }
     fn render_view(
@@ -613,9 +552,17 @@ impl ShellHost for Workbench {
         self.command(id, cx);
     }
     fn zoom_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        // 只重新整形可见行：文档、语法快照与工作区扫描结果都不变。
-        self.prepared.clear();
-        self.dirty = true;
+        // #16 的窗口缩放（window.zoomLevel）同步到 #19 的代码视图：先按设置重读基准字号，
+        // 再乘上窗口缩放系数。只重新整形可见行：文档、语法快照与工作区扫描结果都不变。
+        let zoom = self.shell.zoom() as f64;
+        self.code.update(cx, |code, cx| {
+            code.reload_options(cx);
+            let mut options = code.options().clone();
+            options.font_size *= zoom;
+            // 0 表示按字号自动计算，乘以系数仍是 0。
+            options.line_height_setting *= zoom;
+            code.set_options(options, cx);
+        });
         cx.notify();
     }
 }
@@ -626,25 +573,6 @@ impl Focusable for Workbench {
 }
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let height: f32 = window.viewport_size().height.into();
-        if height != self.viewport_height {
-            self.viewport_height = height;
-            self.dirty = true;
-        }
-        if self.dirty && !self.preparing {
-            self.dirty = false;
-            self.preparing = true;
-            let view = cx.entity();
-            window.defer(cx, move |window, cx| {
-                view.update(cx, |v, cx| {
-                    v.preparing = false;
-                    if let Err(e) = v.prepare(window) {
-                        eprintln!("prepare: {e}");
-                    }
-                    cx.notify();
-                });
-            });
-        }
         if !self.first_frame {
             self.first_frame = true;
             let start = self.started;
@@ -676,80 +604,6 @@ impl Render for Workbench {
             .child(workbench)
     }
 }
-struct CodeElement {
-    view: Entity<Workbench>,
-}
-impl IntoElement for CodeElement {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-impl Element for CodeElement {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let mut style = Style::default();
-        style.size.width = relative(1.0).into();
-        style.size.height = relative(1.0).into();
-        (window.request_layout(style, [], cx), ())
-    }
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut Window,
-        _: &mut App,
-    ) {
-    }
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let v = self.view.read(cx);
-        let rows = v.prepared.clone();
-        let scroll = v.scroll;
-        let (line_height, zoom) = (v.line_height(), v.shell.zoom());
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for row in &rows {
-                let y = bounds.top() + px((row.number as f64 - scroll) as f32 * line_height);
-                let _ = row.gutter.paint(
-                    point(bounds.left() + px(8.0 * zoom), y),
-                    px(line_height),
-                    window,
-                    cx,
-                );
-                let _ = row.shape.paint(
-                    point(bounds.left() + px(64.0 * zoom), y),
-                    px(line_height),
-                    window,
-                    cx,
-                );
-            }
-        });
-        self.view.update(cx, |v, _| v.painted = rows);
-    }
-}
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
 pub fn launch(root: PathBuf, started: Instant) {
     Application::new().run(move |cx: &mut App| {
@@ -764,6 +618,7 @@ pub fn launch(root: PathBuf, started: Instant) {
             KeyBinding::new("ctrl-shift-p", ShowCommands, None),
         ]);
         cx.bind_keys(shell::view::key_bindings());
+        cx.bind_keys(code_view::commands::default_key_bindings());
         // 布局文件只有几百字节：首帧前读取，用来恢复窗口位置、大小与最大化状态。
         let store = LayoutStore::for_workspace(&root);
         let layout = store.load();
@@ -835,7 +690,7 @@ mod shell_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Modifiers, TestAppContext};
+    use gpui::{point, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext};
     #[gpui::test]
     fn walking_skeleton_opens_csharp_through_real_window(cx: &mut TestAppContext) {
         let folder = tempfile::tempdir().unwrap();
@@ -864,19 +719,26 @@ mod tests {
                 .is_some());
             let opened = v.editor.current.as_ref().unwrap();
             assert_eq!(opened.document.text.lines().known, 3);
-            let line = v
-                .painted
-                .iter()
-                .find(|l| l.number == 0)
-                .expect("first line painted");
-            assert_eq!(line.text, "public class First {}");
-            let keyword = line.spans.iter().find(|s| s.range == (0..6)).unwrap();
-            assert_eq!(keyword.scope.as_ref(), "storage.modifier.public.cs");
+            let token = opened.syntax.tokens(Line(0)).unwrap();
+            assert!(token.iter().any(|t| t.range.start().0 == 0
+                && t.range.end().0 == 6
+                && t.scopes.last().map(|s| s.as_ref()) == Some("storage.modifier.public.cs")));
+            assert!(v.status().contains("UTF-8"));
+        });
+        // 代码视图已绘制首行：正文已整形，关键字区间按主题着色。
+        let code = view.read_with(cx, |v, _| v.code.clone());
+        code.read_with(cx, |c, _| {
+            let viewport = c.viewport().expect("code view laid out");
+            assert_eq!(viewport.first_line, 0);
+            assert!(c.last_frame().shaped >= 2, "{:?}", c.last_frame());
+            assert_eq!(c.last_frame().placeholders, 0);
+            let first = c.painted_text(0).expect("first line painted");
+            assert_eq!(&*first, "public class First {}");
+            let merged = c.merged_decorations(0).expect("syntax decorations");
+            let keyword = merged.runs.iter().find(|r| r.range == (0..6)).unwrap();
             // Dark 2026（#10 正式主题引擎）：include 链中 dark_vs 的 `storage.modifier`
             // 比 2026-dark 的 `storage` 更具体，与 VS Code 一致取 #569cd6。
-            assert_eq!(keyword.color, Color(0x56, 0x9c, 0xd6, 255));
-            assert_eq!(line.shape.len(), line.text.len());
-            assert!(v.status().contains("UTF-8"));
+            assert_eq!(keyword.style.foreground, Some(Color(0x56, 0x9c, 0xd6, 255)));
         });
     }
     #[gpui::test]
@@ -908,8 +770,12 @@ mod tests {
                     .known,
                 501
             );
-            assert!(!v.painted.is_empty());
-            assert!(v.painted.len() < 100);
+        });
+        let code = view.read_with(cx, |v, _| v.code.clone());
+        code.read_with(cx, |c, _| {
+            let frame = c.last_frame();
+            assert!(frame.visible_lines > 0);
+            assert!(frame.visible_lines < 100, "只布局可见行：{frame:?}");
         });
         cx.simulate_event(ScrollWheelEvent {
             position: point(px(400.0), px(100.0)),
@@ -918,13 +784,16 @@ mod tests {
             touch_phase: gpui::TouchPhase::Moved,
         });
         cx.run_until_parked();
-        view.read_with(cx, |v, _| assert_eq!(v.painted.first().unwrap().number, 20));
+        code.read_with(cx, |c, _| assert_eq!(c.viewport().unwrap().first_line, 20));
         cx.simulate_click(point(px(128.0), px(152.0)), Modifiers::default());
         cx.run_until_parked();
         view.read_with(cx, |v, _| {
-            assert_eq!(v.painted.first().unwrap().text, "public class B {}");
-            assert_eq!(v.scroll, 0.0);
             assert!(v.status().contains("b.cs"));
+        });
+        code.read_with(cx, |c, _| {
+            assert_eq!(c.scroll_position().top, 0.0);
+            assert_eq!(c.viewport().unwrap().first_line, 0);
+            assert_eq!(&*c.painted_text(0).unwrap(), "public class B {}");
         });
     }
     #[gpui::test]

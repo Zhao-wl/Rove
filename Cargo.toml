@@ -44,6 +44,8 @@ tree-sitter-md = "0.5"
 ignore = "0.4"
 notify = "8"
 globset = "0.4"
+# #19 代码视图：按字素簇做命中测试与插入符移动（UAX #29）；#18 的列表过滤也用它。
+unicode-segmentation = "1.12"
 
 [profile.release]
 lto = "thin"

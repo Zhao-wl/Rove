@@ -161,15 +161,16 @@ fn zoom_scales_ui_without_rescan_or_reparse(cx: &mut TestAppContext) {
     let folder = csharp_folder();
     let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
     open_first_file(cx);
-    let (scans, document, syntax, line_height) = view.read_with(cx, |v, _| {
+    let code = view.read_with(cx, |v, _| v.code.clone());
+    let (scans, document, syntax) = view.read_with(cx, |v, _| {
         let o = v.editor.current.as_ref().unwrap();
         (
             v.scans,
             Arc::as_ptr(&o.document),
             Arc::as_ptr(&o.syntax) as *const (),
-            v.line_height(),
         )
     });
+    let line_height = code.read_with(cx, |c, _| c.line_height());
     let status_before = cx.debug_bounds("statusbar").unwrap().size.height;
     cx.simulate_keystrokes("ctrl-=");
     cx.update(|window, _| window.refresh());
@@ -177,7 +178,6 @@ fn zoom_scales_ui_without_rescan_or_reparse(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         assert_eq!(v.shell.zoom_level(), 1.0);
         assert!((v.shell.zoom() - 1.2).abs() < 1e-6);
-        assert!((v.line_height() - line_height * 1.2).abs() < 1e-3);
         let o = v.editor.current.as_ref().unwrap();
         assert_eq!(v.scans, scans, "缩放不得重新扫描");
         assert_eq!(Arc::as_ptr(&o.document), document, "缩放不得重新打开文档");
@@ -186,7 +186,15 @@ fn zoom_scales_ui_without_rescan_or_reparse(cx: &mut TestAppContext) {
             syntax,
             "缩放不得重新解析"
         );
-        assert!(!v.painted.is_empty());
+    });
+    // 代码视图（#19）随窗口缩放一起放大：行高按字号四舍五入，留一点余量。
+    code.read_with(cx, |c, _| {
+        let scaled = c.line_height();
+        assert!(
+            (scaled - line_height * 1.2).abs() < 1.0,
+            "行高未随窗口缩放：{line_height} → {scaled}"
+        );
+        assert!(c.last_frame().visible_lines > 0, "缩放后仍只重新整形可见行");
     });
     redraw(cx);
     let status_after = cx.debug_bounds("statusbar").unwrap().size.height;

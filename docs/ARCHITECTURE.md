@@ -210,15 +210,15 @@ cargo test --workspace
 | `workbench` | 已由 `rove-ui::shell` 实现（见 §14）：标题栏与命令中心、菜单、活动栏、侧边栏、面板、状态栏容器、布局持久化、五级反馈；骨架只保留装配（`workbench.rs` 实现 `ShellHost`） | #16（已完成） |
 | `editors` | `editor.rs`、`text.rs`：OpenDocuments、单编辑区替换与文档身份缓存 | #17 |
 | `lists` | 已由 `rove-ui::list_widget` 实现：虚拟化列表/树/快速输入与全部 `list.*`、`quickInput.*` 命令（见下文“列表、树与快速输入组件”）；骨架文件树的数据与控制已改用 `ListWidget` + `TreeModel` | #18（已完成） |
-| `code-view` | `workbench.rs`：自定义 Element、可见行缓存、f64 行滚动 | #19 |
-| `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到 TextRun 的投影 | #20 |
+| `code-view` | 已由 `rove-ui::code_view` 实现：自定义 Element、f64 滚动、整形缓存与预取、行号、只读选区、命中测试、滚动条；`workbench.rs` 只挂载 `CodeView` | #19（已完成） |
+| `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到代码视图装饰层（`SyntaxColors`）的投影 | #20 |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
 数据链路：后台扫描返回 `Arc<dyn Workspace>`，文件树通过列表契约激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
-应用位置后发出 Ready。代码 Element 只绘制缓存；绘制外的延迟回调准备可见行并调用 TextSource、
-SyntaxSnapshot、Theme，paint/layout 不读取文件、不解析、不整形。
+应用位置后发出 Ready。代码视图只绘制缓存；帧间空闲切片读取 TextSource、调用装饰提供方（语法着色层
+读 SyntaxSnapshot、Theme）并整形，paint/layout 不读取文件、不解析、不整形（见 §16）。
 命令走 CommandExecutor，提示走 FeedbackService，所有固定文字走 Strings/Message；
 视图和状态贡献登记时不做 IO，装配校验 factory_key、placement 与标题引用。
 
@@ -426,3 +426,45 @@ codicons 字体在 `launch` 中注册。
 测试：`cargo test -p rove-ui`。单元测试在 `list_widget/widget/tests.rs`（每个 `list.*` 命令与每个 P0 设置项）与
 `quick_input.rs`；集成测试 `tests/list_view.rs`、`tests/tree_view.rs`、`tests/quick_input_view.rs` 在真实 GPUI 窗口里
 只通过键位/鼠标驱动，包含 `ctrl+up/down` 按 `listScrollAtBoundary` 穿透到外层的验证和一个编码选择器的消费方示例。
+
+## 16. 代码视图（#19）
+
+位置：`crates/rove-ui/src/code_view/`。只依赖 #1 的冻结契约（`TextSource`、`Settings`、`Theme`、各登记表），
+不修改契约；GPUI 类型只出现在本模块与 `rove-app`。
+
+| 文件 | 内容 |
+|---|---|
+| `view.rs` | `CodeView` 实体：对外接口、事件、命令执行、帧外准备（读文本 → 装饰 → 整形 → 预取） |
+| `element.rs` | GPUI `Element`：布局可见行、绘制（行号、当前行、选区、字形、占位、插入符、滚动条）、鼠标 |
+| `scroll.rs` | f64 滚动模型（虚拟行 + 嵌入区域）、滚轮换算、滑块与概览标尺坐标换算 |
+| `columns.rs` | 字素簇边界、可见列（VS Code 语义：Tab 制表位、全角/emoji 记 2 列）、渲染上限、命中测试 |
+| `selection.rs` | 只读选区与插入符移动、选词（`editor.wordSeparators`）、行选择 |
+| `decorations.rs` | 装饰提供方、优先级合并、按行缓存与失效 |
+| `cache.rs` | 按字节预算淘汰的 LRU（整形缓存、行缓存） |
+| `options.rs` / `colors.rs` / `commands.rs` | `editor.*` 设置项、颜色键、命令与字符串的登记 |
+
+帧内只读缓存：按 f64 滚动位置（`top` 为虚拟行，含上内边距与嵌入区域）算出可见行，从行缓存取显示形式
+（Tab 展开、截断），从整形缓存取 `Arc<LineLayout>`，用 `paint_glyph` 按装饰上色。整形缓存键是
+“显示文本 + 粗斜体分段 + 字体代次”（字体代次覆盖字族、字号、字重、连字、字间距、缩放、DPI），颜色
+不进入键，所以主题 token 或查找高亮变化不触发重新整形。缓存未命中的行先按等宽近似画淡色占位，
+帧后的空闲切片（每片约 3 ms，至少推进一行）读文本、调用装饰提供方、整形，可见行优先，再沿滚动方向
+预取一屏、反方向半屏；行高与 y 坐标只由行号和 f64 滚动位置决定，替换时不跳动。
+
+对外接口（详见 `code_view/mod.rs` 的 rustdoc 速览表）：文本源 `set_text`；装饰 `add_decorations` /
+`invalidate_decorations`（优先级常量在 `decorations::priority`）；选区 `selection` / `set_selection` 与
+`CodeViewEvent::SelectionChanged`；滚动定位 `reveal_line` / `reveal_position`（`Reveal::{Nearest, Center,
+CenterIfOutside, Top}`）；视口事件 `CodeViewEvent::ViewportChanged`；行内覆盖物 `decorations::Overlay` 与
+行下方嵌入区域 `set_view_zone` / `view_zone_bounds`；渲染上限挂钩 `set_line_render_limit`（#22 接入
+`editor.stopRenderingLineAfter` 的界面表现）；命中测试 `position_for_point` / `point_for_position`；
+命令 `execute(<VS Code 命令 ID>)`。
+
+登记：装配时调用 `code_view::register(settings, colors, commands, strings)`；已被他人登记的键跳过而不报
+`Duplicate`（同一 VS Code 设置/颜色/命令可能有多个消费方）。颜色先读当前主题，主题未登记时用
+VS Code 内置默认值。默认键位表 `commands::DEFAULT_KEYS` 取自 `compat/KEYBINDINGS.md`，经 GPUI action
+临时桥接（`SKELETON(commands)`，#14 接管后改为按命令 ID 调 `CodeView::execute`）；字体缩放三个命令
+没有默认键位。
+
+验证：`cargo test -p rove-ui`（单元测试）与 `cargo test -p rove-ui --test code_view`（入口集成测试，
+含装饰/选区/滚动定位/视口事件四类消费方示例、1429 万行合成文本源、7 种模式命中测试、设置逐项生效）。
+性能：`cargo xtask gen-testdata --only small`、`--only uniq` 后 `cargo xtask bench --filter scroll`
+（真实窗口，见 `xtask/benches/scroll_unique.rs`）。

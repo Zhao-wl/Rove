@@ -7383,9 +7383,12 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "futures-lite 2.6.1",
+ "gpui",
  "rove-base",
  "rove-buffer",
+ "rove-commands",
  "rove-config",
+ "rove-i18n",
  "rove-lang-cs",
  "rove-syntax",
  "rove-test-support",

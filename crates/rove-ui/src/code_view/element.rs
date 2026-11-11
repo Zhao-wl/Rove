@@ -1,0 +1,909 @@
+//! 代码视图的 GPUI `Element`：布局可见行、生成绘制指令、登记鼠标处理。
+//!
+//! 帧内只读缓存（行显示形式、整形结果、装饰）；任何未命中都画占位并在绘制后调度空闲准备切片。
+
+use super::options::{CursorStyle, FinalNewline, LineHighlight, LineNumbers, ScrollbarVisibility};
+use super::scroll::{self, Metrics, ScrollPosition};
+use super::view::{
+    hsla, CodeView, CodeViewEvent, Drag, FrameLayout, FrameStats, LineEntry, Shaped, Viewport,
+};
+use gpui::{
+    fill, outline, point, px, quad, size, App, BorderStyle, Bounds, ContentMask,
+    CursorStyle as MouseCursor, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Style, Window,
+};
+use rove_theme::Color;
+use std::borrow::Cow;
+use std::rc::Rc;
+use std::time::Instant;
+
+pub struct CodeElement {
+    pub view: Entity<CodeView>,
+}
+
+impl IntoElement for CodeElement {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+/// 一条可见行的绘制计划。
+pub(crate) struct PaintLine {
+    pub line: u64,
+    /// 行顶边相对文本区顶边的 y（像素）。
+    pub y: f32,
+    pub entry: Option<Rc<LineEntry>>,
+    pub shaped: Option<Rc<Shaped>>,
+}
+
+pub struct Frame {
+    lines: Vec<PaintLine>,
+    hitbox: Hitbox,
+    text_hitbox: Hitbox,
+    layout: FrameLayout,
+    gutter_widths: (f32, f32, f32),
+    focused: bool,
+}
+
+impl Element for CodeElement {
+    type RequestLayoutState = ();
+    type PrepaintState = Frame;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = gpui::relative(1.0).into();
+        style.size.height = gpui::relative(1.0).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Frame {
+        let view = self.view.clone();
+        self.view
+            .update(cx, |v, cx| v.layout_frame(bounds, view, window, cx))
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        frame: &mut Frame,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let view = self.view.clone();
+        self.view.update(cx, |v, cx| {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                v.paint_frame(frame, window);
+            });
+            register_mouse(&view, frame, window);
+            v.finish_frame(window, cx);
+        });
+    }
+}
+
+fn digits(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    &buf[i..]
+}
+
+fn alpha(c: Color, a: f32) -> Hsla {
+    let mut h = hsla(c);
+    h.a *= a;
+    h
+}
+
+impl CodeView {
+    pub(crate) fn layout_frame(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        view: Entity<CodeView>,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Frame {
+        self.frame_started = Some(Instant::now());
+        let focused = self.focus.is_focused(window);
+        self.focus_changed(focused, window, cx);
+        self.line_number_ready(window);
+        let o = &self.options;
+        let lh = self.font.line_height;
+        let digit_w = self
+            .font
+            .digits
+            .as_ref()
+            .map_or(self.font.cell_width, |d| d.advance);
+        let line_count = self.text.as_ref().map_or(1, |t| t.lines().known.max(1));
+
+        // 行号栏：字形边距 | 行号 | 行装饰区。
+        let glyph_w = if o.glyph_margin { 18.0 } else { 0.0 };
+        let ln_w = if o.line_numbers == LineNumbers::Off {
+            0.0
+        } else {
+            let n = (line_count.max(1) as f64).log10().floor() as u32 + 1;
+            (n.max(LINE_NUMBERS_MIN_CHARS) as f32 * digit_w).round()
+        };
+        let gutter_w = glyph_w + ln_w + 10.0;
+
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
+        let vs = o.vertical_scrollbar_size as f32;
+        let hs = o.horizontal_scrollbar_size as f32;
+        let beyond = o.scroll_beyond_last_column * self.font.cell_width as f64;
+        // 先按“不显示垂直滚动条”估算水平条，再确定垂直条（两者相互影响，取保守值）。
+        let text_w_guess = (width - gutter_w - vs).max(0.0) as f64;
+        let show_h = match o.horizontal_scrollbar {
+            ScrollbarVisibility::Visible => true,
+            ScrollbarVisibility::Hidden => false,
+            ScrollbarVisibility::Auto => self.content_width + beyond > text_w_guess,
+        };
+        let hbar_h = if show_h { hs } else { 0.0 };
+        let viewport_h = if o.ignore_horizontal_scrollbar_in_content_height {
+            height
+        } else {
+            (height - hbar_h).max(0.0)
+        };
+        let mut metrics = Metrics {
+            line_height: lh as f64,
+            viewport_height: viewport_h as f64,
+            viewport_width: text_w_guess,
+            line_count,
+            padding_top: o.padding_top,
+            padding_bottom: o.padding_bottom,
+            scroll_beyond_last_line: o.scroll_beyond_last_line,
+            content_width: self.content_width,
+            beyond_last_column: beyond,
+        };
+        let show_v = match o.vertical_scrollbar {
+            ScrollbarVisibility::Visible => true,
+            ScrollbarVisibility::Hidden => false,
+            ScrollbarVisibility::Auto => metrics.max_top(&self.zones) > 0.0,
+        };
+        let vbar_w = if show_v { vs } else { 0.0 };
+        let text_w = (width - gutter_w - vbar_w).max(0.0);
+        metrics.viewport_width = text_w as f64;
+
+        let gutter = Bounds::new(bounds.origin, size(px(gutter_w), bounds.size.height));
+        let text = Bounds::new(
+            point(bounds.origin.x + px(gutter_w), bounds.origin.y),
+            size(px(text_w), px(viewport_h)),
+        );
+        let vbar = show_v.then(|| {
+            Bounds::new(
+                point(bounds.origin.x + px(width - vbar_w), bounds.origin.y),
+                size(px(vbar_w), px(viewport_h)),
+            )
+        });
+        let hbar = show_h.then(|| {
+            Bounds::new(
+                point(text.origin.x, bounds.origin.y + px(height - hbar_h)),
+                size(px(text_w), px(hbar_h)),
+            )
+        });
+
+        // 钳制滚动位置（行数随 #8 的索引增长时也在这里自然更新）。
+        self.scroll = self.scroll.clamped(&metrics, &self.zones);
+        if self.animating() {
+            let view = view.clone();
+            window.on_next_frame(move |_, cx| view.update(cx, |_, cx| cx.notify()));
+        }
+        let top = self.current_top().clamp(0.0, metrics.max_top(&self.zones));
+        let pos = ScrollPosition {
+            top,
+            x: self.scroll.x,
+        };
+        let (first, y0) = pos.first_visible(&metrics, &self.zones);
+
+        let mut lines = Vec::with_capacity((viewport_h / lh) as usize + 2);
+        let mut y = y0 as f32;
+        let mut line = first;
+        let mut stats = FrameStats::default();
+        while line < line_count && y < viewport_h {
+            let entry = self.lines.get(&line).cloned();
+            let shaped = entry
+                .as_ref()
+                .and_then(|e| self.shapes.get(&self.shape_key(e)).cloned());
+            match (&entry, &shaped) {
+                (None, _) => stats.missing += 1,
+                (Some(_), None) => stats.placeholders += 1,
+                (Some(_), Some(_)) => stats.shaped += 1,
+            }
+            lines.push(PaintLine {
+                line,
+                y,
+                entry,
+                shaped,
+            });
+            y += lh + self.zones.get(line) as f32;
+            line += 1;
+        }
+        stats.visible_lines = lines.len() as u32;
+        stats.first_line = first;
+        stats.first_line_y = y0 as f32;
+        self.last_frame = stats;
+        let last = lines.last().map_or(first, |l| l.line);
+        self.note_visible(first..last + 1, top);
+
+        let vthumb = vbar.and_then(|b| {
+            let t = scroll::thumb(
+                f64::from(f32::from(b.size.height)),
+                metrics.viewport_lines(),
+                metrics.total_lines(&self.zones),
+                top,
+            )?;
+            Some(Bounds::new(
+                point(b.origin.x, b.origin.y + px(t.start as f32)),
+                size(b.size.width, px(t.len as f32)),
+            ))
+        });
+        let hthumb = hbar.and_then(|b| {
+            let t = scroll::thumb(
+                f64::from(f32::from(b.size.width)),
+                metrics.viewport_width,
+                metrics.content_width + metrics.beyond_last_column,
+                self.scroll.x,
+            )?;
+            Some(Bounds::new(
+                point(b.origin.x + px(t.start as f32), b.origin.y),
+                size(px(t.len as f32), b.size.height),
+            ))
+        });
+
+        let viewport = Viewport {
+            first_line: first,
+            last_line: last,
+            top,
+            scroll_x: self.scroll.x,
+            width: text_w,
+            height: viewport_h,
+        };
+        if self.last_viewport != Some(viewport) {
+            self.last_viewport = Some(viewport);
+            cx.emit(CodeViewEvent::ViewportChanged(viewport));
+        }
+        self.layout = FrameLayout {
+            bounds,
+            gutter,
+            text,
+            vbar,
+            hbar,
+            vthumb,
+            hthumb,
+            metrics: Some(metrics),
+        };
+        if let Some(start) = self.frame_started {
+            self.last_frame.layout = start.elapsed();
+        }
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let text_hitbox = window.insert_hitbox(text, HitboxBehavior::Normal);
+        Frame {
+            lines,
+            hitbox,
+            text_hitbox,
+            layout: self.layout.clone(),
+            gutter_widths: (glyph_w, ln_w, 10.0),
+            focused,
+        }
+    }
+
+    /// 某行字素簇边界的 x：有整形结果时借用缓存，占位行按等宽近似现算。
+    fn line_xs<'a>(&self, l: &'a PaintLine) -> Option<Cow<'a, [f32]>> {
+        match (&l.shaped, &l.entry) {
+            (Some(s), _) => Some(Cow::Borrowed(&s.xs)),
+            (None, Some(e)) => Some(Cow::Owned(
+                e.display
+                    .monospace_xs(self.font.cell_width, self.font.letter_spacing),
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) {
+        let p = &self.palette;
+        let o = &self.options;
+        let lay = &frame.layout;
+        let lh = self.font.line_height;
+        let text = lay.text;
+        let left = text.origin.x - px(self.scroll.x as f32);
+        let sel = self.cursor.selection;
+        let caret_line = sel.active.line.0;
+
+        window.paint_quad(fill(lay.bounds, hsla(p.background)));
+        window.paint_quad(fill(lay.gutter, hsla(p.gutter_background)));
+
+        // 当前行高亮（选区非空时不画，与 VS Code 一致）。
+        let highlight = sel.is_empty()
+            && o.render_line_highlight != LineHighlight::None
+            && (frame.focused || !o.line_highlight_only_when_focus);
+        if highlight {
+            if let Some(l) = frame.lines.iter().find(|l| l.line == caret_line) {
+                let bg = if frame.focused {
+                    p.line_highlight_background
+                } else {
+                    p.inactive_line_highlight_background
+                };
+                let mut regions = vec![];
+                if matches!(
+                    o.render_line_highlight,
+                    LineHighlight::Line | LineHighlight::All
+                ) {
+                    regions.push((text.origin.x, text.size.width));
+                }
+                if matches!(
+                    o.render_line_highlight,
+                    LineHighlight::Gutter | LineHighlight::All
+                ) {
+                    regions.push((lay.gutter.origin.x, lay.gutter.size.width));
+                }
+                for (x, w) in regions {
+                    let b = Bounds::new(point(x, text.origin.y + px(l.y)), size(w, px(lh)));
+                    if let Some(bg) = bg {
+                        window.paint_quad(fill(b, hsla(bg)));
+                    } else if let Some(border) = p.line_highlight_border {
+                        window.paint_quad(quad(
+                            b,
+                            px(0.),
+                            gpui::transparent_black(),
+                            px(2.),
+                            hsla(border),
+                            BorderStyle::Solid,
+                        ));
+                    }
+                }
+            }
+        }
+
+        window.with_content_mask(Some(ContentMask { bounds: text }), |window| {
+            // 整个文本区放在一个绘制层里：层内图元共用同一个绘制次序，GPUI 不再为每个字形
+            // 做 BoundsTree 插入（逐字形开销从约 0.7 µs 降到约 0.1 µs）。同层内四边形先于
+            // 字形绘制，所以背景、选区、占位条都在文字下面；插入符在层外，位于文字之上。
+            window.paint_layer(text, |window| {
+                for l in &frame.lines {
+                    let y = text.origin.y + px(l.y);
+                    let Some(entry) = &l.entry else { continue };
+                    let Some(xs) = self.line_xs(l) else { continue };
+                    // 整行装饰。
+                    if let Some(m) = &entry.merged {
+                        let b = Bounds::new(point(text.origin.x, y), size(text.size.width, px(lh)));
+                        if let Some(bg) = m.line.background {
+                            window.paint_quad(fill(b, hsla(bg)));
+                        }
+                        if let Some(border) = m.line.border {
+                            window.paint_quad(outline(b, hsla(border), BorderStyle::Solid));
+                        }
+                    }
+                    // 选区。
+                    if !sel.is_empty() && l.line >= sel.start().line.0 && l.line <= sel.end().line.0
+                    {
+                        let a = if l.line == sel.start().line.0 {
+                            entry.display.x_for_source(&xs, sel.start().column.0 as u32)
+                        } else {
+                            0.0
+                        };
+                        let mut b = if l.line == sel.end().line.0 {
+                            entry.display.x_for_source(&xs, sel.end().column.0 as u32)
+                        } else {
+                            *xs.last().unwrap_or(&0.0) + self.font.cell_width * 0.5
+                        };
+                        if b <= a && l.line != sel.end().line.0 {
+                            b = a + self.font.cell_width * 0.5;
+                        }
+                        if b > a {
+                            let color = if frame.focused {
+                                p.selection
+                            } else {
+                                p.inactive_selection
+                            };
+                            let r = if o.rounded_selection { px(3.) } else { px(0.) };
+                            window.paint_quad(quad(
+                                Bounds::new(point(left + px(a), y), size(px(b - a), px(lh))),
+                                r,
+                                hsla(color),
+                                px(0.),
+                                gpui::transparent_black(),
+                                BorderStyle::Solid,
+                            ));
+                        }
+                    }
+                    // 装饰区间的背景、外框。
+                    for (range, style) in &entry.paint_runs {
+                        if style.background.is_none() && style.border.is_none() {
+                            continue;
+                        }
+                        let a = xs[entry.display.stop_index_for_display(range.start)];
+                        let b = xs[entry.display.stop_index_for_display(range.end)];
+                        let r =
+                            Bounds::new(point(left + px(a), y), size(px((b - a).max(1.0)), px(lh)));
+                        if let Some(bg) = style.background {
+                            window.paint_quad(fill(r, hsla(bg)));
+                        }
+                        if let Some(border) = style.border {
+                            window.paint_quad(outline(r, hsla(border), BorderStyle::Solid));
+                        }
+                    }
+                    match &l.shaped {
+                        Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
+                        None => self.paint_placeholder(entry, left, y, &xs, text, window),
+                    }
+                    // 下划线、删除线。
+                    for (range, style) in &entry.paint_runs {
+                        let a = xs[entry.display.stop_index_for_display(range.start)];
+                        let b = xs[entry.display.stop_index_for_display(range.end)];
+                        if let Some(u) = style.underline {
+                            let r = Bounds::new(
+                                point(left + px(a), y + px(lh - 2.0)),
+                                size(px(b - a), px(1.)),
+                            );
+                            window.paint_quad(fill(r, hsla(u)));
+                        }
+                        if let Some(s) = style.strikethrough {
+                            let r = Bounds::new(
+                                point(left + px(a), y + px(lh / 2.0)),
+                                size(px(b - a), px(1.)),
+                            );
+                            window.paint_quad(fill(r, hsla(s)));
+                        }
+                    }
+                    // 行内覆盖物。
+                    if let Some(m) = &entry.merged {
+                        for ov in &m.overlays {
+                            let key = self.overlay_key(&ov.text);
+                            if let Some(shaped) = self.shapes.peek(&key).cloned() {
+                                let x = entry.display.x_for_source(&xs, ov.column);
+                                let color = ov.style.foreground.unwrap_or(p.foreground);
+                                self.paint_layout(
+                                    &shaped.layout,
+                                    left + px(x),
+                                    y,
+                                    hsla(color),
+                                    window,
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+            // 插入符。
+            if frame.focused && self.caret_visible {
+                if let Some(l) = frame.lines.iter().find(|l| l.line == caret_line) {
+                    if let (Some(entry), Some(xs)) = (&l.entry, self.line_xs(l)) {
+                        let x = entry.display.x_for_source(&xs, sel.active.column.0 as u32);
+                        let next = {
+                            let i = entry
+                                .display
+                                .stop_index_for_source(sel.active.column.0 as u32);
+                            xs.get(i + 1).copied().unwrap_or(x + self.font.cell_width)
+                        };
+                        let cell = (next - x).max(self.font.cell_width * 0.5);
+                        let y = text.origin.y + px(l.y);
+                        let caret = hsla(p.cursor);
+                        let r = match o.cursor_style {
+                            CursorStyle::Line | CursorStyle::LineThin => {
+                                let h = if o.cursor_height > 0.0 {
+                                    (o.cursor_height as f32).min(lh)
+                                } else {
+                                    lh
+                                };
+                                Bounds::new(
+                                    point(left + px(x), y + px((lh - h) / 2.0)),
+                                    size(px(o.caret_width() as f32), px(h)),
+                                )
+                            }
+                            CursorStyle::Block | CursorStyle::BlockOutline => {
+                                Bounds::new(point(left + px(x), y), size(px(cell), px(lh)))
+                            }
+                            CursorStyle::Underline => Bounds::new(
+                                point(left + px(x), y + px(lh - 2.0)),
+                                size(px(cell), px(2.)),
+                            ),
+                            CursorStyle::UnderlineThin => Bounds::new(
+                                point(left + px(x), y + px(lh - 1.0)),
+                                size(px(cell), px(1.)),
+                            ),
+                        };
+                        if o.cursor_style == CursorStyle::BlockOutline {
+                            window.paint_quad(outline(r, caret, BorderStyle::Solid));
+                        } else {
+                            window.paint_quad(fill(r, caret));
+                        }
+                    }
+                }
+            }
+        });
+
+        self.paint_gutter(frame, window);
+        self.paint_scrollbars(frame, window);
+    }
+
+    fn baseline(&self, y: Pixels) -> Pixels {
+        let lh = self.font.line_height;
+        let (ascent, descent) = self.font.digits.as_ref().map_or(
+            (self.font.cell_width * 1.6, self.font.cell_width * 0.4),
+            |d| (d.ascent, d.descent),
+        );
+        y + px((lh - ascent - descent) / 2.0 + ascent)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_glyphs(
+        &self,
+        l: &PaintLine,
+        entry: &LineEntry,
+        s: &Shaped,
+        left: Pixels,
+        y: Pixels,
+        xs: &[f32],
+        window: &mut Window,
+    ) {
+        let p = &self.palette;
+        let baseline = self.baseline(y);
+        let text = self.layout.text;
+        let min_x = f32::from(text.origin.x - left) - self.font.cell_width * 4.0;
+        let max_x = f32::from(text.origin.x + text.size.width - left);
+        let spacing = self.font.letter_spacing;
+        let sel = self.cursor.selection;
+        let sel_disp = (p.selection_foreground.is_some()
+            && !sel.is_empty()
+            && l.line >= sel.start().line.0
+            && l.line <= sel.end().line.0)
+            .then(|| {
+                let a = if l.line == sel.start().line.0 {
+                    entry
+                        .display
+                        .display_for_source(sel.start().column.0 as u32)
+                } else {
+                    0
+                };
+                let b = if l.line == sel.end().line.0 {
+                    entry.display.display_for_source(sel.end().column.0 as u32)
+                } else {
+                    u32::MAX
+                };
+                a..b
+            });
+        let _ = xs;
+        let size = self.font.size;
+        let runs = &entry.paint_runs;
+        let bytes = entry.display.text.as_bytes();
+        // 相邻字形几乎总是同色：记住上一次的颜色换算结果。
+        let mut memo = (p.foreground, hsla(p.foreground));
+        for run in &s.layout.runs {
+            let start = run
+                .glyphs
+                .partition_point(|g| f32::from(g.position.x) < min_x);
+            let mut ri = 0usize;
+            for g in &run.glyphs[start..] {
+                let gx = f32::from(g.position.x);
+                if gx > max_x {
+                    break;
+                }
+                let idx = g.index as u32;
+                // 空格（含 Tab 展开出的空格）没有可见字形，跳过以省下 GPUI 的逐字形开销。
+                if bytes.get(g.index) == Some(&b' ') {
+                    continue;
+                }
+                while ri < runs.len() && runs[ri].0.end <= idx {
+                    ri += 1;
+                }
+                let mut color = match runs.get(ri) {
+                    Some((r, st)) if r.start <= idx => st.foreground.unwrap_or(p.foreground),
+                    _ => p.foreground,
+                };
+                if let Some(r) = &sel_disp {
+                    if r.contains(&idx) {
+                        color = p.selection_foreground.unwrap_or(color);
+                    }
+                }
+                let dx = if spacing != 0.0 {
+                    spacing * entry.display.stop_index_for_display(idx) as f32
+                } else {
+                    0.0
+                };
+                self.glyphs_painted.set(self.glyphs_painted.get() + 1);
+                let origin = point(left + px(gx + dx), baseline + g.position.y);
+                if memo.0 != color {
+                    memo = (color, hsla(color));
+                }
+                let _ = if g.is_emoji {
+                    window.paint_emoji(origin, run.font_id, g.id, size)
+                } else {
+                    window.paint_glyph(origin, run.font_id, g.id, size, memo.1)
+                };
+            }
+        }
+    }
+
+    fn paint_layout(
+        &self,
+        layout: &gpui::LineLayout,
+        x: Pixels,
+        y: Pixels,
+        color: Hsla,
+        window: &mut Window,
+    ) {
+        let baseline = self.baseline(y);
+        for run in &layout.runs {
+            for g in &run.glyphs {
+                let origin = point(x + g.position.x, baseline + g.position.y);
+                let _ = if g.is_emoji {
+                    window.paint_emoji(origin, run.font_id, g.id, self.font.size)
+                } else {
+                    window.paint_glyph(origin, run.font_id, g.id, self.font.size, color)
+                };
+            }
+        }
+    }
+
+    /// 等宽近似占位：每段连续的非空白字素画一条淡色条，宽度按可见列估算。
+    fn paint_placeholder(
+        &self,
+        entry: &LineEntry,
+        left: Pixels,
+        y: Pixels,
+        xs: &[f32],
+        text: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
+        let lh = self.font.line_height;
+        let color = alpha(self.palette.foreground, 0.25);
+        let stops = entry.display.stops();
+        let bytes = entry.display.text.as_bytes();
+        let max_x = f32::from(text.origin.x + text.size.width - left);
+        let mut run_start: Option<usize> = None;
+        for i in 0..stops.len() {
+            let blank = i + 1 >= stops.len() || bytes[stops[i].disp as usize] == b' ';
+            match (run_start, blank) {
+                (None, false) => run_start = Some(i),
+                (Some(s), true) => {
+                    let (a, b) = (xs[s], xs[i]);
+                    if a > max_x {
+                        break;
+                    }
+                    let r = Bounds::new(
+                        point(left + px(a), y + px(lh * 0.3)),
+                        size(px((b - a).max(1.0)), px(lh * 0.4)),
+                    );
+                    window.paint_quad(fill(r, color));
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn paint_gutter(&self, frame: &Frame, window: &mut Window) {
+        let o = &self.options;
+        let p = &self.palette;
+        let lay = &frame.layout;
+        let Some(d) = self.font.digits.clone() else {
+            return;
+        };
+        let (glyph_w, ln_w, _) = frame.gutter_widths;
+        let caret_line = self.cursor.selection.active.line.0;
+        let line_count = self.text.as_ref().map_or(1, |t| t.lines().known.max(1));
+        let complete = self.text.as_ref().is_none_or(|t| t.lines().complete);
+        window.with_content_mask(Some(ContentMask { bounds: lay.gutter }), |window| {
+            window.paint_layer(lay.gutter, |window| {
+                let mut buf = [0u8; 20];
+                for l in &frame.lines {
+                    let y = lay.text.origin.y + px(l.y);
+                    // 字形边距图标：以首字母画一个徽记（图标资源由提供方 #40 等接入后替换）。
+                    if glyph_w > 0.0 {
+                        if let Some(icon) = l
+                            .entry
+                            .as_ref()
+                            .and_then(|e| e.merged.as_ref())
+                            .and_then(|m| m.line.glyph.clone())
+                        {
+                            let c = icon.color.unwrap_or(p.foreground);
+                            let r = Bounds::new(
+                                point(
+                                    lay.gutter.origin.x + px(4.0),
+                                    y + px(self.font.line_height / 2.0 - 5.0),
+                                ),
+                                size(px(10.0), px(10.0)),
+                            );
+                            window.paint_quad(quad(
+                                r,
+                                px(5.0),
+                                hsla(c),
+                                px(0.),
+                                gpui::transparent_black(),
+                                BorderStyle::Solid,
+                            ));
+                        }
+                    }
+                    if ln_w <= 0.0 {
+                        continue;
+                    }
+                    let final_newline = complete
+                        && line_count > 1
+                        && l.line + 1 == line_count
+                        && l.entry.as_ref().is_some_and(|e| e.source.is_empty());
+                    if final_newline && o.render_final_newline == FinalNewline::Off {
+                        continue;
+                    }
+                    let number = match o.line_numbers {
+                        LineNumbers::Relative if l.line != caret_line => {
+                            l.line.abs_diff(caret_line)
+                        }
+                        LineNumbers::Interval if l.line != caret_line && (l.line + 1) % 10 != 0 => {
+                            continue
+                        }
+                        _ => l.line + 1,
+                    };
+                    let color = if final_newline && o.render_final_newline == FinalNewline::Dimmed {
+                        p.line_number_dimmed
+                    } else if l.line == caret_line {
+                        p.line_number_active
+                    } else {
+                        p.line_number
+                    };
+                    let ds = digits(number, &mut buf);
+                    let right = lay.gutter.origin.x + px(glyph_w + ln_w);
+                    let baseline = self.baseline(y);
+                    for (k, digit) in ds.iter().enumerate() {
+                        let Some(glyph) = d.glyphs[*digit as usize] else {
+                            continue;
+                        };
+                        let x = right - px((ds.len() - k) as f32 * d.advance);
+                        let _ = window.paint_glyph(
+                            point(x, baseline),
+                            d.font_id,
+                            glyph,
+                            self.font.size,
+                            hsla(color),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    fn paint_scrollbars(&self, frame: &Frame, window: &mut Window) {
+        let p = &self.palette;
+        let lay = &frame.layout;
+        if let (Some(shadow), true) = (p.scrollbar_shadow, self.current_top() > 0.0) {
+            let r = Bounds::new(lay.text.origin, size(lay.text.size.width, px(3.0)));
+            window.paint_quad(fill(r, alpha(shadow, 0.6)));
+        }
+        let slider = |active: bool, hover: bool| {
+            if active {
+                p.slider_active
+            } else if hover {
+                p.slider_hover
+            } else {
+                p.slider
+            }
+        };
+        if let Some(t) = lay.vthumb {
+            let c = slider(
+                matches!(self.drag, Some(Drag::VThumb { .. })),
+                self.hover_vthumb,
+            );
+            window.paint_quad(fill(t, hsla(c)));
+        }
+        if let Some(t) = lay.hthumb {
+            let c = slider(
+                matches!(self.drag, Some(Drag::HThumb { .. })),
+                self.hover_hthumb,
+            );
+            window.paint_quad(fill(t, hsla(c)));
+        }
+    }
+
+    pub(crate) fn finish_frame(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if let Some(start) = self.frame_started.take() {
+            self.last_frame.cpu = start.elapsed();
+            self.last_frame.glyphs = self.glyphs_painted.replace(0);
+            if let Some(rec) = self.recording.as_mut() {
+                rec.push(self.last_frame);
+            }
+        }
+        if self.needs_prepare() {
+            self.schedule_prepare(window, cx);
+        }
+    }
+}
+
+fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window) {
+    let lay = frame.layout.clone();
+    window.set_cursor_style(MouseCursor::IBeam, &frame.text_hitbox);
+    let hitbox = frame.hitbox.clone();
+    let v = view.clone();
+    window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble
+            || e.button != MouseButton::Left
+            || !hitbox.is_hovered(window)
+        {
+            return;
+        }
+        v.update(cx, |v, cx| {
+            window.focus(&v.focus);
+            let p = e.position;
+            if lay.vbar.is_some_and(|b| b.contains(&p)) {
+                v.scrollbar_down(p, true, cx);
+            } else if lay.hbar.is_some_and(|b| b.contains(&p)) {
+                v.scrollbar_down(p, false, cx);
+            } else if lay.gutter.contains(&p) {
+                v.mouse_down_gutter(p, e.modifiers.shift, cx);
+            } else {
+                v.mouse_down_text(p, e.click_count, e.modifiers.shift, cx);
+            }
+        });
+        cx.stop_propagation();
+    });
+    let v = view.clone();
+    let lay = frame.layout.clone();
+    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+        if phase != DispatchPhase::Bubble {
+            return;
+        }
+        v.update(cx, |v, cx| match v.drag {
+            Some(Drag::Text { .. }) if e.pressed_button == Some(MouseButton::Left) => {
+                v.mouse_drag_text(e.position, cx)
+            }
+            Some(Drag::VThumb { .. } | Drag::HThumb { .. })
+                if e.pressed_button == Some(MouseButton::Left) =>
+            {
+                v.scrollbar_drag(e.position, cx)
+            }
+            _ => {
+                let hv = lay.vthumb.is_some_and(|b| b.contains(&e.position));
+                let hh = lay.hthumb.is_some_and(|b| b.contains(&e.position));
+                if hv != v.hover_vthumb || hh != v.hover_hthumb {
+                    v.hover_vthumb = hv;
+                    v.hover_hthumb = hh;
+                    cx.notify();
+                }
+            }
+        });
+    });
+    let v = view.clone();
+    window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+        if phase == DispatchPhase::Bubble && e.button == MouseButton::Left {
+            v.update(cx, |v, cx| v.mouse_up(cx));
+        }
+    });
+    let v = view.clone();
+    let hitbox = frame.hitbox.clone();
+    window.on_mouse_event(move |e: &ScrollWheelEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble || !hitbox.is_hovered(window) {
+            return;
+        }
+        v.update(cx, |v, cx| v.wheel(e.delta, e.modifiers, cx));
+        cx.stop_propagation();
+    });
+}
+
+const LINE_NUMBERS_MIN_CHARS: u32 = 5;

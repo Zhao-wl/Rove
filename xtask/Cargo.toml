@@ -27,8 +27,12 @@ rove-syntax.workspace = true
 futures-lite = "2"
 rove-test-support.workspace = true
 rove-theme.workspace = true
-# #18 列表基准（xtask 在 .github/ui-crates.txt 中，允许经 rove-ui 依赖 gpui）。
+# #18 列表基准、#19 的 scroll_unique 基准都在真实 GPUI 窗口里驱动 rove-ui
+#（xtask 已登记在 .github/ui-crates.txt 中，允许依赖 gpui）。
 rove-ui.workspace = true
+rove-commands.workspace = true
+rove-i18n.workspace = true
+gpui.workspace = true
 
 [[bench]]
 name = "text_source"
