@@ -926,6 +926,8 @@ impl Render for Workbench {
         // Groups, active tabs and reveals change through commands, clicks and the open service;
         // load them into the per-group code views before drawing.
         self.sync_views(cx);
+        // A tab that finished loading in the background reports Ready once it is shown here.
+        self.editor.flush_ready();
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);

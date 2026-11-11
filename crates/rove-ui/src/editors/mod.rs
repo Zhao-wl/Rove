@@ -256,8 +256,9 @@ pub(crate) struct EditorService {
     closed: Vec<(EditorGroupId, Resource, OpenOptions)>,
     open_ids: BTreeMap<DocumentId, usize>,
     events: EventBus<OpenEvent>,
-    /// Ready events wait until the host has loaded the location into the code view.
-    ready: Vec<OpenEvent>,
+    /// Ready events per tab, held until the tab is current in its group and the host has loaded
+    /// its location into that group's code view (a tab left in the background waits).
+    ready: Vec<(TabId, OpenEvent)>,
 }
 
 impl EditorService {
@@ -859,6 +860,7 @@ impl EditorService {
             if !matches!(tab.content, Content::Ready(_)) {
                 tab.content = Content::Loading;
             }
+            self.supersede_ready(existing);
             existing
         } else {
             let replace = self.groups[&group]
@@ -1021,21 +1023,61 @@ impl EditorService {
             })?
             .id;
         let (preview, options) = (loaded.preview, loaded.options.clone());
+        // The user may have moved on while the alias loaded: only an alias that is still the
+        // group's active tab hands that role to the survivor, and focus only stays where it is.
+        let was_active = pane.active == Some(alias);
+        let focus = !options.preserve_focus && self.focused == group;
         self.remove_tab(group, alias, false);
         let tab = self.groups.get_mut(&group)?.tab_mut(existing)?;
         if !preview {
             tab.preview = false;
         }
-        let focus = !options.preserve_focus;
         tab.options = options;
-        self.activate(group, existing, focus);
+        if was_active {
+            self.activate(group, existing, focus);
+        }
         Some(existing)
     }
 
-    /// Emits Ready for requests whose reveal and selection the host has applied.
+    /// Emits Ready for tabs that are current in their group and whose reveal the host has
+    /// applied (text tabs clear `reveal` when the code view takes the location). A held request
+    /// whose tab was closed in the meantime reports Cancelled instead.
     pub(crate) fn flush_ready(&mut self) {
-        for event in std::mem::take(&mut self.ready) {
+        if self.ready.is_empty() {
+            return;
+        }
+        let mut emit = Vec::new();
+        for (tab, event) in std::mem::take(&mut self.ready) {
+            let state = self.groups.values().find_map(|pane| {
+                let entry = pane.tab(tab)?;
+                Some(pane.active == Some(tab) && (entry.kind != EditorKind::Text || !entry.reveal))
+            });
+            match (state, event) {
+                (Some(true), event) => emit.push(event),
+                (Some(false), event) => self.ready.push((tab, event)),
+                (None, OpenEvent::Ready { request, group, .. }) => emit.push(OpenEvent::Failed {
+                    request,
+                    group,
+                    error: Error::Cancelled,
+                }),
+                (None, event) => emit.push(event),
+            }
+        }
+        for event in emit {
             self.events.emit(event);
+        }
+    }
+
+    /// A newer request on the same tab supersedes a Ready that is still held back.
+    fn supersede_ready(&mut self, tab: TabId) {
+        let (old, keep) = std::mem::take(&mut self.ready)
+            .into_iter()
+            .partition::<Vec<_>, _>(|(id, _)| *id == tab);
+        self.ready = keep;
+        for (_, event) in old {
+            if let OpenEvent::Ready { request, group, .. } = event {
+                self.report_cancelled(group, request);
+            }
         }
     }
 
@@ -1125,7 +1167,7 @@ impl EditorService {
             }
         };
         if matches!(event, OpenEvent::Ready { .. }) {
-            self.ready.push(event);
+            self.ready.push((tab_id, event));
         } else {
             self.events.emit(event);
         }
