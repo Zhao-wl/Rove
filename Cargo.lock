@@ -4644,6 +4644,7 @@ name = "rove-config"
 version = "0.0.1"
 dependencies = [
  "rove-base",
+ "tempfile",
 ]
 
 [[package]]

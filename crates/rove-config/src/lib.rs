@@ -1,6 +1,23 @@
 //! Settings registration and access (#13). JSONC parsing/writing belongs to the implementation.
 use rove_base::*;
 use std::{marker::PhantomData, sync::Arc};
+
+// #13：设置层实现。契约类型保持在本文件下方，以下模块只在其后追加。
+pub mod catalog;
+pub mod edit;
+mod events;
+mod file;
+pub mod jsonc;
+mod model;
+pub mod paths;
+mod service;
+pub use catalog::{builtin_registry, register_builtin};
+pub use file::RetryPolicy;
+pub use model::Layer;
+pub use service::{
+    KeybindingsChange, ProblemKind, SettingsOptions, SettingsProblem, SettingsService,
+    WatchOptions, DEFAULT_BACKUP_LIMIT,
+};
 /// A registered VS Code or rove.* key. Overrides apply only in the absence of explicit user values.
 /// The four compat/SETTINGS.md §3 exceptions are approved; all other differences use rove.* rules.
 #[derive(Clone, Debug)]
