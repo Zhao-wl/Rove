@@ -9,6 +9,10 @@ rove-base.workspace = true
 rove-syntax.workspace = true
 memmap2 = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
+# #36 索引生命周期：读取 rove.index.* 设置、缓存元数据、Windows 后台 I/O 优先级。
+rove-config.workspace = true
+serde_json.workspace = true
+windows-sys.workspace = true
 
 [dev-dependencies]
 memory-stats = "1"
@@ -17,3 +21,4 @@ rove-test-support.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 toml = "0.8"
+tempfile = "3"
