@@ -128,6 +128,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::code_view::commands::action_for(id))
         .or_else(|| crate::editors::actions::action_for(id))
         .or_else(|| crate::list_widget::keys::action_for(id))
+        .or_else(|| crate::index_status::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

@@ -39,6 +39,11 @@ use rove_config::{Key, Scope, Settings, SettingsChange};
 use rove_i18n::{Message, StringTable, Strings};
 use rove_theme::{Color, Theme};
 use rove_workspace::{EntryKind, FileEvent, Workspace};
+// #36：C# 索引生命周期与状态。
+use crate::index_status::{self, IndexStatusController, Reaction};
+use rove_lang_cs::lifecycle::{
+    IndexLifecycle, IndexStatus, LifecycleConfig, ProcessBuilder, SourceChange,
+};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -213,6 +218,9 @@ pub struct Workbench {
     theme_service: Arc<rove_theme::ThemeService>,
     settings_events: Option<rove_base::Subscription>,
     theme_events: Option<rove_base::Subscription>,
+    /// #36：C# 索引的生命周期与状态栏条目。
+    index: IndexStatusController,
+    feedback_events: Option<rove_base::Subscription>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -251,7 +259,10 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> CoreResult<Self> {
         let editor = EditorSettings::read(&*settings)?;
-        Ok(Self::build(root, started, store, settings, editor, cx))
+        let mut view = Self::build(root, started, store, settings, editor, cx);
+        // #36：应用入口按设置启动 C# 索引（测试入口 `new` 不启动，条目不显示）。
+        view.start_index(cx);
+        Ok(view)
     }
     fn build(
         root: PathBuf,
@@ -333,6 +344,8 @@ impl Workbench {
             theme_service,
             settings_events: None,
             theme_events: None,
+            index: IndexStatusController::default(),
+            feedback_events: None,
         };
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
@@ -355,6 +368,7 @@ impl Workbench {
             .set_theme_kind(view.theme_service.current().kind());
         view.watch_settings(cx);
         view.watch_theme(cx);
+        view.watch_feedback(cx);
         view.sync_views(cx);
         view.scan(root, cx);
         view
@@ -394,6 +408,12 @@ impl Workbench {
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
             code.update(cx, |code, cx| apply_zoom(code, zoom, cx));
+        }
+        // #36：rove.index.enabled / cacheDir 变化：关闭旧的生命周期，按新设置重新打开。
+        if self.index.lifecycle().is_some()
+            && keys.iter().any(|k| LifecycleConfig::is_lifecycle_key(k))
+        {
+            self.start_index(cx);
         }
         // 排除与只读规则变化：按新规则重新扫描工作区。
         let mut workspace_keys = rove_config::SettingRegistry::default();
@@ -495,9 +515,11 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             while let Ok(first) = receive.recv().await {
                 let mut removed = BTreeSet::new();
+                let mut changes = Vec::new();
                 for batch in
                     std::iter::once(first).chain(std::iter::from_fn(|| receive.try_recv().ok()))
                 {
+                    changes.extend(batch.events.iter().map(index_change));
                     for event in batch.events.iter() {
                         if let FileEvent::Removed(path) | FileEvent::Renamed { from: path, .. } =
                             event
@@ -508,6 +530,8 @@ impl Workbench {
                 }
                 if this
                     .update(cx, |view, cx| {
+                        // #36：源文件变化标记过期，项目配置变化触发重建。
+                        view.index_files_changed(&changes);
                         if !view.editor.settings.close_on_delete {
                             return;
                         }
@@ -614,6 +638,10 @@ impl Workbench {
         let id = id.as_ref();
         let start = Instant::now();
         let previous = self.editor.active().active;
+        if crate::index_status::is_index_command(id) {
+            self.index_command(id, cx);
+            return;
+        }
         if self.commands.is_registered(id) && editor_actions::execute(&mut self.editor, id) {
             self.note_switch(previous, start);
             cx.notify();
@@ -992,8 +1020,236 @@ impl Workbench {
     }
 }
 
+// ------------------------------------------------------------- #36 C# 索引状态
+
+/// #15 的文件事件 → 索引生命周期的变化（项目相对路径）。
+fn index_change(event: &FileEvent) -> SourceChange {
+    match event {
+        FileEvent::Created(p) => SourceChange::Created(p.as_str().to_owned()),
+        FileEvent::Changed(p) => SourceChange::Changed(p.as_str().to_owned()),
+        FileEvent::Removed(p) => SourceChange::Removed(p.as_str().to_owned()),
+        FileEvent::Renamed { from, to } => SourceChange::Renamed {
+            from: from.as_str().to_owned(),
+            to: to.as_str().to_owned(),
+        },
+        FileEvent::RescanRequired => SourceChange::Rescan,
+    }
+}
+
+impl Workbench {
+    /// 按设置（#104 的统一设置服务）启动索引生命周期。`rove.index.enabled = false` 时只显示
+    /// “已禁用”，不创建缓存目录、不启动索引进程。替换旧的生命周期时旧的随之关闭。
+    fn start_index(&mut self, cx: &mut Context<Self>) {
+        let config = LifecycleConfig::from_settings(&*self.settings);
+        let lifecycle = IndexLifecycle::start(
+            self.root.clone(),
+            config,
+            Arc::new(ProcessBuilder::default()),
+        );
+        self.attach_index(lifecycle, cx);
+    }
+
+    /// 装上一个生命周期并订阅它的状态（测试用它注入假的索引进程）。
+    pub(crate) fn attach_index(&mut self, lifecycle: IndexLifecycle, cx: &mut Context<Self>) {
+        let (send, receive) = async_channel::unbounded::<IndexStatus>();
+        let subscription = lifecycle.changes().subscribe(Arc::new(move |status| {
+            let _ = send.try_send(status);
+        }));
+        let epoch = self.index.attach(Some(lifecycle), Some(subscription));
+        let current = self.index.status().clone();
+        self.index_status_changed(epoch, current, cx);
+        cx.spawn(async move |this, cx| {
+            while let Ok(first) = receive.recv().await {
+                let batch: Vec<_> = std::iter::once(first)
+                    .chain(std::iter::from_fn(|| receive.try_recv().ok()))
+                    .collect();
+                let applied = this.update(cx, |view, cx| {
+                    for status in batch {
+                        view.index_status_changed(epoch, status, cx);
+                    }
+                });
+                if applied.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 状态变化：更新状态栏条目；进入失败时经反馈层报一次通知，恢复后收起。
+    fn index_status_changed(&mut self, epoch: u64, status: IndexStatus, cx: &mut Context<Self>) {
+        match self.index.apply(epoch, status) {
+            Reaction::Notify(failure) => {
+                let (key, reason, message, actions) =
+                    index_status::failure_notification(&failure, &self.strings);
+                let _ = shell::view::report(self, &key, reason, message, actions, cx);
+            }
+            Reaction::Recovered => {
+                for key in index_status::failure_keys() {
+                    let _ =
+                        crate::feedback::FeedbackService::dismiss(&mut self.shell.feedback, &key);
+                }
+            }
+            Reaction::None => {}
+        }
+        let entry = index_status::status_entry(
+            self.index.status(),
+            &self.strings,
+            rove_lang_cs::lifecycle::meta::now_ms(),
+        );
+        let shell = &mut self.shell;
+        match entry {
+            Some(entry) => {
+                let _ =
+                    shell
+                        .status_bar
+                        .set(&shell.contributions, index_status::STATUS_ITEM, entry);
+            }
+            None => {
+                shell.status_bar.remove(index_status::STATUS_ITEM);
+            }
+        }
+        cx.notify();
+    }
+
+    fn index_files_changed(&self, changes: &[SourceChange]) {
+        if let Some(lifecycle) = self.index.lifecycle() {
+            if !changes.is_empty() {
+                lifecycle.files_changed(changes);
+            }
+        }
+    }
+
+    /// 通知按钮（“查看详情”“重试”）发出的动作就是命令 ID。
+    fn watch_feedback(&mut self, cx: &mut Context<Self>) {
+        use crate::feedback::{FeedbackEvent, FeedbackService};
+        let (send, receive) = async_channel::unbounded::<FeedbackEvent>();
+        self.feedback_events = Some(self.shell.feedback.events().subscribe(Arc::new(
+            move |event| {
+                let _ = send.try_send(event);
+            },
+        )));
+        cx.spawn(async move |this, cx| {
+            while let Ok(event) = receive.recv().await {
+                let FeedbackEvent::Action { key, action } = event else {
+                    continue;
+                };
+                if !key.starts_with(index_status::FAILURE_KEY_PREFIX)
+                    || !index_status::is_index_command(&action)
+                {
+                    continue;
+                }
+                if this
+                    .update(cx, |view, cx| view.index_command(&action, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// `rove.index.rebuild` / `showDetails` / `openLog`。
+    fn index_command(&mut self, id: &str, cx: &mut Context<Self>) {
+        match id {
+            index_status::REBUILD => {
+                if let Some(lifecycle) = self.index.lifecycle() {
+                    lifecycle.rebuild();
+                }
+            }
+            index_status::SHOW_DETAILS => {
+                let shell = &mut self.shell;
+                shell.layout.panel_visible = true;
+                shell.layout.active_panel_view = Some(index_status::DETAILS_VIEW.into());
+                shell.schedule_save(cx);
+            }
+            index_status::OPEN_LOG => {
+                let log = self
+                    .index
+                    .status()
+                    .info
+                    .log
+                    .clone()
+                    .filter(|path| path.is_file());
+                match log {
+                    Some(path) => {
+                        if let Err(e) = self.open_documents().open(
+                            Resource::File(path),
+                            OpenOptions::default(),
+                            Cancellation::default(),
+                        ) {
+                            eprintln!("index log: {e}");
+                        }
+                    }
+                    None => {
+                        let _ = shell::view::report(
+                            self,
+                            "rove.index.noLog",
+                            Reason::Receipt,
+                            Message::key("index.noLog"),
+                            Arc::from([]),
+                            cx,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn render_index_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let status = self.index.status();
+        let now = rove_lang_cs::lifecycle::meta::now_ms();
+        let lines = index_status::details_lines(status, &self.strings, now);
+        let actions = index_status::details_actions(&status.state);
+        let link = self
+            .shell
+            .color(self.theme.as_ref(), "textLink.foreground")
+            .or_else(|| {
+                self.shell
+                    .color(self.theme.as_ref(), "notificationLink.foreground")
+            });
+        let zoom = self.shell.zoom();
+        let buttons: Vec<_> = actions
+            .into_iter()
+            .map(|(command, label)| {
+                div()
+                    .id(SharedString::from(format!("index-details-{command}")))
+                    .cursor_pointer()
+                    .when_some(link, |d, c| d.text_color(c))
+                    .child(self.label(label, &[]))
+                    .on_click(cx.listener(move |v, _, _, cx| v.index_command(command, cx)))
+            })
+            .collect();
+        div()
+            .id("index-details")
+            .px(px(8.0 * zoom))
+            .flex()
+            .flex_col()
+            .gap(px(4.0 * zoom))
+            .text_size(px(shell::view::UI_FONT_SIZE * zoom))
+            .children(lines.into_iter().map(|line| div().child(line)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(16.0 * zoom))
+                    .children(buttons),
+            )
+            .into_any_element()
+    }
+}
+
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 4] = [CONTAINER_FACTORY, STATUS_FACTORY, FILE_VIEW, PROBLEMS];
+const KNOWN_FACTORIES: [&str; 5] = [
+    CONTAINER_FACTORY,
+    STATUS_FACTORY,
+    FILE_VIEW,
+    PROBLEMS,
+    crate::index_status::DETAILS_VIEW,
+];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
         &self.shell
@@ -1032,6 +1288,7 @@ impl ShellHost for Workbench {
         match factory_key {
             FILE_VIEW => Some(self.render_file_tree(cx)),
             PROBLEMS => Some(shell::view::render_problems_empty(self)),
+            crate::index_status::DETAILS_VIEW => Some(self.render_index_details(cx)),
             _ => None,
         }
     }
@@ -1132,6 +1389,18 @@ impl Render for Workbench {
                 )
             }))
             .on_action(cx.listener(|v, a: &crate::keys::ChordStatus, _, cx| v.chord_status(a, cx)))
+            // #36：rove.index.* 命令（键位服务分发来的 action）。
+            .on_action(cx.listener(|v, _: &crate::index_status::Rebuild, _, cx| {
+                v.index_command(crate::index_status::REBUILD, cx)
+            }))
+            .on_action(
+                cx.listener(|v, _: &crate::index_status::ShowDetails, _, cx| {
+                    v.index_command(crate::index_status::SHOW_DETAILS, cx)
+                }),
+            )
+            .on_action(cx.listener(|v, _: &crate::index_status::OpenLog, _, cx| {
+                v.index_command(crate::index_status::OPEN_LOG, cx)
+            }))
             .child(workbench)
     }
 }
@@ -1418,3 +1687,7 @@ mod tests {
 #[cfg(test)]
 #[path = "workbench_settings_tests.rs"]
 mod settings_tests;
+
+#[cfg(test)]
+#[path = "workbench_index_tests.rs"]
+mod index_tests;

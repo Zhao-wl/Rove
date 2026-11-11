@@ -142,11 +142,12 @@ impl Shared {
             status.revision += 1;
             status.clone()
         };
-        self.changed.notify_all();
         let listeners: Vec<_> = lock(&self.listeners).1.values().cloned().collect();
         for listener in listeners {
             listener(status.clone());
         }
+        // 订阅者先收到（只入队），等待者再醒来：等到状态的一方可以确定事件已经发出。
+        self.changed.notify_all();
     }
     fn cancel_prefetch(&self) {
         if let Some(c) = lock(&self.prefetch_cancel).take() {
