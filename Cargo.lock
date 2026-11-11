@@ -4767,16 +4767,20 @@ name = "rove-lang-cs"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "memchr",
  "memmap2",
  "memory-stats",
  "rove-base",
  "rove-config",
  "rove-syntax",
  "rove-test-support",
+ "rove-workspace",
  "serde",
  "serde_json",
  "tempfile",
  "toml 0.8.23",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
  "windows-sys 0.61.2",
 ]
 

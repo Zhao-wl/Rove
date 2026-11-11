@@ -13,6 +13,10 @@ bytemuck = { version = "1", features = ["derive"] }
 rove-config.workspace = true
 serde_json.workspace = true
 windows-sys.workspace = true
+# #37 L1 声明索引：与 #9（rove-syntax）同一个 C# grammar 版本，直接解析，不经过高亮层。
+tree-sitter.workspace = true
+tree-sitter-c-sharp.workspace = true
+memchr.workspace = true
 
 [dev-dependencies]
 memory-stats = "1"
@@ -21,4 +25,5 @@ rove-test-support.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 toml = "0.8"
+rove-workspace.workspace = true
 tempfile = "3"
