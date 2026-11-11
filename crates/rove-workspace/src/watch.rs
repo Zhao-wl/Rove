@@ -12,7 +12,7 @@
 //! Windows reports a rename as a `From`/`To` pair; [`parse`] pairs them back into a single
 //! [`WatchChange::Renamed`] instead of a delete plus a create.
 
-use crate::folder::Folder;
+use crate::folder::{Folder, MAX_NEW_DIRECTORY_ROUNDS};
 use notify::event::{Flag, ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher as _};
 use std::collections::{BTreeSet, VecDeque};
@@ -124,6 +124,7 @@ fn run(
 
     let mut pending: Vec<Event> = Vec::new();
     let mut deadline: Option<Instant> = None;
+    let mut retry_watches: Vec<(PathBuf, u8)> = Vec::new();
     loop {
         if stop.load(Ordering::Acquire) {
             break;
@@ -159,27 +160,52 @@ fn run(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        let due = deadline.is_some_and(|deadline| Instant::now() >= deadline);
         let Some(folder) = folder.upgrade() else {
             break;
         };
+
+        // Retry directories whose `watch` failed on an earlier round: a path can be briefly
+        // locked while it is being created. Bounded, so a permanently failing directory is not
+        // retried forever.
+        retry_watches = retry_failed_watches(&mut watcher, &folder, retry_watches);
+
+        let due = deadline.is_some_and(|deadline| Instant::now() >= deadline);
         let overflow = pending.len() > folder.event_queue_limit();
         if due || overflow {
             let events = std::mem::take(&mut pending);
             let wanted = folder.apply_watch_events(events, overflow);
-            let watched = register_new_dirs(&mut watcher, &folder, wanted);
-            if !watched.is_empty() {
-                // A directory that was just registered may have received writes while it was not
-                // yet watched (the first event only sees a partial subtree). Re-list it once now
-                // that the OS is delivering events for it.
-                folder.reconcile_dirs(watched.into_iter().collect());
-            }
+            let failed = register_and_reconcile(&mut watcher, &folder, wanted);
+            retry_watches.extend(failed.into_iter().map(|dir| (dir, 1)));
             deadline = None;
         }
     }
 }
 
-/// Watches directories that are not registered yet and reports which calls succeeded.
+/// Registers the directories and re-lists each newly watched directory, repeating until no deeper
+/// directory turns up (bounded by [`MAX_NEW_DIRECTORY_ROUNDS`]).
+///
+/// Returns the directories whose `watch` call failed, for the caller's retry queue.
+fn register_and_reconcile(
+    watcher: &mut impl notify::Watcher,
+    folder: &Folder,
+    mut dirs: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut failed = Vec::new();
+    for _ in 0..MAX_NEW_DIRECTORY_ROUNDS {
+        if dirs.is_empty() {
+            break;
+        }
+        let (watched, mut failures) = register_new_dirs(watcher, folder, dirs);
+        failed.append(&mut failures);
+        if watched.is_empty() {
+            break;
+        }
+        dirs = folder.reconcile_dirs(watched.into_iter().collect());
+    }
+    failed
+}
+
+/// Watches directories that are not registered yet, reporting successes and failures.
 ///
 /// Only a successful `watch` marks the directory as registered, so a backend failure does not
 /// permanently hide the directory from later registration attempts.
@@ -187,15 +213,53 @@ fn register_new_dirs(
     watcher: &mut impl notify::Watcher,
     folder: &Folder,
     dirs: Vec<PathBuf>,
-) -> Vec<PathBuf> {
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut watched = Vec::new();
+    let mut failed = Vec::new();
     for dir in folder.new_watch_dirs(dirs) {
-        if watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
-            folder.mark_registered(std::slice::from_ref(&dir));
-            watched.push(dir);
+        match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                folder.mark_registered(std::slice::from_ref(&dir));
+                watched.push(dir);
+            }
+            Err(_) => failed.push(dir),
         }
     }
-    watched
+    (watched, failed)
+}
+
+/// Maximum attempts for a single directory whose `watch` keeps failing.
+const MAX_WATCH_ATTEMPTS: u8 = 5;
+
+/// Retries the directories that failed to register, with a bounded attempt count.
+fn retry_failed_watches(
+    watcher: &mut impl notify::Watcher,
+    folder: &Folder,
+    pending: Vec<(PathBuf, u8)>,
+) -> Vec<(PathBuf, u8)> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    let unregistered = folder.new_watch_dirs(pending.iter().map(|(dir, _)| dir.clone()).collect());
+    let mut still = Vec::new();
+    for (dir, attempts) in pending {
+        if !unregistered.contains(&dir) {
+            // Another path registered it in the meantime.
+            continue;
+        }
+        if watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+            folder.mark_registered(std::slice::from_ref(&dir));
+            let discovered = folder.reconcile_dirs(BTreeSet::from([dir]));
+            still.extend(
+                register_and_reconcile(watcher, folder, discovered)
+                    .into_iter()
+                    .map(|dir| (dir, 1)),
+            );
+        } else if attempts < MAX_WATCH_ATTEMPTS {
+            still.push((dir, attempts + 1));
+        }
+    }
+    still
 }
 
 fn rescan_event() -> Event {

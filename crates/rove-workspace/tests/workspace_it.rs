@@ -581,6 +581,36 @@ fn a_directory_copied_in_while_still_being_written_converges() {
     assert_eq!(file_paths(&folder).len(), 200);
 }
 
+#[test]
+fn nested_directories_created_during_a_copy_are_watched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let folder = Folder::start(dir.path(), default_config()).expect("start workspace");
+    assert!(wait_until_complete(&folder, Duration::from_secs(15)));
+    assert!(wait_watching(&folder, Duration::from_secs(15)));
+
+    // A copy in progress: the directory appears first, a nested directory some time later.
+    let copied = dir.path().join("Assets/Copied");
+    std::fs::create_dir_all(&copied).expect("create copied directory");
+    write(&copied.join("First.cs"), "class F {}\n");
+    std::thread::sleep(Duration::from_millis(70));
+    std::fs::create_dir_all(copied.join("Sub")).expect("create nested directory");
+    write(&copied.join("Sub/Deep.cs"), "class D {}\n");
+    std::thread::sleep(Duration::from_millis(30));
+    write(&copied.join("Sub/Late.cs"), "class L {}\n");
+
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            file_paths(&folder) == disk_files(dir.path())
+        }),
+        "snapshot must converge with nested directories: snapshot={:?} disk={:?}",
+        file_paths(&folder),
+        disk_files(dir.path())
+    );
+    assert!(file_paths(&folder)
+        .iter()
+        .any(|path| path == "Assets/Copied/Sub/Late.cs"));
+}
+
 /// Settings implementation that serves the registered defaults plus one explicit override, i.e.
 /// what a loaded `settings.json` would look like after #13.
 struct OverrideSettings {

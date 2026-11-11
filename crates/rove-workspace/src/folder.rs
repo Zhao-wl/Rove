@@ -44,7 +44,18 @@ pub struct Folder {
     /// Directories the backend already watches, so rescans/reconciles never register the same
     /// directory twice (a duplicate `ReadDirectoryChangesW` handle would duplicate every event).
     registered_dirs: Mutex<BTreeSet<PathBuf>>,
+    /// Consecutive failed rescans. Used to avoid two full walks on every batch while the backend
+    /// keeps failing (the first failure already reported `RescanRequired`).
+    rescan_failures: AtomicU64,
 }
+
+/// Upper bound for the register → reconcile rounds used to discover nested new directories.
+///
+/// Each round registers the directories found by the previous reconcile and re-lists them; a
+/// directory tree copied in as a whole is therefore fully watched before `complete` is published
+/// (or before the watcher goes back to waiting), without an unbounded loop if the tree keeps
+/// growing.
+pub(crate) const MAX_NEW_DIRECTORY_ROUNDS: usize = 16;
 
 impl Folder {
     /// Starts the streaming scan. The returned workspace is usable immediately: the root
@@ -100,6 +111,7 @@ impl Folder {
             cancel,
             watcher: Mutex::new(None),
             registered_dirs: Mutex::new(BTreeSet::new()),
+            rescan_failures: AtomicU64::new(0),
         });
         // The root listing is synchronous: this is the "root visible in the first frame" part of
         // the streaming contract, and it is one readdir call.
@@ -121,12 +133,7 @@ impl Folder {
             // the scan/watcher race for changes made after the walker passed a directory.
             self.register_dirs_blocking(self.watched_dirs());
             let discovered = self.reconcile_all();
-            if !discovered.is_empty() {
-                // Directories found by the reconcile itself were never walked; register them
-                // synchronously and check them once more before publishing `complete`.
-                self.register_dirs_blocking(discovered.clone());
-                self.reconcile_dirs(discovered.into_iter().collect());
-            }
+            self.register_and_reconcile_blocking(discovered);
         }
         // Even a cancelled or partially failed scan must stop reporting `complete == false`
         // forever; what was found is a valid (if partial) snapshot.
@@ -388,6 +395,22 @@ impl Folder {
                     registered.retain(|dir| !dir.starts_with(directory));
                 }
             }
+        }
+    }
+
+    /// Registers newly discovered directories and re-lists them, until no deeper directory is
+    /// found (bounded by [`MAX_NEW_DIRECTORY_ROUNDS`]).
+    ///
+    /// Needed for a directory tree copied in as a whole: the first subtree scan only sees a
+    /// prefix, the reconcile of the registered directory discovers its children, and those
+    /// children must be registered *and* re-listed before they can be considered watched.
+    fn register_and_reconcile_blocking(&self, mut discovered: Vec<PathBuf>) {
+        for _ in 0..MAX_NEW_DIRECTORY_ROUNDS {
+            if discovered.is_empty() {
+                return;
+            }
+            self.register_dirs_blocking(discovered.clone());
+            discovered = self.reconcile_dirs(discovered.into_iter().collect());
         }
     }
 
@@ -848,7 +871,7 @@ impl Folder {
         }
         // Phase 4: diff and apply under the lock, batching every removal into one pass.
         let mut dirs_to_watch = Vec::new();
-        self.commit(|snapshot| {
+        let removed_directories = self.commit(|snapshot| {
             let mut emitted = Vec::new();
             let removals: Vec<WorkspacePath> = listings
                 .iter()
@@ -864,6 +887,18 @@ impl Folder {
                         .map(|(_, display)| display.clone())
                         .collect::<Vec<_>>()
                 })
+                .collect();
+            // Resolve kinds before removing: a directory that only the reconcile saw disappear
+            // must be forgotten so that re-creating it is watched again.
+            let removed_directories: Vec<PathBuf> = removals
+                .iter()
+                .filter(|path| {
+                    matches!(
+                        snapshot.kind(path),
+                        Some(crate::contracts::EntryKind::Directory)
+                    )
+                })
+                .map(|path| self.absolute(path))
                 .collect();
             for removed in snapshot.remove_many(&removals) {
                 emitted.push(FileEvent::Removed(removed));
@@ -887,8 +922,9 @@ impl Folder {
                 self.push_watch_dirs(&mut dirs_to_watch, &directory, &subdirectories);
             }
             let changed = !emitted.is_empty();
-            (emitted, changed, ())
+            (emitted, changed, removed_directories)
         });
+        self.forget_registered_all(&removed_directories);
         dirs_to_watch
     }
 
@@ -903,11 +939,23 @@ impl Folder {
     /// `RescanRequired`: the events that triggered it were dropped, so consumers must treat their
     /// view as stale. Returns the directories the caller has to watch.
     fn rescan_and_report(self: &Arc<Self>) -> Vec<PathBuf> {
-        // One retry: a transient sharing/permission failure during the walk is common (an editor
-        // or antivirus holding a file) and the second pass usually succeeds.
-        let replacement =
-            scan::collect(self, &self.cancel).or_else(|_| scan::collect(self, &self.cancel));
+        // A cancelled workspace must not burn two full walks; the scan itself fails with
+        // `Cancelled` and nothing is lost by stopping here.
+        if self.cancel.check().is_err() {
+            return Vec::new();
+        }
+        // One retry for a transient sharing/permission failure during the walk (an editor or
+        // antivirus holding a file). After a failed rescan the next attempt runs a single walk
+        // instead of two, so a persistently failing backend cannot double the cost of every batch.
+        let retry = self.rescan_failures.load(Ordering::Relaxed) == 0;
+        let first = scan::collect(self, &self.cancel);
+        let replacement = match first {
+            Ok(snapshot) => Ok(snapshot),
+            Err(_) if retry && self.cancel.check().is_ok() => scan::collect(self, &self.cancel),
+            Err(error) => Err(error),
+        };
         let Ok(replacement) = replacement else {
+            self.rescan_failures.fetch_add(1, Ordering::Relaxed);
             let revision = {
                 let mut snapshot = self.write();
                 snapshot.bump()
@@ -918,6 +966,7 @@ impl Folder {
             });
             return Vec::new();
         };
+        self.rescan_failures.store(0, Ordering::Relaxed);
         let revision = {
             let mut snapshot = self.write();
             let revision = Version(snapshot.revision().0.wrapping_add(1));
@@ -1165,6 +1214,66 @@ mod tests {
         let page = folder.files(0..100).unwrap();
         let paths: Vec<&str> = page.items.iter().map(|entry| entry.path.as_str()).collect();
         assert_eq!(paths, ["Assets/Copied/First.cs", "Assets/Copied/Late.cs"]);
+    }
+
+    #[test]
+    fn nested_directories_discovered_by_reconcile_are_returned_for_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        std::fs::create_dir_all(dir.path().join("Assets/Copied")).unwrap();
+        std::fs::write(dir.path().join("Assets/Copied/First.cs"), "class F {}\n").unwrap();
+
+        let event =
+            notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Folder))
+                .add_path(folder.root().join("Assets/Copied"));
+        let to_watch = folder.apply_watch_events(vec![event], false);
+        assert!(
+            to_watch.iter().any(|path| path.ends_with("Copied")),
+            "new directory must be reported for registration: {to_watch:?}"
+        );
+
+        // The nested directory appears after the first subtree scan (a copy still in progress).
+        // It is already in the snapshot, so only an explicit registration round can watch it.
+        std::fs::create_dir_all(dir.path().join("Assets/Copied/Sub")).unwrap();
+        std::fs::write(dir.path().join("Assets/Copied/Sub/Deep.cs"), "class D {}\n").unwrap();
+        let discovered = folder.reconcile_dirs(to_watch.into_iter().collect());
+        let sub = folder.absolute(&WorkspacePath::new("Assets/Copied/Sub").unwrap());
+        assert!(
+            discovered.contains(&sub),
+            "reconcile must report the nested directory for registration: {discovered:?}"
+        );
+
+        // The bounded register → reconcile loop the callers run ends with everything watched.
+        let second = folder.reconcile_dirs(discovered.into_iter().collect());
+        assert!(
+            second.is_empty(),
+            "no deeper directories expected: {second:?}"
+        );
+        let page = folder.files(0..100).unwrap();
+        let paths: Vec<&str> = page.items.iter().map(|entry| entry.path.as_str()).collect();
+        assert!(paths.contains(&"Assets/Copied/Sub/Deep.cs"), "{paths:?}");
+    }
+
+    #[test]
+    fn a_directory_removed_by_reconcile_is_forgotten_for_watching() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Assets/Sub")).unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        let assets = folder.absolute(&WorkspacePath::new("Assets").unwrap());
+        let sub = folder.absolute(&WorkspacePath::new("Assets/Sub").unwrap());
+        folder.mark_registered(std::slice::from_ref(&sub));
+        assert!(folder.new_watch_dirs(vec![sub.clone()]).is_empty());
+
+        // A lost delete event is repaired by the reconcile; the stale registration must go away
+        // too, otherwise re-creating the directory would never be watched again.
+        std::fs::remove_dir_all(dir.path().join("Assets/Sub")).unwrap();
+        folder.reconcile_dirs(std::collections::BTreeSet::from([assets]));
+
+        assert_eq!(
+            folder.new_watch_dirs(vec![sub.clone()]),
+            vec![sub],
+            "a directory removed by reconcile must be registrable again"
+        );
     }
 
     #[test]
