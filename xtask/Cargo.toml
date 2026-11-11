@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "scroll_unique"
 harness = false
+
+[[bench]]
+name = "cancellation"
+harness = false
