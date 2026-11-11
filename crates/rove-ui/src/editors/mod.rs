@@ -1,14 +1,15 @@
 pub(crate) mod actions;
 mod layout;
 pub(crate) mod settings;
+pub(crate) mod syntax;
 
 pub(crate) use layout::{Axis, Direction, Layout};
 use settings::{EditorKind, EditorSettings};
 
 use crate::{documents::*, skeleton::events::EventBus};
 use rove_base::*;
-use rove_buffer::{Document, Documents, LineCount, SizeClass};
-use rove_syntax::{SyntaxService, SyntaxSnapshot};
+use rove_buffer::{Document, Documents, LineCount};
+use rove_syntax::{highlight::DocumentHighlighter, SyntaxSnapshot, SyntaxUpdate};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 
 pub(crate) type TabId = u64;
@@ -246,8 +247,9 @@ pub(crate) struct EditorService {
     pub(crate) expanded: Option<EditorGroupId>,
     pub(crate) settings: EditorSettings,
     loader: Arc<dyn Documents>,
-    syntax: Arc<dyn SyntaxService>,
+    highlights: syntax::Highlights,
     schedule: Rc<dyn Fn(OpenJob)>,
+    schedule_syntax: Rc<dyn Fn(syntax::SyntaxJob)>,
     serial: u64,
     latest_navigation: Option<OpenRequestId>,
     history: History,
@@ -263,9 +265,10 @@ pub(crate) struct EditorService {
 impl EditorService {
     pub(crate) fn new(
         loader: Arc<dyn Documents>,
-        syntax: Arc<dyn SyntaxService>,
+        syntax: Arc<dyn DocumentHighlighter>,
         settings: EditorSettings,
         schedule: impl Fn(OpenJob) + 'static,
+        schedule_syntax: impl Fn(syntax::SyntaxJob) + 'static,
     ) -> Self {
         let first = EditorGroupId(1);
         Self {
@@ -276,8 +279,9 @@ impl EditorService {
             expanded: None,
             settings,
             loader,
-            syntax,
+            highlights: syntax::Highlights::new(syntax),
             schedule: Rc::new(schedule),
+            schedule_syntax: Rc::new(schedule_syntax),
             serial: 1,
             latest_navigation: None,
             history: History::default(),
@@ -560,18 +564,96 @@ impl EditorService {
 
     fn count_down(&mut self, tab: &Tab) {
         if let Some(opened) = tab.opened() {
-            Self::release_model(&mut self.open_ids, opened.document.id);
+            Self::release_model(&mut self.open_ids, &mut self.highlights, opened.document.id);
         }
     }
 
-    fn release_model(open_ids: &mut BTreeMap<DocumentId, usize>, id: DocumentId) {
+    /// Drop one reference to a document; the last one also ends its highlighting.
+    fn release_model(
+        open_ids: &mut BTreeMap<DocumentId, usize>,
+        highlights: &mut syntax::Highlights,
+        id: DocumentId,
+    ) {
         if let Some(count) = open_ids.get_mut(&id) {
             if *count > 1 {
                 *count -= 1;
             } else {
                 open_ids.remove(&id);
+                highlights.release(id);
             }
         }
+    }
+
+    /// Highlight a ready document in the background, visible lines of `tab` first.
+    fn start_highlight(&mut self, group: EditorGroupId, tab: TabId) {
+        let Some(pane) = self.groups.get(&group) else {
+            return;
+        };
+        let Some(entry) = pane.tab(tab) else {
+            return;
+        };
+        let Some(opened) = entry.opened() else {
+            return;
+        };
+        if entry.kind != EditorKind::Text
+            || opened.syntax.is_some()
+            || !syntax::highlighted(&opened.document)
+        {
+            return;
+        }
+        let visible = syntax::visible(entry.view.scroll, pane.rows);
+        let document = opened.document.clone();
+        if let Some(job) = self.highlights.start(&document, visible) {
+            (self.schedule_syntax)(job);
+        }
+    }
+
+    /// Apply a finished background analysis to every tab that shows the document at the
+    /// analysed version. Returns whether any tab changed; a visible-first result is
+    /// followed by the full pass.
+    pub(crate) fn finish_syntax(
+        &mut self,
+        document: DocumentId,
+        generation: u64,
+        result: Result<SyntaxUpdate>,
+    ) -> bool {
+        let Some(partial) = self.highlights.finish(document, generation) else {
+            return false;
+        };
+        let Ok(update) = result else {
+            return false;
+        };
+        let version = update.snapshot.version();
+        let mut changed = false;
+        let mut shown = None;
+        for pane in self.groups.values_mut() {
+            for tab in &mut pane.tabs {
+                if let Content::Ready(opened) = &mut tab.content {
+                    if opened.document.id == document && opened.document.text.version() == version {
+                        opened.syntax = Some(update.snapshot.clone());
+                        shown.get_or_insert_with(|| opened.document.clone());
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if let Some(document) = shown.filter(|_| partial) {
+            if let Some(job) = self.highlights.start(&document, None) {
+                (self.schedule_syntax)(job);
+            }
+        }
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn highlighting(&self, document: DocumentId) -> bool {
+        self.highlights.is_running(document)
+    }
+
+    /// Replace the syntax service (tests substitute a recording or failing one).
+    #[cfg(test)]
+    pub(crate) fn set_syntax(&mut self, syntax: Arc<dyn DocumentHighlighter>) {
+        self.highlights = syntax::Highlights::new(syntax);
     }
 
     pub(crate) fn close_tabs(&mut self, group: Option<EditorGroupId>, preserve_pinned: bool) {
@@ -930,7 +1012,7 @@ impl EditorService {
             self.report_cancelled(group, request);
         }
         let loader = self.loader.clone();
-        let syntax = self.syntax.clone();
+        let highlighter = self.highlights.service.clone();
         (self.schedule)(OpenJob {
             id,
             task: Box::pin(async move {
@@ -947,21 +1029,30 @@ impl EditorService {
                     document.text.offset(selection.start())?;
                     document.text.offset(selection.end())?;
                 }
-                let snapshot = if !text_editor || document.metadata.size == SizeClass::Huge {
+                let snapshot = if !text_editor || !syntax::highlighted(&document) {
                     None
                 } else if let Some(snapshot) = warm.and_then(|opened| opened.syntax) {
                     Some(snapshot)
+                } else if syntax::inline(&document) {
+                    // An unsupported language opens as plain text rather than failing.
+                    match highlighter
+                        .analyze(
+                            document.id,
+                            document.text.clone(),
+                            document.metadata.language.clone(),
+                            None,
+                            None,
+                            cancel.clone(),
+                        )
+                        .await
+                    {
+                        Ok(update) => Some(update.snapshot),
+                        Err(Error::Cancelled) => return Err(Error::Cancelled),
+                        Err(_) => None,
+                    }
                 } else {
-                    Some(
-                        syntax
-                            .analyze(
-                                document.text.clone(),
-                                document.metadata.language.clone(),
-                                cancel.clone(),
-                            )
-                            .await?
-                            .snapshot,
-                    )
+                    // Readable first; `finish` starts the background analysis.
+                    None
                 };
                 cancel.check()?;
                 Ok(LoadResult {
@@ -1107,10 +1198,12 @@ impl EditorService {
             .unwrap();
         let event = match result {
             Ok(loaded) => {
-                if let Some(old) = tab.opened() {
-                    Self::release_model(&mut self.open_ids, old.document.id);
-                }
                 let document = loaded.opened.document.id;
+                // Count the new document first, so reloading the same one keeps its baseline.
+                *self.open_ids.entry(document).or_default() += 1;
+                if let Some(old) = tab.opened() {
+                    Self::release_model(&mut self.open_ids, &mut self.highlights, old.document.id);
+                }
                 if let Some(position) = loaded.position {
                     tab.view.reveal(
                         position,
@@ -1121,7 +1214,6 @@ impl EditorService {
                 }
                 tab.reveal |= loaded.position.is_some();
                 tab.content = Content::Ready(loaded.opened);
-                *self.open_ids.entry(document).or_default() += 1;
                 if self.latest_navigation == Some(id) {
                     let to = Location {
                         group,
@@ -1167,6 +1259,7 @@ impl EditorService {
         };
         if matches!(event, OpenEvent::Ready { .. }) {
             self.ready.push((tab_id, event));
+            self.start_highlight(group, tab_id);
         } else {
             self.events.emit(event);
         }

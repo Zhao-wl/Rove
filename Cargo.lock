@@ -4821,6 +4821,7 @@ name = "rove-ui"
 version = "0.0.1"
 dependencies = [
  "async-channel 2.5.0",
+ "futures-lite 2.6.1",
  "globset",
  "gpui",
  "memchr",

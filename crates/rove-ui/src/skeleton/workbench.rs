@@ -8,6 +8,7 @@ use crate::{
     editors::{
         actions as editor_actions,
         settings::{EditorKind, EditorSettings},
+        syntax::SyntaxJob,
         Axis, Content, Direction, EditorService, Layout, OpenJob, Tab, TabId, ViewState,
     },
     list_widget::{
@@ -37,6 +38,7 @@ use rove_base::{
 use rove_commands::{center::CommandCenter, CommandExecutor, CommandRegistry, Invocation};
 use rove_config::{Key, Scope, Settings, SettingsChange};
 use rove_i18n::{Message, StringTable, Strings};
+use rove_syntax::highlight::{SyntaxDocuments, TreeSitterSyntax};
 use rove_theme::{Color, Theme};
 use rove_workspace::{EntryKind, FileEvent, Workspace};
 // #36：C# 索引生命周期与状态。
@@ -57,6 +59,8 @@ use std::{
 mod editor_panes;
 #[cfg(test)]
 mod editor_tests;
+#[cfg(test)]
+mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
@@ -303,6 +307,28 @@ impl Workbench {
             })
             .detach();
         };
+        let syntax_owner = cx.entity().downgrade();
+        let syntax_app = cx.to_async();
+        let syntax_background = cx.background_executor().clone();
+        let schedule_syntax = move |job: SyntaxJob| {
+            let SyntaxJob {
+                document,
+                generation,
+                task,
+            } = job;
+            let analysis = syntax_background.spawn(task);
+            let owner = syntax_owner.clone();
+            syntax_app
+                .spawn(async move |cx| {
+                    let result = analysis.await;
+                    let _ = owner.update(cx, |view, cx| {
+                        if view.editor.finish_syntax(document, generation, result) {
+                            view.refresh_syntax(document, cx);
+                        }
+                    });
+                })
+                .detach();
+        };
         let shell = Shell::new(
             &root,
             appearance::contributions().unwrap(),
@@ -318,9 +344,13 @@ impl Workbench {
             tree: None,
             editor: EditorService::new(
                 Arc::new(FileDocuments::new(root.clone(), services.clone()).with_size_policy(size)),
-                Arc::new(rove_syntax::highlight::TreeSitterSyntax::default()),
+                // #94: one baseline per open document, configured by the shared settings.
+                Arc::new(SyntaxDocuments::new(
+                    TreeSitterSyntax::default().with_settings(services.clone()),
+                )),
                 settings,
                 schedule,
+                schedule_syntax,
             ),
             root: root.clone(),
             views: BTreeMap::new(),
@@ -902,6 +932,36 @@ impl Workbench {
                 code.set_selection(selection_of(&state), Some(Reveal::CenterIfOutside), cx);
             }
         });
+    }
+
+    /// A background analysis of `document` finished: recolour the code views showing it.
+    fn refresh_syntax(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        let Self { editor, views, .. } = self;
+        for slot in views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
+        {
+            let Some(shown) = slot.shown.filter(|shown| shown.document == document) else {
+                continue;
+            };
+            let Some(opened) = editor
+                .groups
+                .values()
+                .find_map(|pane| pane.tab(shown.tab))
+                .and_then(Tab::opened)
+                .filter(|opened| opened.document.text.version() == shown.version)
+            else {
+                continue;
+            };
+            *slot.colors.current.borrow_mut() = opened
+                .syntax
+                .clone()
+                .map(|syntax| (opened.document.text.clone(), syntax));
+            let layer = slot.layer.clone();
+            slot.code
+                .update(cx, |code, cx| code.invalidate_decorations(&layer, None, cx));
+        }
+        cx.notify();
     }
 
     /// The focused group's code view (the active editor).

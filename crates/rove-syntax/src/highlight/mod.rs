@@ -363,6 +363,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         cancel: work.cancel,
         deadline: None,
     };
+    let mut trace = Trace::start(&language, text.byte_len());
     if let Some(parsed) = complete {
         // Same text as the partial snapshot: keep its parse, highlight every line.
         let scan = 0..parsed.ranges.len();
@@ -377,8 +378,10 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
             line_limit,
             pool,
             &full_work,
+            &mut trace,
         )?
         .0;
+        trace.finish("complete");
         return Ok((
             snapshot(
                 text,
@@ -414,6 +417,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         None => Source::read(text.as_ref(), work)?,
     };
     work.check()?;
+    trace.mark("read");
 
     // The previous tree after the edit and its reparse, for changed-range detection.
     let mut diff: Option<(Tree, Tree)> = None;
@@ -455,6 +459,11 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
     } else {
         (full(&source)?, true)
     };
+    trace.mark(if captured.is_some() {
+        "parse+query (parallel parts)"
+    } else {
+        "parse"
+    });
 
     let edited_ranges = match baseline {
         Some((patch, old)) => old
@@ -466,6 +475,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         Some(ranges) => ranges,
         None => RowRanges::new(text.as_ref(), &source, count.known as usize, work)?,
     };
+    trace.mark("rows");
     let incremental = baseline
         .filter(|(_, old)| ranges.len() > 0 && old.ranges.len() > 0)
         .map(|(patch, old)| {
@@ -499,8 +509,10 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         line_limit,
         pool,
         work,
+        &mut trace,
     )?;
     work.check()?;
+    trace.finish(if baseline.is_some() { "edit" } else { "full" });
     Ok((
         snapshot(
             text, language, line_limit, source, trees, ranges, lines, partial,
@@ -521,6 +533,7 @@ fn highlight(
     line_limit: usize,
     pool: Option<&WorkerPool>,
     work: &Work<'_>,
+    trace: &mut Trace,
 ) -> Result<rows::Rows> {
     let bytes = ranges.bytes(scan.clone());
     let captures = match (captured, trees) {
@@ -536,8 +549,8 @@ fn highlight(
             captures
         }
     };
-
-    rows::assemble(
+    trace.mark("query");
+    let rows = rows::assemble(
         ranges,
         source,
         scan,
@@ -545,7 +558,59 @@ fn highlight(
         incremental,
         line_limit,
         work,
-    )
+    );
+    trace.mark("tokens");
+    rows
+}
+
+/// Phase timings on stderr when `ROVE_SYNTAX_TRACE` is set (diagnostics for #94).
+struct Trace(Option<TraceState>);
+
+struct TraceState {
+    started: Instant,
+    last: Instant,
+    label: String,
+    phases: Vec<(&'static str, Duration)>,
+}
+
+impl Trace {
+    fn start(language: &str, bytes: u64) -> Self {
+        static ENABLED: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var_os("ROVE_SYNTAX_TRACE").is_some());
+        Self(ENABLED.then(|| {
+            let now = Instant::now();
+            TraceState {
+                started: now,
+                last: now,
+                label: format!("{language} {bytes} B"),
+                phases: Vec::new(),
+            }
+        }))
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        if let Some(state) = &mut self.0 {
+            let now = Instant::now();
+            state.phases.push((phase, now - state.last));
+            state.last = now;
+        }
+    }
+
+    fn finish(&mut self, kind: &str) {
+        if let Some(state) = self.0.take() {
+            let phases: Vec<_> = state
+                .phases
+                .iter()
+                .map(|(phase, took)| format!("{phase} {:.2} ms", took.as_secs_f64() * 1e3))
+                .collect();
+            eprintln!(
+                "rove-syntax: {kind} {}: {:.2} ms ({})",
+                state.label,
+                state.started.elapsed().as_secs_f64() * 1e3,
+                phases.join(", ")
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
