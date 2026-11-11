@@ -58,7 +58,7 @@ impl std::fmt::Display for Invalid {
 /// `min_hit_rate` 判定失效；命中率达标时，不一致的文件只标记为过期。
 ///
 /// 默认 200 个或 2%（取大者）、阈值 90%：中型项目（约 1 万个文件）抽 200 个，源文件平均十几 KB，
-/// 冷缓存 HDD 上约 1–2 秒，在后台进行，不阻塞打开；少量文件离线改动只标过期，大面积改动
+/// 冷缓存 HDD 上估计 1–2 秒（未单独实测），在后台进行，不阻塞打开；少量文件离线改动只标过期，大面积改动
 /// （切分支、Unity 升级）才重建。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SampleRule {

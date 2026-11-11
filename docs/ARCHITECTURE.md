@@ -596,7 +596,7 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 |---|---|
 | 打开 | `rove.index.enabled = false` → `Disabled`；扫描项目输入（根目录 `*.csproj`，`Assets/`、`Packages/` 下的 `*.asmdef`/`*.asmref` 内容与 `*.cs` 路径），没有 C# → `NoCSharp`（条目不显示）；创建缓存目录、写 `project.json`（同时验证可写，失败 → `Failed(CacheDir)`）、淘汰 |
 | 有效性检查 | ① magic 与格式版本 ② 索引进程版本（`validity::EXPECTED_INDEXER_VERSION`，测试对照 `RoveIndexer.csproj`）③ 项目配置：头部配置哈希与构建记录一致且输入指纹与磁盘一致 ④ 抽样文件哈希：`max(200, 2%)` 个文件比对 xxHash64，命中率 < 90% 重建，否则只把不一致的文件标记过期。①–③ 同步完成后立即发布索引（`Ready`），④ 在预读之后的后台进行 |
-| 预读 | `prefetch::prefetch`：`FILE_FLAG_SEQUENTIAL_SCAN` 顺序读整个文件、线程进入 `THREAD_MODE_BACKGROUND_BEGIN`（低 I/O 优先级）、可限速、可取消（关项目即停）；刚构建的索引跳过 |
+| 预读 | `prefetch::prefetch`：`FILE_FLAG_SEQUENTIAL_SCAN` 全速顺序读整个文件、普通 I/O 优先级、可取消（关项目即停）；刚构建的索引跳过。限速与低优先级两种策略保留给基准，实测在 HDD 上都更差（数据见 `prefetch.rs` 注释与 #36 的 PR） |
 | 构建 | `process::locate_indexer`（唯一的组件查找函数，#43 合并后替换）→ `ProcessBuilder` 拉起 `rove-indexer-cs <项目> <新世代路径>`，stdout/stderr 逐行写日志并解析进度（阶段行与 `files: N`；将来的 `progress <done> <total>` 直接采用）；失败重试一次，组件缺失 → `NotInstalled`，其余 → `Failed`；已知对不上的旧索引不再提供（降级到 L1/L0） |
 | 文件变化 | `files_changed(&[SourceChange])`（界面从 #15 的 `FileEvent` 转换）：源文件只标记过期（`is_stale` 供 #38 降级为近似），项目配置文件变化全量重建，监听溢出重新检查。**#35 合并后的切换点**在 `IndexLifecycle::files_changed` 的注释处：改为转发给常驻进程（状态 `Updating`） |
 | 淘汰 | `CachePolicy` 默认 10 个项目、总量 5 GiB（依据见 `evict.rs`），按 `project.json` 的最近打开时间从旧到新删除，当前项目永远保留，只删除带 `project.json` 的项目目录 |

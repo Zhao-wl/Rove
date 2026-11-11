@@ -6,11 +6,12 @@
 //! 原索引（热）上预先抽好，抽样本身不触碰冷文件。
 //!
 //! 用法（scratch 放在要测的盘上，例如 HDD、SATA SSD、NVMe 各跑一次）：
-//! cargo run --release -p rove-lang-cs --example index_prefetch_bench -- <index.rvcsidx> <scratch-dir> [queries=200] [throttle_mb_s=64]
+//! cargo run --release -p rove-lang-cs --example index_prefetch_bench -- <index.rvcsidx> <scratch-dir> [queries=200] [throttle_mb_s=64] [rounds=3]
 use rove_base::Cancellation;
 use rove_lang_cs::{
-    lifecycle::prefetch::{prefetch, PrefetchMode},
-    CsIndex, Role, Utf8Column,
+    index::Utf8Column,
+    lifecycle::prefetch::{prefetch_with, PrefetchMode},
+    CsIndex, Role,
 };
 use std::{
     fs::{self, File, OpenOptions},
@@ -94,6 +95,7 @@ fn run(
     source: &Path,
     scratch: &Path,
     mode: PrefetchMode,
+    low_priority: bool,
     picks: &[(String, u32, Utf8Column)],
 ) {
     let path: PathBuf = scratch.join(format!("cold-{label}.rvcsidx"));
@@ -104,7 +106,7 @@ fn run(
     let cancel = Cancellation::default();
     let prefetcher = {
         let (path, cancel) = (path.clone(), cancel.clone());
-        std::thread::spawn(move || prefetch(&path, mode, &cancel).unwrap())
+        std::thread::spawn(move || prefetch_with(&path, mode, low_priority, &cancel).unwrap())
     };
     let mut times = Vec::with_capacity(picks.len());
     let mut found = 0usize;
@@ -152,25 +154,48 @@ fn main() {
         scratch.display()
     );
     drop(warm);
-    // 单独的“预读整个文件”耗时（没有并发查询）。
-    let only = scratch.join("cold-prefetch-only.rvcsidx");
-    cold_copy(Path::new(index_path), &only).unwrap();
-    let stats = prefetch(&only, PrefetchMode::Full, &Cancellation::default()).unwrap();
-    println!(
-        "prefetch only: {:.1} MB in {:.1} ms ({:.0} MB/s)",
-        stats.bytes as f64 / 1048576.0,
-        stats.elapsed.as_secs_f64() * 1e3,
-        stats.bytes as f64 / 1048576.0 / stats.elapsed.as_secs_f64().max(1e-9)
-    );
-    let _ = fs::remove_file(&only);
     let source = Path::new(index_path);
-    run("off", source, scratch, PrefetchMode::Off, &picks);
-    run("full", source, scratch, PrefetchMode::Full, &picks);
-    run(
-        &format!("{throttle}MB/s"),
-        source,
-        scratch,
-        PrefetchMode::Throttled(throttle << 20),
-        &picks,
-    );
+    let rounds: usize = args.get(5).map_or(3, |s| s.parse().unwrap());
+    for round in 1..=rounds {
+        println!("-- round {round}");
+        // 单独的“预读整个文件”耗时（没有并发查询），低优先级与普通优先级各一次。
+        for (label, low) in [("low-prio", true), ("normal", false)] {
+            let only = scratch.join("cold-prefetch-only.rvcsidx");
+            cold_copy(source, &only).unwrap();
+            let stats =
+                prefetch_with(&only, PrefetchMode::Full, low, &Cancellation::default()).unwrap();
+            println!(
+                "prefetch only ({label}): {:.1} MB in {:.1} ms ({:.0} MB/s)",
+                stats.bytes as f64 / 1048576.0,
+                stats.elapsed.as_secs_f64() * 1e3,
+                stats.bytes as f64 / 1048576.0 / stats.elapsed.as_secs_f64().max(1e-9)
+            );
+            let _ = fs::remove_file(&only);
+        }
+        run("off", source, scratch, PrefetchMode::Off, true, &picks);
+        run(
+            "full-low",
+            source,
+            scratch,
+            PrefetchMode::Full,
+            true,
+            &picks,
+        );
+        run(
+            "full-norm",
+            source,
+            scratch,
+            PrefetchMode::Full,
+            false,
+            &picks,
+        );
+        run(
+            &format!("{throttle}MBps"),
+            source,
+            scratch,
+            PrefetchMode::Throttled(throttle << 20),
+            true,
+            &picks,
+        );
+    }
 }

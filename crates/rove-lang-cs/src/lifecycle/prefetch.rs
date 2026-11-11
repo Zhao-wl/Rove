@@ -4,8 +4,11 @@
 //! 读（`FILE_FLAG_SEQUENTIAL_SCAN`）从头到尾顺序读一遍索引文件，把它拉进系统文件缓存，之后的
 //! mmap 缺页都是软缺页。读到的数据立即丢弃，不占进程内存。
 //!
-//! 为了不和前台查询抢 I/O：可以限速（[`PrefetchMode::Throttled`]）；线程在 Windows 上进入后台
-//! 模式（`THREAD_MODE_BACKGROUND_BEGIN`，I/O 优先级“很低”），前台的缺页读优先。随时可取消。
+//! 默认全速顺序读、普通 I/O 优先级，随时可取消（关项目即停）。#36 的实测（PR 中的数据，中型项目
+//! 55 MB 索引）：HDD 上不预读时前 200 次跳转 p99 117–527 ms，全速预读 79–97 ms，且整批查询在
+//! 0.4–0.7 s 内完成；Windows 后台模式（低 I/O 优先级）与 64 MB/s 限速在机器繁忙时都会被饿住，
+//! 预读拖到数秒、p99 反而更差。SSD/NVMe 上冷查询 p99 本来就只有约 2 ms，预读 50–120 ms 完成。
+//! 两种保守策略仍保留（[`PrefetchMode::Throttled`]、[`prefetch_with`] 的低优先级），供基准对比。
 use rove_base::Cancellation;
 use std::{
     fs::File,
@@ -88,12 +91,22 @@ pub fn prefetch(
     mode: PrefetchMode,
     cancel: &Cancellation,
 ) -> io::Result<PrefetchStats> {
+    prefetch_with(path, mode, false, cancel)
+}
+
+/// 同 [`prefetch`]，可选择让线程进入 Windows 后台模式（`THREAD_MODE_BACKGROUND_BEGIN`，低 I/O 优先级）。
+pub fn prefetch_with(
+    path: &Path,
+    mode: PrefetchMode,
+    low_priority: bool,
+    cancel: &Cancellation,
+) -> io::Result<PrefetchStats> {
     let start = Instant::now();
     let mut stats = PrefetchStats::default();
     if mode == PrefetchMode::Off {
         return Ok(stats);
     }
-    let _background = BackgroundMode::enter();
+    let _background = low_priority.then(BackgroundMode::enter);
     let mut file = open_sequential(path)?;
     let mut buffer = vec![0u8; CHUNK];
     loop {
