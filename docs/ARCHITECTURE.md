@@ -205,7 +205,7 @@ cargo test --workspace
 | `buffer` | 已由 `rove-buffer` 实现：编码识别（BOM/自动/候选）、换行符、rope 快照与坐标转换；`text.rs` 只保留文档缓存与打开策略 | #7（已完成） |
 | `syntax` | 已迁入 `rove-syntax::highlight`：五种语言、增量解析和逐行 scope | #9 |
 | `theme` | 已由 `rove-theme::ThemeService` 实现：VS Code 主题 JSON（include 链）、vscode-textmate scope 匹配、颜色默认值表与用户覆盖；`workbench.rs` 直接装配该服务 | #10（已完成） |
-| `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |
+| `commands` | 已由 `rove-commands` 实现：命令登记与分发、keybindings.json、键表达式、when、和弦；`commands.rs` 只保留窗口的命令装配，`workbench.rs` 的 `on_key_down` 接 `rove_ui::keys` | #14（已完成） |
 | `workspace` | 已由 #15 替换为 `rove-workspace`：流式并行扫描（不读 `.gitignore`）、`files.exclude`/`rove.files.extraExclude` 合并、只读规则真值表、文件监听（溢出重扫、重命名还原） | #15 |
 | `workbench` | 已由 `rove-ui::shell` 实现（见 §14）：标题栏与命令中心、菜单、活动栏、侧边栏、面板、状态栏容器、布局持久化、五级反馈；骨架只保留装配（`workbench.rs` 实现 `ShellHost`） | #16（已完成） |
 | `editors` | 已由 `rove-ui::editors` 实现（见 §17）：编辑器组网格、标签（预览/固定/拖动）、打开文档服务、导航历史、编辑器类型解析；`workbench/editor_panes.rs` 绘制组与标签栏，每个组挂一个 `CodeView`；`text.rs` 只保留文档弱引用缓存 | #17（已完成） |
@@ -497,3 +497,23 @@ VS Code 内置默认值。默认键位表 `commands::DEFAULT_KEYS` 取自 `compa
 覆盖调用方示例（路径 + 行列 + 来源 → 视口包含目标行、选区正确）、预览/固定/分屏/最大化、导航历史跨组往返、
 切换标签恢复滚动与选区、别名去重；`cargo test -p rove-ui expanding_a_group` 覆盖布局比例。
 切换耗时：`ROVE_EDITOR_SWITCH_TRACE=1` 运行 release 版，stdout 输出 `EDITOR_SWITCH_TO_PAINT_MS`（从命令处理到下一帧）。
+
+## 18. 键位与命令层（#14）
+
+位置：`crates/rove-commands/src/` 下的 `keys`、`when`、`context`、`keybindings`、`chord`、`center`、`builtin` 模块（`lib.rs` 只追加了模块声明，冻结契约未改）；GPUI 适配在 `crates/rove-ui/src/keys.rs`。核心层不依赖 gpui。
+
+| 入口 | 用途 |
+|---|---|
+| `center::CommandCenter` | 命令表。`register(id, Command)` 登记 VS Code 命令 ID，`implement(id, handler)` 挂上实现。只登记未实现的命令按键能解析到，执行时返回 `Unsupported`；命令面板只列 `implemented()`。各功能在自己的模块里登记，没有集中的大数组。 |
+| `context::ContextKeyService` | `ContextKeys` 的实现：读 O(log n)，值真正变化时才在解锁后发出一次 `ContextChange`。`context::keys::*` 列出范围内的上下文键及负责设置它们的 issue；没人设置的键就是未知键，求值为 false。 |
+| `when::WhenExpr` / `WhenEngine` | 移植 VS Code contextkey 的语法和语义：`\|\|` < `&&` < `!`，支持 `==`/`!=`/`===`/`!==`（JS 宽松相等）、`=~` 正则字面量（整体作为一个 token，标志 `i`/`m`/`s`）、`in`/`not in`、`<`/`<=`/`>`/`>=`、括号、`true`/`false`。未知键读作 undefined，因此 `!unknown` 为 true，与 VS Code 一致（`!isWeb` 等默认键位依赖这一点）。语法错误返回 `InvalidInput`，对应的键位永远不会生效。 |
+| `keys::parse_keybinding` | 键表达式解析：修饰键（`ctrl`/`shift`/`alt`/`meta`/`win`/`cmd`，用 `+` 或 `-` 连接）、空格分隔的和弦，大小写不敏感。键名统一成 VS Code 的通用名称：`/` 与 `oem_2`、`=` 与 `oem_plus` 等价，支持 `numpad_*` 和 `[Slash]` 这类扫描码写法（按 US 布局映射，即 `keyboard.dispatch: code` 在该布局下的结果），不做布局推断。 |
+| `keybindings::KeybindingService` | 默认键位加用户 `keybindings.json`（JSONC），裁决规则同 VS Code：后定义优先，用户规则排在默认规则之后，`-command` 按命令、键、when 移除默认规则，when 不满足时继续往前找，命令未登记的规则直接忽略（不报错）。热加载：`reload_if_changed` 比较修改时间和大小；文件解析失败时保留上一份有效的表。 |
+| `chord::ChordState` | 和弦状态：匹配到前缀时进入待定状态；下一个键未绑定时中止（`Esc` 也是这样）；5 秒无操作（`CHORD_TIMEOUT`）或窗口失焦时退出；单独按修饰键不改变状态。 |
+| `builtin` | 登记 KEYBINDINGS.md §5 的 Rove 专有命令（只登记，实现由各功能 issue 完成），以及命令层自己的中文字符串。 |
+
+默认键位表：`python scripts/compat/gen_default_keybindings.py` 按 `scripts/compat/rules.py` 的判定，从 `docs/compat/vscode/default-keybindings.json` 生成 `crates/rove-commands/data/default-keybindings.json`。表中包括 P0/P1/P2 全部“实现”条目（保持导出顺序），再追加人工补充的键位和 Rove 专有键位，编译时嵌入二进制。CI 的行尾检查任务运行 `--check`，校验生成物与源数据一致。P1/P2 键位通过“命令未登记就忽略”自然分批生效，不需要额外的开关。
+
+GPUI 接入：`Workbench` 根节点的 `on_key_down` 调用 `rove_ui::keys::KeyInput`。GPUI 会把 Shift 并入标点和数字的字符（`ctrl+shift+-` 上报为 `ctrl+_`），适配层按 US 布局还原成“键 + Shift”。GPUI 不区分小键盘与主键盘上的同一字符，`numpad_*` 键位目前无法从实际按键触发。用户目录暂由 `keys::vscode_user_dir` 解析（`--vscode-user-dir`、`ROVE_VSCODE_USER_DIR`、`%APPDATA%\Code\User`），#13 提供共享解析器后替换。
+
+验证：`cargo test -p rove-commands`（键表达式、when（移植 VS Code 用例）、裁决与移除、和弦、热加载；`tests/keybindings_integration.rs` 对照 KEYBINDINGS.md 检查 P0 是否漏项，并覆盖“读 keybindings.json → 按键 → 分发”；`builtin` 检查 Rove 键位与 VS Code 默认键位无冲突），以及 `cargo test -p rove-ui keybindings_json_keys_dispatch_commands`（真实 GPUI 键盘事件）。

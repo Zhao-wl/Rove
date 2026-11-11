@@ -67,6 +67,10 @@ jobs:
       - name: git ls-files --eol
         shell: pwsh
         run: pwsh -NoProfile -File .github/scripts/check-eol.ps1
+      # #14：默认键位表由脚本从 VS Code 导出生成，生成物必须与源数据、判定规则一致
+      - name: 默认键位表与源数据一致
+        shell: pwsh
+        run: python scripts/compat/gen_default_keybindings.py --check
 
   dotnet:
     name: C# 索引进程
