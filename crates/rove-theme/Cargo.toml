@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 rove-base.workspace = true
+rove-config.workspace = true
+jsonc-parser.workspace = true
+serde_json.workspace = true

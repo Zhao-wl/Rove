@@ -66,6 +66,18 @@ impl Theme for DefaultTheme {
         &NoEvents
     }
 }
+
+// #10 主题引擎的正式实现（契约类型见上方，未改动）。
+mod color;
+pub mod defaults;
+pub mod file;
+pub mod resolved;
+pub mod service;
+pub mod textmate;
+pub use color::{format_hex, parse_hex};
+pub use resolved::{Customizations, ResolvedTheme};
+pub use service::{ThemeCatalog, ThemeEntry, ThemeService, DEFAULT_THEME};
+
 #[cfg(test)]
 mod tests {
     use super::*;
