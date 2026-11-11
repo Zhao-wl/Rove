@@ -179,9 +179,13 @@ impl DisplayLine {
     }
 
     /// 按给定的边界 x 坐标表做命中测试：返回离 `x` 最近的边界对应的源列。
-    /// `xs` 必须与 [`Self::stops`] 一一对应且单调不减。
+    /// `xs` 应与 [`Self::stops`] 一一对应且单调不减；长度不一致时只用两者共有的前缀，绝不越界。
     pub fn source_for_x(&self, xs: &[f32], x: f32) -> u32 {
-        debug_assert_eq!(xs.len(), self.stops.len());
+        let n = xs.len().min(self.stops.len());
+        if n == 0 {
+            return 0;
+        }
+        let xs = &xs[..n];
         let i = xs.partition_point(|&v| v <= x);
         if i == 0 {
             return 0;
@@ -196,9 +200,14 @@ impl DisplayLine {
         }
     }
 
-    /// 源列 → x（按边界 x 坐标表）。
+    /// 源列 → x（按边界 x 坐标表）。下标超出 `xs` 时取最后一个边界，空表为 0。
     pub fn x_for_source(&self, xs: &[f32], src: u32) -> f32 {
-        xs[self.stop_index_for_source(src)]
+        Self::x_at(xs, self.stop_index_for_source(src))
+    }
+
+    /// 第 `i` 个边界的 x；越界时取最后一个，空表为 0（防御 `xs` 与 stops 不一致）。
+    pub fn x_at(xs: &[f32], i: usize) -> f32 {
+        xs.get(i).or(xs.last()).copied().unwrap_or(0.0)
     }
 
     /// 等宽近似的边界 x：`可见列 × 单元宽 + 字间距 × 簇序号`。缓存未命中的占位渲染与命中测试都用它，
@@ -327,6 +336,18 @@ mod tests {
         // 超出渲染部分的点击落到渲染末尾。
         let xs = line.monospace_xs(8.0, 0.0);
         assert_eq!(line.source_for_x(&xs, 1e9), 10_000);
+    }
+
+    #[test]
+    fn mismatched_x_tables_never_index_out_of_bounds() {
+        let spaces = DisplayLine::build("    foo", 4, None);
+        let tab = DisplayLine::build("	foo", 4, None);
+        let short = tab.monospace_xs(10.0, 0.0);
+        assert_eq!((short.len(), spaces.stops().len()), (5, 8));
+        assert_eq!(spaces.x_for_source(&short, 7), 70.0);
+        assert_eq!(spaces.source_for_x(&short, 1e9), 4);
+        assert_eq!(spaces.x_for_source(&[], 7), 0.0);
+        assert_eq!(spaces.source_for_x(&[], 5.0), 0);
     }
 
     #[test]

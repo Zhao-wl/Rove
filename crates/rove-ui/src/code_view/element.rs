@@ -2,6 +2,7 @@
 //!
 //! 帧内只读缓存（行显示形式、整形结果、装饰）；任何未命中都画占位并在绘制后调度空闲准备切片。
 
+use super::columns::DisplayLine;
 use super::options::{CursorStyle, FinalNewline, LineHighlight, LineNumbers, ScrollbarVisibility};
 use super::scroll::{self, Metrics, ScrollPosition};
 use super::view::{
@@ -14,7 +15,6 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Style, Window,
 };
 use rove_theme::Color;
-use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -317,15 +317,10 @@ impl CodeView {
     }
 
     /// 某行字素簇边界的 x：有整形结果时借用缓存，占位行按等宽近似现算。
-    fn line_xs<'a>(&self, l: &'a PaintLine) -> Option<Cow<'a, [f32]>> {
-        match (&l.shaped, &l.entry) {
-            (Some(s), _) => Some(Cow::Borrowed(&s.xs)),
-            (None, Some(e)) => Some(Cow::Owned(
-                e.display
-                    .monospace_xs(self.font.cell_width, self.font.letter_spacing),
-            )),
-            _ => None,
-        }
+    /// 某行字素簇边界的 x（按本行自己的 stops 计算，见 [`CodeView::xs_for`]）。
+    fn line_xs(&self, l: &PaintLine) -> Option<Rc<[f32]>> {
+        let entry = l.entry.as_ref()?;
+        Some(self.xs_for(entry, l.shaped.as_deref()))
     }
 
     pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) {
@@ -440,8 +435,12 @@ impl CodeView {
                         if style.background.is_none() && style.border.is_none() {
                             continue;
                         }
-                        let a = xs[entry.display.stop_index_for_display(range.start)];
-                        let b = xs[entry.display.stop_index_for_display(range.end)];
+                        let a = DisplayLine::x_at(
+                            &xs,
+                            entry.display.stop_index_for_display(range.start),
+                        );
+                        let b =
+                            DisplayLine::x_at(&xs, entry.display.stop_index_for_display(range.end));
                         let r =
                             Bounds::new(point(left + px(a), y), size(px((b - a).max(1.0)), px(lh)));
                         if let Some(bg) = style.background {
@@ -457,8 +456,12 @@ impl CodeView {
                     }
                     // 下划线、删除线。
                     for (range, style) in &entry.paint_runs {
-                        let a = xs[entry.display.stop_index_for_display(range.start)];
-                        let b = xs[entry.display.stop_index_for_display(range.end)];
+                        let a = DisplayLine::x_at(
+                            &xs,
+                            entry.display.stop_index_for_display(range.start),
+                        );
+                        let b =
+                            DisplayLine::x_at(&xs, entry.display.stop_index_for_display(range.end));
                         if let Some(u) = style.underline {
                             let r = Bounds::new(
                                 point(left + px(a), y + px(lh - 2.0)),
@@ -685,7 +688,7 @@ impl CodeView {
             match (run_start, blank) {
                 (None, false) => run_start = Some(i),
                 (Some(s), true) => {
-                    let (a, b) = (xs[s], xs[i]);
+                    let (a, b) = (DisplayLine::x_at(xs, s), DisplayLine::x_at(xs, i));
                     if a > max_x {
                         break;
                     }

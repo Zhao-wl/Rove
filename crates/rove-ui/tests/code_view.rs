@@ -1089,3 +1089,39 @@ fn view_zones_push_following_lines_down(cx: &mut TestAppContext) {
         Some(pos(6, 0))
     );
 }
+
+/// 回归（PR #101 评审）：`\tfoo` 与 `    foo` 展开后的显示文本相同、整形结果共享，但两行的字素簇边界数
+/// 不同（5 与 8）。边界 x 必须按各行自己的 stops 计算，光标放到空格行行尾时不能越界。
+#[gpui::test]
+fn shared_shape_for_tab_and_spaces_keeps_per_line_boundaries(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "\tfoo\n    foo\n", vec![]);
+    view.read_with(cx, |v, _| {
+        assert!(v.is_line_shaped(0) && v.is_line_shaped(1));
+        assert_eq!(
+            v.shape_cache_stats().entries,
+            2,
+            "前两行共享同一份整形结果，另一份是末尾空行"
+        );
+    });
+    view.update(cx, |v, cx| {
+        v.set_selection(Selection::caret(pos(1, 7)), Some(Reveal::Nearest), cx)
+    });
+    settle(cx); // 每帧绘制插入符
+    let tab_end = mid(&view, cx, pos(0, 4));
+    let space_end = mid(&view, cx, pos(1, 7));
+    assert_eq!(tab_end.x, space_end.x, "两行行尾在同一列");
+    for col in 0..=7 {
+        let at = mid(&view, cx, pos(1, col));
+        assert_eq!(
+            view.update(cx, |v, _| v.position_for_point(at)),
+            Some(pos(1, col))
+        );
+    }
+    for col in 0..=4 {
+        let at = mid(&view, cx, pos(0, col));
+        assert_eq!(
+            view.update(cx, |v, _| v.position_for_point(at)),
+            Some(pos(0, col))
+        );
+    }
+}

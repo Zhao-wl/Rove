@@ -23,7 +23,7 @@ use rove_base::{Line, Position, Version};
 use rove_buffer::TextSource;
 use rove_config::Settings;
 use rove_theme::{Color, Theme, ThemeKind};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -116,6 +116,9 @@ pub(crate) struct LineEntry {
     pub paint_runs: Vec<(Range<u32>, TextStyle)>,
     /// 整形用的字体段：(显示字节长度, 样式位：1 粗体 / 2 斜体)。
     pub font_runs: Arc<[(u32, u8)]>,
+    /// 本行字素簇边界 x 的备忘（只缓存正式整形的结果）：(字体代次, x 表)。x 表必须按本行自己的
+    /// stops 计算——整形缓存按显示文本共享，Tab 开头的 `foo` 与四个空格开头的 `foo` 显示相同但边界不同。
+    pub xs: RefCell<Option<(u64, Rc<[f32]>)>>,
 }
 
 #[derive(Clone)]
@@ -141,10 +144,11 @@ impl Hash for ShapeKey {
     }
 }
 
-/// 整形结果：GPUI 的行布局 + 每个字素簇边界的 x（命中测试用）。
+/// 整形结果：只含与显示文本对应的纯几何（GPUI 行布局 + 按显示字节偏移排序的字形 x）。
+/// 不含任何依赖源行的信息，因此可以在显示文本相同的不同源行之间共享。
 pub(crate) struct Shaped {
     pub layout: Arc<LineLayout>,
-    pub xs: Vec<f32>,
+    pub glyphs: Vec<(u32, f32)>,
 }
 
 /// 行号用的数字字形（每次字体变化整形一次 "0123456789"）。
@@ -824,12 +828,7 @@ impl CodeView {
     /// 某位置在文本坐标系中的 x 范围（像素，相对文本起点）。
     fn caret_x_range(&mut self, p: Position) -> Option<(f64, f64)> {
         let (entry, shaped) = self.line_geometry(p.line.0)?;
-        let xs = match &shaped {
-            Some(s) => s.xs.clone(),
-            None => entry
-                .display
-                .monospace_xs(self.font.cell_width, self.font.letter_spacing),
-        };
+        let xs = self.xs_for(&entry, shaped.as_deref());
         let x = entry.display.x_for_source(&xs, p.column.0 as u32) as f64;
         Some((x, x))
     }
@@ -845,12 +844,7 @@ impl CodeView {
         let line = line_at_coord(coord, &m, &self.zones);
         let x = (point.x - text.origin.x).to_f64() + self.scroll.x;
         let (entry, shaped) = self.line_geometry(line)?;
-        let xs = match &shaped {
-            Some(s) => s.xs.clone(),
-            None => entry
-                .display
-                .monospace_xs(self.font.cell_width, self.font.letter_spacing),
-        };
+        let xs = self.xs_for(&entry, shaped.as_deref());
         let col = entry.display.source_for_x(&xs, x as f32);
         Some(self.clamp_position(pos(line, col as u64)))
     }
@@ -1348,6 +1342,7 @@ impl CodeView {
             merged,
             paint_runs,
             font_runs: font_runs.into(),
+            xs: RefCell::new(None),
         }
     }
 
@@ -1393,12 +1388,11 @@ impl CodeView {
             .map(|r| r.glyphs.len())
             .sum::<usize>()
             * 40
-            + shaped.xs.len() * 4
+            + shaped.glyphs.len() * 8
             + entry.display.text.len()
             + 96;
-        self.content_width = self
-            .content_width
-            .max(*shaped.xs.last().unwrap_or(&0.0) as f64);
+        let xs = self.xs_for(&entry, Some(&shaped));
+        self.content_width = self.content_width.max(*xs.last().unwrap_or(&0.0) as f64);
         self.shapes.insert(key, Rc::new(shaped), cost);
         for o in &entry.merged.as_ref().map_or(vec![], |m| m.overlays.clone()) {
             self.ensure_overlay_shaped(&o.text, window);
@@ -1432,7 +1426,7 @@ impl CodeView {
             .text_system()
             .layout_line(text, self.font.size, &runs, None);
         let shaped = Shaped {
-            xs: vec![0.0, f32::from(layout.width)],
+            glyphs: Vec::new(),
             layout,
         };
         self.shapes
@@ -1468,11 +1462,34 @@ impl CodeView {
             .collect();
         let mut glyphs = glyphs;
         glyphs.sort_by_key(|g| g.0);
-        let xs =
-            entry
+        Shaped { layout, glyphs }
+    }
+
+    /// 本行字素簇边界的 x 表：有整形结果时由共享的字形几何按本行 stops 现算（按字体代次备忘），
+    /// 否则用等宽近似（占位是短暂状态，不备忘）。长度恒等于本行 stops 数。
+    pub(crate) fn xs_for(&self, entry: &LineEntry, shaped: Option<&Shaped>) -> Rc<[f32]> {
+        let Some(s) = shaped else {
+            return entry
                 .display
-                .shaped_xs(&glyphs, f32::from(layout.width), self.font.letter_spacing);
-        Shaped { layout, xs }
+                .monospace_xs(self.font.cell_width, self.font.letter_spacing)
+                .into();
+        };
+        let generation = self.font.generation;
+        if let Some((g, xs)) = &*entry.xs.borrow() {
+            if *g == generation {
+                return xs.clone();
+            }
+        }
+        let xs: Rc<[f32]> = entry
+            .display
+            .shaped_xs(
+                &s.glyphs,
+                f32::from(s.layout.width),
+                self.font.letter_spacing,
+            )
+            .into();
+        *entry.xs.borrow_mut() = Some((generation, xs.clone()));
+        xs
     }
 
     /// 绘制后调度空闲准备切片（已调度则跳过）。
