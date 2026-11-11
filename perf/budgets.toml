@@ -60,6 +60,16 @@ reason = "M0 的 GPUI 原型工作集 47.7 MB，但 M1 工作台（标题栏 / �
 # ---------------------------------------------------------------- 大文件
 
 [[budget]]
+id = "open_10mb_text"
+metric = "打开 10 MB 文本文件（读盘 + 解码 + rope 快照）"
+value = 50
+unit = "ms"
+owner = "#7"
+status = "recorded"
+bench = "buffer/open_10mb"
+reason = "issue #7 验收标准 < 50 ms。AGENTS.md §8.1 规定 CI 不做绝对性能判定，所以只记录实测值；本地参考机的数据见 PR"
+
+[[budget]]
 id = "open_1gb_text"
 metric = "打开 1 GB 文本文件（到可滚动）"
 value = 1000

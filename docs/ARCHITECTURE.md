@@ -130,6 +130,10 @@ ListModel 是展平的可见树快照；控件按可视范围取行，以稳定 
 
 反馈采用状态栏临时消息、光标提示、编辑器提示条、通知、模态五级。通知 key 去重；勿扰仅保留错误；正常后台工作只显示状态。模态只用于数据丢失风险和与 VS Code 一致的安全确认，不能同步阻塞 UI 线程。
 
+打开请求由安装好的服务调度后台工作并在所属窗口应用结果。每个已接受请求发出一次终态事件，带标签当时所在组。按标签 ID 可关闭加载中或失败的标签；脏标签返回 NeedsUserDecision。关闭或替换未完成请求时报告 Cancelled。调用方取消会移除尚未就绪的标签，保留已有的就绪视图。服务不取消调用方令牌。
+
+按组枚举保留标签顺序、预览、固定、活动和脏状态，也包括加载及失败项。Ready 快照表示已有视图，即使后续请求仍在运行；Ready 事件则确认该请求已经应用。定位与选区并存时优先显示选区起点。
+
 ## 6. 五类登记机制
 
 全部使用 `Registry<T>`：显式 register，空 ID 拒绝，重复 ID 返回 Duplicate 且不覆盖；查询 O(log n)，遍历按 ID 稳定排序。应用启动装配后共享只读表，不在绘制中反复登记。这里是产品内贡献点，不是插件系统。
@@ -195,7 +199,7 @@ cargo test --workspace
 
 | 标记 | 最简实现与位置（相对 skeleton/） | 替换 issue |
 |---|---|---|
-| `buffer` | `text.rs`：UTF-8/BOM、不可变 TextSource、行与坐标转换 | #7 |
+| `buffer` | 已由 `rove-buffer` 实现：编码识别（BOM/自动/候选）、换行符、rope 快照与坐标转换；`text.rs` 只保留文档缓存与打开策略 | #7（已完成） |
 | `syntax` | `syntax.rs`：SyntaxService → tree-sitter C# → 逐行 scope | #9 |
 | `theme` | `appearance.rs`：ColorRegistry、Dark 2026 子集、Theme | #10 |
 | `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |

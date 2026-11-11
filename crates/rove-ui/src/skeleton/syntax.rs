@@ -66,6 +66,22 @@ fn chunk(text: &dyn TextSource, offset: usize) -> Result<Vec<u8>> {
     }
     Err(Error::OutOfBounds)
 }
+/// tree-sitter 的行号只在 LF 上递增，而 #7 的缓冲区把单独的 CR 也当作换行；
+/// 直接拿 `node.start_position().row` 去索引 `line_range` 会让 CR-only / 混合换行
+/// 文件的后半段 token 全部错位或丢失。统一按字节偏移反查缓冲区的行号。
+///
+/// 节点边界可能落在行终止符或 UTF-8 标量内部，此时向前找最近的合法位置。
+fn line_of_byte(text: &dyn TextSource, offset: u64) -> Result<Line> {
+    let mut offset = offset.min(text.byte_len());
+    loop {
+        match text.position(ByteOffset(offset)) {
+            Ok(position) => return Ok(position.line),
+            Err(Error::OutOfBounds) if offset > 0 => offset -= 1,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 impl SyntaxService for CSharp {
     fn analyze(
         &self,
@@ -115,18 +131,19 @@ impl SyntaxService for CSharp {
                 while let Some((m, i)) = captures.next() {
                     cancel.check()?;
                     let c = m.captures[*i];
-                    let start = c.node.start_position().row;
-                    let end = c.node.end_position().row;
+                    let start = line_of_byte(text.as_ref(), c.node.start_byte() as u64)?;
+                    let end = line_of_byte(text.as_ref(), c.node.end_byte() as u64)?;
                     let scope: Arc<str> = query.capture_names()[c.index as usize].into();
-                    for row in start..=end {
-                        if row >= lines.len() {
+                    for row in start.0..=end.0 {
+                        let row_index = row as usize;
+                        if row_index >= lines.len() {
                             break;
                         }
-                        let line = text.line_range(Line(row as u64))?;
+                        let line = text.line_range(Line(row))?;
                         let a = line.start().0.max(c.node.start_byte() as u64);
                         let b = line.end().0.min(c.node.end_byte() as u64);
                         if a < b {
-                            lines[row].push(Token {
+                            lines[row_index].push(Token {
                                 range: Span::new(ByteOffset(a), ByteOffset(b))?,
                                 scopes: Arc::from([scope.clone()]),
                             });
@@ -148,5 +165,45 @@ impl SyntaxService for CSharp {
                 changed_lines: None,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rove_buffer::RopeText;
+    use std::task::{Context, Poll, Waker};
+
+    /// `analyze` 不 await 任何东西，一次 poll 就能完成；测试里不需要完整 executor。
+    fn block_on<T>(mut task: Task<T>) -> Result<T> {
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        loop {
+            if let Poll::Ready(value) = task.as_mut().poll(&mut context) {
+                return value;
+            }
+        }
+    }
+
+    fn has_keyword(snapshot: &Arc<dyn SyntaxSnapshot>, line: Line) -> bool {
+        snapshot
+            .tokens(line)
+            .unwrap()
+            .iter()
+            .any(|token| token.scopes.iter().any(|scope| scope.as_ref() == "keyword"))
+    }
+
+    #[test]
+    fn standalone_cr_lines_keep_highlights() {
+        // tree-sitter 只在 LF 上递增 row；缓冲区把单独的 CR 当作换行，
+        // 所以第二行必须按字节偏移反查，而不是用 `start_position().row`。
+        let text: Arc<dyn TextSource> = Arc::new(RopeText::from_text("class A {}\rclass B {}\r"));
+        let update =
+            block_on(CSharp.analyze(text, "csharp".into(), Cancellation::default())).unwrap();
+        assert!(has_keyword(&update.snapshot, Line(0)));
+        assert!(
+            has_keyword(&update.snapshot, Line(1)),
+            "CR-only 文件的第二行必须保留 keyword token"
+        );
     }
 }

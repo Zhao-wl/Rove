@@ -4,7 +4,7 @@ use crate::documents::*;
 use rove_base::*;
 use rove_buffer::{Document, Documents};
 use rove_syntax::{SyntaxService, SyntaxSnapshot};
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 pub struct Opened {
     pub document: Arc<Document>,
     pub syntax: Arc<dyn SyntaxSnapshot>,
@@ -12,49 +12,79 @@ pub struct Opened {
 }
 pub struct Pending {
     pub id: OpenRequestId,
+    pub resource: Resource,
     pub task: Task<Opened>,
 }
+const GROUP: EditorGroupId = EditorGroupId(0);
+
 pub struct SingleEditor {
     pub current: Option<Opened>,
     pub loading: bool,
     loader: Arc<dyn Documents>,
     syntax: Arc<dyn SyntaxService>,
-    pending: Option<Pending>,
+    schedule: Rc<dyn Fn(Pending)>,
     cancel: Cancellation,
     serial: u64,
+    next_tab: u64,
+    active_request: Option<OpenRequestId>,
+    tab: Option<EditorTabSnapshot>,
     events: EventBus<OpenEvent>,
 }
 impl SingleEditor {
-    pub fn new(loader: Arc<dyn Documents>, syntax: Arc<dyn SyntaxService>) -> Self {
+    pub fn new(
+        loader: Arc<dyn Documents>,
+        syntax: Arc<dyn SyntaxService>,
+        schedule: impl Fn(Pending) + 'static,
+    ) -> Self {
         Self {
             current: None,
             loading: false,
             loader,
             syntax,
-            pending: None,
+            schedule: Rc::new(schedule),
             cancel: Default::default(),
             serial: 0,
+            next_tab: 0,
+            active_request: None,
+            tab: None,
             events: EventBus::empty(),
         }
     }
-    /// The host acknowledges after applying the requested location to its viewport.
-    pub fn ready(&self, id: OpenRequestId) {
-        if id.0 == self.serial {
-            if let Some(opened) = &self.current {
-                self.events.emit(OpenEvent::Ready {
-                    request: id,
-                    document: opened.document.id,
-                });
-            }
+    /// Commit the snapshot after the host applies the requested viewport.
+    pub fn ready(&mut self, id: OpenRequestId) {
+        if self.active_request != Some(id) || self.loading {
+            return;
+        }
+        if let (Some(tab), Some(opened)) = (&mut self.tab, &self.current) {
+            tab.state = EditorTabState::Ready(opened.document.clone());
+            self.active_request = None;
+            self.events.emit(OpenEvent::Ready {
+                request: id,
+                group: GROUP,
+                document: opened.document.id,
+            });
         }
     }
-    pub fn take_pending(&mut self) -> Option<Pending> {
-        self.pending.take()
+
+    fn cancel_pending(&mut self) {
+        // The skeleton can invalidate a request immediately. The installed worker
+        // observes caller cancellation without mutating that caller's token.
+        if let Some(request) = self.active_request.take() {
+            self.events.emit(OpenEvent::Failed {
+                request,
+                group: GROUP,
+                error: Error::Cancelled,
+            });
+        }
     }
+
     pub fn complete(&mut self, id: OpenRequestId, result: Result<Opened>) -> Result<bool> {
-        if id.0 != self.serial {
+        if self.active_request != Some(id) || !self.loading {
             return Ok(false);
         }
+        let Some(tab) = self.tab.as_mut() else {
+            return Ok(false);
+        };
         self.loading = false;
         let result = result.and_then(|opened| {
             self.cancel.check()?;
@@ -66,9 +96,18 @@ impl SingleEditor {
                 Ok(true)
             }
             Err(error) => {
-                self.current = None;
+                self.active_request = None;
+                if !matches!(tab.state, EditorTabState::Ready(_)) {
+                    self.current = None;
+                    if error == Error::Cancelled {
+                        self.tab = None;
+                    } else {
+                        tab.state = EditorTabState::Failed(error.clone());
+                    }
+                }
                 self.events.emit(OpenEvent::Failed {
                     request: id,
+                    group: GROUP,
                     error: error.clone(),
                 });
                 Err(error)
@@ -84,18 +123,46 @@ impl OpenDocuments for SingleEditor {
         cancel: Cancellation,
     ) -> Result<OpenRequestId> {
         cancel.check()?;
-        if options.group.is_some() || matches!(options.presentation, Presentation::Preview) {
+        match options.target {
+            OpenTarget::Active | OpenTarget::Group(GROUP) => {}
+            OpenTarget::Group(_) => return Err(Error::NotFound),
+            OpenTarget::Beside => return Err(Error::Unsupported),
+        }
+        if options.selection.is_some()
+            || (options.reveal_position().is_none()
+                && matches!(options.presentation, Presentation::Preview))
+        {
             return Err(Error::Unsupported);
         }
-        self.cancel.cancel();
+        self.cancel_pending();
         self.cancel = cancel.clone();
         self.serial += 1;
         self.loading = true;
         let id = OpenRequestId(self.serial);
-        let task = self.loader.open(r, cancel.clone());
+        self.active_request = Some(id);
+        if let Some(tab) = self.tab.as_mut().filter(|tab| tab.resource == r) {
+            if !matches!(tab.state, EditorTabState::Ready(_)) {
+                tab.state = EditorTabState::Loading;
+            }
+        } else {
+            self.current = None;
+            self.next_tab += 1;
+            self.tab = Some(EditorTabSnapshot {
+                id: EditorTabId(self.next_tab),
+                resource: r.clone(),
+                kind: EditorTabKind::Text,
+                preview: false,
+                pinned: false,
+                dirty: false,
+                active: true,
+                state: EditorTabState::Loading,
+            });
+        }
+        let task = self.loader.open(r.clone(), cancel.clone());
         let syntax = self.syntax.clone();
-        self.pending = Some(Pending {
+        (self.schedule)(Pending {
             id,
+            resource: r,
             task: Box::pin(async move {
                 let document = task.await?;
                 cancel.check()?;
@@ -122,17 +189,35 @@ impl OpenDocuments for SingleEditor {
     fn find(&self, r: &Resource) -> Option<Arc<Document>> {
         self.loader.find(r)
     }
-    fn close(&mut self, id: DocumentId, _: Option<EditorGroupId>) -> Result<CloseOutcome> {
-        if self.current.as_ref().is_some_and(|c| c.document.id == id) {
-            self.cancel.cancel();
-            self.serial += 1;
-            self.loading = false;
-            self.pending = None;
-            self.current = None;
-            Ok(CloseOutcome::Closed)
-        } else {
-            Ok(CloseOutcome::NotOpen)
+    fn close(&mut self, id: DocumentId, group: Option<EditorGroupId>) -> Result<CloseOutcome> {
+        if group.is_some_and(|group| group != GROUP) {
+            return Ok(CloseOutcome::NotOpen);
         }
+        let Some(tab) = self.tab.as_ref().filter(
+            |tab| matches!(&tab.state, EditorTabState::Ready(document) if document.id == id),
+        ) else {
+            return Ok(CloseOutcome::NotOpen);
+        };
+        self.close_tab(tab.id)
+    }
+    fn close_tab(&mut self, id: EditorTabId) -> Result<CloseOutcome> {
+        let Some(tab) = self.tab.as_ref().filter(|tab| tab.id == id) else {
+            return Ok(CloseOutcome::NotOpen);
+        };
+        if tab.dirty {
+            return Ok(CloseOutcome::NeedsUserDecision);
+        }
+        self.tab = None;
+        self.loading = false;
+        self.current = None;
+        self.cancel_pending();
+        Ok(CloseOutcome::Closed)
+    }
+    fn in_group(&self, group: EditorGroupId) -> Vec<EditorTabSnapshot> {
+        if group != GROUP {
+            return Vec::new();
+        }
+        self.tab.iter().cloned().collect()
     }
     fn events(&self) -> &dyn Events<OpenEvent> {
         &self.events
@@ -142,17 +227,65 @@ impl OpenDocuments for SingleEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton::{syntax::CSharp, text::FileDocuments};
-    use std::sync::Mutex;
+    use crate::skeleton::{
+        syntax::CSharp,
+        text::{default_settings, FileDocuments},
+    };
+    use std::{cell::RefCell, collections::VecDeque, sync::Mutex};
 
     #[gpui::test]
     async fn stale_completion_and_failed_file_do_not_replace_latest_document() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("a.cs"), "public class A {}\n").unwrap();
         std::fs::write(root.path().join("b.cs"), "public class B {}\n").unwrap();
-        std::fs::write(root.path().join("bad.cs"), [0xff]).unwrap();
-        let loader = Arc::new(FileDocuments::new(root.path().into()));
-        let mut editor = SingleEditor::new(loader.clone(), Arc::new(CSharp));
+        let loader = Arc::new(FileDocuments::new(root.path().into(), default_settings()));
+        let jobs = Rc::new(RefCell::new(VecDeque::new()));
+        let queue = jobs.clone();
+        let mut editor = SingleEditor::new(loader.clone(), Arc::new(CSharp), move |job| {
+            queue.borrow_mut().push_back(job);
+        });
+        for (options, expected) in [
+            (
+                OpenOptions {
+                    target: OpenTarget::Beside,
+                    ..Default::default()
+                },
+                Error::Unsupported,
+            ),
+            (
+                OpenOptions {
+                    target: OpenTarget::Group(EditorGroupId(99)),
+                    ..Default::default()
+                },
+                Error::NotFound,
+            ),
+            (
+                OpenOptions {
+                    selection: Some(
+                        TextRange::new(Position::default(), Position::default()).unwrap(),
+                    ),
+                    ..Default::default()
+                },
+                Error::Unsupported,
+            ),
+            (
+                OpenOptions {
+                    presentation: Presentation::Preview,
+                    ..Default::default()
+                },
+                Error::Unsupported,
+            ),
+        ] {
+            assert_eq!(
+                editor.open(
+                    Resource::Virtual("unused".into()),
+                    options,
+                    Cancellation::default()
+                ),
+                Err(expected)
+            );
+        }
+        assert!(jobs.borrow().is_empty());
         let events = Arc::new(Mutex::new(Vec::new()));
         let received = events.clone();
         let subscription = editor
@@ -166,7 +299,12 @@ mod tests {
                 Cancellation::default(),
             )
             .unwrap();
-        let old = editor.take_pending().unwrap();
+        assert!(matches!(
+            editor.in_group(GROUP)[0].state,
+            EditorTabState::Loading
+        ));
+        assert!(editor.in_group(EditorGroupId(999)).is_empty());
+        let old = jobs.borrow_mut().pop_front().unwrap();
         let old_result = old.task.await;
         editor
             .open(
@@ -175,13 +313,17 @@ mod tests {
                 Cancellation::default(),
             )
             .unwrap();
-        let latest = editor.take_pending().unwrap();
+        let latest = jobs.borrow_mut().pop_front().unwrap();
         let result = latest.task.await;
         assert!(editor.complete(latest.id, result).unwrap());
         assert!(
-            events.lock().unwrap().is_empty(),
+            events.lock().unwrap().len() == 1,
             "Ready waits for host location application"
         );
+        assert!(matches!(
+            editor.in_group(GROUP)[0].state,
+            EditorTabState::Loading
+        ));
         editor.ready(latest.id);
         assert!(!editor.complete(old.id, old_result).unwrap());
         assert_eq!(
@@ -189,8 +331,12 @@ mod tests {
             resource("b.cs")
         );
         assert!(
-            matches!(events.lock().unwrap().as_slice(), [OpenEvent::Ready { request, .. }] if *request == latest.id)
+            matches!(events.lock().unwrap().as_slice(), [OpenEvent::Failed { request: previous, group: GROUP, error: Error::Cancelled }, OpenEvent::Ready { request, group: GROUP, .. }] if *previous == old.id && *request == latest.id)
         );
+        assert!(matches!(
+            editor.in_group(GROUP)[0].state,
+            EditorTabState::Ready(_)
+        ));
         let alias = Resource::File(root.path().join("b.cs"));
         let alias_doc = loader
             .open(alias.clone(), Cancellation::default())
@@ -204,13 +350,26 @@ mod tests {
                 Cancellation::default(),
             )
             .unwrap();
-        let bad = editor.take_pending().unwrap();
-        assert_eq!(
+        let bad = jobs.borrow_mut().pop_front().unwrap();
+        assert!(matches!(
             editor.complete(bad.id, bad.task.await),
-            Err(Error::Unsupported)
-        );
+            Err(Error::Io {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            })
+        ));
         assert!(!editor.loading);
         assert!(editor.current.is_none());
+        assert!(matches!(
+            editor.in_group(GROUP)[0].state,
+            EditorTabState::Failed(Error::Io {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            })
+        ));
+        let failed = editor.in_group(GROUP)[0].id;
+        assert_eq!(editor.close_tab(failed).unwrap(), CloseOutcome::Closed);
+        assert!(editor.in_group(GROUP).is_empty());
         drop(subscription);
         editor
             .open(
@@ -219,12 +378,12 @@ mod tests {
                 Cancellation::default(),
             )
             .unwrap();
-        let recovery = editor.take_pending().unwrap();
+        let recovery = jobs.borrow_mut().pop_front().unwrap();
         assert!(editor.complete(recovery.id, recovery.task.await).unwrap());
         editor.ready(recovery.id);
         assert_eq!(
             events.lock().unwrap().len(),
-            2,
+            3,
             "dropped subscriber is detached"
         );
     }
