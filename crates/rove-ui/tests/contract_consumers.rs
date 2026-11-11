@@ -144,3 +144,127 @@ fn core_objects_can_cross_worker_boundaries() {
     shareable::<Cancellation>();
     shareable::<Subscription>();
 }
+
+#[gpui::test]
+fn document_caller_opens_a_position_and_closes_a_pending_tab(cx: &mut gpui::TestAppContext) {
+    use rove_ui::{
+        documents::{CloseOutcome, EditorTabState, OpenEvent, OpenOptions, OpenSource},
+        skeleton::Workbench,
+    };
+    use std::{sync::Mutex, time::Instant};
+
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("caller.cs");
+    let pending_path = folder.path().join("pending.cs");
+    std::fs::write(&path, "// first\n// 中文\n").unwrap();
+    std::fs::write(&pending_path, "// pending\n").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let position = Position {
+        line: Line(1),
+        column: Utf8Column(3),
+    };
+    let resource = Resource::File(path);
+    let pending_resource = Resource::File(pending_path);
+    let caller_token = Cancellation::default();
+    let (request, _subscription) = cx.update(|_, app| {
+        view.update(app, |view, cx| {
+            let documents = view.open_documents();
+            let captured = events.clone();
+            let subscription = documents.events().subscribe(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+            let request = documents
+                .open(
+                    resource.clone(),
+                    OpenOptions {
+                        location: Some(position),
+                        source: OpenSource::GoToLine,
+                        preserve_focus: true,
+                        ..Default::default()
+                    },
+                    caller_token.clone(),
+                )
+                .unwrap();
+            cx.notify();
+            (request, subscription)
+        })
+    });
+    cx.run_until_parked();
+    let group = match events.lock().unwrap().as_slice() {
+        [OpenEvent::Ready {
+            request: completed,
+            group,
+            ..
+        }] if *completed == request => *group,
+        other => panic!("expected one Ready event, got {other:?}"),
+    };
+    let (pending, replaced) = cx.update(|_, app| {
+        view.update(app, |view, cx| {
+            let documents = view.open_documents();
+            let tabs = documents.in_group(group);
+            assert_eq!(tabs.len(), 1);
+            assert!(tabs[0].active);
+            assert!(!tabs[0].dirty);
+            let EditorTabState::Ready(document) = &tabs[0].state else {
+                panic!("expected a committed document, got {:?}", tabs[0]);
+            };
+            assert_eq!(document.id, documents.find(&resource).unwrap().id);
+            assert_eq!(
+                document
+                    .text
+                    .position(document.text.offset(position).unwrap())
+                    .unwrap(),
+                position
+            );
+
+            let pending = documents
+                .open(
+                    pending_resource.clone(),
+                    OpenOptions::default(),
+                    caller_token.clone(),
+                )
+                .unwrap();
+            let loading = documents
+                .in_group(group)
+                .into_iter()
+                .find(|tab| tab.resource == pending_resource)
+                .unwrap();
+            assert!(matches!(loading.state, EditorTabState::Loading));
+            let replaced = documents
+                .open(
+                    pending_resource.clone(),
+                    OpenOptions::default(),
+                    caller_token.clone(),
+                )
+                .unwrap();
+            let same_tab = documents
+                .in_group(group)
+                .into_iter()
+                .find(|tab| tab.resource == pending_resource)
+                .unwrap();
+            assert_eq!(same_tab.id, loading.id);
+            assert_eq!(
+                documents.close_tab(same_tab.id).unwrap(),
+                CloseOutcome::Closed
+            );
+            assert_eq!(
+                documents.close_tab(same_tab.id).unwrap(),
+                CloseOutcome::NotOpen
+            );
+            assert_eq!(caller_token.check(), Ok(()));
+            cx.notify();
+            (pending, replaced)
+        })
+    });
+    cx.run_until_parked();
+    assert!(matches!(
+        events.lock().unwrap().as_slice(),
+        [
+            OpenEvent::Ready { .. },
+            OpenEvent::Failed { request: a, group: a_group, error: Error::Cancelled },
+            OpenEvent::Failed { request: b, group: b_group, error: Error::Cancelled },
+        ] if (*a, *b, *a_group, *b_group) == (pending, replaced, group, group)
+    ));
+}
