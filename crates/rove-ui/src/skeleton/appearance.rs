@@ -22,12 +22,12 @@ pub fn strings() -> Result<StringTable> {
         ("commands.palette", "命令面板（尚未实现）"),
         ("tree.open", "▾ {name}"),
         ("tree.closed", "▸ {name}"),
-        ("line.number", "{line}"),
         ("workbench.statusTitle", "文件状态"),
     ] {
         t.register(k, Arc::from(v))?;
     }
     crate::shell::catalog::register_strings(&mut t)?;
+    crate::code_view::commands::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

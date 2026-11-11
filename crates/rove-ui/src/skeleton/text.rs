@@ -17,6 +17,7 @@ use std::{
 pub fn default_settings() -> Arc<dyn Settings> {
     let mut registry = SettingRegistry::default();
     rove_buffer::settings::register(&mut registry).expect("编码设置键必须在启动时登记");
+    crate::code_view::options::register(&mut registry).expect("代码视图设置键必须在启动时登记");
     Arc::new(DefaultSettings(registry))
 }
 
