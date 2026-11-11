@@ -27,6 +27,11 @@ use rove_commands::ContextKeys;
 use rove_syntax::symbols::{availability, Availability, DocumentSymbols, SymbolId, SymbolUpdate};
 use std::collections::HashSet;
 
+/// 某组的面包屑数据：(文档, 符号, 段)。
+type GroupSegments = (Arc<Document>, Option<Arc<DocumentSymbols>>, Vec<Segment>);
+/// 快速输入的分组分隔行：(起点, 标签)。
+type Separators = Vec<(usize, Option<Arc<str>>)>;
+
 const BAR_HEIGHT: f32 = 22.0;
 const PICKER_WIDTH: f32 = 300.0;
 const PICKER_ROWS: usize = 12;
@@ -234,10 +239,7 @@ impl Workbench {
     }
 
     /// 某组的面包屑数据：(文档, 符号, 段)。只读：以该组上一次的路径为起点查找（`path_from`）。
-    pub(super) fn group_segments(
-        &self,
-        group: EditorGroupId,
-    ) -> Option<(Arc<Document>, Option<Arc<DocumentSymbols>>, Vec<Segment>)> {
+    pub(super) fn group_segments(&self, group: EditorGroupId) -> Option<GroupSegments> {
         let tab = self.editor.groups.get(&group)?.current()?;
         if tab.kind != EditorKind::Text {
             return None;
@@ -1102,7 +1104,7 @@ impl Workbench {
         &mut self,
         symbols: Option<&DocumentSymbols>,
         query: &str,
-    ) -> (goto::PickList, Vec<(usize, Option<Arc<str>>)>) {
+    ) -> (goto::PickList, Separators) {
         let revision = self.outline.goto.as_mut().map_or(0, |g| {
             g.revision += 1;
             g.revision

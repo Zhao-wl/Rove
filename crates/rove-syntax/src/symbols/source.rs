@@ -70,7 +70,7 @@ impl<'a> Source<'a> {
     fn tick(&self) -> Result<()> {
         let n = self.count.get() + 1;
         self.count.set(n);
-        if n % CHECK_EVERY == 0 {
+        if n.is_multiple_of(CHECK_EVERY) {
             self.cancel.check()?;
         }
         Ok(())
