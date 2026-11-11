@@ -3,6 +3,7 @@
 pub mod contributions;
 pub mod documents;
 pub mod feedback;
+pub mod list_widget;
 pub mod lists;
 
 pub mod skeleton;
