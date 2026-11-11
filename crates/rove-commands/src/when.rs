@@ -140,18 +140,54 @@ fn js_parse_float(v: &Value) -> f64 {
         Value::Array(items) => js_string(&Value::Array(items.clone())),
         _ => return f64::NAN,
     };
-    let bytes = s.as_bytes();
-    let mut end = 0;
-    let mut best = f64::NAN;
-    while end < bytes.len() {
-        end += 1;
-        if let Ok(n) = s[..end].parse::<f64>() {
-            if !s[..end].contains(|c: char| c.is_ascii_alphabetic() && c != 'e' && c != 'E') {
-                best = n;
-            }
+    float_prefix(&s)
+}
+
+/// Longest prefix matching JS `StrDecimalLiteral` (`[+-]? (Infinity | digits [. digits] [e[+-]digits])`).
+/// The scan only advances over ASCII bytes, so every slice ends on a char boundary even when the
+/// text continues with multibyte characters ("1中", "中").
+fn float_prefix(s: &str) -> f64 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    if matches!(b.first(), Some(b'+' | b'-')) {
+        i = 1;
+    }
+    if s[i..].starts_with("Infinity") {
+        return if b[0] == b'-' {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while *i < b.len() && b[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        *i - start
+    };
+    let mut mantissa = digits(&mut i);
+    if i < b.len() && b[i] == b'.' {
+        let mut j = i + 1;
+        let fraction = digits(&mut j);
+        if mantissa + fraction > 0 {
+            mantissa += fraction;
+            i = j;
         }
     }
-    best
+    if mantissa == 0 {
+        return f64::NAN;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        if digits(&mut j) > 0 {
+            i = j;
+        }
+    }
+    s[..i].parse().unwrap_or(f64::NAN)
 }
 
 /// JavaScript `String(value)` for the value kinds a context key can hold.
@@ -715,6 +751,37 @@ mod tests {
         // Non-numeric right-hand side is constant false.
         t("five > x", false);
         t("five < 'abc'", false);
+    }
+
+    #[test]
+    fn comparisons_on_non_ascii_values_do_not_panic() {
+        let c = ctx(&[
+            ("zh", s("中文")),
+            ("mixed", s("1中")),
+            ("frac", s("2.5中文")),
+            ("exp", s("1e3é")),
+            ("dot", s(".5")),
+            ("neg", s("-3x")),
+            ("inf", s("Infinity中")),
+            ("emoji", s("😀1")),
+        ]);
+        let t = |e: &str, expected: bool| assert_eq!(eval_in(e, &c), expected, "{e}");
+        t("zh > 0", false);
+        t("zh <= 0", false);
+        t("mixed == 1", false);
+        t("mixed >= 1", true);
+        t("mixed < 1", false);
+        t("frac > 2", true);
+        t("frac < 3", true);
+        t("exp >= 1000", true);
+        t("dot > 0.4", true);
+        t("neg < -2", true);
+        t("inf > 100", true);
+        t("emoji > 0", false);
+        assert!(float_prefix("1.").eq(&1.0));
+        assert!(float_prefix(".").is_nan());
+        assert!(float_prefix("1e").eq(&1.0));
+        assert!(float_prefix("").is_nan());
     }
 
     #[test]
