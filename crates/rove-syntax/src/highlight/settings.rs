@@ -36,12 +36,19 @@ pub fn register_settings(registry: &mut SettingRegistry) -> Result<()> {
     Ok(())
 }
 
+/// Built-in language default of the line limit (VS Code's `[csharp]` default override).
+fn language_line_length(language: &str) -> Option<usize> {
+    (language == "csharp").then_some(CSHARP_LINE_LENGTH)
+}
+
+/// Size limit for highlighting and the per-line limit of `language`.
+///
+/// VS Code's default language override (`[csharp]` = 2500) ranks above the user's global
+/// value, so it applies unless the provider has a language-level value. A provider that
+/// returns the same value for the language as for the global scope has none (for example
+/// `DefaultSettings`, which ignores the scope), and the built-in language default is kept.
 pub(super) fn limits(settings: Option<&dyn Settings>, language: Arc<str>) -> (u64, usize) {
-    let fallback = if language.as_ref() == "csharp" {
-        CSHARP_LINE_LENGTH
-    } else {
-        DEFAULT_LINE_LENGTH
-    };
+    let language_default = language_line_length(&language);
     let scope = Scope {
         language: Some(language),
     };
@@ -51,9 +58,17 @@ pub(super) fn limits(settings: Option<&dyn Settings>, language: Arc<str>) -> (u6
             .filter(|n| *n >= 0.0)
             .map(|n| n as u64)
     };
+    let scoped = read(LINE_LENGTH, &scope);
+    let global = read(LINE_LENGTH, &Scope::default());
+    let line_length = match (scoped, language_default) {
+        (Some(value), Some(_)) if scoped != global => value as usize,
+        (_, Some(default)) => default,
+        (Some(value), None) => value as usize,
+        (None, None) => DEFAULT_LINE_LENGTH,
+    };
     (
         read(LARGE_FILE, &Scope::default()).unwrap_or(DEFAULT_LARGE_FILE),
-        read(LINE_LENGTH, &scope).map_or(fallback, |limit| limit as usize),
+        line_length,
     )
 }
 
@@ -115,5 +130,20 @@ mod tests {
     fn built_in_defaults_apply_without_a_settings_provider() {
         assert_eq!(limits(None, "csharp".into()).1, CSHARP_LINE_LENGTH);
         assert_eq!(limits(None, "json".into()).1, DEFAULT_LINE_LENGTH);
+    }
+
+    #[test]
+    fn registered_defaults_keep_the_csharp_line_length() {
+        let mut registry = SettingRegistry::default();
+        register_settings(&mut registry).unwrap();
+        let settings = rove_config::DefaultSettings(registry);
+        assert_eq!(
+            limits(Some(&settings), "csharp".into()).1,
+            CSHARP_LINE_LENGTH
+        );
+        assert_eq!(
+            limits(Some(&settings), "json".into()).1,
+            DEFAULT_LINE_LENGTH
+        );
     }
 }
