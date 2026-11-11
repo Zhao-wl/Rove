@@ -4722,6 +4722,7 @@ dependencies = [
  "chardetng",
  "encoding_rs",
  "memchr",
+ "memmap2",
  "ropey",
  "rove-base",
  "rove-config",
