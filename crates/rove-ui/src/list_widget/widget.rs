@@ -1245,7 +1245,7 @@ impl ListWidget {
                             .rows(i..(i + 4096).min(n))
                             .unwrap_or_else(|_| Arc::from([]));
                         for (k, r) in rows.iter().enumerate() {
-                            if matcher.score(&q, &r.label).is_some() {
+                            if matcher.is_match(&q, &r.label) {
                                 out.push((i + k) as u32);
                             }
                         }
@@ -1274,7 +1274,7 @@ impl ListWidget {
         match &self.filter_query {
             Some((q, _)) if !q.is_empty() => self
                 .label_at(i)
-                .is_some_and(|l| self.matcher.score(q, &l).is_some()),
+                .is_some_and(|l| self.matcher.is_match(q, &l)),
             _ => true,
         }
     }

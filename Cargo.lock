@@ -4820,7 +4820,6 @@ dependencies = [
  "rove-workspace",
  "serde_json",
  "tempfile",
- "unicode-segmentation",
 ]
 
 [[package]]

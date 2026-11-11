@@ -438,7 +438,7 @@ impl TreeModel {
                 if !node.alive {
                     continue;
                 }
-                if m.score(q, &node.item.label).is_some() {
+                if m.is_match(q, &node.item.label) {
                     visible[n] = true;
                 }
                 if visible[n] {

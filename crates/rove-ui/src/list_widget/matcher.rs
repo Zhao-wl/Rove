@@ -30,6 +30,30 @@ pub struct FindMatch {
 /// An empty query matches every label with no highlight ranges.
 pub trait Matcher: Send + Sync {
     fn score(&self, query: &str, label: &str) -> Option<FindMatch>;
+    /// Match test without building highlight ranges (used when filtering every row).
+    fn is_match(&self, query: &str, label: &str) -> bool {
+        self.score(query, label).is_some()
+    }
+}
+
+/// ASCII queries can be matched byte-wise: an ASCII byte never occurs inside a multi-byte UTF-8
+/// sequence, so every match starts and ends on a char boundary.
+fn ascii_find(query: &[u8], label: &str, from: usize) -> Option<usize> {
+    let hay = label.as_bytes().get(from..)?;
+    if query.len() > hay.len() {
+        return None;
+    }
+    let (first, rest) = query.split_first()?;
+    let last_start = hay.len() - query.len();
+    let check =
+        |p: usize| p <= last_start && hay[p + 1..p + query.len()].eq_ignore_ascii_case(rest);
+    let (lo, up) = (first.to_ascii_lowercase(), first.to_ascii_uppercase());
+    let found = if lo == up {
+        memchr::memchr_iter(lo, hay).find(|&p| check(p))
+    } else {
+        memchr::memchr2_iter(lo, up, hay).find(|&p| check(p))
+    };
+    found.map(|p| p + from)
 }
 
 fn eq_ignore_case(a: char, b: char) -> bool {
@@ -49,7 +73,21 @@ fn push_range(ranges: &mut Vec<Range<usize>>, r: Range<usize>) {
 /// Case-insensitive substring match (`contiguous`). Earlier matches score higher.
 pub struct ContiguousMatcher;
 impl Matcher for ContiguousMatcher {
+    fn is_match(&self, query: &str, label: &str) -> bool {
+        if query.is_ascii() {
+            return query.is_empty() || ascii_find(query.as_bytes(), label, 0).is_some();
+        }
+        self.score(query, label).is_some()
+    }
+
     fn score(&self, query: &str, label: &str) -> Option<FindMatch> {
+        if query.is_ascii() && !query.is_empty() {
+            let start = ascii_find(query.as_bytes(), label, 0)?;
+            return Some(FindMatch {
+                score: 1000 - start.min(999) as i32,
+                ranges: std::iter::once(start..start + query.len()).collect(),
+            });
+        }
         let q: Vec<char> = query.chars().collect();
         if q.is_empty() {
             return Some(FindMatch {
@@ -85,6 +123,16 @@ impl Matcher for ContiguousMatcher {
 /// VS Code's scorer; consecutive characters and matches at the start score higher.
 pub struct SimpleFuzzyMatcher;
 impl Matcher for SimpleFuzzyMatcher {
+    fn is_match(&self, query: &str, label: &str) -> bool {
+        if query.is_ascii() {
+            let mut hay = label.bytes();
+            return query
+                .bytes()
+                .all(|q| hay.any(|b| b.eq_ignore_ascii_case(&q)));
+        }
+        self.score(query, label).is_some()
+    }
+
     fn score(&self, query: &str, label: &str) -> Option<FindMatch> {
         let mut ranges = Vec::new();
         let mut score = 0i32;
@@ -132,6 +180,10 @@ mod tests {
             vec![6..12]
         );
         assert!(m.score("", "x").unwrap().ranges.is_empty());
+        // The match-only fast path agrees with score().
+        assert!(m.is_match("LAY", "Player.cs") && !m.is_match("pyr", "Player.cs"));
+        assert!(m.is_match("配置", "游戏配置.json") && m.is_match("", "x"));
+        assert!(!m.is_match("Player.cs!", "Player.cs"));
     }
 
     #[test]
@@ -142,6 +194,8 @@ mod tests {
         let joined = m.score("lay", "Player.cs").unwrap();
         assert_eq!(joined.ranges, vec![1..4]);
         assert!(m.score("zz", "Player.cs").is_none());
+        assert!(m.is_match("PYR", "Player.cs") && !m.is_match("zz", "Player.cs"));
+        assert!(!m.is_match("rp", "Player"), "order matters");
         assert!(m.score("pl", "Player").unwrap().score > m.score("pl", "aPxl").unwrap().score);
     }
 }
