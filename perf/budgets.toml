@@ -191,3 +191,37 @@ owner = "#26"
 status = "enforced"
 bench = "outline/breadcrumb_cursor_move_5000_lines"
 reason = "issue #26 验收标准：按位置二分查找符号路径并复用上一条路径，不遍历整棵树"
+
+# ---------------------------------------------------------------- C# L1 声明索引（#37）
+# 大型项目用例需要 ROVE_TEST_UNITY_LARGE；未设置时跳过，check-budgets 显示「未测量」、不算失败。
+
+[[budget]]
+id = "l1_build_large"
+metric = "L1 声明索引首次构建，大型 Unity 项目（2.1 万个 .cs，热缓存）"
+value = 5000
+unit = "ms"
+owner = "#37"
+status = "enforced"
+bench = "l1/build_large"
+reason = "issue #37 验收：LANGUAGE_INTELLIGENCE §3.4 的 3 s 按 1 万个文件定，大型测试项目 2.1 万个文件，按热缓存 < 5 s 验收；冷缓存不设门槛，数字记在 PR 里"
+
+[[budget]]
+id = "l1_incremental_large"
+metric = "L1 单文件变更后的增量更新（大型项目）"
+value = 100
+unit = "ms"
+owner = "#37"
+status = "enforced"
+bench = "l1/incremental_large"
+reason = "issue #37 验收：单文件变更 < 100 ms（读盘 + 哈希 + 解析 + 并入）"
+
+[[budget]]
+id = "l1_workspace_symbols_large"
+metric = "工作区符号搜索每次按键（大型项目，含模糊匹配与排序）"
+value = 30
+unit = "ms"
+owner = "#37"
+status = "enforced"
+bench = "l1/workspace_symbols_large"
+aggregate = "p99"
+reason = "LANGUAGE_INTELLIGENCE §1：工作区符号搜索 < 30 ms；#24 的 fuzzyScorer 注入后要重测"
