@@ -44,12 +44,20 @@ impl Theme for DarkTheme {
         self.colors.get(id).map(|v| v.dark).ok_or(Error::NotFound)
     }
     fn token_style(&self, scopes: &[Arc<str>]) -> TokenStyle {
-        let color = scopes.iter().rev().find_map(|s| match s.as_ref() {
-            "keyword" => Some(KEYWORD),
-            "comment" => Some(Color(0x8b, 0x94, 0x9e, 255)),
-            "string" => Some(Color(0xa5, 0xd6, 0xff, 255)),
-            "constant.numeric" => Some(Color(0x79, 0xc0, 0xff, 255)),
-            _ => None,
+        // TextMate selectors match a scope and its dot-separated descendants.
+        const RULES: [(&str, Color); 5] = [
+            ("keyword", KEYWORD),
+            ("storage", KEYWORD),
+            ("comment", Color(0x8b, 0x94, 0x9e, 255)),
+            ("string", Color(0xa5, 0xd6, 0xff, 255)),
+            ("constant.numeric", Color(0x79, 0xc0, 0xff, 255)),
+        ];
+        let color = scopes.iter().rev().find_map(|s| {
+            RULES.iter().find_map(|&(prefix, color)| {
+                s.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+                    .then_some(color)
+            })
         });
         TokenStyle {
             foreground: color,
@@ -128,4 +136,25 @@ pub fn contributions() -> Result<ContributionRegistry> {
         )?;
     }
     Ok(r)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_style_matches_textmate_scope_prefixes() {
+        let theme = DarkTheme::new().unwrap();
+        let style = |scope: &str| theme.token_style(&[Arc::from(scope)]).foreground;
+        assert_eq!(style("storage.type.class.cs"), Some(KEYWORD));
+        assert_eq!(style("keyword.control.flow.return.cs"), Some(KEYWORD));
+        assert_eq!(
+            style("comment.line.double-slash.cs"),
+            Some(Color(0x8b, 0x94, 0x9e, 255))
+        );
+        assert_eq!(
+            style("string.quoted.double.cs"),
+            Some(Color(0xa5, 0xd6, 0xff, 255))
+        );
+        assert_eq!(style("storagex.cs"), None);
+    }
 }

@@ -3,11 +3,15 @@ use super::events::EventBus;
 use crate::documents::*;
 use rove_base::*;
 use rove_buffer::{Document, Documents};
-use rove_syntax::{SyntaxService, SyntaxSnapshot};
+use rove_syntax::{
+    highlight::{DocumentSyntax, TreeSitterSyntax},
+    SyntaxService, SyntaxSnapshot,
+};
 use std::{rc::Rc, sync::Arc};
 pub struct Opened {
     pub document: Arc<Document>,
     pub syntax: Arc<dyn SyntaxSnapshot>,
+    syntax_session: DocumentSyntax,
     pub position: Option<Position>,
 }
 pub struct Pending {
@@ -21,7 +25,7 @@ pub struct SingleEditor {
     pub current: Option<Opened>,
     pub loading: bool,
     loader: Arc<dyn Documents>,
-    syntax: Arc<dyn SyntaxService>,
+    syntax: TreeSitterSyntax,
     schedule: Rc<dyn Fn(Pending)>,
     cancel: Cancellation,
     serial: u64,
@@ -33,7 +37,7 @@ pub struct SingleEditor {
 impl SingleEditor {
     pub fn new(
         loader: Arc<dyn Documents>,
-        syntax: Arc<dyn SyntaxService>,
+        syntax: TreeSitterSyntax,
         schedule: impl Fn(Pending) + 'static,
     ) -> Self {
         Self {
@@ -134,6 +138,12 @@ impl OpenDocuments for SingleEditor {
         {
             return Err(Error::Unsupported);
         }
+        // Reuse the open document's syntax baseline when the request resolves to it
+        // (an alias or a reopen); captured before a new tab clears `current`.
+        let active = self
+            .current
+            .as_ref()
+            .map(|opened| (opened.document.id, opened.syntax_session.clone()));
         self.cancel_pending();
         self.cancel = cancel.clone();
         self.serial += 1;
@@ -169,7 +179,10 @@ impl OpenDocuments for SingleEditor {
                 if let Some(p) = options.location {
                     document.text.offset(p)?;
                 }
-                let update = syntax
+                let session = active
+                    .filter(|(id, _)| *id == document.id)
+                    .map_or_else(|| syntax.document(), |(_, session)| session);
+                let update = session
                     .analyze(
                         document.text.clone(),
                         document.metadata.language.clone(),
@@ -180,6 +193,7 @@ impl OpenDocuments for SingleEditor {
                 Ok(Opened {
                     document,
                     syntax: update.snapshot,
+                    syntax_session: session,
                     position: options.location,
                 })
             }),
@@ -227,10 +241,7 @@ impl OpenDocuments for SingleEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton::{
-        syntax::CSharp,
-        text::{default_settings, FileDocuments},
-    };
+    use crate::skeleton::text::{default_settings, FileDocuments};
     use std::{cell::RefCell, collections::VecDeque, sync::Mutex};
 
     #[gpui::test]
@@ -241,9 +252,10 @@ mod tests {
         let loader = Arc::new(FileDocuments::new(root.path().into(), default_settings()));
         let jobs = Rc::new(RefCell::new(VecDeque::new()));
         let queue = jobs.clone();
-        let mut editor = SingleEditor::new(loader.clone(), Arc::new(CSharp), move |job| {
-            queue.borrow_mut().push_back(job);
-        });
+        let mut editor =
+            SingleEditor::new(loader.clone(), TreeSitterSyntax::default(), move |job| {
+                queue.borrow_mut().push_back(job);
+            });
         for (options, expected) in [
             (
                 OpenOptions {
@@ -343,6 +355,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(loader.find(&alias).unwrap().id, alias_doc.id);
+        let previous = editor.current.as_ref().unwrap().syntax.clone();
+        editor
+            .open(alias, OpenOptions::default(), Cancellation::default())
+            .unwrap();
+        let reopen = jobs.borrow_mut().pop_front().unwrap();
+        assert!(editor.complete(reopen.id, reopen.task.await).unwrap());
+        assert!(
+            Arc::ptr_eq(&previous, &editor.current.as_ref().unwrap().syntax),
+            "an alias of the open document keeps its syntax baseline"
+        );
+        editor.ready(reopen.id);
         editor
             .open(
                 resource("bad.cs"),
@@ -380,10 +403,14 @@ mod tests {
             .unwrap();
         let recovery = jobs.borrow_mut().pop_front().unwrap();
         assert!(editor.complete(recovery.id, recovery.task.await).unwrap());
+        assert!(
+            !Arc::ptr_eq(&previous, &editor.current.as_ref().unwrap().syntax),
+            "a different document starts a new syntax baseline"
+        );
         editor.ready(recovery.id);
         assert_eq!(
             events.lock().unwrap().len(),
-            3,
+            4,
             "dropped subscriber is detached"
         );
     }

@@ -68,15 +68,8 @@ impl Documents for FileDocuments {
                 }
             }
             cancel.check()?;
-            let language = if path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("cs"))
-            {
-                "csharp"
-            } else {
-                "plaintext"
-            };
-            let loaded = open_path(&path, &LoadOptions::new(language, &*settings))?;
+            let language = rove_syntax::highlight::language_for_path(&path, None);
+            let loaded = open_path(&path, &LoadOptions::new(&language, &*settings))?;
             cancel.check()?;
             let mut docs = cache.lock().unwrap();
             let doc = docs

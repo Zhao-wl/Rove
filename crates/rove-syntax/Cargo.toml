@@ -10,3 +10,15 @@ rove-buffer.workspace = true
 fancy-regex.workspace = true
 jsonc-parser.workspace = true
 serde_json.workspace = true
+rove-config.workspace = true
+tree-sitter.workspace = true
+tree-sitter-c-sharp.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-yaml.workspace = true
+tree-sitter-xml.workspace = true
+tree-sitter-md.workspace = true
+globset = "0.4"
+
+[dev-dependencies]
+futures-lite = "2"
+tempfile = "3"

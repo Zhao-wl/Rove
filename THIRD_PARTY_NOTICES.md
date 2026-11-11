@@ -75,3 +75,21 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Tree-sitter 语法与高亮查询（#9）
+
+以下 MIT 语法通过 Cargo 编译进 Rove，版本以 `Cargo.lock` 为准。
+
+| 语法 | Cargo 版本 | 上游 |
+|---|---|---|
+| C# | `tree-sitter-c-sharp 0.23.5` | [tree-sitter/tree-sitter-c-sharp](https://github.com/tree-sitter/tree-sitter-c-sharp/tree/v0.23.5) |
+| JSON / JSONC | `tree-sitter-json 0.24.8` | [tree-sitter/tree-sitter-json](https://github.com/tree-sitter/tree-sitter-json/tree/v0.24.8) |
+| YAML | `tree-sitter-yaml 0.7.2` | [tree-sitter-grammars/tree-sitter-yaml](https://github.com/tree-sitter-grammars/tree-sitter-yaml/tree/v0.7.2) |
+| XML | `tree-sitter-xml 0.7.0` | [tree-sitter-grammars/tree-sitter-xml](https://github.com/tree-sitter-grammars/tree-sitter-xml/tree/v0.7.0) |
+| Markdown（块级和行内） | `tree-sitter-md 0.5.4` | [tree-sitter-grammars/tree-sitter-markdown](https://github.com/tree-sitter-grammars/tree-sitter-markdown/tree/v0.5.4) |
+
+`crates/rove-syntax/src/highlight/queries/` 的高亮查询为 Rove 编写。
+捕获名参考 [VS Code 内置 TextMate 语法](https://github.com/microsoft/vscode/tree/ffe08d127413e67baa2d3cf31a62bdfdcf218f71/extensions)
+（`csharp`、`json`、`yaml`、`xml`、`markdown-basics`，Microsoft，MIT，许可见上文）。
+
+Markdown 围栏注入查询的节点关系参考 [tree-sitter-md 0.5.4 的块级注入查询](https://github.com/tree-sitter-grammars/tree-sitter-markdown/blob/v0.5.4/tree-sitter-markdown/queries/injections.scm)（MIT）。

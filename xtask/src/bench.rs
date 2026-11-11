@@ -27,7 +27,7 @@ struct BenchTarget {
     requires: &'static str,
 }
 
-const TARGETS: [BenchTarget; 5] = [
+const TARGETS: [BenchTarget; 6] = [
     BenchTarget {
         name: "text_source",
         requires: "",
@@ -46,6 +46,10 @@ const TARGETS: [BenchTarget; 5] = [
     },
     BenchTarget {
         name: "cancellation",
+        requires: "",
+    },
+    BenchTarget {
+        name: "syntax",
         requires: "",
     },
 ];
