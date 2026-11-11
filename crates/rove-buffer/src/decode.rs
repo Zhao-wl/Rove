@@ -3,15 +3,16 @@
 //! 识别顺序：
 //! 1. 明确的编码指定（“通过编码重新打开”，#27 会用到）；
 //! 2. BOM（UTF-8 / UTF-16 LE / UTF-16 BE）——BOM 永远优先于猜测；
-//! 3. `files.autoGuessEncoding` 开启时：合法 UTF-8 直接按 UTF-8，否则交给
-//!    `chardetng` 推断，并只接受 `files.candidateGuessEncodings` 里的编码；
-//! 4. 以上都不成立时遵循 `files.encoding`。
+//! 3. `files.autoGuessEncoding` 开启时（见 [`guess_without_bom`]）：
+//!    - 纯 ASCII 按 `files.encoding` 报告（内容不变）；含非 ASCII 的合法 UTF-8 按 UTF-8；
+//!    - 否则 `chardetng` 有把握且结果（按编码族，见 [`same_family`]）在
+//!      `files.candidateGuessEncodings` 里时，采用该候选；
+//!    - 否则 `files.encoding` 能无错解码就用它；
+//!    - 再否则按候选的列出顺序取第一个能无错解码的编码（VS Code 的“搜索空间”语义）；
+//! 4. 以上都不成立时遵循 `files.encoding`（随后会被判成二进制/不支持的编码）。
 //!
 //! 无 BOM 的 UTF-16 不做自动推断（`chardetng` 不返回 UTF-16）：按 `files.encoding`
 //! 处理，没有显式指定时会被 NUL/解码失败检测当成二进制。
-//!
-//! 猜测一定会误判，遵循 issue #7 的取舍：**不确定就回落到 `files.encoding`**，
-//! 不给出“看起来对”的编码。
 //!
 //! 解码后文本保留原始行终止符（混合换行不统一），BOM 单独记录、不进入文本。
 
@@ -23,8 +24,8 @@ use rove_base::{Error, Result};
 use crate::contracts::{Encoding, Eol, LineEndings};
 use crate::settings::{metadata_encoding, Preferences};
 
-/// 短于此长度的输入不做自动识别：ASCII 兼容的多编码在短文本上无法区分，
-/// 单个 `0xFF` 之类的字节在部分单字节编码里也算“解码成功”。
+/// 短于此长度的输入不交给 `chardetng` 推断：ASCII 兼容的多编码在短文本上无法区分。
+/// 短输入仍会按 `files.encoding` → 候选顺序尝试无错解码（issue #91）。
 const MIN_GUESS_BYTES: usize = 8;
 
 /// 解码失败的比例超过这个值就当作二进制 / 不支持的编码。
@@ -58,8 +59,8 @@ pub(crate) fn decode<'a>(
     force_open: bool,
 ) -> Result<DecodedText<'a>> {
     let choice = choose_encoding(bytes, preferences, explicit)?;
-    let (text, had_errors) = match choice.utf8 {
-        Some(text) => (Cow::Borrowed(text), false),
+    let (text, had_errors) = match choice.decoded {
+        Some(text) => (text, false),
         None => decode_encoding(choice.encoding, &bytes[choice.bom_len..]),
     };
     let scan = scan_text(&text, had_errors);
@@ -89,8 +90,8 @@ struct EncodingChoice<'a> {
     encoding: &'static RsEncoding,
     bom_len: usize,
     guessed: bool,
-    /// 已确认合法、无需二次校验的 UTF-8（只在无 BOM 的自动识别路径出现）。
-    utf8: Option<&'a str>,
+    /// 选编码时已经无错解码过的文本（只在无 BOM 的自动识别路径出现），避免二次解码。
+    decoded: Option<Cow<'a, str>>,
 }
 
 fn choose_encoding<'a>(
@@ -104,7 +105,7 @@ fn choose_encoding<'a>(
             encoding,
             bom_len: matching_bom_len(bytes, encoding),
             guessed: false,
-            utf8: None,
+            decoded: None,
         });
     }
     if let Some((encoding, bom_len)) = sniff_bom(bytes) {
@@ -112,32 +113,17 @@ fn choose_encoding<'a>(
             encoding,
             bom_len,
             guessed: false,
-            utf8: None,
+            decoded: None,
         });
     }
     if preferences.auto_guess {
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            return Ok(EncodingChoice {
-                encoding: UTF_8,
-                bom_len: 0,
-                guessed: false,
-                utf8: Some(text),
-            });
-        }
-        if let Some(encoding) = guess(bytes, preferences) {
-            return Ok(EncodingChoice {
-                encoding,
-                bom_len: 0,
-                guessed: true,
-                utf8: None,
-            });
-        }
+        return Ok(guess_without_bom(bytes, preferences, detect(bytes)));
     }
     Ok(EncodingChoice {
         encoding: preferences.fallback,
         bom_len: 0,
         guessed: false,
-        utf8: None,
+        decoded: None,
     })
 }
 
@@ -161,31 +147,109 @@ fn matching_bom_len(bytes: &[u8], encoding: &'static RsEncoding) -> usize {
     }
 }
 
-/// 用 `chardetng` 推断，并只在推断结果位于 `files.candidateGuessEncodings` 中时采纳。
+/// 无 BOM、开启自动识别时的选编码逻辑。`detected` 是 `chardetng` 有把握的推断结果
+/// （见 [`detect`]），单独作为参数是为了让测试能注入“误判成同族编码”之类难以构造的结果。
 ///
-/// 不按“能无错解码”去尝试候选编码：很多单字节编码与 GBK 互相都能解码成功，
-/// 那样会在推断结果被候选列表排除时把 `files.encoding` 也盖掉，静默显示乱码
-/// （例如 windows-1251 的俄文被当成 GBK）。推断不可信或不在候选列表里时返回
-/// `None`，由调用方回落到 `files.encoding`。
+/// 取舍（issue #91）：
+/// - 推断结果不在候选里时**先试 `files.encoding`**，所以显式的 `windows1251` 不会被
+///   候选 GBK 盖掉（PR #90 修掉的乱码问题）；
+/// - `files.encoding` 也解不了时按候选顺序取第一个能无错解码的编码，GBK 文件即使被
+///   推断成 Big5 / EUC-KR、过短或推断没把握，也不会被报成二进制；
+/// - 返回值里 `guessed = true` 只表示编码来自候选列表，而不是 `files.encoding`。
+fn guess_without_bom<'a>(
+    bytes: &'a [u8],
+    preferences: &Preferences,
+    detected: Option<&'static RsEncoding>,
+) -> EncodingChoice<'a> {
+    let fallback = preferences.fallback;
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        // 纯 ASCII 在任何 ASCII 兼容编码下内容都一样，按 files.encoding 报告，
+        // 状态栏与保存（#27 / #48）才会和设置一致；VS Code 同样忽略 jschardet 的 ascii 结果。
+        let encoding = if text.is_ascii() && fallback.is_ascii_compatible() {
+            fallback
+        } else {
+            UTF_8
+        };
+        return EncodingChoice {
+            encoding,
+            bom_len: 0,
+            guessed: false,
+            decoded: Some(Cow::Borrowed(text)),
+        };
+    }
+    let candidates = &preferences.candidates;
+    if let Some(detected) = detected {
+        if let Some(candidate) = candidates
+            .iter()
+            .copied()
+            .find(|candidate| same_family(candidate, detected))
+        {
+            return EncodingChoice {
+                encoding: candidate,
+                bom_len: 0,
+                guessed: true,
+                decoded: None,
+            };
+        }
+    }
+    if let Some(text) = decode_cleanly(fallback, bytes) {
+        return EncodingChoice {
+            encoding: fallback,
+            bom_len: 0,
+            guessed: false,
+            decoded: Some(text),
+        };
+    }
+    for &candidate in candidates {
+        if candidate == fallback {
+            continue;
+        }
+        if let Some(text) = decode_cleanly(candidate, bytes) {
+            return EncodingChoice {
+                encoding: candidate,
+                bom_len: 0,
+                guessed: true,
+                decoded: Some(text),
+            };
+        }
+    }
+    EncodingChoice {
+        encoding: fallback,
+        bom_len: 0,
+        guessed: false,
+        decoded: None,
+    }
+}
+
+/// `chardetng` 的推断；输入过短或推断没把握时返回 `None`。
 ///
-/// 无 BOM 的 UTF-16 不在推断范围内：`chardetng` 不会返回 UTF-16，这类文件按
-/// `files.encoding` 处理；没有显式指定时会被 NUL/解码失败检测当成二进制。
-fn guess(bytes: &[u8], preferences: &Preferences) -> Option<&'static RsEncoding> {
+/// 短输入上 ASCII 兼容的多字节编码无法区分，单个 `0xFF` 在部分单字节编码里也算
+/// “解码成功”，所以短输入只走“按 files.encoding / 候选顺序无错解码”的路径。
+fn detect(bytes: &[u8]) -> Option<&'static RsEncoding> {
     if bytes.len() < MIN_GUESS_BYTES {
         return None;
     }
     let mut detector = chardetng::EncodingDetector::new();
     detector.feed(bytes, true);
     let (detected, confident) = detector.guess_assess(None, false);
-    if !confident {
-        // 推断本身不可信时宁可回落到 files.encoding（issue #7 的风险提示）。
-        return None;
-    }
-    preferences
-        .candidates
-        .iter()
-        .copied()
-        .find(|candidate| *candidate == detected)
+    confident.then_some(detected)
+}
+
+/// 两个编码是否同族：同族时推断结果可以被候选列表里的另一个成员接受。
+///
+/// 目前只有 GBK / GB18030 一族：`encoding_rs` 的 GBK 解码器与 GB18030 解码器完全相同
+/// （都接受四字节序列），按哪个解码结果都一样。命中时采用**候选列表里的那个**，
+/// 让报告与保存（#48）使用的编码和用户的设置一致。
+fn same_family(a: &'static RsEncoding, b: &'static RsEncoding) -> bool {
+    let chinese = |encoding: &'static RsEncoding| {
+        encoding == encoding_rs::GBK || encoding == encoding_rs::GB18030
+    };
+    a == b || (chinese(a) && chinese(b))
+}
+
+/// 无错解码时返回文本，遇到第一个错误即停止。
+fn decode_cleanly<'a>(encoding: &'static RsEncoding, bytes: &'a [u8]) -> Option<Cow<'a, str>> {
+    encoding.decode_without_bom_handling_and_without_replacement(bytes)
 }
 
 fn decode_encoding<'a>(encoding: &'static RsEncoding, bytes: &'a [u8]) -> (Cow<'a, str>, bool) {
@@ -478,8 +542,104 @@ mod tests {
 
     #[test]
     fn short_inputs_are_not_guessed() {
-        // 单字节 0xFF 在 windows-1252 里是合法字符，但短输入不该猜。
+        // 单字节 0xFF 在 windows-1252 里是合法字符，但不在候选（GBK）里，且 GBK 解不了。
         assert_eq!(decode_default(&[0xFF]).err(), Some(Error::Unsupported));
+    }
+
+    #[test]
+    fn short_gbk_file_opens_with_default_candidates() {
+        // issue #91 第 3 条（手工构造）：6 字节的 `中文\r\n` 不经 chardetng，
+        // files.encoding = utf8 解不了，按候选顺序用 GBK 打开，不报二进制。
+        let text = "中文\r\n";
+        let bytes = gbk(text);
+        assert!(bytes.len() < MIN_GUESS_BYTES);
+        let decoded = decode_default(&bytes).unwrap();
+        assert_eq!(decoded.text, text);
+        assert_eq!(decoded.detection.encoding, Encoding::Gbk);
+        assert!(decoded.detection.guessed);
+    }
+
+    #[test]
+    fn gbk_misdetected_as_sibling_cjk_encoding_still_opens_as_gbk() {
+        // issue #91 第 1 条（手工构造，注入推断结果）：chardetng 有把握地给出 Big5 / EUC-KR
+        // 时，结果不在候选里 → files.encoding(utf8) 解不了 → 按候选顺序用 GBK。
+        let text = "// 这是一段 GBK 编码的中文注释，用来验证自动识别。\r\n";
+        let bytes = gbk(text);
+        for misdetected in [encoding_rs::BIG5, encoding_rs::EUC_KR] {
+            let choice = guess_without_bom(&bytes, &preferences(true, "utf8"), Some(misdetected));
+            assert_eq!(choice.encoding, encoding_rs::GBK);
+            assert!(choice.guessed);
+            assert_eq!(choice.decoded.as_deref(), Some(text));
+        }
+    }
+
+    #[test]
+    fn undecided_guess_tries_candidates_in_listed_order() {
+        // VS Code 语义：候选是按列出顺序尝试的搜索空间。两个候选都能无错解码时取第一个。
+        let bytes = gbk("中文注释：顺序测试");
+        let ordered = |candidates| Preferences {
+            auto_guess: true,
+            candidates,
+            fallback: UTF_8,
+        };
+        let first_gbk = guess_without_bom(
+            &bytes,
+            &ordered(vec![encoding_rs::GBK, encoding_rs::WINDOWS_1252]),
+            None,
+        );
+        assert_eq!(first_gbk.encoding, encoding_rs::GBK);
+        let first_1252 = guess_without_bom(
+            &bytes,
+            &ordered(vec![encoding_rs::WINDOWS_1252, encoding_rs::GBK]),
+            None,
+        );
+        assert_eq!(first_1252.encoding, encoding_rs::WINDOWS_1252);
+    }
+
+    #[test]
+    fn gb18030_and_gbk_are_one_family() {
+        // issue #91 第 2 条：推断成 GB18030 时候选里的 gbk 也算命中，并报告候选本身；
+        // 反过来候选写 gb18030、推断成 GBK 时报告 GB18030。
+        let text = "// 中文注释\r\n";
+        let bytes = gbk(text);
+        let choice = guess_without_bom(
+            &bytes,
+            &preferences(true, "windows1251"),
+            Some(encoding_rs::GB18030),
+        );
+        assert_eq!(choice.encoding, encoding_rs::GBK);
+        assert!(choice.guessed);
+        let gb18030 = Preferences {
+            auto_guess: true,
+            candidates: vec![encoding_rs::GB18030],
+            fallback: UTF_8,
+        };
+        let choice = guess_without_bom(&bytes, &gb18030, Some(encoding_rs::GBK));
+        assert_eq!(choice.encoding, encoding_rs::GB18030);
+        // 两者解码结果一致。
+        assert_eq!(decode(&bytes, &gb18030, None, false).unwrap().text, text);
+    }
+
+    #[test]
+    fn pure_ascii_reports_files_encoding() {
+        // issue #91 第 4 条：files.encoding = gbk 时纯 ASCII 文件报告 GBK，内容不变、不算自动识别。
+        let bytes = b"using UnityEngine;\r\n";
+        let decoded = decode(bytes, &preferences(true, "gbk"), None, false).unwrap();
+        assert_eq!(decoded.text, "using UnityEngine;\r\n");
+        assert_eq!(decoded.detection.encoding, Encoding::Gbk);
+        assert!(!decoded.detection.guessed);
+        // 含非 ASCII 的合法 UTF-8 仍然按 UTF-8。
+        let decoded = decode(
+            "// 中文\n".as_bytes(),
+            &preferences(true, "gbk"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(decoded.detection.encoding, Encoding::Utf8);
+        // files.encoding 不兼容 ASCII（UTF-16）时纯 ASCII 仍报 UTF-8，不把字节当 UTF-16 解。
+        let decoded = decode(bytes, &preferences(true, "utf16le"), None, false).unwrap();
+        assert_eq!(decoded.detection.encoding, Encoding::Utf8);
     }
 
     #[test]
