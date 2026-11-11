@@ -3,7 +3,7 @@ use rove_base::*;
 use rove_buffer::{
     open_bytes, Document, Documents, LoadOptions, ReadOnlyReason, SizeClass, TextSource,
 };
-use rove_config::{DefaultSettings, SettingRegistry, Settings};
+use rove_config::Settings;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -12,15 +12,6 @@ use std::{
         Arc, Mutex, Weak,
     },
 };
-
-/// 装配用的默认设置：#13 的设置层合并前，用契约里的 `DefaultSettings`
-/// 提供 `files.encoding` / `files.autoGuessEncoding` / 候选编码的缺省值。
-pub fn default_settings() -> Arc<dyn Settings> {
-    let mut registry = SettingRegistry::default();
-    rove_buffer::settings::register(&mut registry).expect("编码设置键必须在启动时登记");
-    crate::code_view::options::register(&mut registry).expect("代码视图设置键必须在启动时登记");
-    Arc::new(DefaultSettings(registry))
-}
 
 /// Live documents are owned by tabs and callers. The cache only indexes their weak identities.
 #[derive(Default)]

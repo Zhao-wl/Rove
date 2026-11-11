@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 rove-ui.workspace = true
+rove-config.workspace = true
 gpui.workspace = true
 
 [target.'cfg(windows)'.dependencies]

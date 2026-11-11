@@ -1,7 +1,4 @@
-use super::{
-    appearance,
-    text::{default_settings, FileDocuments},
-};
+use super::{appearance, text::FileDocuments};
 use crate::{
     code_view::{
         self, CodeView, CodeViewEvent, CodeViewServices, DecorationProvider, InlineDecoration,
@@ -38,9 +35,9 @@ use rove_base::{
     Version, WorkspacePath,
 };
 use rove_commands::{center::CommandCenter, CommandExecutor, CommandRegistry, Invocation};
-use rove_config::{Key, Scope};
+use rove_config::{Key, Scope, Settings, SettingsChange};
 use rove_i18n::{Message, StringTable, Strings};
-use rove_theme::{Color, Theme, ThemeKind};
+use rove_theme::{Color, Theme};
 use rove_workspace::{EntryKind, FileEvent, Workspace};
 use std::{
     borrow::Cow,
@@ -210,9 +207,16 @@ pub struct Workbench {
     workspace_events: Option<rove_base::Subscription>,
     started: Instant,
     first_frame: bool,
+    /// #104：应用唯一的设置服务实例；工作台、主题、代码视图、打开服务与工作区扫描共用。
+    settings: Arc<dyn Settings>,
+    /// 同一个主题服务的具体类型：读取当前主题的明暗。
+    theme_service: Arc<rove_theme::ThemeService>,
+    settings_events: Option<rove_base::Subscription>,
+    theme_events: Option<rove_base::Subscription>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
+    /// 使用只读的 VS Code 默认设置（测试与嵌入用）；应用入口用 [`Workbench::with_settings`]。
     pub fn new(root: PathBuf, started: Instant, cx: &mut Context<Self>) -> Self {
         let store = if cfg!(test) {
             LayoutStore::disabled()
@@ -227,28 +231,33 @@ impl Workbench {
         store: LayoutStore,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::build(root, started, store, EditorSettings::default(), cx)
-    }
-    /// Builds a window using the registered editor preferences from a supplied settings service.
-    pub fn with_editor_settings(
-        root: PathBuf,
-        started: Instant,
-        store: LayoutStore,
-        settings: &dyn rove_config::Settings,
-        cx: &mut Context<Self>,
-    ) -> CoreResult<Self> {
-        Ok(Self::build(
+        let settings = crate::app_settings::defaults_only();
+        Self::build(
             root,
             started,
             store,
-            EditorSettings::read(settings)?,
+            settings,
+            EditorSettings::default(),
             cx,
-        ))
+        )
+    }
+    /// 用应用的设置服务建窗口（#104）：同一个实例传给工作台、主题、代码视图、打开服务与
+    /// 工作区扫描，并订阅它的变更做热加载。
+    pub fn with_settings(
+        root: PathBuf,
+        started: Instant,
+        store: LayoutStore,
+        settings: Arc<dyn Settings>,
+        cx: &mut Context<Self>,
+    ) -> CoreResult<Self> {
+        let editor = EditorSettings::read(&*settings)?;
+        Ok(Self::build(root, started, store, settings, editor, cx))
     }
     fn build(
         root: PathBuf,
         started: Instant,
         store: LayoutStore,
+        services: Arc<dyn Settings>,
         settings: EditorSettings,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -286,19 +295,18 @@ impl Workbench {
         let shell = Shell::new(
             &root,
             appearance::contributions().unwrap(),
-            shell::view::default_settings(),
+            services.clone(),
             store,
             cx,
         );
         // #10 的主题服务同时供给骨架与代码视图（#19）。
-        let theme: Arc<dyn Theme> = rove_theme::ThemeService::new(default_settings());
+        let theme_service = rove_theme::ThemeService::new(services.clone());
+        let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
-                Arc::new(
-                    FileDocuments::new(root.clone(), default_settings()).with_size_policy(size),
-                ),
+                Arc::new(FileDocuments::new(root.clone(), services.clone()).with_size_policy(size)),
                 Arc::new(rove_syntax::highlight::TreeSitterSyntax::default()),
                 settings,
                 schedule,
@@ -321,6 +329,10 @@ impl Workbench {
             workspace_events: None,
             started,
             first_frame: false,
+            settings: services,
+            theme_service,
+            settings_events: None,
+            theme_events: None,
         };
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
@@ -339,30 +351,118 @@ impl Workbench {
                 );
             }
         }
+        view.shell
+            .set_theme_kind(view.theme_service.current().kind());
+        view.watch_settings(cx);
+        view.watch_theme(cx);
         view.sync_views(cx);
         view.scan(root, cx);
         view
     }
+    /// #104 热加载：设置服务（文件监听线程）发布的变更合并后回到 UI 线程处理。
+    fn watch_settings(&mut self, cx: &mut Context<Self>) {
+        let (send, receive) = async_channel::unbounded::<SettingsChange>();
+        self.settings_events = Some(self.settings.changes().subscribe(Arc::new(move |change| {
+            let _ = send.try_send(change);
+        })));
+        cx.spawn(async move |this, cx| {
+            while let Ok(first) = receive.recv().await {
+                let mut keys: BTreeSet<Arc<str>> = first.keys.iter().cloned().collect();
+                while let Ok(more) = receive.try_recv() {
+                    keys.extend(more.keys.iter().cloned());
+                }
+                if this
+                    .update(cx, |view, cx| view.settings_changed(&keys, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    fn settings_changed(&mut self, keys: &BTreeSet<Arc<str>>, cx: &mut Context<Self>) {
+        // 工作台按键现读设置，只需放弃被外部改动的本窗口临时值。
+        self.shell.settings_changed(keys);
+        if keys.iter().any(|k| k.starts_with("workbench.editor.")) {
+            match EditorSettings::read(&*self.settings) {
+                Ok(settings) => self.editor.settings = settings,
+                Err(e) => eprintln!("settings: 编辑器设置无效，沿用旧值：{e}"),
+            }
+        }
+        // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
+        let zoom = self.shell.zoom() as f64;
+        for code in self.code_views() {
+            code.update(cx, |code, cx| apply_zoom(code, zoom, cx));
+        }
+        // 排除与只读规则变化：按新规则重新扫描工作区。
+        let mut workspace_keys = rove_config::SettingRegistry::default();
+        if rove_workspace::register_settings(&mut workspace_keys).is_ok()
+            && keys.iter().any(|k| workspace_keys.get(k).is_some())
+        {
+            self.scan(self.root.clone(), cx);
+        }
+        cx.notify();
+    }
+    /// 主题服务换了主题（`workbench.colorTheme` 等变化后在后台重新加载）：刷新明暗与代码视图配色。
+    fn watch_theme(&mut self, cx: &mut Context<Self>) {
+        let (send, receive) = async_channel::unbounded::<Version>();
+        self.theme_events = Some(self.theme.changes().subscribe(Arc::new(move |v| {
+            let _ = send.try_send(v);
+        })));
+        cx.spawn(async move |this, cx| {
+            while receive.recv().await.is_ok() {
+                while receive.try_recv().is_ok() {}
+                if this.update(cx, |view, cx| view.theme_changed(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    fn theme_changed(&mut self, cx: &mut Context<Self>) {
+        let kind = self.theme_service.current().kind();
+        self.shell.set_theme_kind(kind);
+        let slots: Vec<_> = self
+            .views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
+            .map(|slot| (slot.code.clone(), slot.layer.clone()))
+            .collect();
+        for (code, layer) in slots {
+            let theme = self.theme.clone();
+            code.update(cx, |code, cx| {
+                code.set_theme(theme, kind, cx);
+                code.invalidate_decorations(&layer, None, cx);
+            });
+        }
+        cx.notify();
+    }
+    fn code_views(&self) -> Vec<Entity<CodeView>> {
+        self.views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
+            .map(|slot| slot.code.clone())
+            .collect()
+    }
     fn label(&self, key: &str, args: &[(&str, String)]) -> String {
         appearance::message(&self.strings, key, args)
     }
+    /// 主题没有给这个键设色时（各主题覆盖的键不同，例如 Dark+ 没有 `editorGroupHeader.tabsBorder`）
+    /// 先用工作台登记的默认值，再不行就透明，与 VS Code 一致；热切换主题后也不会因缺色崩溃。
     fn ui_color(&self, key: &str) -> Hsla {
-        color(
-            self.theme
-                .color(key)
-                .expect("registered color")
-                .expect("Dark 2026 value"),
-        )
+        self.shell
+            .color(self.theme.as_ref(), key)
+            .unwrap_or_else(gpui::transparent_black)
     }
     fn scan(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.scans += 1;
         // SKELETON: build the workspace through the #15 implementation. The explorer still waits
         // for the initial snapshot before building its rows; streaming (root in the first frame)
         // is available from `rove_workspace::Folder::start` and belongs to #23's explorer.
+        let settings = self.settings.clone();
         let task = cx.background_executor().spawn(async move {
-            let config = rove_workspace::WorkspaceConfig::from_settings(
-                &rove_workspace::default_settings(),
-            )?;
+            let config = rove_workspace::WorkspaceConfig::from_settings(&*settings)?;
             let folder = rove_workspace::Folder::scan_root(root, config)?;
             Ok(folder as Arc<dyn Workspace>)
         });
@@ -386,10 +486,8 @@ impl Workbench {
         .detach();
     }
     /// `workbench.editor.closeOnFileDelete`: close tabs whose file was removed or renamed away.
+    /// 总是订阅，事件到达时再看设置：`closeOnFileDelete` 可以热加载（#104）。
     fn watch_workspace(&mut self, workspace: &Arc<dyn Workspace>, cx: &mut Context<Self>) {
-        if !self.editor.settings.close_on_delete {
-            return;
-        }
         let (send, receive) = async_channel::unbounded();
         self.workspace_events = Some(workspace.changes().subscribe(Arc::new(move |batch| {
             let _ = send.try_send(batch);
@@ -410,6 +508,9 @@ impl Workbench {
                 }
                 if this
                     .update(cx, |view, cx| {
+                        if !view.editor.settings.close_on_delete {
+                            return;
+                        }
                         let mut changed = false;
                         for path in removed {
                             changed |= view.editor.file_removed(&Resource::Workspace(path));
@@ -589,14 +690,16 @@ impl Workbench {
         });
         let provider: Rc<dyn DecorationProvider> = colors.clone();
         let theme = self.theme.clone();
+        let theme_kind = self.theme_service.current().kind();
+        let settings = self.settings.clone();
         let zoom = self.shell.zoom() as f64;
         let mut layer = None;
         let code = cx.new(|cx| {
             let mut code = CodeView::new(
                 CodeViewServices {
-                    settings: default_settings(),
+                    settings,
                     theme,
-                    theme_kind: ThemeKind::Dark,
+                    theme_kind,
                 },
                 cx,
             );
@@ -913,8 +1016,10 @@ impl ShellHost for Workbench {
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus)
-            .bg(self.ui_color("editor.background"))
-            .text_color(self.ui_color("editor.foreground"))
+            // 主题可能不给 editor.* 设色（例如 Light+ 没有 editor.foreground）：用代码视图
+            // 解析好的调色板（与 VS Code 一样回落到默认值），热切换主题时也不会缺色。
+            .bg(color(self.code_view().read(cx).palette().background))
+            .text_color(color(self.code_view().read(cx).palette().foreground))
             .child(self.editor_grid(cx))
             .into_any_element()
     }
@@ -950,13 +1055,7 @@ impl ShellHost for Workbench {
         // #16 的窗口缩放（window.zoomLevel）同步到 #19 的代码视图：先按设置重读基准字号，
         // 再乘上窗口缩放系数。只重新整形可见行：文档、语法快照与工作区扫描结果都不变。
         let zoom = self.shell.zoom() as f64;
-        let codes: Vec<_> = self
-            .views
-            .values()
-            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
-            .map(|slot| slot.code.clone())
-            .collect();
-        for code in codes {
+        for code in self.code_views() {
             code.update(cx, |code, cx| apply_zoom(code, zoom, cx));
         }
         cx.notify();
@@ -1037,9 +1136,10 @@ impl Render for Workbench {
     }
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
-pub fn launch(root: PathBuf, started: Instant) {
-    // #13 的设置服务装配到窗口之前，编辑器设置由只读启动适配器读取（editors::startup_settings）。
-    let editors = crate::editors::startup_settings::load(crate::editor_setting_defaults().unwrap());
+///
+/// `settings` 是应用唯一的设置服务实例（`crate::app_settings::open`），窗口设置、工作台、主题、
+/// 代码视图、打开服务与工作区扫描都用它。
+pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
     Application::new().run(move |cx: &mut App| {
         if let Err(e) = cx
             .text_system()
@@ -1055,7 +1155,6 @@ pub fn launch(root: PathBuf, started: Instant) {
         // 布局文件只有几百字节：首帧前读取，用来恢复窗口位置、大小与最大化状态。
         let store = LayoutStore::for_workspace(&root);
         let layout = store.load();
-        let settings = shell::view::default_settings();
         let read = |key: &'static str| {
             Key::<String>::new(key)
                 .read(settings.as_ref(), &Scope::default())
@@ -1094,9 +1193,8 @@ pub fn launch(root: PathBuf, started: Instant) {
                 },
                 |window, cx| {
                     cx.new(|cx| {
-                        let mut view =
-                            Workbench::with_editor_settings(root, started, store, &editors, cx)
-                                .expect("valid editor settings");
+                        let mut view = Workbench::with_settings(root, started, store, settings, cx)
+                            .expect("valid editor settings");
                         Shell::attach_window(&mut view, window, cx);
                         view
                     })
@@ -1316,3 +1414,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "workbench_settings_tests.rs"]
+mod settings_tests;

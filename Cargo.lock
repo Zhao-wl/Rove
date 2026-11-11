@@ -4705,6 +4705,7 @@ version = "0.0.1"
 dependencies = [
  "gpui",
  "rove-commands",
+ "rove-config",
  "rove-i18n",
  "rove-ui",
  "windows-sys 0.61.2",
@@ -4825,7 +4826,6 @@ dependencies = [
  "rove-theme",
  "rove-workspace",
  "serde_json",
- "serde_json_lenient",
  "tempfile",
  "unicode-segmentation",
 ]

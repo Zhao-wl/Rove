@@ -262,6 +262,10 @@ pub struct ThemeService {
     revision: AtomicU64,
     hub: Hub,
     reload_pending: AtomicBool,
+    /// 重新加载的代次：每次 `reload` 开始时领取一个号，读设置在领号之后。
+    reload_requested: AtomicU64,
+    /// 已应用到 `current` 的最大代次；较早开始、较晚完成的加载不得覆盖较新的结果。
+    reload_applied: Mutex<u64>,
     log: Mutex<Vec<Diagnostic>>,
     _settings_subscription: Mutex<Option<Subscription>>,
 }
@@ -295,6 +299,8 @@ impl ThemeService {
             revision: AtomicU64::new(1),
             hub: Hub(Arc::default()),
             reload_pending: AtomicBool::new(false),
+            reload_requested: AtomicU64::new(0),
+            reload_applied: Mutex::new(0),
             log: Mutex::new(Vec::new()),
             _settings_subscription: Mutex::new(None),
         });
@@ -403,12 +409,24 @@ impl ThemeService {
 
     /// 同步重新加载当前设置指向的主题。成功时替换快照、发布新修订号并返回它；
     /// 失败时保留旧快照，返回错误。
+    ///
+    /// 多次重新加载可以并发执行（例如快速连续切换两次主题）。每次加载在读设置之前领取代次，
+    /// 只有代次不低于已应用代次的结果才会替换快照；被更新的加载取代的旧结果返回 `Stale`，
+    /// 因此最后生效的总是最后开始（读到最新设置）的那一次。
     pub fn reload(&self) -> Result<Version> {
+        let ticket = self.reload_requested.fetch_add(1, Ordering::AcqRel) + 1;
         let (theme, diags) = Self::build(&*self.settings, &self.catalog, &self.registry);
         let result = match theme {
             Ok(theme) => {
-                *self.current.write().expect("theme lock") = Arc::new(theme);
-                let v = Version(self.revision.fetch_add(1, Ordering::AcqRel) + 1);
+                let v = {
+                    let mut applied = self.reload_applied.lock().expect("reload generation");
+                    if *applied > ticket {
+                        return Err(Error::Stale);
+                    }
+                    *applied = ticket;
+                    *self.current.write().expect("theme lock") = Arc::new(theme);
+                    Version(self.revision.fetch_add(1, Ordering::AcqRel) + 1)
+                };
                 self.record(diags);
                 self.hub.emit(v);
                 Ok(v)

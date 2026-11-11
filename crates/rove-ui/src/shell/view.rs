@@ -25,7 +25,7 @@ use gpui::{
 };
 use rove_base::{DocumentId, Value};
 use rove_commands::CommandRegistry;
-use rove_config::{DefaultSettings, Key, Scope, SettingRegistry, Settings};
+use rove_config::{Key, Scope, Settings};
 use rove_i18n::{Message, Strings};
 use rove_theme::{Color, ColorRegistry, Theme, ThemeKind};
 use std::{
@@ -144,12 +144,6 @@ pub fn default_menus() -> MenuRegistry {
     let mut r = MenuRegistry::default();
     register_menus(&mut r).expect("工作台菜单登记");
     r
-}
-/// #13 的设置服务合并前，工作台用契约里的 DefaultSettings 读 VS Code 默认值。
-pub fn default_settings() -> Arc<dyn Settings> {
-    let mut r = SettingRegistry::default();
-    register_settings(&mut r).expect("工作台设置登记");
-    Arc::new(DefaultSettings(r))
 }
 
 impl Shell {
@@ -270,6 +264,11 @@ impl Shell {
             .cloned()
             .or_else(|| self.settings.read(key, &Scope::default()).ok())
     }
+    /// #104 热加载：设置文件里这些键变了。工作台的设置是现读的，只需丢掉本窗口对它们的
+    /// 临时值（切换类命令写入后留下的），让新值生效。
+    pub fn settings_changed(&mut self, keys: &std::collections::BTreeSet<Arc<str>>) {
+        self.overrides.retain(|key, _| !keys.contains(*key));
+    }
     pub fn setting_str(&self, key: &'static str) -> String {
         match self.setting(key) {
             Some(Value::String(s)) => s.to_string(),
@@ -341,6 +340,9 @@ impl Shell {
 
     pub fn set_theme_kind(&mut self, kind: ThemeKind) {
         self.kind = kind;
+    }
+    pub fn theme_kind(&self) -> ThemeKind {
+        self.kind
     }
     /// 先查当前主题；主题里没有登记的工作台颜色键回退到本模块登记的默认值。
     pub fn color(&self, theme: &dyn Theme, key: &str) -> Option<Hsla> {

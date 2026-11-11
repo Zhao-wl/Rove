@@ -317,8 +317,8 @@ Rove 默认值只有 `compat/SETTINGS.md` §3 的四项（数据测试保证没�
   第四条是 `markdown.preview.doubleClickToSwitchToEditor`。`search.useIgnoreFiles` 在清单中属于“不支持”，被静默忽略。
 - 可否按语言覆盖：导出的默认设置不带 scope，`gen_settings_catalog.py` 把 `editor.*`、`diffEditor.*`、编码/换行相关的
   `files.*` 与默认语言覆盖中出现过的键视为可覆盖。
-- 装配：骨架仍用 `DefaultSettings`（`rove-ui/src/skeleton/text.rs` 的 `default_settings()`）。换成 `SettingsService` 时，
-  先调用各 crate 的 `register`，再调用 `register_builtin`，并用 `split_user_dir_arg` 从启动参数中取出 `--vscode-user-dir`。
+- 装配（#104 已完成）：`rove-app` 用 `split_user_dir_arg` 取出 `--vscode-user-dir`，`rove_ui::app_settings::open`
+  先按模块登记各自的键、再 `register_builtin`，打开唯一的 `SettingsService`；见下文“设置层装配”。
   `files.associations`、C# 行长等语法设置接到文件打开路径属于 #94。
 
 验证：`cargo test -p rove-config`。`tests/settings_md_coverage.rs` 对照 `SETTINGS.md` 检查登记与“不支持”清单；
@@ -483,7 +483,6 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
 | `editors/layout.rs` | 网格布局树：任意方向分屏、多级嵌套、方向切换、展开组时只调整祖先链比例 |
 | `editors/actions.rs` | 编辑器组与标签命令（VS Code ID、标题字符串）登记与执行；`context()` 发布 `multipleEditorGroups`、`activeEditorGroupEmpty`、`activeEditorIsPinned` 等上下文键，默认键位与 when 来自 VS Code 默认表 |
 | `editors/settings.rs` | `workbench.editor.*`、`workbench.editorAssociations`、`window.density.editorTabHeight` 登记与读取；编辑器类型登记表 + glob 解析 |
-| `editors/startup_settings.rs` | #13 设置服务装配到窗口前的只读 JSONC 启动适配器（不写回） |
 
 **组与代码视图**：每个编辑器组挂一个 `Entity<CodeView>`（#19），组内的“拆分编辑器”再加一个；不按标签建视图，
 也不全窗口共用。活动标签的滚动与选区归 `CodeView` 所有，并经 `CodeViewEvent::{ViewportChanged, SelectionChanged}`
@@ -519,3 +518,21 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
 GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入口。`keys::init` 安装 GPUI 全局 `Keys`（键位服务、上下文键服务、命令表 `CommandCenter`）和一个按键拦截器（`intercept_keystrokes`，先于 GPUI 自己的键位表运行）。拦截器把按键换成 VS Code 键名，用“焦点路径上各元素的 GPUI key context + 全局上下文键”求值 when，再把命中的命令派发为实现它的模块的 GPUI action（`keys::action_for`：工作台、代码视图、编辑器组、列表与快速输入）；没有模块 action 的命令派发为 `RunCommand`，交给窗口处理。焦点路径上没有处理者时，按键交给原生处理（例如输入框里的 `ctrl+c`）；和弦的最后一个键总是被消费。模态框打开时独占键盘。各模块不再调用 `bind_keys`，默认键位全部来自生成的 VS Code 表；少数不在表里的放在模块的 `EXTRA_DEFAULTS` 中，同样经键位服务登记，所以用户的 keybindings.json 可以覆盖或移除任何一条。各模块只在 key context 上发布 VS Code 上下文键（`editorTextFocus`、`listFocus`、`statusBarFocused`、`multipleEditorGroups` 等）。菜单与悬停提示的键位文字由 `keys::key_label` 从生效的表中取出。GPUI 会把 Shift 并入标点和数字的字符（`ctrl+shift+-` 上报为 `ctrl+_`），适配层按 US 布局还原成“键 + Shift”。GPUI 不区分小键盘与主键盘上的同一字符，`numpad_*` 键位目前无法从实际按键触发。用户目录由 #13 的 `rove_config::paths` 解析（依次为 `--vscode-user-dir`、`ROVE_VSCODE_USER_DIR`、`%APPDATA%\Code\User`）。
 
 验证：`cargo test -p rove-commands`（键表达式、when（移植 VS Code 用例）、裁决与移除、和弦、热加载；`tests/keybindings_integration.rs` 对照 KEYBINDINGS.md 检查 P0 是否漏项，并覆盖“读 keybindings.json → 按键 → 分发”；`builtin` 检查 Rove 键位与 VS Code 默认键位无冲突），以及 `cargo test -p rove-ui keybindings_json_keys_dispatch_commands`（真实 GPUI 键盘事件：用户覆盖工作台键位、`-command`、未知命令、和弦的 Esc 与超时、菜单键位文字）和 `keys::tests::no_module_binds_keys_directly`（防止模块绕过键位服务直接 `bind_keys`）。
+
+### 设置层装配（#104）
+
+- 入口：`rove.exe [--vscode-user-dir <目录>] <工作区>`。`rove-app` 用 `rove_config::paths::split_user_dir_arg` 拆出参数，
+  其余第一个参数是工作区；不传时按 `ROVE_VSCODE_USER_DIR` > `%APPDATA%\Code\User` 解析。
+- `rove_ui::app_settings::registry()`：依次登记工作台（shell）、`rove_buffer::settings`、`code_view::options`、
+  编辑器组（`editors::settings`）、列表、`rove_workspace`、`rove_syntax::highlight` 的键，先登记者胜出，最后
+  `register_builtin`。单元测试校验各模块对同一键的默认值一致，且与 `compat/SETTINGS.md` 一致。
+- `app_settings::open` 打开**唯一**的 `SettingsService`，`skeleton::launch` 把同一个 `Arc<dyn Settings>` 交给窗口设置
+  读取、`Shell`、`ThemeService`、每个 `CodeView`、`FileDocuments`（打开服务）与工作区扫描。#94 直接从
+  `Workbench` 持有的这个实例读取 `files.associations` 等语法设置。`app_settings::defaults_only()` 只给测试与
+  `Workbench::new`（测试入口）用。
+- 热加载：`Workbench` 订阅 `settings.changes()`，合并同一批变更后在 UI 线程：丢弃工作台对这些键的本窗口临时值
+  （工作台按键现读设置）；`workbench.editor.*` 变化时重读编辑器组设置；所有代码视图 `reload_options` 并乘窗口缩放；
+  `rove_workspace` 登记的键（`files.exclude`、只读规则等）变化时按新规则重新扫描。`ThemeService` 自己订阅主题相关键并在
+  后台重载，`Workbench` 订阅主题的 `changes()` 刷新工作台明暗与代码视图配色。
+- 主题重载竞态：`ThemeService::reload` 在读设置前领取代次，只有不低于已应用代次的结果才替换快照，被取代的旧加载返回
+  `Stale`；连续切换两次主题，最后生效的是后切的那个。

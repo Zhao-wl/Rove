@@ -1,7 +1,6 @@
 pub(crate) mod actions;
 mod layout;
 pub(crate) mod settings;
-pub(crate) mod startup_settings;
 
 pub(crate) use layout::{Axis, Direction, Layout};
 use settings::{EditorKind, EditorSettings};
