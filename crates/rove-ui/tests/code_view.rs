@@ -1065,3 +1065,27 @@ fn word_separators_and_surrounding_lines_drive_behaviour(cx: &mut TestAppContext
         );
     });
 }
+
+/// 消费方示例：行下方嵌入区域（#41 速览窗口）——后续行整体下移，区域位置可查询。
+#[gpui::test]
+fn view_zones_push_following_lines_down(cx: &mut TestAppContext) {
+    let text = "z\n".repeat(200);
+    let (view, cx) = open(cx, &text, vec![]);
+    let before = mid(&view, cx, pos(6, 0));
+    view.update(cx, |v, cx| v.set_view_zone(5, 120.0, cx));
+    settle(cx);
+    let after = mid(&view, cx, pos(6, 0));
+    assert_eq!(f32::from(after.y - before.y), 120.0);
+    let line5 = point_of(&view, cx, pos(5, 0));
+    let lh = view.read_with(cx, |v, _| v.line_height());
+    let zone = view
+        .read_with(cx, |v, _| v.view_zone_bounds(5))
+        .expect("zone visible");
+    assert_eq!(zone.origin.y, line5.y + px(lh));
+    assert_eq!(f32::from(zone.size.height), 120.0);
+    // 点击嵌入区域下方的行仍然命中正确的行。
+    assert_eq!(
+        view.update(cx, |v, _| v.position_for_point(after)),
+        Some(pos(6, 0))
+    );
+}

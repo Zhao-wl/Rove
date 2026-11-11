@@ -14,6 +14,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Style, Window,
 };
 use rove_theme::Color;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -300,6 +301,9 @@ impl CodeView {
             hthumb,
             metrics: Some(metrics),
         };
+        if let Some(start) = self.frame_started {
+            self.last_frame.layout = start.elapsed();
+        }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let text_hitbox = window.insert_hitbox(text, HitboxBehavior::Normal);
         Frame {
@@ -312,20 +316,21 @@ impl CodeView {
         }
     }
 
-    fn line_xs(&self, l: &PaintLine) -> Option<Vec<f32>> {
+    /// 某行字素簇边界的 x：有整形结果时借用缓存，占位行按等宽近似现算。
+    fn line_xs<'a>(&self, l: &'a PaintLine) -> Option<Cow<'a, [f32]>> {
         match (&l.shaped, &l.entry) {
-            (Some(s), _) => Some(s.xs.clone()),
-            (None, Some(e)) => Some(
+            (Some(s), _) => Some(Cow::Borrowed(&s.xs)),
+            (None, Some(e)) => Some(Cow::Owned(
                 e.display
                     .monospace_xs(self.font.cell_width, self.font.letter_spacing),
-            ),
+            )),
             _ => None,
         }
     }
 
-    pub(crate) fn paint_frame(&mut self, frame: &Frame, window: &mut Window) {
-        let p = self.palette.clone();
-        let o = self.options.clone();
+    pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) {
+        let p = &self.palette;
+        let o = &self.options;
         let lay = &frame.layout;
         let lh = self.font.line_height;
         let text = lay.text;
@@ -379,102 +384,115 @@ impl CodeView {
         }
 
         window.with_content_mask(Some(ContentMask { bounds: text }), |window| {
-            for l in &frame.lines {
-                let y = text.origin.y + px(l.y);
-                let Some(entry) = &l.entry else { continue };
-                let xs = self.line_xs(l).unwrap_or_default();
-                // 整行装饰。
-                if let Some(m) = &entry.merged {
-                    let b = Bounds::new(point(text.origin.x, y), size(text.size.width, px(lh)));
-                    if let Some(bg) = m.line.background {
-                        window.paint_quad(fill(b, hsla(bg)));
+            // 整个文本区放在一个绘制层里：层内图元共用同一个绘制次序，GPUI 不再为每个字形
+            // 做 BoundsTree 插入（逐字形开销从约 0.7 µs 降到约 0.1 µs）。同层内四边形先于
+            // 字形绘制，所以背景、选区、占位条都在文字下面；插入符在层外，位于文字之上。
+            window.paint_layer(text, |window| {
+                for l in &frame.lines {
+                    let y = text.origin.y + px(l.y);
+                    let Some(entry) = &l.entry else { continue };
+                    let Some(xs) = self.line_xs(l) else { continue };
+                    // 整行装饰。
+                    if let Some(m) = &entry.merged {
+                        let b = Bounds::new(point(text.origin.x, y), size(text.size.width, px(lh)));
+                        if let Some(bg) = m.line.background {
+                            window.paint_quad(fill(b, hsla(bg)));
+                        }
+                        if let Some(border) = m.line.border {
+                            window.paint_quad(outline(b, hsla(border), BorderStyle::Solid));
+                        }
                     }
-                    if let Some(border) = m.line.border {
-                        window.paint_quad(outline(b, hsla(border), BorderStyle::Solid));
-                    }
-                }
-                // 选区。
-                if !sel.is_empty() && l.line >= sel.start().line.0 && l.line <= sel.end().line.0 {
-                    let a = if l.line == sel.start().line.0 {
-                        entry.display.x_for_source(&xs, sel.start().column.0 as u32)
-                    } else {
-                        0.0
-                    };
-                    let mut b = if l.line == sel.end().line.0 {
-                        entry.display.x_for_source(&xs, sel.end().column.0 as u32)
-                    } else {
-                        *xs.last().unwrap_or(&0.0) + self.font.cell_width * 0.5
-                    };
-                    if b <= a && l.line != sel.end().line.0 {
-                        b = a + self.font.cell_width * 0.5;
-                    }
-                    if b > a {
-                        let color = if frame.focused {
-                            p.selection
+                    // 选区。
+                    if !sel.is_empty() && l.line >= sel.start().line.0 && l.line <= sel.end().line.0
+                    {
+                        let a = if l.line == sel.start().line.0 {
+                            entry.display.x_for_source(&xs, sel.start().column.0 as u32)
                         } else {
-                            p.inactive_selection
+                            0.0
                         };
-                        let r = if o.rounded_selection { px(3.) } else { px(0.) };
-                        window.paint_quad(quad(
-                            Bounds::new(point(left + px(a), y), size(px(b - a), px(lh))),
-                            r,
-                            hsla(color),
-                            px(0.),
-                            gpui::transparent_black(),
-                            BorderStyle::Solid,
-                        ));
+                        let mut b = if l.line == sel.end().line.0 {
+                            entry.display.x_for_source(&xs, sel.end().column.0 as u32)
+                        } else {
+                            *xs.last().unwrap_or(&0.0) + self.font.cell_width * 0.5
+                        };
+                        if b <= a && l.line != sel.end().line.0 {
+                            b = a + self.font.cell_width * 0.5;
+                        }
+                        if b > a {
+                            let color = if frame.focused {
+                                p.selection
+                            } else {
+                                p.inactive_selection
+                            };
+                            let r = if o.rounded_selection { px(3.) } else { px(0.) };
+                            window.paint_quad(quad(
+                                Bounds::new(point(left + px(a), y), size(px(b - a), px(lh))),
+                                r,
+                                hsla(color),
+                                px(0.),
+                                gpui::transparent_black(),
+                                BorderStyle::Solid,
+                            ));
+                        }
                     }
-                }
-                // 装饰区间的背景、外框。
-                for (range, style) in &entry.paint_runs {
-                    if style.background.is_none() && style.border.is_none() {
-                        continue;
+                    // 装饰区间的背景、外框。
+                    for (range, style) in &entry.paint_runs {
+                        if style.background.is_none() && style.border.is_none() {
+                            continue;
+                        }
+                        let a = xs[entry.display.stop_index_for_display(range.start)];
+                        let b = xs[entry.display.stop_index_for_display(range.end)];
+                        let r =
+                            Bounds::new(point(left + px(a), y), size(px((b - a).max(1.0)), px(lh)));
+                        if let Some(bg) = style.background {
+                            window.paint_quad(fill(r, hsla(bg)));
+                        }
+                        if let Some(border) = style.border {
+                            window.paint_quad(outline(r, hsla(border), BorderStyle::Solid));
+                        }
                     }
-                    let a = xs[entry.display.stop_index_for_display(range.start)];
-                    let b = xs[entry.display.stop_index_for_display(range.end)];
-                    let r = Bounds::new(point(left + px(a), y), size(px((b - a).max(1.0)), px(lh)));
-                    if let Some(bg) = style.background {
-                        window.paint_quad(fill(r, hsla(bg)));
+                    match &l.shaped {
+                        Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
+                        None => self.paint_placeholder(entry, left, y, &xs, text, window),
                     }
-                    if let Some(border) = style.border {
-                        window.paint_quad(outline(r, hsla(border), BorderStyle::Solid));
+                    // 下划线、删除线。
+                    for (range, style) in &entry.paint_runs {
+                        let a = xs[entry.display.stop_index_for_display(range.start)];
+                        let b = xs[entry.display.stop_index_for_display(range.end)];
+                        if let Some(u) = style.underline {
+                            let r = Bounds::new(
+                                point(left + px(a), y + px(lh - 2.0)),
+                                size(px(b - a), px(1.)),
+                            );
+                            window.paint_quad(fill(r, hsla(u)));
+                        }
+                        if let Some(s) = style.strikethrough {
+                            let r = Bounds::new(
+                                point(left + px(a), y + px(lh / 2.0)),
+                                size(px(b - a), px(1.)),
+                            );
+                            window.paint_quad(fill(r, hsla(s)));
+                        }
                     }
-                }
-                match &l.shaped {
-                    Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
-                    None => self.paint_placeholder(entry, left, y, &xs, text, window),
-                }
-                // 下划线、删除线。
-                for (range, style) in &entry.paint_runs {
-                    let a = xs[entry.display.stop_index_for_display(range.start)];
-                    let b = xs[entry.display.stop_index_for_display(range.end)];
-                    if let Some(u) = style.underline {
-                        let r = Bounds::new(
-                            point(left + px(a), y + px(lh - 2.0)),
-                            size(px(b - a), px(1.)),
-                        );
-                        window.paint_quad(fill(r, hsla(u)));
-                    }
-                    if let Some(s) = style.strikethrough {
-                        let r = Bounds::new(
-                            point(left + px(a), y + px(lh / 2.0)),
-                            size(px(b - a), px(1.)),
-                        );
-                        window.paint_quad(fill(r, hsla(s)));
-                    }
-                }
-                // 行内覆盖物。
-                if let Some(m) = &entry.merged {
-                    for ov in &m.overlays {
-                        let key = self.overlay_key(&ov.text);
-                        if let Some(shaped) = self.shapes.peek(&key).cloned() {
-                            let x = entry.display.x_for_source(&xs, ov.column);
-                            let color = ov.style.foreground.unwrap_or(p.foreground);
-                            self.paint_layout(&shaped.layout, left + px(x), y, hsla(color), window);
+                    // 行内覆盖物。
+                    if let Some(m) = &entry.merged {
+                        for ov in &m.overlays {
+                            let key = self.overlay_key(&ov.text);
+                            if let Some(shaped) = self.shapes.peek(&key).cloned() {
+                                let x = entry.display.x_for_source(&xs, ov.column);
+                                let color = ov.style.foreground.unwrap_or(p.foreground);
+                                self.paint_layout(
+                                    &shaped.layout,
+                                    left + px(x),
+                                    y,
+                                    hsla(color),
+                                    window,
+                                );
+                            }
                         }
                     }
                 }
-            }
+            });
             // 插入符。
             if frame.focused && self.caret_visible {
                 if let Some(l) = frame.lines.iter().find(|l| l.line == caret_line) {
@@ -576,6 +594,9 @@ impl CodeView {
         let _ = xs;
         let size = self.font.size;
         let runs = &entry.paint_runs;
+        let bytes = entry.display.text.as_bytes();
+        // 相邻字形几乎总是同色：记住上一次的颜色换算结果。
+        let mut memo = (p.foreground, hsla(p.foreground));
         for run in &s.layout.runs {
             let start = run
                 .glyphs
@@ -587,6 +608,10 @@ impl CodeView {
                     break;
                 }
                 let idx = g.index as u32;
+                // 空格（含 Tab 展开出的空格）没有可见字形，跳过以省下 GPUI 的逐字形开销。
+                if bytes.get(g.index) == Some(&b' ') {
+                    continue;
+                }
                 while ri < runs.len() && runs[ri].0.end <= idx {
                     ri += 1;
                 }
@@ -604,11 +629,15 @@ impl CodeView {
                 } else {
                     0.0
                 };
+                self.glyphs_painted.set(self.glyphs_painted.get() + 1);
                 let origin = point(left + px(gx + dx), baseline + g.position.y);
+                if memo.0 != color {
+                    memo = (color, hsla(color));
+                }
                 let _ = if g.is_emoji {
                     window.paint_emoji(origin, run.font_id, g.id, size)
                 } else {
-                    window.paint_glyph(origin, run.font_id, g.id, size, hsla(color))
+                    window.paint_glyph(origin, run.font_id, g.id, size, memo.1)
                 };
             }
         }
@@ -684,76 +713,80 @@ impl CodeView {
         let line_count = self.text.as_ref().map_or(1, |t| t.lines().known.max(1));
         let complete = self.text.as_ref().is_none_or(|t| t.lines().complete);
         window.with_content_mask(Some(ContentMask { bounds: lay.gutter }), |window| {
-            let mut buf = [0u8; 20];
-            for l in &frame.lines {
-                let y = lay.text.origin.y + px(l.y);
-                // 字形边距图标：以首字母画一个徽记（图标资源由提供方 #40 等接入后替换）。
-                if glyph_w > 0.0 {
-                    if let Some(icon) = l
-                        .entry
-                        .as_ref()
-                        .and_then(|e| e.merged.as_ref())
-                        .and_then(|m| m.line.glyph.clone())
-                    {
-                        let c = icon.color.unwrap_or(p.foreground);
-                        let r = Bounds::new(
-                            point(
-                                lay.gutter.origin.x + px(4.0),
-                                y + px(self.font.line_height / 2.0 - 5.0),
-                            ),
-                            size(px(10.0), px(10.0)),
-                        );
-                        window.paint_quad(quad(
-                            r,
-                            px(5.0),
-                            hsla(c),
-                            px(0.),
-                            gpui::transparent_black(),
-                            BorderStyle::Solid,
-                        ));
+            window.paint_layer(lay.gutter, |window| {
+                let mut buf = [0u8; 20];
+                for l in &frame.lines {
+                    let y = lay.text.origin.y + px(l.y);
+                    // 字形边距图标：以首字母画一个徽记（图标资源由提供方 #40 等接入后替换）。
+                    if glyph_w > 0.0 {
+                        if let Some(icon) = l
+                            .entry
+                            .as_ref()
+                            .and_then(|e| e.merged.as_ref())
+                            .and_then(|m| m.line.glyph.clone())
+                        {
+                            let c = icon.color.unwrap_or(p.foreground);
+                            let r = Bounds::new(
+                                point(
+                                    lay.gutter.origin.x + px(4.0),
+                                    y + px(self.font.line_height / 2.0 - 5.0),
+                                ),
+                                size(px(10.0), px(10.0)),
+                            );
+                            window.paint_quad(quad(
+                                r,
+                                px(5.0),
+                                hsla(c),
+                                px(0.),
+                                gpui::transparent_black(),
+                                BorderStyle::Solid,
+                            ));
+                        }
                     }
-                }
-                if ln_w <= 0.0 {
-                    continue;
-                }
-                let final_newline = complete
-                    && line_count > 1
-                    && l.line + 1 == line_count
-                    && l.entry.as_ref().is_some_and(|e| e.source.is_empty());
-                if final_newline && o.render_final_newline == FinalNewline::Off {
-                    continue;
-                }
-                let number = match o.line_numbers {
-                    LineNumbers::Relative if l.line != caret_line => l.line.abs_diff(caret_line),
-                    LineNumbers::Interval if l.line != caret_line && (l.line + 1) % 10 != 0 => {
-                        continue
-                    }
-                    _ => l.line + 1,
-                };
-                let color = if final_newline && o.render_final_newline == FinalNewline::Dimmed {
-                    p.line_number_dimmed
-                } else if l.line == caret_line {
-                    p.line_number_active
-                } else {
-                    p.line_number
-                };
-                let ds = digits(number, &mut buf);
-                let right = lay.gutter.origin.x + px(glyph_w + ln_w);
-                let baseline = self.baseline(y);
-                for (k, digit) in ds.iter().enumerate() {
-                    let Some(glyph) = d.glyphs[*digit as usize] else {
+                    if ln_w <= 0.0 {
                         continue;
+                    }
+                    let final_newline = complete
+                        && line_count > 1
+                        && l.line + 1 == line_count
+                        && l.entry.as_ref().is_some_and(|e| e.source.is_empty());
+                    if final_newline && o.render_final_newline == FinalNewline::Off {
+                        continue;
+                    }
+                    let number = match o.line_numbers {
+                        LineNumbers::Relative if l.line != caret_line => {
+                            l.line.abs_diff(caret_line)
+                        }
+                        LineNumbers::Interval if l.line != caret_line && (l.line + 1) % 10 != 0 => {
+                            continue
+                        }
+                        _ => l.line + 1,
                     };
-                    let x = right - px((ds.len() - k) as f32 * d.advance);
-                    let _ = window.paint_glyph(
-                        point(x, baseline),
-                        d.font_id,
-                        glyph,
-                        self.font.size,
-                        hsla(color),
-                    );
+                    let color = if final_newline && o.render_final_newline == FinalNewline::Dimmed {
+                        p.line_number_dimmed
+                    } else if l.line == caret_line {
+                        p.line_number_active
+                    } else {
+                        p.line_number
+                    };
+                    let ds = digits(number, &mut buf);
+                    let right = lay.gutter.origin.x + px(glyph_w + ln_w);
+                    let baseline = self.baseline(y);
+                    for (k, digit) in ds.iter().enumerate() {
+                        let Some(glyph) = d.glyphs[*digit as usize] else {
+                            continue;
+                        };
+                        let x = right - px((ds.len() - k) as f32 * d.advance);
+                        let _ = window.paint_glyph(
+                            point(x, baseline),
+                            d.font_id,
+                            glyph,
+                            self.font.size,
+                            hsla(color),
+                        );
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -792,6 +825,7 @@ impl CodeView {
     pub(crate) fn finish_frame(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         if let Some(start) = self.frame_started.take() {
             self.last_frame.cpu = start.elapsed();
+            self.last_frame.glyphs = self.glyphs_painted.replace(0);
             if let Some(rec) = self.recording.as_mut() {
                 rec.push(self.last_frame);
             }

@@ -90,6 +90,10 @@ impl EventEmitter<CodeViewEvent> for CodeView {}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
     pub cpu: Duration,
+    /// 其中布局（prepaint）部分。
+    pub layout: Duration,
+    /// 本帧绘制的字形数（已按水平可见范围裁剪）。
+    pub glyphs: u32,
     pub visible_lines: u32,
     /// 用正式整形结果绘制的行数。
     pub shaped: u32,
@@ -233,6 +237,7 @@ pub struct CodeView {
     pub(crate) last_frame: FrameStats,
     pub(crate) recording: Option<Vec<FrameStats>>,
     pub(crate) slice_budget: Duration,
+    pub(crate) glyphs_painted: Cell<u32>,
 }
 
 impl Focusable for CodeView {
@@ -339,6 +344,7 @@ impl CodeView {
             last_frame: FrameStats::default(),
             recording: None,
             slice_budget: PREPARE_SLICE,
+            glyphs_painted: Cell::new(0),
         }
     }
 
