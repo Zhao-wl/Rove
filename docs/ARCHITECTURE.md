@@ -207,13 +207,13 @@ cargo test --workspace
 | `theme` | 已由 `rove-theme::ThemeService` 实现：VS Code 主题 JSON（include 链）、vscode-textmate scope 匹配、颜色默认值表与用户覆盖；`workbench.rs` 直接装配该服务 | #10（已完成） |
 | `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |
 | `workspace` | 已由 #15 替换为 `rove-workspace`：流式并行扫描（不读 `.gitignore`）、`files.exclude`/`rove.files.extraExclude` 合并、只读规则真值表、文件监听（溢出重扫、重命名还原） | #15 |
-| `workbench` | `appearance.rs`、`commands.rs`、`workbench.rs`：贡献点装配、固定容器、状态反馈 | #16 |
+| `workbench` | 已由 `rove-ui::shell` 实现（见 §14）：标题栏与命令中心、菜单、活动栏、侧边栏、面板、状态栏容器、布局持久化、五级反馈；骨架只保留装配（`workbench.rs` 实现 `ShellHost`） | #16（已完成） |
 | `editors` | `editor.rs`、`text.rs`：OpenDocuments、单编辑区替换与文档身份缓存 | #17 |
 | `lists` | `workbench.rs`：ListModel/ListController、通用虚拟文件列表 | #18 |
 | `code-view` | `workbench.rs`：自定义 Element、可见行缓存、f64 行滚动 | #19 |
 | `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到 TextRun 的投影 | #20 |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace | #23 |
-| `status` | `appearance.rs`、`workbench.rs`：状态栏贡献条目与文件名/行数/编码 | #27 |
+| `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
 数据链路：后台扫描返回 `Arc<dyn Workspace>`，文件树通过列表契约激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -356,3 +356,42 @@ Rove 默认值只有 `compat/SETTINGS.md` §3 的四项（数据测试保证没�
   “语义 token 类型 → TextMate scope”的回退由 R58 补齐。
 
 性能：`cargo xtask bench --filter theme/`（`xtask/benches/theme.rs`），见 PR 中的数据。
+
+## 14. 工作台（#16）
+
+位置：`crates/rove-ui/src/shell/`。纯数据模型不依赖 GPUI，GPUI 绘制与命令分发集中在 `view.rs`；
+宿主（目前是骨架的 `Workbench`）实现 `ShellHost`，提供编辑区、视图工厂、文档身份与命令执行桥。
+
+| 模块 | 内容 |
+|---|---|
+| `catalog.rs` | 全部登记项：工作台命令与 KEYBINDINGS.md 默认键位、`window.*`/`workbench.*` 设置、`titleBar.*` 等颜色键、中文字符串、菜单项、视图容器 / 小节 / 面板 / 状态栏条目 |
+| `feedback.rs` | `FeedbackHub` 实现 `FeedbackService`：五级反馈、同因通知计次、勿扰、提示条按“文件 + 原因”去重与“不再提示”、模态只接受数据丢失 / 安全确认 |
+| `layout.rs` | `LayoutState` 与按工作区持久化的 `LayoutStore`（`%APPDATA%\Rove\workspaceStorage\<哈希>\layout.json`、`globalState.json`） |
+| `menus.rs` | `MenuRegistry`：文件、编辑、选择、查看、转到、帮助 + 齿轮菜单；命令未登记或未实现的项不显示 |
+| `status.rs` | `StatusBar`：状态栏条目的运行期内容（`$(icon)` 文本、悬停提示、命令、普通 / prominent / warning / error） |
+| `icons.rs` | 打包的 codicons 字体与 `$(图标名)` / `$(图标名~spin)` 语法 |
+| `progress.rs` | 100 ms 后才显示的细进度条判定（#17 打开文件时用，绘制用 `view::progress_bar`） |
+| `view.rs` | `Shell` 状态、`ShellHost`、`run_command`、`report`、各部件绘制、`key_bindings()` |
+
+**登记方式（其他 issue 只追加，不改工作台代码）**
+
+- 视图：在 `ContributionRegistry` 登记 `Placement::ActivityBar`（视图容器，`factory_key = catalog::CONTAINER_FACTORY`）、
+  `Placement::Sidebar { container }`（容器内的可折叠小节，`order` 决定顺序：打开的编辑器 0、文件夹 10、大纲 20）
+  或 `Placement::Panel`；宿主的 `ShellHost::render_view` 按 `factory_key` 返回元素，未装配的工厂不显示。
+  面板隐藏时不调用面板视图工厂。
+- 状态栏：登记 `Placement::StatusLeft` / `StatusRight`（`order` 即 VS Code 的 priority，越大越靠左，
+  `factory_key = catalog::STATUS_FACTORY`），运行期用 `shell.status_bar.set(&shell.contributions, id, StatusEntry)` 更新内容。
+- 菜单：在 `shell.menus` 登记 `MenuItem`；命令实现后在装配期调用 `shell.mark_implemented(id)`，菜单才显示该项。
+- 反馈：调用 `shell::view::report(host, key, Reason, Message, actions, cx)`，**由原因决定级别**
+  （`Receipt`/`Background` → 状态栏 3 秒；`NoResult` → 光标提示；`FileContext` → 编辑器提示条；
+  `Global(severity)` → 通知；`DataLoss`/`SecurityConfirmation` → 模态）。正常后台工作用 `Background`，永不弹通知。
+
+**键位**：#14 的键位系统合并前，`view::key_bindings()` 把 `catalog::DEFAULT_KEYS` 装配成 GPUI KeyBinding；
+`statusBarFocused`、`notificationFocus`、`notificationToastsVisible`、`notificationCenterVisible` 以 GPUI key context 表达。
+GPUI 0.2.2 的 Windows 后端无法区分 `ctrl+numpad0` 与 `ctrl+0`，所以 `workbench.action.zoomReset` 暂不绑键（“查看”菜单可用）。
+
+**缩放**：`workbench.action.zoomIn/zoomOut/zoomReset` 与 `window.zoomLevel` 同 VS Code（每级 ×1.2，范围 ±8，
+`window.zoomPerWindow` 为 true 时不写回设置）；工作台尺寸与代码视图行高一起缩放，只重新整形可见行，不重新扫描、不重新解析。
+
+**启动**：首帧前只同步读取几百字节的布局文件以恢复窗口位置、大小与最大化状态；之后的布局写入都在后台执行器完成。
+codicons 字体在 `launch` 中注册。
