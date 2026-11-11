@@ -311,3 +311,25 @@ fn large_single_line_file_has_one_line() {
         Line(0)
     );
 }
+
+#[test]
+fn short_gbk_file_and_ascii_file_follow_candidate_and_files_encoding() {
+    // #91：短 GBK 文件在默认设置下按候选 GBK 打开（不报二进制）；
+    // files.encoding = gbk 时纯 ASCII 文件报告 GBK，与设置一致。
+    let directory = tempfile::tempdir().unwrap();
+    let short = directory.path().join("Short.cs");
+    std::fs::write(&short, encode(&Encoding::Gbk, "中文\r\n")).unwrap();
+    let settings = default_settings();
+    let loaded = open_path(&short, &LoadOptions::new("csharp", &settings)).unwrap();
+    assert_eq!(loaded.metadata.encoding, Encoding::Gbk);
+    assert!(loaded.detection.guessed);
+    assert_eq!(full_text(loaded.text.as_ref()), "中文\r\n");
+
+    let ascii = directory.path().join("Plain.cs");
+    std::fs::write(&ascii, b"public class Plain {}\r\n").unwrap();
+    let gbk = UserSettings::new(&[(settings::FILES_ENCODING, Value::String("gbk".into()))]);
+    let loaded = open_path(&ascii, &LoadOptions::new("csharp", &gbk)).unwrap();
+    assert_eq!(loaded.metadata.encoding, Encoding::Gbk);
+    assert!(!loaded.detection.guessed);
+    assert_eq!(full_text(loaded.text.as_ref()), "public class Plain {}\r\n");
+}
