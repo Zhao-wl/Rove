@@ -1,11 +1,23 @@
 # 第三方来源
 
-## Dark 2026 主题子集
+## VS Code 默认主题与主题引擎（#10）
 
-`crates/rove-ui/src/skeleton/appearance.rs` 中的颜色选自 Microsoft VS Code 的
-[2026-dark.json](https://github.com/microsoft/vscode/blob/main/extensions/theme-defaults/themes/2026-dark.json)
-（2026-11-10 核对，继承 dark_modern / dark_plus / dark_vs）。只包含骨架需要的界面颜色与四种 token 颜色。
-原始许可证：[MIT](https://github.com/microsoft/vscode/blob/main/LICENSE.txt)。
+以下内容来自 Microsoft VS Code **1.145.2**（提交 `c4453f8ea430795f941c1b2ff6c9321135a74a02`，MIT 许可）：
+
+- `crates/rove-theme/data/themes/*.json`：`extensions/theme-defaults/themes/` 下的十个默认主题文件，
+  原样复制（Dark 2026、Light 2026、Dark Modern、Light Modern、Dark+、Light+ 以及它们 include 的
+  Visual Studio 与高对比度主题）。文件清单与哈希见该目录的 `README.md`。
+- `crates/rove-theme/src/defaults/generated.rs`：由 `scripts/theme/gen_color_defaults.py` 从
+  `src/vs/**/*.ts` 中的 `registerColor` 调用提取的颜色默认值表。
+- `crates/rove-theme/src/color.rs`：移植 `src/vs/base/common/color.ts` 的颜色运算（HSLA、
+  `lighten`/`darken`/`transparent`/`makeOpaque`/`mix`、相对亮度）。
+- `crates/rove-theme/src/defaults/mod.rs`：移植 `src/vs/platform/theme/common/colorUtils.ts` 的
+  默认值求值（`resolveColorValue`/`executeTransform`）。
+- `crates/rove-theme/src/file.rs`、`resolved.rs`：移植 `src/vs/workbench/services/themes/common/`
+  中 `colorThemeData.ts` 与 `themeCompatibility.ts` 的主题加载、`include` 合并与用户覆盖语义。
+
+来源：<https://github.com/microsoft/vscode/tree/1.145.2>
+原始许可证：<https://github.com/microsoft/vscode/blob/1.145.2/LICENSE.txt>
 以下保留版权及许可声明；完整第三方依赖分发清单由 #75 维护。
 
 MIT License
@@ -103,3 +115,32 @@ Markdown 围栏注入查询的节点关系参考 [tree-sitter-md 0.5.4 的块级
 
 来源：<https://github.com/microsoft/vscode/tree/1.145.2>
 原始许可证：MIT（Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。
+
+## vscode-textmate 主题匹配（#10）
+
+`crates/rove-theme/src/textmate.rs` 移植自 Microsoft
+[vscode-textmate](https://github.com/microsoft/vscode-textmate) **9.3.2** 的 `src/theme.ts`
+（scope 选择器解析、父 scope 与子代组合符、规则前缀树与特异性排序），其单元测试移植自
+`src/tests/themes.test.ts`。原始许可证：MIT。
+
+The MIT License (MIT)
+
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
