@@ -57,6 +57,18 @@ owner = "#16"
 status = "pending"
 reason = "M0 的 GPUI 原型工作集 47.7 MB，但 M1 工作台（标题栏 / 活动栏 / 侧边栏 / 状态栏 / 面板）还没实现，等 #16 落地后按工作集与私有提交分别记录"
 
+# ---------------------------------------------------------------- 工作区
+
+[[budget]]
+id = "workspace_full_scan_large"
+metric = "大型 Unity 项目全量扫描（热缓存）"
+value = 1000
+unit = "ms"
+owner = "#15"
+status = "enforced"
+bench = "workspace/full_scan_large"
+reason = "issue #15 验收：约 2 万个 .cs 的大型项目全量扫描 < 1 s（热缓存，含排除与只读规则）。未设置 ROVE_TEST_UNITY_LARGE 时该用例跳过，check-budgets 显示「未测量」、不算失败"
+
 # ---------------------------------------------------------------- 大文件
 
 [[budget]]

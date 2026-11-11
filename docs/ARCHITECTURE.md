@@ -205,7 +205,7 @@ cargo test --workspace
 | `syntax` | 已迁入 `rove-syntax::highlight`：五种语言、增量解析和逐行 scope | #9 |
 | `theme` | `appearance.rs`：ColorRegistry、Dark 2026 子集、Theme | #10 |
 | `commands` | `commands.rs`、`workbench.rs`：CommandRegistry/Executor、两个硬编码键位 | #14 |
-| `workspace` | `workspace.rs`：Workspace 快照、递归扫描，排除 .git/Library/Temp | #15 |
+| `workspace` | 已由 #15 替换为 `rove-workspace`：流式并行扫描（不读 `.gitignore`）、`files.exclude`/`rove.files.extraExclude` 合并、只读规则真值表、文件监听（溢出重扫、重命名还原） | #15 |
 | `workbench` | `appearance.rs`、`commands.rs`、`workbench.rs`：贡献点装配、固定容器、状态反馈 | #16 |
 | `editors` | `editor.rs`、`text.rs`：OpenDocuments、单编辑区替换与文档身份缓存 | #17 |
 | `lists` | `workbench.rs`：ListModel/ListController、通用虚拟文件列表 | #18 |

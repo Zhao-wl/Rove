@@ -7,3 +7,11 @@ license.workspace = true
 [dependencies]
 rove-base.workspace = true
 rove-buffer.workspace = true
+rove-config.workspace = true
+globset.workspace = true
+ignore.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+rove-test-support.workspace = true
+tempfile = "3"
