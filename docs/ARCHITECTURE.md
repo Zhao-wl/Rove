@@ -1003,6 +1003,6 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 验证：`cargo test -p rove-search`（`tests/search_it.rs`：分组与列、正则 / 全词 / 大小写、`search.smartCase`、包含 / 排除 glob、
 排除设置合并与“只因 Rove 默认排除”、`.gitignore` / `.git/info/exclude` / `.ignore` 不生效、`search.maxResults` 截断、GBK / UTF-16 /
-BOM / 二进制、分块行号、多行正则、取消 < 50 ms、大型 Unity 项目计时）；`cargo test -p rove-ui search`（模型、登记、
+BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（release））与 `tests/cancellation.rs`（独立二进制，取消到全部线程结束 < 50 ms）；`cargo test -p rove-ui search`（模型、登记、
 `skeleton/workbench/search_tests.rs` 真实 GPUI 窗口：`Ctrl+Shift+F` → 输入 → 回车 → 分组与首条位置、`f4` 打开并选中、`.md` 打开源码、
 `alt+c/w/r`、`delete`、空状态与再搜索一次）。性能：`cargo xtask bench --filter search/`（预算 `search_*`）。
