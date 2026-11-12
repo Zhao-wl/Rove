@@ -499,6 +499,18 @@ impl Workbench {
             header = header.child(self.label("editors.index", &[("index", index.to_string())]));
         }
         header = header.child(text);
+        // #20：只读文档的标签（单标签模式下即编辑器标题）显示锁形图标（UX_SPEC §3.4）。
+        if self.tab_read_only(tab) {
+            header = header.child(
+                div()
+                    .id(id("tab-lock", group, tab_id))
+                    .flex_shrink_0()
+                    .child(crate::shell::view::icon_label(
+                        "$(lock-small)",
+                        px(12.0 * self.shell.zoom()),
+                    )),
+            );
+        }
         if settings.badges && matches!(tab.content, Content::Failed(_)) {
             header = header.child(self.label("editors.errorBadge", &[]));
         }

@@ -3,7 +3,10 @@
 //! 帧内只读缓存（行显示形式、整形结果、装饰）；任何未命中都画占位并在绘制后调度空闲准备切片。
 
 use super::columns::DisplayLine;
-use super::options::{CursorStyle, FinalNewline, LineHighlight, LineNumbers, ScrollbarVisibility};
+use super::guides;
+use super::options::{
+    CursorStyle, FinalNewline, FoldingControls, LineHighlight, LineNumbers, ScrollbarVisibility,
+};
 use super::scroll::{self, Metrics, ScrollPosition};
 use super::view::{
     hsla, CodeView, CodeViewEvent, Drag, FrameLayout, FrameStats, LineEntry, Shaped, Viewport,
@@ -12,7 +15,7 @@ use gpui::{
     fill, outline, point, px, quad, size, App, BorderStyle, Bounds, ContentMask,
     CursorStyle as MouseCursor, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Style, Window,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollWheelEvent, Style, Window,
 };
 use rove_theme::Color;
 use std::rc::Rc;
@@ -36,6 +39,8 @@ pub(crate) struct PaintLine {
     pub y: f32,
     pub entry: Option<Rc<LineEntry>>,
     pub shaped: Option<Rc<Shaped>>,
+    /// 首行为本行的折叠区间：(是否已折叠)。
+    pub fold: Option<bool>,
 }
 
 pub struct Frame {
@@ -136,24 +141,40 @@ impl CodeView {
         let focused = self.focus.is_focused(window);
         self.focus_changed(focused, window, cx);
         self.line_number_ready(window);
-        let o = &self.options;
         let lh = self.font.line_height;
         let digit_w = self
             .font
             .digits
             .as_ref()
             .map_or(self.font.cell_width, |d| d.advance);
-        let line_count = self.text.as_ref().map_or(1, |t| t.lines().known.max(1));
+        let doc_count = self.text.as_ref().map_or(1, |t| t.lines().known.max(1));
+        // 行数随 #8 的索引增长时，折叠映射跟着更新。
+        self.folding.set_doc_lines(doc_count);
+        let line_count = self.line_count();
+        let o = &self.options;
 
-        // 行号栏：字形边距 | 行号 | 行装饰区。
+        // 行号栏：字形边距 | 行号 | 行装饰区（含折叠控件）。
         let glyph_w = if o.glyph_margin { 18.0 } else { 0.0 };
         let ln_w = if o.line_numbers == LineNumbers::Off {
             0.0
         } else {
-            let n = (line_count.max(1) as f64).log10().floor() as u32 + 1;
+            let n = (doc_count.max(1) as f64).log10().floor() as u32 + 1;
             (n.max(LINE_NUMBERS_MIN_CHARS) as f32 * digit_w).round()
         };
-        let gutter_w = glyph_w + ln_w + 10.0;
+        let controls = o.folding
+            && o.show_folding_controls != FoldingControls::Never
+            && self.folding_enabled();
+        let deco_w = if controls {
+            (self.font.cell_width * 1.8).round().max(10.0)
+        } else {
+            10.0
+        };
+        let fold_column = if controls {
+            (glyph_w + ln_w)..(glyph_w + ln_w + deco_w)
+        } else {
+            0.0..0.0
+        };
+        let gutter_w = glyph_w + ln_w + deco_w;
 
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
@@ -226,9 +247,11 @@ impl CodeView {
 
         let mut lines = Vec::with_capacity((viewport_h / lh) as usize + 2);
         let mut y = y0 as f32;
-        let mut line = first;
+        // `view` 是屏幕行（滚动坐标），`line` 是文档行（缓存与绘制内容）。
+        let mut view_line = first;
         let mut stats = FrameStats::default();
-        while line < line_count && y < viewport_h {
+        while view_line < line_count && y < viewport_h {
+            let line = self.doc_line(view_line);
             let entry = self.lines.get(&line).cloned();
             let shaped = entry
                 .as_ref()
@@ -238,21 +261,24 @@ impl CodeView {
                 (Some(_), None) => stats.placeholders += 1,
                 (Some(_), Some(_)) => stats.shaped += 1,
             }
+            let fold = self.folding.header(line).map(|(_, collapsed)| collapsed);
             lines.push(PaintLine {
                 line,
                 y,
                 entry,
                 shaped,
+                fold,
             });
-            y += lh + self.zones.get(line) as f32;
-            line += 1;
+            y += lh + self.zones.get(view_line) as f32;
+            view_line += 1;
         }
+        let first_doc = self.doc_line(first);
         stats.visible_lines = lines.len() as u32;
-        stats.first_line = first;
+        stats.first_line = first_doc;
         stats.first_line_y = y0 as f32;
         self.last_frame = stats;
-        let last = lines.last().map_or(first, |l| l.line);
-        self.note_visible(first..last + 1, top);
+        let last = lines.last().map_or(first_doc, |l| l.line);
+        self.note_visible(first..view_line.max(first + 1), top);
 
         let vthumb = vbar.and_then(|b| {
             let t = scroll::thumb(
@@ -280,7 +306,7 @@ impl CodeView {
         });
 
         let viewport = Viewport {
-            first_line: first,
+            first_line: first_doc,
             last_line: last,
             top,
             scroll_x: self.scroll.x,
@@ -300,6 +326,7 @@ impl CodeView {
             vthumb,
             hthumb,
             metrics: Some(metrics),
+            fold_column,
         };
         if let Some(start) = self.frame_started {
             self.last_frame.layout = start.elapsed();
@@ -311,7 +338,7 @@ impl CodeView {
             hitbox,
             text_hitbox,
             layout: self.layout.clone(),
-            gutter_widths: (glyph_w, ln_w, 10.0),
+            gutter_widths: (glyph_w, ln_w, deco_w),
             focused,
         }
     }
@@ -397,6 +424,17 @@ impl CodeView {
                             window.paint_quad(outline(b, hsla(border), BorderStyle::Solid));
                         }
                     }
+                    // 已折叠的首行：`editor.foldBackground`（`editor.foldingHighlight`）。
+                    if l.fold == Some(true) && o.folding_highlight {
+                        if let Some(bg) = p.fold_background {
+                            let b =
+                                Bounds::new(point(text.origin.x, y), size(text.size.width, px(lh)));
+                            window.paint_quad(fill(b, hsla(bg)));
+                        }
+                    }
+                    if o.guides_indentation {
+                        self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
+                    }
                     // 选区。
                     if !sel.is_empty() && l.line >= sel.start().line.0 && l.line <= sel.end().line.0
                     {
@@ -453,6 +491,10 @@ impl CodeView {
                     match &l.shaped {
                         Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
                         None => self.paint_placeholder(entry, left, y, &xs, text, window),
+                    }
+                    self.paint_whitespace(l, entry, &xs, left, y, window);
+                    if l.fold == Some(true) {
+                        self.paint_fold_placeholder(&xs, left, y, window);
                     }
                     // 下划线、删除线。
                     for (range, style) in &entry.paint_runs {
@@ -546,6 +588,174 @@ impl CodeView {
 
         self.paint_gutter(frame, window);
         self.paint_scrollbars(frame, window);
+    }
+
+    /// 缩进参考线：每个缩进单位一条 1 px 竖线，颜色按层级取 `editorIndentGuide.background1`–`6`。
+    #[allow(clippy::too_many_arguments)]
+    fn paint_indent_guides(
+        &self,
+        l: &PaintLine,
+        entry: &LineEntry,
+        xs: &[f32],
+        left: Pixels,
+        y: Pixels,
+        frame: &Frame,
+        window: &mut Window,
+    ) {
+        let tab = self.options.tab_size;
+        let levels = match guides::indent_columns(&entry.source, tab) {
+            Some(cols) => guides::levels(cols, tab),
+            None => {
+                // 空行：看上下最近的有内容行（只看已缓存的行，不在帧内读文本）。
+                let indent_of = |line: u64| {
+                    self.lines
+                        .peek(&line)
+                        .and_then(|e| guides::indent_columns(&e.source, tab))
+                        .map(|c| guides::levels(c, tab))
+                };
+                let doc_count = self.doc_line_count();
+                let above = (l.line.saturating_sub(GUIDE_SEARCH)..l.line)
+                    .rev()
+                    .find_map(indent_of);
+                let below =
+                    (l.line + 1..(l.line + GUIDE_SEARCH).min(doc_count)).find_map(indent_of);
+                let off_side = false;
+                guides::blank_line_levels(above, below, off_side)
+            }
+        };
+        let _ = frame;
+        let stops = entry.display.stops();
+        for level in 0..levels {
+            let Some(color) = self.palette.indent_guides[level as usize % 6] else {
+                continue;
+            };
+            let col = level * tab;
+            let x = stops
+                .iter()
+                .position(|s| s.col == col)
+                .filter(|&i| i < xs.len())
+                .map_or(col as f32 * self.font.cell_width, |i| xs[i]);
+            let r = Bounds::new(
+                point(left + px(x.round()), y),
+                size(px(1.0), px(self.font.line_height)),
+            );
+            window.paint_quad(fill(r, hsla(color)));
+        }
+    }
+
+    /// `editor.renderWhitespace`：空格画居中的点，Tab 画一条横线。
+    fn paint_whitespace(
+        &self,
+        l: &PaintLine,
+        entry: &LineEntry,
+        xs: &[f32],
+        left: Pixels,
+        y: Pixels,
+        window: &mut Window,
+    ) {
+        let mode = self.options.render_whitespace;
+        if mode == guides::RenderWhitespace::None {
+            return;
+        }
+        let Some(color) = self.palette.whitespace else {
+            return;
+        };
+        let sel = self.cursor.selection;
+        let selection = (!sel.is_empty()
+            && l.line >= sel.start().line.0
+            && l.line <= sel.end().line.0)
+            .then(|| {
+                let a = if l.line == sel.start().line.0 {
+                    sel.start().column.0 as u32
+                } else {
+                    0
+                };
+                let b = if l.line == sel.end().line.0 {
+                    sel.end().column.0 as u32
+                } else {
+                    u32::MAX
+                };
+                a..b
+            });
+        let lh = self.font.line_height;
+        let c = hsla(color);
+        for (i, tab) in guides::whitespace_marks(&entry.source, &entry.display, mode, selection) {
+            let (a, b) = (DisplayLine::x_at(xs, i), DisplayLine::x_at(xs, i + 1));
+            let r = if tab {
+                Bounds::new(
+                    point(left + px(a + 2.0), y + px((lh / 2.0).round())),
+                    size(px((b - a - 4.0).max(1.0)), px(1.0)),
+                )
+            } else {
+                let d = 2.0;
+                Bounds::new(
+                    point(
+                        left + px(((a + b) / 2.0 - d / 2.0).round()),
+                        y + px((lh - d) / 2.0),
+                    ),
+                    size(px(d), px(d)),
+                )
+            };
+            window.paint_quad(fill(r, c));
+        }
+    }
+
+    /// 已折叠首行行尾的“⋯”占位标记（`editor.foldPlaceholderForeground`）。
+    fn paint_fold_placeholder(&self, xs: &[f32], left: Pixels, y: Pixels, window: &mut Window) {
+        let p = &self.palette;
+        let color = hsla(p.fold_placeholder_foreground.unwrap_or(p.foreground));
+        let end = *xs.last().unwrap_or(&0.0);
+        let (a, b) = self.placeholder_x(end);
+        let lh = self.font.line_height;
+        let d = (self.font.cell_width * 0.22).max(2.0);
+        let step = (b - a) / 3.0;
+        for k in 0..3 {
+            let cx = a + step * (k as f32 + 0.5);
+            let r = Bounds::new(
+                point(left + px(cx - d / 2.0), y + px((lh - d) / 2.0)),
+                size(px(d), px(d)),
+            );
+            window.paint_quad(fill(r, color));
+        }
+    }
+
+    /// 行号栏的折叠控件：折叠的显示 ›，展开的显示 ⌄（`mouseover` 时只在鼠标悬停行号栏时显示）。
+    fn paint_fold_control(
+        &self,
+        lay: &FrameLayout,
+        y: Pixels,
+        collapsed: bool,
+        window: &mut Window,
+    ) {
+        if lay.fold_column.is_empty() {
+            return;
+        }
+        let show = collapsed
+            || match self.options.show_folding_controls {
+                FoldingControls::Always => true,
+                FoldingControls::Mouseover => self.hover_gutter,
+                FoldingControls::Never => false,
+            };
+        if !show {
+            return;
+        }
+        let lh = self.font.line_height;
+        let cx = lay.gutter.origin.x + px((lay.fold_column.start + lay.fold_column.end) / 2.0);
+        let cy = y + px(lh / 2.0);
+        let r = (lh * 0.18).max(2.5);
+        let mut path = PathBuilder::stroke(px(1.2));
+        if collapsed {
+            path.move_to(point(cx - px(r * 0.5), cy - px(r)));
+            path.line_to(point(cx + px(r * 0.5), cy));
+            path.line_to(point(cx - px(r * 0.5), cy + px(r)));
+        } else {
+            path.move_to(point(cx - px(r), cy - px(r * 0.5)));
+            path.line_to(point(cx, cy + px(r * 0.5)));
+            path.line_to(point(cx + px(r), cy - px(r * 0.5)));
+        }
+        if let Ok(path) = path.build() {
+            window.paint_path(path, hsla(self.palette.folding_control_foreground));
+        }
     }
 
     fn baseline(&self, y: Pixels) -> Pixels {
@@ -746,6 +956,9 @@ impl CodeView {
                             ));
                         }
                     }
+                    if let Some(collapsed) = l.fold {
+                        self.paint_fold_control(lay, y, collapsed, window);
+                    }
                     if ln_w <= 0.0 {
                         continue;
                     }
@@ -884,9 +1097,11 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window) {
             _ => {
                 let hv = lay.vthumb.is_some_and(|b| b.contains(&e.position));
                 let hh = lay.hthumb.is_some_and(|b| b.contains(&e.position));
-                if hv != v.hover_vthumb || hh != v.hover_hthumb {
+                let hg = lay.gutter.contains(&e.position);
+                if hv != v.hover_vthumb || hh != v.hover_hthumb || hg != v.hover_gutter {
                     v.hover_vthumb = hv;
                     v.hover_hthumb = hh;
+                    v.hover_gutter = hg;
                     cx.notify();
                 }
             }
@@ -910,3 +1125,5 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window) {
 }
 
 const LINE_NUMBERS_MIN_CHARS: u32 = 5;
+/// 空行的缩进参考线向上下各找多少行有内容的行。
+const GUIDE_SEARCH: u64 = 64;

@@ -15,6 +15,10 @@
 //! | 坐标换算（命中测试） | [`CodeView::position_for_point`]、[`CodeView::point_for_position`] |
 //! | 滚动条 / 概览标尺坐标 | [`scroll::thumb`]、[`scroll::track_y_for_line`]、[`scroll::line_for_track_y`] |
 //! | 命令（VS Code ID） | [`CodeView::execute`]、[`commands::COMMANDS`] |
+//! | 语法着色（#20）：快照与变化行 | [`CodeView::set_syntax`]、[`highlight`] |
+//! | 折叠（#20）：状态读写、区间、文档行 ↔ 屏幕行映射 | [`CodeView::folds`]、[`CodeView::set_folds`]、[`CodeViewEvent::FoldsChanged`]、[`folding::FoldMap`] |
+//! | 括号匹配 / 同名高亮（#20） | [`CodeView::bracket_match`]、[`CodeView::has_word_highlights`] |
+//! | 只读与文档级别（#20） | [`CodeView::set_read_only`]、[`CodeViewEvent::EditBlocked`]、[`CodeView::set_document_level`]、[`CodeView::disabled_features`] |
 //!
 //! 事件用 GPUI 的 `cx.subscribe(&view, |_, _, e: &CodeViewEvent, _| ..)` 订阅；回调只做轻量更新。
 //!
@@ -23,12 +27,17 @@
 //! 所有方法只在 UI 线程调用。绘制只读缓存；读文本、调用装饰提供方与整形都在帧之间的空闲切片里
 //! （每片 [`view::PREPARE_SLICE`]），缓存未命中时先画等宽近似占位，下一帧替换，行高不变。
 
+pub mod brackets;
 pub mod cache;
 pub mod colors;
 pub mod columns;
 pub mod commands;
 pub mod decorations;
 mod element;
+pub mod folding;
+pub mod guides;
+pub mod highlight;
+pub mod occurrences;
 pub mod options;
 pub mod scroll;
 pub mod selection;
@@ -40,7 +49,10 @@ pub use decorations::{
 };
 pub use scroll::{Reveal, ScrollPosition};
 pub use selection::Selection;
-pub use view::{CodeView, CodeViewEvent, CodeViewServices, FrameStats, SelectionSource, Viewport};
+pub use view::{
+    presented_read_only, read_only_reason_key, CodeView, CodeViewEvent, CodeViewServices, Feature,
+    FrameStats, SelectionSource, Viewport,
+};
 
 use rove_base::Result;
 

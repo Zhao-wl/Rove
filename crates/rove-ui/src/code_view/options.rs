@@ -74,6 +74,42 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.roundedSelection", DefaultValue::Bool(true)),
     ("editor.emptySelectionClipboard", DefaultValue::Bool(true)),
     ("editor.mouseWheelZoom", DefaultValue::Bool(false)),
+    // #20：高亮、括号、同名高亮、折叠、参考线、空白字符。
+    (
+        "editor.maxTokenizationLineLength",
+        DefaultValue::Num(20000.0),
+    ),
+    ("editor.matchBrackets", DefaultValue::Str("always")),
+    (
+        "editor.occurrencesHighlight",
+        DefaultValue::Str("singleFile"),
+    ),
+    ("editor.occurrencesHighlightDelay", DefaultValue::Num(0.0)),
+    ("editor.selectionHighlight", DefaultValue::Bool(true)),
+    (
+        "editor.selectionHighlightMaxLength",
+        DefaultValue::Num(200.0),
+    ),
+    (
+        "editor.selectionHighlightMultiline",
+        DefaultValue::Bool(false),
+    ),
+    (
+        "editor.selectedTextMatchMode",
+        DefaultValue::Str("findOptions"),
+    ),
+    ("editor.folding", DefaultValue::Bool(true)),
+    ("editor.foldingStrategy", DefaultValue::Str("auto")),
+    ("editor.foldingMaximumRegions", DefaultValue::Num(5000.0)),
+    ("editor.showFoldingControls", DefaultValue::Str("mouseover")),
+    ("editor.foldingHighlight", DefaultValue::Bool(true)),
+    (
+        "editor.unfoldOnClickAfterEndOfLine",
+        DefaultValue::Bool(false),
+    ),
+    ("editor.guides.indentation", DefaultValue::Bool(true)),
+    ("editor.renderWhitespace", DefaultValue::Str("selection")),
+    ("editor.largeFileOptimizations", DefaultValue::Bool(true)),
 ];
 
 /// 设置项默认值（编译期表）。
@@ -170,6 +206,14 @@ pub enum Ligatures {
     Features(Vec<(String, u32)>),
 }
 
+/// `editor.showFoldingControls`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldingControls {
+    Always,
+    Never,
+    Mouseover,
+}
+
 /// 强类型的编辑器选项快照。设置变更时整体重读；字体相关字段变化会让整形缓存整体失效。
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorOptions {
@@ -218,6 +262,26 @@ pub struct EditorOptions {
     pub rounded_selection: bool,
     pub empty_selection_clipboard: bool,
     pub mouse_wheel_zoom: bool,
+    /// `editor.maxTokenizationLineLength`（`None` 为不限）。
+    pub max_tokenization_line_length: Option<usize>,
+    pub match_brackets: super::brackets::MatchBrackets,
+    /// `editor.occurrencesHighlight` 不为 `off`。
+    pub occurrences_highlight: bool,
+    pub occurrences_highlight_delay_ms: u64,
+    pub selection_highlight: bool,
+    pub selection_highlight_max_length: usize,
+    pub selection_highlight_multiline: bool,
+    /// `editor.selectedTextMatchMode`：`caseSensitive` 为真；`findOptions` 按查找条的默认（不区分大小写）。
+    pub selected_text_case_sensitive: bool,
+    pub folding: bool,
+    pub folding_strategy: super::folding::FoldingStrategy,
+    pub folding_maximum_regions: usize,
+    pub show_folding_controls: FoldingControls,
+    pub folding_highlight: bool,
+    pub unfold_on_click_after_end_of_line: bool,
+    pub guides_indentation: bool,
+    pub render_whitespace: super::guides::RenderWhitespace,
+    pub large_file_optimizations: bool,
 }
 
 impl Default for EditorOptions {
@@ -441,6 +505,50 @@ impl EditorOptions {
             rounded_selection: r.bool("editor.roundedSelection"),
             empty_selection_clipboard: r.bool("editor.emptySelectionClipboard"),
             mouse_wheel_zoom: r.bool("editor.mouseWheelZoom"),
+            max_tokenization_line_length: {
+                let n = r.num("editor.maxTokenizationLineLength", -1.0, 1e9);
+                (n >= 0.0).then_some(n as usize)
+            },
+            match_brackets: match r.str("editor.matchBrackets").as_str() {
+                "never" => super::brackets::MatchBrackets::Never,
+                "near" => super::brackets::MatchBrackets::Near,
+                _ => super::brackets::MatchBrackets::Always,
+            },
+            occurrences_highlight: match r.raw("editor.occurrencesHighlight") {
+                Value::Bool(b) => b,
+                Value::String(s) => &*s != "off",
+                _ => true,
+            },
+            occurrences_highlight_delay_ms: r.num("editor.occurrencesHighlightDelay", 0.0, 2000.0)
+                as u64,
+            selection_highlight: r.bool("editor.selectionHighlight"),
+            selection_highlight_max_length: r.num("editor.selectionHighlightMaxLength", 0.0, 1e9)
+                as usize,
+            selection_highlight_multiline: r.bool("editor.selectionHighlightMultiline"),
+            selected_text_case_sensitive: r.str("editor.selectedTextMatchMode") == "caseSensitive",
+            folding: r.bool("editor.folding"),
+            folding_strategy: if r.str("editor.foldingStrategy") == "indentation" {
+                super::folding::FoldingStrategy::Indentation
+            } else {
+                super::folding::FoldingStrategy::Auto
+            },
+            folding_maximum_regions: r.num("editor.foldingMaximumRegions", 10.0, 65000.0) as usize,
+            show_folding_controls: match r.str("editor.showFoldingControls").as_str() {
+                "always" => FoldingControls::Always,
+                "never" => FoldingControls::Never,
+                _ => FoldingControls::Mouseover,
+            },
+            folding_highlight: r.bool("editor.foldingHighlight"),
+            unfold_on_click_after_end_of_line: r.bool("editor.unfoldOnClickAfterEndOfLine"),
+            guides_indentation: r.bool("editor.guides.indentation"),
+            render_whitespace: match r.str("editor.renderWhitespace").as_str() {
+                "none" => super::guides::RenderWhitespace::None,
+                "boundary" => super::guides::RenderWhitespace::Boundary,
+                "trailing" => super::guides::RenderWhitespace::Trailing,
+                "all" => super::guides::RenderWhitespace::All,
+                _ => super::guides::RenderWhitespace::Selection,
+            },
+            large_file_optimizations: r.bool("editor.largeFileOptimizations"),
         }
     }
 

@@ -32,8 +32,8 @@ pub(crate) struct ViewState {
     pub(crate) scroll_x: f64,
     pub(crate) cursor: Position,
     pub(crate) selection: Option<TextRange>,
-    /// Owned by the tab; the code view will supply the ranges when folding is implemented.
-    #[allow(dead_code, reason = "#19 owns folding and consumes these ranges")]
+    /// Collapsed fold ranges (#20); the code view writes them back through
+    /// `CodeViewEvent::FoldsChanged` and restores them when the tab is shown again.
     pub(crate) folds: Arc<[LineRange]>,
 }
 
