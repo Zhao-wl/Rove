@@ -55,7 +55,11 @@ impl Default for WriteOptions {
 /// 测试也可以在这里阻塞，由父进程强杀（验证“强杀后原文件完整、无临时残留”）。
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct FailPoint(pub Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>);
+pub struct FailPoint(pub FailHook);
+
+/// 故障注入回调：参数是临时文件路径。
+#[doc(hidden)]
+pub type FailHook = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
 
 /// 写入失败的类别（界面按类别选通知文案与按钮）。
 #[derive(Clone, Debug, PartialEq, Eq)]

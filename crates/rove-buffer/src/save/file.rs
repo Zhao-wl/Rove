@@ -163,7 +163,7 @@ pub enum DiskChange {
     /// 本地没有修改：已静默重新加载。`edit` 是对文本的改动（交给语法与视图；选区已映射）；
     /// 编码或换行符重新识别后变化时对应标记为真（更新状态栏）。
     Reloaded {
-        edit: Option<AppliedEdit>,
+        edit: Option<Box<AppliedEdit>>,
         encoding_changed: bool,
         line_endings_changed: bool,
     },
@@ -531,7 +531,7 @@ impl TextFile {
         self.deleted = false;
         self.external = None;
         Ok(DiskChange::Reloaded {
-            edit,
+            edit: edit.map(Box::new),
             encoding_changed,
             line_endings_changed: !same_line_endings(&line_endings_before, self.line_endings()),
         })

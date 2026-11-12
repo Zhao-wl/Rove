@@ -200,13 +200,13 @@ impl SaveOptions {
         in_workspace: bool,
         has_errors: bool,
     ) -> bool {
-        let mode_matches = match (self.auto_save, trigger) {
-            (AutoSave::AfterDelay(_), AutoSaveTrigger::Delay) => true,
-            (AutoSave::OnFocusChange, AutoSaveTrigger::FocusChange)
-            | (AutoSave::OnFocusChange, AutoSaveTrigger::WindowChange) => true,
-            (AutoSave::OnWindowChange, AutoSaveTrigger::WindowChange) => true,
-            _ => false,
-        };
+        let mode_matches = matches!(
+            (self.auto_save, trigger),
+            (AutoSave::AfterDelay(_), AutoSaveTrigger::Delay)
+                | (AutoSave::OnFocusChange, AutoSaveTrigger::FocusChange)
+                | (AutoSave::OnFocusChange, AutoSaveTrigger::WindowChange)
+                | (AutoSave::OnWindowChange, AutoSaveTrigger::WindowChange)
+        );
         mode_matches
             && !untitled
             && (!self.auto_save_workspace_files_only || in_workspace)
