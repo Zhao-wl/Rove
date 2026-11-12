@@ -336,3 +336,37 @@ owner = "#24"
 status = "pending"
 bench = "quickopen/first_key_large"
 reason = "issue #24 验收要求 ROVE_TEST_UNITY_LARGE 上每次按键 p99 < 16 ms。本机的大型项目有约 15.6 万个文件（issue 写的是约 2.1 万个 .cs 外加其他文件），安静时第一个字符约 14 ms、p99 约 40 ms，目录名类查询（如 Script）与多段查询（如 enemy spa）最慢约 22 ms，还没达标；候选在 2.5 万个量级时 p99 < 16 ms。进一步需要为 description 里的匹配做上界剪枝或增量/异步刷新，见 #24 的 PR"
+
+# ---------------------------------------------------------------- 全局搜索（#25）
+# 口径：大型 Unity 项目（ROVE_TEST_UNITY_LARGE）里搜常见标识符 GetComponent，热缓存；只经 rove_search::search 测量。
+# 合成用例（2000 个文件，约 40 MB）在 CI 上也能跑，只记录不设门槛。
+
+[[budget]]
+id = "search_first_batch_large"
+metric = "全局搜索：大型 Unity 项目，从发起到第一批结果"
+value = 100
+unit = "ms"
+owner = "#25"
+status = "enforced"
+bench = "search/first_batch_large"
+reason = "issue #25 验收：首批结果 < 100 ms（热缓存）。未设置 ROVE_TEST_UNITY_LARGE 时跳过，check-budgets 显示「未测量」"
+
+[[budget]]
+id = "search_full_large"
+metric = "全局搜索：大型 Unity 项目，常见标识符的全量搜索"
+value = 2000
+unit = "ms"
+owner = "#25"
+status = "pending"
+bench = "search/full_large"
+reason = "issue #25 验收：全部完成 < 2 s（热缓存）。本机大型项目约 16 万个文件、16 GB（其中 2.7 万个二进制文件）；单独运行 1.8–2.5 s，与其他会话并行编译时的 criterion 均值 3.1 s；同一棵树上 ripgrep 14.1（-uu，同样的排除）热缓存约 4.6 s。负载下测不出可信的达标数据，先记录、不设门槛，安静机器上复测后再改为 enforced"
+
+[[budget]]
+id = "search_full_synthetic"
+metric = "全局搜索：2000 个合成文件（约 40 MB）全量搜索"
+value = 0
+unit = "ms"
+owner = "#25"
+status = "recorded"
+bench = "search/full_synthetic"
+reason = "CI 也能跑的回归参考，不设门槛"

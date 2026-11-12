@@ -33,6 +33,8 @@ rove-ui.workspace = true
 rove-commands.workspace = true
 rove-i18n.workspace = true
 gpui.workspace = true
+# #25 全局搜索基准。
+rove-search.workspace = true
 
 [[bench]]
 name = "text_source"
@@ -92,4 +94,8 @@ harness = false
 
 [[bench]]
 name = "quickopen"
+harness = false
+
+[[bench]]
+name = "search"
 harness = false

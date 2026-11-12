@@ -43,6 +43,11 @@ flowchart TD
  docview --> base
  cs --> config
  cs --> buffer
+ ui --> search[rove-search]
+ search --> workspace
+ search --> buffer
+ search --> config
+ search --> base
 ```
 
 | crate | 职责 | GPUI |
@@ -58,6 +63,7 @@ flowchart TD
 | rove-lang-cs | 导航查询契约；既有 index.rs 保持独立 | 禁止 |
 | rove-docview | 结构树节点，复用语法符号模型 | 禁止 |
 | rove-fuzzy | VS Code `fuzzyScorer` 的逐条移植（快速打开排序）与命令面板的单词过滤 | 禁止 |
+| rove-search | 全局搜索引擎（#25，见 §29）：`search.*` 语义、并行流式结果、取消、编码识别 | 禁止 |
 | rove-ui | 打开/定位/关闭、反馈、列表/树、快速输入、贡献点 | 允许 |
 | rove-app | 入口、服务装配与窗口生命周期 | 允许 |
 
@@ -218,6 +224,7 @@ cargo test --workspace
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
 | `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
+| `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §29）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
@@ -948,3 +955,54 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 索引增量、剪枝与完整扫描等价、并行与单线程等价、优化后的整条流水线与朴素 VS Code 实现等价、历史）；`skeleton/workbench/quick_access_tests.rs`（真实 GPUI 窗口：`Ctrl+P` → 输入 → 选中
 → 文档已打开并定位、四个前缀、命令面板与键位、`Ctrl+Enter`、`Esc`、命令中心入口、设置）。性能：
 `cargo xtask bench --filter quickopen/`（预算 `quickopen_*`）。
+
+## 29. 全局搜索（#25）
+
+引擎在核心层 `crates/rove-search`（不依赖 gpui；**不读取 `.gitignore`**，运行时不联网），视图在 `crates/rove-ui/src/search/`。
+只依赖冻结契约（`Settings`、`Theme`、登记表、#17 的 `OpenDocuments`、#18 的 `ListModel`/`ListView`/`TextInput`）与
+#15 的 `RuleSet` / 设置键、#7 的编码识别（`rove_buffer::open_bytes`），不修改契约。
+
+| 位置 | 内容 | GPUI |
+|---|---|---|
+| `rove-search::query` | `SearchQuery`；匹配器编译（`grep-regex`：字面量 / 正则、全词、大小写、`search.smartCase`，正则含 `
+` 时多行）；“包含 / 排除的文件”按 VS Code `expandGlobalGlob` 展开（`./` 相对根，其余加 `**/`，花括号内逗号不分隔） | 否 |
+| `rove-search::settings` | `search.*` 登记（与 `register_builtin` 默认值一致）；`SearchConfig`（引擎）、`ViewSettings`（视图）。`search.useIgnoreFiles` / `useParentIgnoreFiles` / `useGlobalIgnoreFiles` 不登记、不读取 | 否 |
+| `rove-search::engine` | `search(root, query, config, cancel, on_batch) -> SearchSummary` | 否 |
+| `rove-ui::search::model` | 结果模型：按文件分组、`search.sortOrder`、`search.collapseResults`、`search.action.remove`；展平快照 `ResultRows` 实现 `ListModel` | 否 |
+| `rove-ui::search::registry` | `search.action.*`、`toggleSearch*`、`search.focus.*` 命令、字符串、颜色键、`workbench.view.search` 容器里的结果小节、`SearchAction` | 仅 action |
+| `rove-ui::search::view` | `SearchView`：查询框 + 三个开关、包含 / 排除、使用排除设置、进度条、摘要 / 上限 / 空状态、虚拟化结果列表 | 是 |
+| `skeleton/workbench/search_host.rs` | 窗口装配：绘制小节、转发 `SearchAction`、经 `OpenDocuments`（`OpenSource::Search`，带选区）打开、发布 `searchViewletVisible` / `hasSearchResult`、`findInFiles` 后把焦点交给查询框并用编辑器单行选中内容作种子 | 是 |
+
+**文件集合**：与 #15 的扫描逐项相同的 walker 设置（全部忽略文件开关关闭）+ 同一套 `RuleSet` 合并语义：`files.exclude` 叠在
+`rove.files.extraExclude` 之上（`RuleSet::merged`）再加 `search.exclude`；“使用排除设置”关闭时三者都不生效，视图里的
+“排除的文件”始终生效。搜索自己遍历而不读工作区快照，因为 `search.followSymlinks`（默认 true）与“不使用排除设置”都需要快照
+之外的文件；剪枝时顺带记录“是否有目录只因 `rove.files.extraExclude` 被排除”（`SearchSummary::excluded_by_rove_defaults`），
+空状态据此显示“已排除 Unity 生成的目录。”与“包含排除的文件再搜索一次”（关闭“使用排除设置”重搜）。
+
+**并行、流式与取消**：`ignore` 的并行 walker 在工作线程里直接搜索（`search.ripgrep.maxThreads`，0 自动）；每个有匹配的文件整体
+送回调用线程，第一批立即交出、之后约 30 ms 一批；视图经通道收到后按代次丢弃过期批次。取消令牌检查点：每个目录项、每个文件、
+每 1 MiB 块、每处匹配，`search` 返回时线程已全部结束（`std::thread::scope`），测试断言取消到返回 < 50 ms。
+`search.maxResults` 按匹配处数原子扣减，恰好截断并报告 `limit_hit`。
+
+**编码与二进制**：先读开头 8 KiB，含 NUL（且无 UTF-16 BOM）即按二进制跳过、不读剩余内容；UTF-8 BOM 去掉、UTF-16 BOM 转码；
+纯 ASCII 字面量查询先在原始字节上判定有无匹配（ASCII 兼容编码解码后不会凭空出现 ASCII 匹配），没有就结束；
+否则合法 UTF-8 原样搜索，非 UTF-8 交给 #7 的编码识别（`files.autoGuessEncoding`、候选 GBK），识别失败按原始字节搜索。
+大于 16 MiB 的文件内存映射、不做 UTF-8 校验。结果的行号从 0 开始，区间是解码后该行的 UTF-8 字节列（与编辑器坐标一致）；
+预览去掉缩进，超长行只保留第一处匹配附近约 1000 字节。
+
+**视图行为**：`search.searchOnType` + `searchOnTypeDebouncePeriod` 防抖，回车立即搜索，切换开关立即重搜；非法正则不发起搜索、
+输入框标红。文件行单击 / 回车展开折叠，匹配行单击预览打开（保留焦点）、回车固定打开、`ctrl+enter` 在侧边打开；`f4` / `shift+f4`
+循环（必要时展开折叠的文件）并保留焦点预览；`delete` 消除；左右方向键在展平列表上换成文件行展开 / 折叠（`capture_action`）。
+上下文键：`searchViewletFocus`、`searchState`、`inputBoxFocus`、`searchInputBoxFocus`、`fileMatchOrMatchFocus`、`fileMatchFocus`、
+`matchFocus`、`firstMatchFocus`、`fileMatchOrFolderMatchWithResourceFocus`、`folderMatchWithResourceFocus`（列表模式没有文件夹节点，
+文件行上也发布，`shift+alt+f` 限制到它所在的文件夹）。
+
+**有意的差异与未做**：替换（R61）、搜索编辑器（P2）、`searchWithAI` 不登记；“查看排除设置”打开共用的 `settings.json`
+（Rove 没有设置界面）；`search.sortOrder = modified` 按 `default` 排（结果不带修改时间）；`search.decorations.colors` 没有
+可着色的来源（没有 SCM / 问题装饰）；包含 / 排除输入框总是显示（VS Code 默认收在 `…` 后）；多行匹配只在起始行显示与选中。
+
+验证：`cargo test -p rove-search`（`tests/search_it.rs`：分组与列、正则 / 全词 / 大小写、`search.smartCase`、包含 / 排除 glob、
+排除设置合并与“只因 Rove 默认排除”、`.gitignore` / `.git/info/exclude` / `.ignore` 不生效、`search.maxResults` 截断、GBK / UTF-16 /
+BOM / 二进制、分块行号、多行正则、取消 < 50 ms、大型 Unity 项目计时）；`cargo test -p rove-ui search`（模型、登记、
+`skeleton/workbench/search_tests.rs` 真实 GPUI 窗口：`Ctrl+Shift+F` → 输入 → 回车 → 分组与首条位置、`f4` 打开并选中、`.md` 打开源码、
+`alt+c/w/r`、`delete`、空状态与再搜索一次）。性能：`cargo xtask bench --filter search/`（预算 `search_*`）。
