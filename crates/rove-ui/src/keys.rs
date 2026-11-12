@@ -92,6 +92,8 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::quick_access::registry::register_commands(&mut registry)?;
     // #49：保存、另存为、全部保存、还原、保存冲突的两个命令与换行符统一。
     crate::save::registry::register_commands(&mut registry)?;
+    // #40：C# 导航交互。
+    crate::nav::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -125,6 +127,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::outline::registry::action_for(id))
         .or_else(|| crate::find::registry::action_for(id))
         .or_else(|| crate::quick_access::registry::action_for(id))
+        .or_else(|| crate::nav::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

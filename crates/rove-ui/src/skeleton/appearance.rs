@@ -82,6 +82,8 @@ pub fn strings() -> Result<StringTable> {
     crate::quick_access::registry::register_strings(&mut t)?;
     // #49：保存失败通知、无法编码字符与关闭确认的模态框、外部修改提示条。
     crate::save::registry::register_strings(&mut t)?;
+    // #40：C# 导航交互（空状态、近似提示、悬停卡片、命令标题）。
+    crate::nav::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

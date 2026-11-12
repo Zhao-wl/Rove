@@ -217,6 +217,7 @@ cargo test --workspace
 | `code-view` | 已由 `rove-ui::code_view` 实现：自定义 Element、f64 滚动、整形缓存与预取、行号、只读选区、命中测试、滚动条；`workbench.rs` 只挂载 `CodeView` | #19（已完成） |
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
 | `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
+| `nav` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::nav` 与 `skeleton/workbench/nav_host.rs` 实现（见 §29）：转到定义 / 声明 / 实现、`Ctrl+悬停` 与 `Ctrl+点击`、悬停卡片、符号导航模式、语义同名高亮、近似结果提示，以及 #38 `CsRouter` 的装配（语义来源、L1、`BufferStates` 的打开 / 重新载入 / 关闭） | #40（已完成） |
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；命令与字符串已登记，窗口装配（`ctrl+s` → `SaveController`、重载后刷新视图）随 #47 的可编辑代码视图接入 | #49 |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
@@ -1014,3 +1015,36 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 自动保存判定、未命名文档、另存为）；`cargo test -p rove-buffer --lib save`（编码、写入、变换、去重与去抖的单元测试）；
 `cargo test -p rove-ui --lib save::`（控制器：各反馈的级别与按钮、按钮后续动作、关闭确认三条路径与热退出开关、提示条不堆积、
 自写零误报、“编辑 → 保存 → 外部修改 → 重载”）。
+
+## 31. C# 导航交互（#40）
+
+位置：`crates/rove-ui/src/nav/`（`lib.rs` 只追加 `pub mod nav;`）与窗口装配 `crates/rove-ui/src/skeleton/workbench/nav_host.rs`。只消费 #1 的冻结契约（`CsQueries` 经 #38 的 `CsRouter`、`OpenDocuments`、`FeedbackService`、登记表）与 #19 的代码视图接口，不修改契约；GPUI 类型只在 `rove-ui`。
+
+| 文件 | 内容 | GPUI |
+|---|---|---|
+| `nav/registry.rs` | 命令（VS Code ID：`revealDefinition`、`revealDefinitionAside`、`goToDeclaration`、`goToImplementation`、`gotoNextSymbolFromResult(.cancel)`、`showHover`、8 个卡片内滚动命令、两个悬停详细程度命令、`wordHighlight.next/prev/trigger`）、界面字符串、颜色键（`editorHoverWidget.*`、`editorLink.activeForeground`）、上下文键名、`NavAction` | 仅 action |
+| `nav/settings.rs` | `editor.gotoLocation.multiple*`（含已弃用的 `multiple`）、`editor.definitionLinkOpensInPeek`、`editor.hover.*`、`editor.maxTokenizationLineLength`、`editor.occurrencesHighlight*` 按 `csharp` 语言作用域读取 | 否 |
+| `nav/model.rs` | 查询结果 → 呈现方式（`plan`：空状态 / 只有元数据 / 单个候选 / 多候选，逐条精确度取最弱）、速览标题标记、符号导航模式、近似提示去重、语义同名高亮区间（按行二分、`F7` 循环） | 否 |
+| `nav/hover.rs` | 卡片内容（签名、XML 文档注释 → 段落、定义预览、近似标记、长行提示）与卡片内滚动 | 否 |
+| `nav/semantic.rs` | `LiveSemantic`（可替换的 `SemanticSource`）、`OpenBuffers`（打开中的 C# 文档 → `BufferStates` 的打开 / 重新载入 / 关闭） | 否 |
+| `nav/view.rs` | 悬停卡片的绘制 | 是 |
+| `skeleton/workbench/nav_host.rs` | 窗口装配：命令、后台查询与过期丢弃、跳转、符号导航模式、悬停与 `Ctrl+悬停`、装饰层、上下文键、L1 构建与增量、`F12` 计时 | 是 |
+
+**#38 的装配**（§25“装配”一段）：`CsRouter::new(LiveSemantic, BufferStates).with_root(项目根)` 每个窗口建一次；#36 的生命周期换掉时（`attach_index`）只换 `LiveSemantic` 里的来源（`IndexStatusController` 改为持有 `Arc<IndexLifecycle>`，`shared()` 取出）；应用入口在工作区扫描完成后在后台建 L1（`rove.index.enabled` 时写到 #36 缓存目录的 `l1/`），文件事件转成 `L1Change` 增量更新，然后 `with_l1` 重建路由（`BufferStates` 沿用）。`BufferStates` 的打开 / 重新载入 / 关闭由 `sync_nav` 每帧比较打开中的 C# 标签得出，读盘算原始字节的哈希在后台；**编辑（M3 编辑事务）与保存（#49）的装配处调用 `Workbench::cs_buffers()` 的 `edited` / `saved`**。所有查询在后台执行器上执行，回到窗口时按请求代次与文档版本丢弃过期结果。
+
+**代码视图的追加接口**（#19 模块内只追加，不改既有行为）：事件 `CodeViewEvent::{PointerMoved, PointerLeft, LinkClicked}`（文本区上的指针位置与 Ctrl、`Ctrl+点击`，修饰键变化时在原位置重发）、`set_link_cursor`（手形光标）、`set_semantic_word_highlights(Option<bool>)`（`Some(has)`：停用 #20 的文本单词高亮，`hasWordHighlights` 取 `has`；`None`：回到文本模式；选区相似匹配不受影响）、`word_range_at`（与同名高亮同一套分词规则）。
+
+**行为要点**
+
+- **上下文键**：焦点组活动标签是 C# 时在编辑器区域发布 `editorHasDefinitionProvider` / `DeclarationProvider` / `ImplementationProvider` / `ReferenceProvider` / `HoverProvider`（D2：其他语言一个都不发布，`F12` 的 when 不成立，命令直接执行也什么都不做）；符号导航模式发布 `hasSymbols`；卡片可见发布 `editorHoverVisible`，卡片有焦点时卡片自己的 key context 是 `editorHoverFocused`。
+- **跳转**一律经打开文档服务（`OpenSource::CodeNavigation`，目标组 = 发起的组，`revealDefinitionAside` 为 `Beside`），插入符放到符号名起点，目标行 `Reveal::CenterIfOutside`；跳转前的位置由 #17 自动压入导航历史（跨文件、跨标签、跨分屏，目标标签已关闭时后退会重新打开）。
+- **多候选**按 `editor.gotoLocation.multiple*`：`peek` 交给 `Workbench::open_peek(PeekRequest)`——**#41 的接入点**，合并前只记录请求并返回 false，调用方按 `goto` 处理；`goto` 跳到第一个并进入符号导航模式（`f12` 循环、`escape` 退出、状态栏“第 N / 共 M 个符号”）；`gotoAndPeek` 先跳再交给速览。速览标题的近似标记由 `PeekRequest::annotation` 传入（精确为 `None`，近似为“近似 · N 个候选”；查找引用用 `model::references_annotation`，近似为“近似”）。`Ctrl+点击` 在 `editor.definitionLinkOpensInPeek` 为真时总是交给速览。
+- **外部符号**（只有 `rove-cs-metadata:` 目标）：`Workbench::open_metadata`——**#42 的接入点**，合并前按 UX_SPEC §4.1 末行在状态栏提示“未找到 `X` 的元数据”，不打开空标签。
+- **近似结果**（UX_SPEC §2.2 逐行）：单个候选跳转 + 状态栏 3 秒“近似结果：语义索引未就绪”（同一目标位置每次会话只提示一次）；多候选与引用的速览标题标记；悬停底部灰色“近似结果”；同名高亮退化为 #20 的文本高亮且无提示；精确结果没有任何标记。空状态在光标处提示“未找到 `X` 的定义 / 声明 / 实现”，近似时追加“（语义索引构建中）”。查询失败（未就绪、版本过期、资源不支持）按“近似的空结果”处理。
+- **悬停**：鼠标停在 C# 标识符上 `editor.hover.delay` 后在后台查询（`hover_detailed`），300 ms 内没有结果显示“正在加载…”；`editor.hover.enabled = off` 时只有 `ctrl+k ctrl+i`；`sticky` 时离开单词等 `hidingDelay`、指针在卡片上不收起，否则立即收起；`above` 决定先上后下（`gpui::anchored` 放不下时翻转）；长行（超过 `editor.maxTokenizationLineLength`）在 `showLongLineWarning` 时追加提示。第二次 `ctrl+k ctrl+i` 把焦点移进卡片，方向键 / 翻页键 / `ctrl+home|end` 滚动卡片，`escape` 收起并把焦点还给编辑器。悬停详细程度只有一级（两个命令只登记）。
+- **`Ctrl+悬停`**：标识符加 `editorLink.activeForeground` 下划线与前景色、手形光标，并在 `delay` 后弹出定义预览（定义处开始最多 8 行源码，打开中的缓冲区优先，否则读盘）；松开 Ctrl（`on_modifiers_changed`）立即收起。
+- **语义同名高亮**：只在 C#、`SizeClass::Normal` 的文档上接管；光标仍在当前高亮的某一处时不重查，否则按 `editor.occurrencesHighlightDelay` 去抖后在后台查询引用、只保留本文件的结果；装饰层优先级 `SYMBOL_HIGHLIGHT`，结果变化时只让新旧两组涉及的行失效（超过 64 行才整层失效），绘制时按行二分。索引的出现位置只区分定义与引用，所以**声明处按“写”（`wordHighlightStrong*`）、其余按“读”（`wordHighlight*`）**；真正的读 / 写区分要等索引记录访问方式。光标离开旧符号时旧高亮立即消失，模式（语义 / 文本）保持到新结果到达，不闪烁；索引快照代次或状态变化时静默重查（`nav_index_changed`）。`F7` / `Shift+F7` 在语义区间（文本模式下按整词扫描本文件）之间循环；`wordHighlight.trigger` 在 `occurrencesHighlight = off` 时也高亮一次。概览标尺的 `editorOverviewRuler.wordHighlight*` 由 R55 绘制，位置集合在装饰层状态里。
+
+**性能**：`F12` → 目标行画面完成 = 后台查询（索引侧，预算 `goto_definition` / `router_definition_*`）+ 打开文档服务对已打开文件的切换与定位 + 一帧绘制。`cargo xtask bench --filter nav/`（`xtask/benches/nav.rs`，真实窗口、2 万行目标文件、200 个不同目标区域）输出 `nav/f12_to_paint`（预算 `goto_definition_e2e`，p99 < 50 ms）、`nav/f12_to_frame`、`nav/f12_query`。`ROVE_NAV_TRACE=1` 运行 release 版时每次跳转在 stdout 输出 `NAV_F12_TO_PAINT_MS <总> QUERY_MS <查询>`。同名高亮不进入绘制关键路径（查询在后台，装饰按行缓存）。
+
+验证：`cargo test -p rove-ui nav`（`nav::*` 单元测试：登记、设置逐项、呈现决策、符号导航、去重、高亮区间、XML 文档、语义来源与缓冲区同步；`skeleton::workbench::nav_tests` 入口集成测试：真实 GPUI 窗口 + 用 #38 的测试写出器现场生成的 RVCSIDX v2 索引——`F12` → 文档已打开并定位、历史后退 / 前进 / 重新打开已关闭的标签、`ctrl+k f12` 跨分屏、`ctrl+f12` 在抽象方法 / 虚方法 / 接口上、`partial` 多定义与 `hasSymbols`、`Ctrl+悬停` 下划线与预览、`Ctrl+点击`、`definitionLinkOpensInPeek`、悬停的 `delay` / `enabled` / `sticky` 与卡片焦点、`Init` / `Update` / `Dispose` / `Get` / `Value` 的语义高亮数量与 `F7`、近似呈现的五种场景、空状态、非 C# 文件、缓冲区登记）。真实项目上的界面抽查：`cargo test -p rove-ui ui_nav_cases -- --ignored --nocapture`（`skeleton/workbench/nav_cases_tests.rs`：需要 `ROVE_TEST_UNITY_MEDIUM` 与中型项目的 L2 索引 `target/nav-check/medium.idx` 或 `ROVE_NAV_INDEX_MEDIUM`，缺任何一个都跳过；从 #39 的 `tests/nav-cases/medium-*.toml` 按 var、重载、扩展方法、泛型、partial、接口实现、Unity API 每类取 5 个，在真实工作台里打开文件、放插入符、按 `f12`，读回落点并与期望定义比较，结果写到 `target/nav-check/ui-nav-cases-medium.md`）；手工核对用 `cargo run -p rove-app -- <ROVE_TEST_UNITY_MEDIUM>`。

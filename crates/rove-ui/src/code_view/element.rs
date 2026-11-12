@@ -104,7 +104,7 @@ impl Element for CodeElement {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 v.paint_frame(frame, window);
             });
-            register_mouse(&view, frame, window);
+            register_mouse(&view, frame, window, v.link_cursor);
             v.finish_frame(window, cx);
         });
     }
@@ -1052,9 +1052,15 @@ impl CodeView {
     }
 }
 
-fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window) {
+fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, link: bool) {
     let lay = frame.layout.clone();
-    window.set_cursor_style(MouseCursor::IBeam, &frame.text_hitbox);
+    // #40：`Ctrl+悬停` 在可跳转的标识符上时显示手形光标。
+    let cursor = if link {
+        MouseCursor::PointingHand
+    } else {
+        MouseCursor::IBeam
+    };
+    window.set_cursor_style(cursor, &frame.text_hitbox);
     let hitbox = frame.hitbox.clone();
     let v = view.clone();
     window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
@@ -1073,6 +1079,9 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window) {
                 v.scrollbar_down(p, false, cx);
             } else if lay.gutter.contains(&p) {
                 v.mouse_down_gutter(p, e.modifiers.shift, cx);
+            } else if e.modifiers.control && !e.modifiers.shift && e.click_count == 1 {
+                // #40：Ctrl+点击转到定义（Ctrl+Alt+点击在旁边打开）。
+                v.mouse_down_link(p, e.modifiers.alt, cx);
             } else {
                 v.mouse_down_text(p, e.click_count, e.modifiers.shift, cx);
             }
@@ -1081,9 +1090,15 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window) {
     });
     let v = view.clone();
     let lay = frame.layout.clone();
-    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+    let text_hitbox = frame.text_hitbox.clone();
+    window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble {
             return;
+        }
+        // #40：悬停与 `Ctrl+悬停` 的指针位置（拖动时不报）。
+        if e.pressed_button.is_none() {
+            let inside = text_hitbox.is_hovered(window).then_some(e.position);
+            v.update(cx, |v, cx| v.pointer_moved(inside, e.modifiers.control, cx));
         }
         v.update(cx, |v, cx| match v.drag {
             Some(Drag::Text { .. }) if e.pressed_button == Some(MouseButton::Left) => {

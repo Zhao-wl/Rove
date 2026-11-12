@@ -480,7 +480,8 @@ pub fn failure_keys() -> impl Iterator<Item = String> {
 
 /// 窗口持有的索引状态：生命周期、最新状态与订阅。
 pub struct IndexStatusController {
-    lifecycle: Option<IndexLifecycle>,
+    /// `Arc`：#40 的查询路由（`CsRouter`）与状态栏共用同一个生命周期。
+    lifecycle: Option<std::sync::Arc<IndexLifecycle>>,
     status: IndexStatus,
     /// 每换一次生命周期加一；旧生命周期排队中的事件被丢弃。
     epoch: u64,
@@ -516,7 +517,11 @@ impl IndexStatusController {
         &self.status
     }
     pub fn lifecycle(&self) -> Option<&IndexLifecycle> {
-        self.lifecycle.as_ref()
+        self.lifecycle.as_deref()
+    }
+    /// 共享的生命周期（#40 装配到查询路由的语义来源）。
+    pub fn shared(&self) -> Option<std::sync::Arc<IndexLifecycle>> {
+        self.lifecycle.clone()
     }
     /// 换上（或换掉）生命周期；旧的随之关闭（取消预读、结束索引进程）。
     pub fn attach(
@@ -526,10 +531,10 @@ impl IndexStatusController {
     ) -> u64 {
         self.epoch += 1;
         self._subscription = subscription;
-        self.lifecycle = lifecycle;
+        self.lifecycle = lifecycle.map(std::sync::Arc::new);
         self.status = self
             .lifecycle
-            .as_ref()
+            .as_deref()
             .map(IndexLifecycle::status)
             .unwrap_or_else(|| IndexStatus {
                 state: IndexState::NoCSharp,
