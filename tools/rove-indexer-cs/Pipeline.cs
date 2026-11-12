@@ -50,7 +50,10 @@ sealed class IndexContext
     public int NextGeneratedId;
     public readonly SymbolTable Symbols = new();
     public readonly ConcurrentBag<(SymbolKey from, SymbolKey to, RelKind kind)> Relations = new();
-    public readonly ConcurrentDictionary<string, MetadataReference> MetadataRefs = new(StringComparer.OrdinalIgnoreCase);
+    /// DLL 引用缓存。读不出来的 DLL（被占用、损坏）记为 null，只警告一次，项目照常编译。
+    public readonly ConcurrentDictionary<string, MetadataReference?> MetadataRefs = new(StringComparer.OrdinalIgnoreCase);
+    /// 被引用到的外部类型，流水线结束后生成元数据视图（#34）。
+    public readonly MetadataRequests Metadata = new();
     public readonly ConcurrentDictionary<string, AnalyzerFileReference> AnalyzerRefs = new(StringComparer.OrdinalIgnoreCase);
     public readonly AnalyzerLoader Loader = new();
     public required SemaphoreSlim Io;
@@ -228,7 +231,7 @@ static class Pipeline
             long tc = Stats.Now();
             var refs = new List<MetadataReference>();
             foreach (var r in proj.References)
-                if (File.Exists(r)) refs.Add(ctx.MetadataRefs.GetOrAdd(r, x => MetadataReference.CreateFromFile(x)));
+                if (File.Exists(r) && ctx.MetadataRefs.GetOrAdd(r, LoadReference) is { } reference) refs.Add(reference);
             refs.AddRange(depImages.OfType<MetadataReference>());
             var opts = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
                 allowUnsafe: proj.Unsafe, concurrentBuild: true,
@@ -319,6 +322,23 @@ static class Pipeline
         {
             PostImage(null);
             if (!bindingQueued) done();
+        }
+    }
+
+    /// 先按 Roslyn 的方式打开；被其他进程以不兼容的共享方式占用时，改用可共享读取重试，仍失败则跳过并警告。
+    static MetadataReference? LoadReference(string path)
+    {
+        try { return MetadataReference.CreateFromFile(path); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException)
+        {
+            try
+            {
+                if (Program.ReadShared(path) is { } bytes)
+                    return MetadataReference.CreateFromImage(ImmutableCollectionsMarshal.AsImmutableArray(bytes), filePath: path);
+            }
+            catch (BadImageFormatException) { }
+            MetadataViews.Warn($"reference {path} is unreadable ({e.GetType().Name}: {e.Message}); skipped");
+            return null;
         }
     }
 

@@ -840,3 +840,25 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 装配（#40 接入时完成；本 PR 不改 UI/app）：`CsRouter::new(lifecycle, buffers).with_l1(l1).with_root(项目根)`；文档打开时 `BufferStates::opened(path, text, hash_bytes(磁盘原始字节))`，外部修改重新载入时 `reloaded`，M3 编辑事务 `edited`，保存 `saved`，关闭 `closed`。所有查询在后台执行器上调用。
 
 验证：`cargo test -p rove-lang-cs router`（`mapping` 属性测试：随机编辑后未修改行逐字节对应、正反映射互逆；路由单元测试覆盖插入 10 行仍精确、修改所在行降级、反向映射混合干净文件与脏缓冲区、四条降级路径、L0 局部名字/lambda/局部函数/遮蔽、逐条精确度）与 `cargo test -p rove-lang-cs --test router`（真实 `IndexLifecycle`：打开 → 精确 → 编辑 → 近似 → 保存并重建 → 精确；组件未安装时 L1/L0 回退）。准确率：`cargo run -p rove-lang-cs --example nav_check -- --source router`，与 `--source l2` 逐例一致。性能：`cargo xtask bench --filter cs_router/`（合成索引，预算 `router_definition_*`）；真实索引端到端 `cs_index/router_*`（预算 `goto_definition` / `find_references`，需要 `--cs-index`）。
+
+## 26. 外部符号元数据视图（#34）
+
+位置：生成在 `tools/rove-indexer-cs/MetadataViews.cs`（登记、生成、XML 文档读取、报告统计），挂接点是 `ProjectBinder.NoteExternal`（绑定时登记）、`Program.cs` 的 `metadata_views` 阶段与 `IndexWriter.MetadataSections`（写段 11、13）。读取在 `crates/rove-lang-cs/src/index.rs`。格式与生成规则见 [CS_INDEX_FORMAT](CS_INDEX_FORMAT.md)「元数据视图」一节。`query.rs` 的冻结契约未改动。#34 没有对应的 `SKELETON(...)` 标记，元数据视图这种文档类型的界面登记由 #42 负责。
+
+流程：
+
+1. 绑定期间，遇到外部符号（不在源码中、程序集不属于任何项目）时，只登记它所在的最外层类型。登记内容是程序集标识、DLL 引用和类型的元数据名，每个项目每个类型只登记一次。同时把类型链上的每一层放进符号表，供读取端沿 container 找到最外层类型。
+2. 流水线结束、各项目的编译都已释放后，用缓存的 DLL 引用建一个只含元数据的编译（导入全部成员），按程序集标识解析类型并并行生成视图。同名程序集的不同版本若在共用编译里冲突，会单独建一个编译。此时符号表已完整，所以只为表中存在的成员写位置记录。生成与写索引的前几步（符号编号、出现位置打包）同时进行，写入端到需要视图时才等待。XML 文档文件流式读取，只保留被请求类型的条目。
+3. 写索引时按最终符号序号输出视图记录、成员记录与签名，并统计报告。
+
+不中断索引的情况：DLL 被占用时，先以共享方式重读，仍失败则跳过该引用，项目照常编译；缺少 `.xml` 文档时只有签名；XML 损坏或无法读取时同样只有签名；某个类型解析不到或生成失败时，跳过这个视图；视图自检有语法错误时照常写出。以上情况都会在 stderr 打出 `warning:`，并计入报告的 `metadata.warnings`。
+
+| 读取接口（`CsIndex`） | 用途 |
+|---|---|
+| `metadata_definitions(symbol)` | 外部符号的定义位置（视图序号 + 行、UTF-8 列、长度）；源码符号或没有视图的符号返回空。同名程序集的多个版本各返回一个位置 |
+| `metadata_view_text(view)` / `metadata_view_records()` / `metadata_views_of(type_symbol)` / `metadata_view_members(view)` | 视图正文（含 `#region` 文件头，当作 C# 文件显示）、视图列表、某类型的视图、视图内有位置记录的成员 |
+| `signature(symbol)` / `xml_doc(symbol)` | 声明签名（段 11）；原始 XML 文档文本（取自视图中成员上方的 `///` 行） |
+
+报告（`--report` 的 `metadata`）：视图数、正文字节数、带文档成员的比例、自检有语法错误的视图数、外部符号引用数与落空数（`external_miss_ratio`）、按符号种类的落空分布、落空最多的 40 个符号、最大的 20 个视图、警告样本。
+
+验证：`cargo test -p rove-lang-cs`（`index_tests.rs` 的段 13 解析与校验）；`cargo test -p rove-lang-cs --lib -- --ignored`（`roslyn_writer_generates_metadata_views`：真实索引进程 + 临时构建的第三方库 1.0/2.0，覆盖缺 `.xml`、DLL 被独占锁住、同名不同版本、嵌套类型、泛型约束、确定性输出）；设置 `ROVE_TEST_UNITY_MEDIUM` 后，`cargo test -p rove-lang-cs --test metadata_views` 在真实项目上抽查 `Transform.position`、`List<T>.Add`、第三方 DLL 和去重。准确率：`nav_check` 的 `external` 分类现在按「符号在视图里有定义位置」判定。

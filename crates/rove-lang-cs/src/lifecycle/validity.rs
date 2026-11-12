@@ -19,7 +19,7 @@ use std::{
 pub const EXPECTED_FORMAT: u32 = 2;
 /// 与 `tools/rove-indexer-cs/RoveIndexer.csproj` 的 `<Version>` 一致（测试对照该文件，改版本时
 /// 会提醒同步这里）。#43 合并后改为与安装的组件握手得到的版本。
-pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 0, 3, 0];
+pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 1, 0, 0];
 const GENERATED_PREFIX: &str = "rove-generated://";
 
 /// 失效原因（写进日志；界面只显示“正在重建”）。

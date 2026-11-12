@@ -25,13 +25,14 @@ static class IndexWriter
 
     public static (long occurrences, long relations, long bytes, long symbols) Write(
         string outPath, byte[] configHash, FileResult[] files, SymbolTable symbols,
-        IEnumerable<(SymbolKey from, SymbolKey to, RelKind kind)> rels)
+        IEnumerable<(SymbolKey from, SymbolKey to, RelKind kind)> rels,
+        Func<IReadOnlyList<MetadataView>> views, MetadataStats metadata)
     {
         if (!BitConverter.IsLittleEndian) throw new PlatformNotSupportedException("RVCSIDX is little-endian");
         string tempPath = outPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            var stats = WriteFile(tempPath, configHash, files, symbols, rels);
+            var stats = WriteFile(tempPath, configHash, files, symbols, rels, views, metadata);
             File.Move(tempPath, outPath, overwrite: true);
             return stats;
         }
@@ -44,7 +45,8 @@ static class IndexWriter
     /// files 已按路径的 UTF-8 字节序排好，下标即最终文件号。
     static (long occurrences, long relations, long bytes, long symbols) WriteFile(
         string path, byte[] configHash, FileResult[] files, SymbolTable table,
-        IEnumerable<(SymbolKey from, SymbolKey to, RelKind kind)> rels)
+        IEnumerable<(SymbolKey from, SymbolKey to, RelKind kind)> rels,
+        Func<IReadOnlyList<MetadataView>> views, MetadataStats metadata)
     {
         var stepWatch = System.Diagnostics.Stopwatch.StartNew();
         void Step(string name)
@@ -86,6 +88,7 @@ static class IndexWriter
                 }
             }
             target.InSource |= rec.InSource;
+            target.External |= rec.External;
             resolved[rec.Id] = target;
         }
         // 字符串键在前（Ordinal），局部键在后（最终文件号、偏移）
@@ -191,6 +194,12 @@ static class IndexWriter
                 (byte)(s.InSource ? 1 : 0), (ushort)Math.Min(defCounts[i], ushort.MaxValue));
         }
 
+        // 元数据视图在后台生成（见 Program.cs），到这里才需要。
+        var generatedViews = views();
+        Step("metadata views wait");
+        var (signatures, xmlDocs, viewBytes) = MetadataSections(generatedViews, symArr, counts, strings, FinalOf, metadata);
+        generatedViews = null!;
+
         var relArr = rels.Select(r => (from: FinalOf(r.from), to: FinalOf(r.to), kind: (uint)r.kind))
             .Where(r => r.from != null && r.to != null)
             .Select(r => new Rel((uint)r.from!.Value, (uint)r.to!.Value, r.kind))
@@ -271,9 +280,12 @@ static class IndexWriter
         Begin(Section.Inactive, inactive.Count);
         Bulk<Pair>(CollectionsMarshal.AsSpan(inactive));
 
-        Begin(Section.Signatures, 0);
-        Begin(Section.XmlDocs, 0);
-        Begin(Section.MetadataViews, 0);
+        Begin(Section.Signatures, signatures.Length);
+        Bulk<Pair>(signatures);
+        Begin(Section.XmlDocs, xmlDocs.Length);
+        Bulk<Pair>(xmlDocs);
+        Begin(Section.MetadataViews, viewBytes.Length);
+        w.Write(viewBytes);
         Begin(Section.Strings, strings.Bytes.Length);
         strings.Bytes.WriteTo(fs);
         Align();
@@ -319,6 +331,52 @@ static class IndexWriter
     readonly record struct Pair(uint A, uint B);
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     readonly record struct Rel(uint From, uint To, uint Kind);
+
+    /// 段 11、13（段 12 留空：XML 文档只在视图正文里存一份，见 CS_INDEX_FORMAT.md）。
+    /// 视图按 (type_symbol, 程序集标识) 排序；视图内成员按 (member_symbol, line, col) 排序，可二分。
+    /// 同一符号出现在多个视图中（同名程序集的不同版本）时，签名取排在前面的视图。
+    static (Pair[] signatures, Pair[] docs, byte[] views) MetadataSections(IReadOnlyList<MetadataView> views, SymRec[] symArr,
+        int[] counts, StringTable strings, Func<SymbolKey, int?> finalOf, MetadataStats stats)
+    {
+        var ordered = views.Select(v => (v, type: finalOf(SymbolKey.Global(v.TypeKey)))).Where(x => x.type != null)
+            .OrderBy(x => x.type).ThenBy(x => x.v.Identity, StringComparer.Ordinal).ToArray();
+        var hasTarget = new bool[symArr.Length];
+        var texts = new SortedDictionary<int, string>();
+        var viewRecs = new List<(uint type, uint text, uint start, uint count)>(ordered.Length);
+        var memberRecs = new List<(uint symbol, uint line, uint col, uint len)>();
+        foreach (var (view, type) in ordered)
+        {
+            var members = view.Members.Select(m => (symbol: finalOf(SymbolKey.Global(m.Key)), m)).Where(x => x.symbol != null)
+                .Select(x => ((uint)x.symbol!.Value, x.m.Line, x.m.Col, x.m.Len)).Order().ToArray();
+            foreach (var m in members) hasTarget[m.Item1] = true;
+            foreach (var (key, signature) in view.Texts)
+                if (finalOf(SymbolKey.Global(key)) is { } id) texts.TryAdd(id, signature);
+            viewRecs.Add(((uint)type!.Value, strings.Add(view.Text), (uint)memberRecs.Count, (uint)members.Length));
+            memberRecs.AddRange(members);
+            stats.Add(view, type.Value, Encoding.UTF8.GetByteCount(view.Text), members.Length);
+        }
+        var signatures = texts.Select(kv => new Pair((uint)kv.Key, strings.Add(kv.Value))).ToArray();
+        Pair[] docs = [];
+
+        // 外部符号跳转落空率：外部符号的引用中，符号在任何视图里都没有位置记录的比例。
+        for (int i = 0; i < symArr.Length; i++)
+        {
+            var s = symArr[i];
+            if (!s.External || s.InSource) continue;
+            stats.External(s, counts[i], hasTarget[i]);
+        }
+
+        if (viewRecs.Count == 0) return (signatures, docs, []);
+        using var ms = new MemoryStream(8 + 16 * (viewRecs.Count + memberRecs.Count));
+        using var w = new BinaryWriter(ms);
+        w.Write((uint)viewRecs.Count);
+        w.Write((uint)memberRecs.Count);
+        foreach (var (type, text, start, count) in viewRecs) { w.Write(type); w.Write(text); w.Write(start); w.Write(count); }
+        foreach (var (symbol, line, col, len) in memberRecs) { w.Write(symbol); w.Write(line); w.Write(col); w.Write(len); }
+        w.Flush();
+        var bytes = ms.ToArray();
+        return (signatures, docs, bytes);
+    }
 
     static ulong Pack(uint file, Occ occ, List<(uint file, Occ occ)> wide)
     {

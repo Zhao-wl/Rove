@@ -147,9 +147,8 @@ impl NavSource for L2Index {
                 line0: l.line,
             })
             .collect();
-        // 外部符号：只有索引里带元数据视图（#34）时才算有落点。v2 的元数据段为空。
-        // TODO(#34)：元数据视图有读取接口后，改为按符号查找对应视图是否存在。
-        let external = if defs.is_empty() && !self.idx.metadata_views().is_empty() {
+        // 外部符号：在元数据视图（#34）里有定义位置才算有落点。
+        let external = if defs.is_empty() && !self.idx.metadata_definitions(sym).is_empty() {
             match self.idx.symbol_key(sym) {
                 Ok(rove_lang_cs::index::SymbolKey::Global(k)) => Some(doc_comment_id(k).to_owned()),
                 _ => None,

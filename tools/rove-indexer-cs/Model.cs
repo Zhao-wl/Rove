@@ -41,6 +41,8 @@ sealed class SymRec
     public required string Display;
     public required byte Kind;
     public bool InSource;
+    /// 来自外部 DLL（不是本次索引的任何项目）。写索引时与 InSource 一起判定：有源码版本的不算外部。
+    public bool External;
     public SymbolKey? ContainerKey;
     /// 来自本项目其他程序集元数据镜像的参数：解析不到源码声明时使用的后备键。
     public string? ParameterFallback;
