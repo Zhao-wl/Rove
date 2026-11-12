@@ -59,7 +59,7 @@ impl Workbench {
     }
 
     /// 焦点组的活动文本编辑器：(组, 文档, 光标)。
-    fn focused_text(&self) -> Option<(EditorGroupId, Arc<Document>, Position)> {
+    pub(super) fn focused_text(&self) -> Option<(EditorGroupId, Arc<Document>, Position)> {
         let group = self.editor.focused;
         let tab = self.editor.groups.get(&group)?.current()?;
         if tab.kind != EditorKind::Text {
@@ -323,7 +323,7 @@ impl Workbench {
         }
     }
 
-    fn reveal_key(
+    pub(super) fn reveal_key(
         &mut self,
         document: DocumentId,
         key: &str,

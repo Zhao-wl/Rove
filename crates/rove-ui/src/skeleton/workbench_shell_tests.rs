@@ -250,6 +250,13 @@ fn menus_only_show_implemented_commands(cx: &mut TestAppContext) {
     let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
     view.read_with(cx, |v, _| {
         let commands = v.commands.registry();
+        // #16 自己实现的命令，加上其他 issue 在装配期声明的（#24：快速打开、命令面板、转到行）。
+        let implemented = |id: &str| {
+            catalog::is_implemented(id)
+                || crate::quick_access::registry::COMMANDS
+                    .iter()
+                    .any(|(cmd, _, _)| *cmd == id)
+        };
         let mut shown = 0;
         let mut expected = 0;
         for menu in [
@@ -266,26 +273,26 @@ fn menus_only_show_implemented_commands(cx: &mut TestAppContext) {
             for id in &items {
                 let item = v.shell.menus.get(id).unwrap();
                 assert!(commands.get(&item.command).is_some());
-                assert!(catalog::is_implemented(&item.command));
+                assert!(implemented(&item.command));
             }
         }
         // 菜单项数 == 已登记且已实现的命令被登记成菜单项的数量。
         for (_, item) in v.shell.menus.entries() {
-            if commands.get(&item.command).is_some() && catalog::is_implemented(&item.command) {
+            if commands.get(&item.command).is_some() && implemented(&item.command) {
                 expected += 1;
             }
         }
         assert_eq!(shown, expected);
-        // 命令面板（showCommands）已登记但还没实现：齿轮菜单里不出现，而不是置灰。
+        // 命令面板（showCommands）由 #24 实现并在装配期声明：齿轮菜单里出现这一项。
         assert!(v
             .shell
             .menus
             .entries()
             .any(|(_, i)| i.command.as_ref() == "workbench.action.showCommands"));
-        assert!(v
-            .shell
-            .visible_menu_items(commands, MenuId::Manage)
-            .is_empty());
+        let manage = v.shell.visible_menu_items(commands, MenuId::Manage);
+        assert!(manage.iter().any(|id| {
+            v.shell.menus.get(id).unwrap().command.as_ref() == "workbench.action.showCommands"
+        }));
     });
 }
 

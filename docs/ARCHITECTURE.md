@@ -26,6 +26,7 @@ flowchart TD
  ui --> workspace[rove-workspace]
  ui --> cs[rove-lang-cs]
  ui --> docview[rove-docview]
+ ui --> fuzzy[rove-fuzzy]
  buffer --> base
  syntax --> buffer
  syntax --> base
@@ -56,6 +57,7 @@ flowchart TD
 | rove-workspace | 文件列表/树、规则、文件事件 | 禁止 |
 | rove-lang-cs | 导航查询契约；既有 index.rs 保持独立 | 禁止 |
 | rove-docview | 结构树节点，复用语法符号模型 | 禁止 |
+| rove-fuzzy | VS Code `fuzzyScorer` 的逐条移植（快速打开排序）与命令面板的单词过滤 | 禁止 |
 | rove-ui | 打开/定位/关闭、反馈、列表/树、快速输入、贡献点 | 允许 |
 | rove-app | 入口、服务装配与窗口生命周期 | 允许 |
 
@@ -214,7 +216,8 @@ cargo test --workspace
 | `lists` | 已由 `rove-ui::list_widget` 实现：虚拟化列表/树/快速输入与全部 `list.*`、`quickInput.*` 命令（见下文“列表、树与快速输入组件”）；骨架文件树的数据与控制已改用 `ListWidget` + `TreeModel` | #18（已完成） |
 | `code-view` | 已由 `rove-ui::code_view` 实现：自定义 Element、f64 滚动、整形缓存与预取、行号、只读选区、命中测试、滚动条；`workbench.rs` 只挂载 `CodeView` | #19（已完成） |
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
-| `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §24）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
+| `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
+| `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
@@ -891,3 +894,57 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 - #48（替换）：匹配列表、当前项、范围与 `Searcher` 都在可独立测试的 `FindModel` 里；替换按钮 / 输入框与命令在 `host.rs` 的 `render_widget` 与 `execute` 追加，查找条布局的第一列（展开替换的箭头）留给它，不需要改状态机。
 
 验证：`cargo test -p rove-ui find`（引擎、模型、登记的单元测试）与 `cargo test -p rove-ui find_tests`（`skeleton/workbench/find_tests.rs`，真实 GPUI 窗口、只通过键位驱动：`ctrl+f` 种子、输入即查找与光标跟随、`enter` / `f3` / `ctrl+f3`、循环开关、四个开关与跨文件保持、非法正则、在选区内查找与 `autoFindInSelection`、历史、计数、替换入口不存在）。性能：`cargo xtask bench --filter find/`（10 万行输入一个字符到计数更新，预算 `find_input_char_100k_lines`）与 `cargo xtask bench --filter scroll/find_visible`（查找条打开时的帧预算，对照 `scroll/frame_cpu_cache_hit`）。
+
+## 28. 快速打开与命令面板（#24）
+
+核心层 `rove-fuzzy`（不依赖 gpui）逐条移植 VS Code 的 `fuzzyScorer.ts`（`scoreFuzzy`、`scoreFuzzy2`、
+`scoreItemFuzzy`、`compareItemsByFuzzyScore`、`prepareQuery`）及其用到的 `filters.ts` / `comparers.ts` 片段，并把
+`fuzzyScorer.test.ts` 的 68 个用例一对一移植成单元测试（1 个校验 VS Code 内部 32 位哈希缓存键的用例因实现不同只留
+`#[ignore]` 空壳）。字符串按 UTF-16 码元处理，区间与位置是码元下标，界面用 `utf16_to_byte_ranges` 转成字节区间。
+来源与许可见 `THIRD_PARTY_NOTICES.md`。**排序上任何“更合理”的偏离都算 bug**；已知的有意近似只有
+`compare_file_names`（无 ICU，数字按数值、忽略大小写）与 `matchesWords` 不做重音折叠。
+
+`rove-ui::quick_access`（见模块文档）：
+
+| 模块 | 内容 | GPUI |
+|---|---|---|
+| `parse` | 文本开头的 `>` `:` `@` `#` 前缀与 `文件:行:列` / `文件(行,列)` 后缀 | 否 |
+| `files` | `FileIndex`（`Workspace::files` 分页读入，按 `FileEvent` 增量更新，`RescanRequired` 重建）、`Search`（按键间前缀剪枝、历史文件加权、最多 512 条）、`Picks` 行与高亮 | 否 |
+| `commands` | 命令面板：已实现命令、`WORD_FILTER`、最近使用分组、重复标签显示命令 ID | 否 |
+| `lines` | 转到行/列的解析（负数从末尾数起，越界只提示） | 否 |
+| `matcher` | `scoreFuzzy2` 作为 #18 的 `Matcher`（`@` 符号与 #26 的 `goto::symbol_picks` 共用） | 否 |
+| `registry` | 命令 `workbench.action.quickOpen` / `showCommands` / `gotoLine`、界面字符串、`QuickAccessAction`、`search.quickOpen.*` 与 `workbench.quickOpen.*` 的读取、命令面板不列出的内部命令 | 仅 action |
+
+- **候选与排序**：label = 文件名，description = 相对目录，path = 相对路径（分隔符 `\`，与 VS Code 在 Windows 上一致）。
+  排序规则全部来自 `rove-fuzzy`；为了让每次按键在十几万个候选上也守住 16 ms，打分的数据布局与 VS Code 的 JS 实现不同，
+  但结果必须逐位相同（`rove-fuzzy` 的测试逐项对照）：
+  - 纯 ASCII 的路径（绝大多数）依次追加在一整块连续的字节里（`FileIndex::arena`），字符集合的 64 位掩码放在紧凑的数组里
+    （`Hot`，每个候选 32 字节）：查询里出现的字符，候选里必须都有，否则几纳秒内否决；其余候选（非 ASCII 文件名）用预先算好
+    UTF-16 与小写形式的 `Target`，走同一套泛型打分代码（`Text` trait：`Wide` / `Ascii`）。
+  - 打分只产生 `Summary`（分数与匹配区间的首尾，不分配）；比较器只用得到分数、首尾、label/description/路径长度，
+    字符串只在整数部分全部相同时才取（`compare_keys`）。排名确定后才给最终的前 512 名生成完整的高亮区间。
+  - 查询是上一次查询的延长（且没有引号）时，只在上一次的匹配集合里重新打分；候选集变化（`FileIndex::generation`）时作废。
+  - 候选超过 1.2 万个时在 rayon 线程池里分块并行，各块共享“第 512 名的分数下限”（原子变量），最后归并各块的前 512 名。
+  - 前 512 名已经全是 label 级结果（分数 ≥ `LABEL_SCORE_THRESHOLD`）且查询只有一段时，只在 description 里匹配的候选排不进去：
+    不再为它们跑矩阵，只用顺序检查判断“有没有匹配”（供下一次按键剪枝）。
+  - 只保留最好的 512 条，用二分插入而不是 `sort`（VS Code 的比较规则不保证严格全序，`sort` 可能 panic）。
+- **历史**：窗口内最近打开的文件（最近的在前，最多 100 个，不持久化）。空查询只列历史；有查询时历史中匹配的排在前面，
+  `search.quickOpen.history.filterSortOrder` 为 `default` 时按相关度、`recency` 时按最近打开；文件结果不重复历史里的文件；
+  `search.quickOpen.includeHistory = false` 时没有历史分组。
+- **命令面板**：只列已实现的命令（`keys::is_implemented`，即有模块 action 或命令表里有处理器），列表/快速输入/通知
+  等内部导航命令不列出（`registry::hidden_in_palette`）；键位取 `KeybindingTable::preferred_keys`（用户自定义优先，
+  否则第一条默认键位）；分“最近使用”和“其他命令”两组。运行命令：关闭浮层、焦点还给编辑器后派发该命令的 GPUI action
+  （没有 action 的命令派发 `RunCommand`）。
+- **宿主**（`skeleton/workbench/quick_access_host.rs`）：创建 #18 的 `QuickInputView`（`filter = None`，自己过滤与排序），
+  `QuickInputTextChanged` 同步重算列表；行的高亮与右侧键位文本经 #18 新增的 `RowDecor`（`ActiveInput::decor`）传入；
+  `Ctrl+Enter`（`quickInput.accept` 带 `ctrl`）在旁边打开；工作区文件列表在扫描完成后后台建索引，未就绪时立即可用并在
+  列表底部显示“正在加载文件列表…”；`workbench.quickOpen.closeOnFocusLost` 与 `preserveInput` 按设置读取。
+  打开与定位经 #17 的 `OpenDocuments`（`OpenSource::QuickOpen` / `GoToLine`）。命令中心点击调用
+  `workbench.action.quickOpen`（#16 的 `run_command` → `run_external_command`）。
+- **没有的**：`#` 工作区符号（R59）只显示“尚不可用”并提示 `Ctrl+P`；命令的 `when`/前置条件没有数据模型，命令面板不按
+  `when` 过滤；最近打开的文件不持久化；`@` 在 `文件名@符号` 的组合写法不支持。
+
+验证：`cargo test -p rove-fuzzy`（移植的 VS Code 用例，另有与稠密矩阵参考实现、`Target` 路径的随机对照）；`cargo test -p rove-ui quick_access`（前缀解析、转到行、命令面板、
+索引增量、剪枝与完整扫描等价、并行与单线程等价、优化后的整条流水线与朴素 VS Code 实现等价、历史）；`skeleton/workbench/quick_access_tests.rs`（真实 GPUI 窗口：`Ctrl+P` → 输入 → 选中
+→ 文档已打开并定位、四个前缀、命令面板与键位、`Ctrl+Enter`、`Esc`、命令中心入口、设置）。性能：
+`cargo xtask bench --filter quickopen/`（预算 `quickopen_*`）。

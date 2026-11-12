@@ -302,3 +302,37 @@ owner = "#21"
 status = "enforced"
 bench = "scroll/find_visible_frame_cpu_cache_hit"
 reason = "issue #21 验收标准：查找条可见时 #19 的滚动与帧预算不退化。与 frame_cpu_cache_hit 同一份 small.txt、同样的 300 帧 × 3 行，额外打开查找条并搜索 e（几乎每行都有匹配）。无法创建窗口的环境整组跳过"
+
+# ---------------------------------------------------------------- 快速打开（#24）
+# 验收口径是大型 Unity 项目（ROVE_TEST_UNITY_LARGE，约 2.1 万个 .cs 外加其他文件）每次按键 p99 < 16 ms；
+# 合成的 2.5 万个路径在 CI 上也能跑（criterion 报告均值，p50/p99/max 由基准在 stderr 打印，数字记在 PR 里）。
+
+[[budget]]
+id = "quickopen_first_key_25k"
+metric = "快速打开：2.5 万个合成路径上输入第一个字符（无前缀剪枝可用的最坏一次按键，含打分、排序、转成行与高亮）"
+value = 16
+unit = "ms"
+owner = "#24"
+status = "enforced"
+bench = "quickopen/first_key_synthetic_25k"
+reason = "issue #24 验收：每次按键到列表刷新 < 16 ms"
+
+[[budget]]
+id = "quickopen_extend_key_25k"
+metric = "快速打开：2.5 万个合成路径上键入过程中的一次按键（复用上一次结果做前缀剪枝）"
+value = 16
+unit = "ms"
+owner = "#24"
+status = "enforced"
+bench = "quickopen/extend_key_synthetic_25k"
+reason = "issue #24 验收：每次按键到列表刷新 < 16 ms"
+
+[[budget]]
+id = "quickopen_first_key_large"
+metric = "快速打开：大型 Unity 项目上输入第一个字符（最坏一次按键）"
+value = 16
+unit = "ms"
+owner = "#24"
+status = "pending"
+bench = "quickopen/first_key_large"
+reason = "issue #24 验收要求 ROVE_TEST_UNITY_LARGE 上每次按键 p99 < 16 ms。本机的大型项目有约 15.6 万个文件（issue 写的是约 2.1 万个 .cs 外加其他文件），安静时第一个字符约 14 ms、p99 约 40 ms，目录名类查询（如 Script）与多段查询（如 enemy spa）最慢约 22 ms，还没达标；候选在 2.5 万个量级时 p99 < 16 ms。进一步需要为 description 里的匹配做上界剪枝或增量/异步刷新，见 #24 的 PR"
