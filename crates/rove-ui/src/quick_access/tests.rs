@@ -421,7 +421,7 @@ fn parallel_scoring_gives_the_same_results_as_a_single_thread() {
 /// 与朴素实现（逐个 `score_item` + VS Code 比较器，选出前 N 名）完全相同的结果。
 #[test]
 fn optimized_pipeline_matches_a_plain_vscode_implementation() {
-    use rove_fuzzy::{compare_scored, prepare_query, score_item, ItemScore, Scored};
+    use rove_fuzzy::{compare_scored, prepare_query, ItemScore, Scored};
     let mut paths = synthetic_paths(5000);
     // 再加一些非 ASCII 与重名的候选，走另一条数据路径
     paths.extend(
