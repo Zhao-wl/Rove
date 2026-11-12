@@ -1,4 +1,5 @@
 //! 搜索引擎入口的集成测试（#25）：在临时目录里建文件，经公开入口 `rove_search::search` 断言结果。
+#![allow(clippy::single_range_in_vec_init)] // 一行一处匹配本来就是只有一个区间的 Vec
 
 use rove_base::{Cancellation, Error, Value};
 use rove_config::{DefaultSettings, Setting, SettingRegistry, Settings};

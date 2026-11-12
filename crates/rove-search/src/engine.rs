@@ -62,7 +62,7 @@ impl LineMatch {
         let start = self.preview_start as usize;
         let len = self.preview.len();
         self.ranges.iter().filter_map(move |r| {
-            let s = (r.start as usize).checked_sub(start).unwrap_or(0).min(len);
+            let s = (r.start as usize).saturating_sub(start).min(len);
             let e = (r.end as usize).saturating_sub(start).min(len);
             (r.end as usize > start && s <= e).then_some(s..e)
         })
@@ -549,7 +549,11 @@ impl Sink for Collect<'_> {
             let end = (m.end().min(line_end).max(m.start()) - line_start) as u32;
             match per_line.last_mut() {
                 Some((s, _, ranges)) if *s == line_start => ranges.push(start..end),
-                _ => per_line.push((line_start, first_line + line_index, vec![start..end])),
+                _ => per_line.push((
+                    line_start,
+                    first_line + line_index,
+                    std::iter::once(start..end).collect(),
+                )),
             }
             true
         });
@@ -611,6 +615,7 @@ fn floor_boundary(text: &str, mut index: usize) -> usize {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)] // 一行一处匹配本来就是只有一个区间的 Vec
 mod tests {
     use super::*;
 

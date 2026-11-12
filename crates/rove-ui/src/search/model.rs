@@ -449,6 +449,7 @@ impl ListModel for ResultRows {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)] // 一行一处匹配本来就是只有一个区间
 mod tests {
     use super::*;
 
