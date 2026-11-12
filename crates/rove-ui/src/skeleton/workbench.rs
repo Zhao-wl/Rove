@@ -67,6 +67,10 @@ mod outline_tests;
 mod quick_access_host;
 #[cfg(test)]
 mod quick_access_tests;
+// #40：C# 导航交互（转到定义 / 实现、悬停、Ctrl+点击、语义同名高亮）。
+mod nav_host;
+#[cfg(test)]
+mod nav_tests;
 #[cfg(test)]
 #[path = "workbench_readonly_tests.rs"]
 mod readonly_tests;
@@ -218,6 +222,8 @@ pub struct Workbench {
     find_strings: Arc<dyn Strings>,
     /// #24：快速打开与命令面板的状态（见 `quick_access_host.rs`）。
     quick: quick_access_host::QuickAccess,
+    /// #40：C# 导航（查询路由、悬停、同名高亮、符号导航模式，见 `nav_host.rs`）。
+    nav: nav_host::Nav,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -343,6 +349,12 @@ impl Workbench {
         let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;
         let outline = Self::new_outline(theme.clone(), &services, cx);
+        let nav = nav_host::Nav::new(
+            &root,
+            &*services,
+            theme.as_ref(),
+            theme_service.current().kind(),
+        );
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
@@ -385,6 +397,7 @@ impl Workbench {
             find_shared: crate::find::host::FindShared::new(find_history),
             find_strings: Arc::new(appearance::strings().unwrap()),
             quick: Default::default(),
+            nav,
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -448,6 +461,8 @@ impl Workbench {
             }
         }
         self.outline_settings_changed(keys, cx);
+        // #40：editor.gotoLocation.* / editor.hover.* / editor.occurrencesHighlight* 变化。
+        self.nav_settings_changed(keys, cx);
         // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
@@ -506,6 +521,8 @@ impl Workbench {
             let theme = self.theme.clone();
             find.update(cx, |find, cx| find.set_theme(&theme, kind, cx));
         }
+        // #40：悬停卡片、链接与语义同名高亮的颜色。
+        self.nav_theme_changed(cx);
         cx.notify();
     }
     fn find_hosts(&self) -> Vec<Entity<crate::find::host::FindHost>> {
@@ -551,6 +568,8 @@ impl Workbench {
                     view.workspace = Some(workspace.clone());
                     // #24：后台建快速打开的文件索引。
                     view.quick_workspace_ready(cx);
+                    // #40：后台建 C# 的 L1 快速声明索引（导航的近似回退）。
+                    view.nav_workspace_ready(cx);
                     file_tree(workspace)
                 });
                 match tree {
@@ -578,10 +597,13 @@ impl Workbench {
                 let mut changes = Vec::new();
                 // #24：快速打开的文件列表按事件增量更新。
                 let mut quick = Vec::new();
+                // #40：L1 快速声明索引的增量更新。
+                let mut nav = Vec::new();
                 for batch in
                     std::iter::once(first).chain(std::iter::from_fn(|| receive.try_recv().ok()))
                 {
                     quick.push((batch.revision.0, batch.events.clone()));
+                    nav.extend(batch.events.iter().cloned());
                     changes.extend(batch.events.iter().map(index_change));
                     for event in batch.events.iter() {
                         if let FileEvent::Removed(path) | FileEvent::Renamed { from: path, .. } =
@@ -596,6 +618,7 @@ impl Workbench {
                         // #36：源文件变化标记过期，项目配置变化触发重建。
                         view.index_files_changed(&changes);
                         view.quick_files_changed(quick, cx);
+                        view.nav_files_changed(&nav, cx);
                         if !view.editor.settings.close_on_delete {
                             return;
                         }
@@ -827,6 +850,8 @@ impl Workbench {
         event: &CodeViewEvent,
         cx: &mut Context<Self>,
     ) {
+        // #40：悬停、Ctrl+悬停 / 点击、语义同名高亮跟随指针、光标与文本。
+        self.nav_code_event(group, secondary, event, cx);
         match event {
             CodeViewEvent::EditBlocked { position, reasons } => {
                 return self.edit_blocked(group, secondary, *position, reasons, cx);
@@ -881,7 +906,10 @@ impl Workbench {
             CodeViewEvent::FoldsChanged(folds) => state.folds = folds.clone(),
             CodeViewEvent::TextChanged
             | CodeViewEvent::EditBlocked { .. }
-            | CodeViewEvent::ToggleReadonlyRequested => {}
+            | CodeViewEvent::ToggleReadonlyRequested
+            | CodeViewEvent::PointerMoved { .. }
+            | CodeViewEvent::PointerLeft
+            | CodeViewEvent::LinkClicked { .. } => {}
         }
     }
 
@@ -1304,6 +1332,8 @@ impl Workbench {
             let _ = send.try_send(status);
         }));
         let epoch = self.index.attach(Some(lifecycle), Some(subscription));
+        // #40：查询路由的语义来源换成新的生命周期。
+        self.nav_index_attached(cx);
         let current = self.index.status().clone();
         self.index_status_changed(epoch, current, cx);
         cx.spawn(async move |this, cx| {
@@ -1357,6 +1387,8 @@ impl Workbench {
                 shell.status_bar.remove(index_status::STATUS_ITEM);
             }
         }
+        // #40：索引就绪 / 重建完成时静默刷新语义同名高亮。
+        self.nav_index_changed(cx);
         cx.notify();
     }
 
@@ -1592,6 +1624,8 @@ impl Render for Workbench {
         self.sync_outline(window, cx);
         // #24：最近打开、失去焦点时关闭、关闭后还焦点或运行选中的命令。
         self.sync_quick_access(window, cx);
+        // #40：打开中的 C# 文档同步给查询路由的 BufferStates；F12 的画面计时。
+        self.sync_nav(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1633,7 +1667,10 @@ impl Render for Workbench {
         let workbench = shell::view::render(self, window, cx);
         let goto = self.goto_overlay(cx);
         let quick = self.quick_overlay(cx);
-        let context = editor_actions::context(&self.editor) + self.breadcrumbs_context();
+        let hover = self.nav_overlay(cx);
+        let context = editor_actions::context(&self.editor)
+            + self.breadcrumbs_context()
+            + &self.nav_context();
         div()
             .size_full()
             .font_family("Segoe UI")
@@ -1676,9 +1713,16 @@ impl Render for Workbench {
                     v.quick_action_handler(a, window, cx)
                 },
             ))
+            // #40：C# 导航命令。
+            .on_action(
+                cx.listener(|v, a: &crate::nav::registry::NavAction, window, cx| {
+                    v.nav_command(a.0, window, cx)
+                }),
+            )
             .child(workbench)
             .children(goto)
             .children(quick)
+            .children(hover)
     }
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.

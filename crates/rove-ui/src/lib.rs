@@ -27,3 +27,5 @@ pub mod outline;
 pub mod find;
 // #24：快速打开与命令面板（`:` `@` `#` `>` 前缀、命令中心入口）。
 pub mod quick_access;
+// #40：C# 导航交互（转到定义 / 实现、悬停、Ctrl+点击、语义同名高亮）。
+pub mod nav;

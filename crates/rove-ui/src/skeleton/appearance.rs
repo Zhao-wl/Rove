@@ -80,6 +80,8 @@ pub fn strings() -> Result<StringTable> {
     crate::find::registry::register_strings(&mut t)?;
     // #24：快速打开、命令面板与转到行的标题和提示。
     crate::quick_access::registry::register_strings(&mut t)?;
+    // #40：C# 导航交互（空状态、近似提示、悬停卡片、命令标题）。
+    crate::nav::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
