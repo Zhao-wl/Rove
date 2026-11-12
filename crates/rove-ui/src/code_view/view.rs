@@ -99,6 +99,20 @@ pub enum CodeViewEvent {
     },
     /// “在会话中切换只读模式”（#20）：只读状态按文档保存，由宿主决定并回填 [`CodeView::set_read_only`]。
     ToggleReadonlyRequested,
+    /// #40：鼠标在文本区上移动（没有按下按键）或按住 / 松开修饰键。`position` 是指针下的文档位置
+    /// （按最近位置钳制，宿主自行判断是否真的落在单词上），`point` 是窗口坐标。
+    PointerMoved {
+        position: Position,
+        point: Point<Pixels>,
+        ctrl: bool,
+    },
+    /// #40：鼠标离开文本区。
+    PointerLeft,
+    /// #40：`Ctrl+点击`（`side`：同时按住 Alt，VS Code 在旁边打开）。插入符已移到点击处。
+    LinkClicked {
+        position: Position,
+        side: bool,
+    },
 }
 
 /// 按文档级别（UX_SPEC §3.1）关闭的功能（#20 提供查询，#22 组装状态栏悬停文案）。
@@ -329,6 +343,12 @@ pub struct CodeView {
     pub(crate) glyphs_painted: Cell<u32>,
     /// 第一行之上的额外空间（像素）：#21 的 `editor.find.addExtraSpaceOnTop`。
     pub(crate) top_inset: f32,
+    /// #40：语义同名高亮接管时为 `Some(有没有高亮)`，文本单词高亮停用；`None` 为文本模式。
+    semantic_words: Option<bool>,
+    /// #40：上一次在文本区上的指针位置（窗口坐标），修饰键变化时据此重发 `PointerMoved`。
+    pointer: Option<Point<Pixels>>,
+    /// #40：指针下是可跳转的链接（`Ctrl+悬停`），文本区显示手形光标。
+    pub(crate) link_cursor: bool,
 }
 
 impl Focusable for CodeView {
@@ -362,6 +382,10 @@ impl Render for CodeView {
             .track_focus(&self.focus)
             .size_full()
             // 可打印字符：只读时在光标处提示原因（编辑本身由 R46 实现）。
+            // #40：按下 / 松开 Ctrl 时在指针处重新判定 `Ctrl+悬停`（不动鼠标也出现 / 收起下划线）。
+            .on_modifiers_changed(cx.listener(|v, e: &gpui::ModifiersChangedEvent, _, cx| {
+                v.modifiers_changed(e.modifiers.control, cx)
+            }))
             .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _, cx| {
                 let m = &e.keystroke.modifiers;
                 if e.keystroke.key_char.is_some() && !m.control && !m.alt && !m.platform {
@@ -514,6 +538,9 @@ impl CodeView {
             slice_budget: PREPARE_SLICE,
             glyphs_painted: Cell::new(0),
             top_inset: 0.0,
+            semantic_words: None,
+            pointer: None,
+            link_cursor: false,
         };
         view.apply_feature_options();
         view
@@ -1285,6 +1312,82 @@ impl CodeView {
             self.reveal_caret(cx);
         }
         self.selection_changed(SelectionSource::Mouse, cx);
+    }
+
+    /// #40：`Ctrl+点击`（多光标修饰键为 Alt 时 VS Code 的“转到定义”）：插入符移到点击处，再交给宿主跳转。
+    pub(crate) fn mouse_down_link(
+        &mut self,
+        point: Point<Pixels>,
+        side: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(p) = self.position_for_point(point) else {
+            return;
+        };
+        self.cursor.set(Selection::caret(p));
+        self.drag = None;
+        self.selection_changed(SelectionSource::Mouse, cx);
+        cx.emit(CodeViewEvent::LinkClicked { position: p, side });
+    }
+
+    /// #40：指针在文本区上移动（`point = None` 表示离开文本区）或修饰键变化。
+    pub(crate) fn pointer_moved(
+        &mut self,
+        point: Option<Point<Pixels>>,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match point {
+            Some(point) => {
+                self.pointer = Some(point);
+                if let Some(position) = self.position_for_point(point) {
+                    cx.emit(CodeViewEvent::PointerMoved {
+                        position,
+                        point,
+                        ctrl,
+                    });
+                }
+            }
+            None => {
+                if self.pointer.take().is_some() {
+                    cx.emit(CodeViewEvent::PointerLeft);
+                }
+            }
+        }
+    }
+
+    /// #40：修饰键变化时，在上一次的指针位置重发 `PointerMoved`（按下 Ctrl 不动鼠标也出现下划线）。
+    pub(crate) fn modifiers_changed(&mut self, ctrl: bool, cx: &mut Context<Self>) {
+        if let Some(point) = self.pointer {
+            self.pointer_moved(Some(point), ctrl, cx);
+        }
+    }
+
+    /// #40：指针下是否显示手形光标（`Ctrl+悬停` 在可跳转的标识符上）。
+    pub fn set_link_cursor(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.link_cursor != on {
+            self.link_cursor = on;
+            cx.notify();
+        }
+    }
+
+    /// #40：语义同名高亮接管单词高亮。`Some(has)`：停用文本单词高亮（选区相似匹配不受影响），
+    /// `hasWordHighlights` 取 `has`；`None`：回到文本模式（#20，非 C# 文件与近似结果）。
+    pub fn set_semantic_word_highlights(&mut self, state: Option<bool>, cx: &mut Context<Self>) {
+        if self.semantic_words == state {
+            return;
+        }
+        let mode_changed = self.semantic_words.is_some() != state.is_some();
+        self.semantic_words = state;
+        if mode_changed {
+            self.update_occurrences(cx);
+        }
+        cx.notify();
+    }
+
+    /// 语义同名高亮的状态（见 [`Self::set_semantic_word_highlights`]）。
+    pub fn semantic_word_highlights(&self) -> Option<bool> {
+        self.semantic_words
     }
 
     /// 点击行号选中整行（VS Code 行为）。
@@ -2316,7 +2419,10 @@ impl CodeView {
 
     /// `hasWordHighlights` 上下文键的取值。
     pub fn has_word_highlights(&self) -> bool {
-        self.occurrences.borrow().has_word_highlights()
+        match self.semantic_words {
+            Some(has) => has,
+            None => self.occurrences.borrow().has_word_highlights(),
+        }
     }
 
     /// 第一行之上的额外空间（像素，缩放前）。查找条打开时留出它的高度，让第一行能滚到查找条下面
@@ -2353,6 +2459,14 @@ impl CodeView {
             .word_rule()
             .word_at(&line, s.active.column.0 as usize)?;
         Some(line[a..b].to_string())
+    }
+
+    /// #40：`p` 所在的单词（与同名高亮同一套分词规则）：（起始列, 结束列, 文本），UTF-8 字节列。
+    pub fn word_range_at(&self, p: Position) -> Option<(u64, u64, String)> {
+        let text = self.text.as_ref()?;
+        let line = TextLines(&**text).line_text(p.line.0)?;
+        let (a, b) = self.word_rule().word_at(&line, p.column.0 as usize)?;
+        Some((a as u64, b as u64, line[a..b].to_string()))
     }
 
     /// 当前同名高亮的文本（单词或选中文本）。
@@ -2394,7 +2508,10 @@ impl CodeView {
                 exclude: (s.start().line.0, a),
             });
         }
-        if !self.options.occurrences_highlight || self.effective_level() != SizeClass::Normal {
+        if !self.options.occurrences_highlight
+            || self.effective_level() != SizeClass::Normal
+            || self.semantic_words.is_some()
+        {
             return None;
         }
         let line = lines.line_text(s.active.line.0)?;

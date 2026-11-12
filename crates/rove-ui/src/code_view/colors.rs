@@ -164,6 +164,8 @@ pub fn theme_registry() -> ColorRegistry {
     let mut registry = rove_theme::service::p0_registry();
     register(&mut registry).expect("code view colors");
     crate::find::registry::register_colors(&mut registry).expect("find colors");
+    // #40：悬停卡片与 `Ctrl+悬停` 链接的颜色，用户主题也能覆盖。
+    crate::nav::registry::register_colors(&mut registry).expect("nav colors");
     registry
 }
 

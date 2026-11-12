@@ -30,3 +30,5 @@ pub mod quick_access;
 
 // #49：保存与外部修改（命令、反馈映射、关闭确认、外部修改提示）。核心在 rove_buffer::save。
 pub mod save;
+// #40：C# 导航交互（转到定义 / 实现、悬停、Ctrl+点击、语义同名高亮）。
+pub mod nav;
