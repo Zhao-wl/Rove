@@ -123,6 +123,27 @@ bench = "scroll/frame_interval_cache_miss"
 aggregate = "p99"
 reason = "CHARTER §6：缓存全未命中时帧间隔 p99 ≤ 1.5 倍刷新间隔（1.5 × 8.33 ms ≈ 12.5 ms）。M0 实测 16.83 ms；#19 在 120 Hz 开发机上实测 p99 11.3–11.7 ms（uniq.txt 400 帧 × 37 行，见 PR）。帧间隔由显示器刷新率与 vsync 决定，托管 runner 没有物理显示器，所以只记录、不在 CI 上判定；参考设备上的判定按本条数值人工核对"
 
+[[budget]]
+id = "highlighted_frame_cpu_cache_hit"
+metric = "带语法着色连续滚动时每帧 CPU（整形缓存命中）"
+value = 1
+unit = "ms"
+owner = "#20"
+status = "enforced"
+bench = "scroll/highlighted_frame_cpu_cache_hit"
+reason = "#20：与 frame_cpu_cache_hit 同一预算（CHARTER §6，每帧 CPU 平均 < 1 ms），文本换成内存生成的 C#、经正式 tree-sitter 快照与 Dark 2026 主题着色（300 帧 × 3 行）。开发机实测 mean 0.34 ms。token → 样式按行缓存，帧内不做 scope 匹配"
+
+[[budget]]
+id = "highlighted_frame_interval_cache_miss"
+metric = "带语法着色连续滚动时帧间隔 p99（整形缓存全未命中）"
+value = 12.5
+unit = "ms"
+owner = "#20"
+status = "recorded"
+bench = "scroll/highlighted_frame_interval_cache_miss"
+aggregate = "p99"
+reason = "#20：与 frame_cpu_cache_miss 同口径（1.5 × 8.33 ms），每行唯一的 2 万行 C#、400 帧 × 37 行。120 Hz 开发机实测 p99 9.34 ms。帧间隔取决于显示器与 vsync，只记录、不在 CI 上判定"
+
 # ---------------------------------------------------------------- 语言导航
 # 这两条在语义索引就绪时才可测：cargo xtask bench --cs-index <idx>
 # 没有索引时 bench 会整组跳过，check-budgets 会打印「未测量」，不算失败。

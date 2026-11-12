@@ -21,8 +21,12 @@ pub mod priority {
     pub const SEMANTIC: i32 = 10;
     /// #25：全局搜索结果的范围高亮。
     pub const SEARCH_RANGE: i32 = 20;
+    /// #20：文本同名高亮与选区相似匹配（#40 的语义级同名高亮在其上）。
+    pub const WORD_HIGHLIGHT: i32 = 25;
     /// #40：同名符号高亮。
     pub const SYMBOL_HIGHLIGHT: i32 = 30;
+    /// #20：括号匹配。
+    pub const BRACKET_MATCH: i32 = 35;
     /// #21：查找匹配。
     pub const FIND_MATCH: i32 = 40;
 }
@@ -296,7 +300,12 @@ impl DecorationStore {
         }
     }
 
-    /// 文本换了（新快照/新文档）：全部失效且丢弃旧结果。
+    /// 同一文档的新快照：全部失效，但重算前继续用旧结果绘制（不闪烁）。
+    pub fn mark_all_stale(&mut self) {
+        self.invalidate_all();
+    }
+
+    /// 文本换了（新文档）：全部失效且丢弃旧结果。
     pub fn reset(&mut self) {
         for l in &mut self.layers {
             l.lines.clear();

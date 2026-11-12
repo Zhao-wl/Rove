@@ -132,8 +132,50 @@ pub const COLORS: &[ColorDefault] = &[
     ),
 ];
 
+/// #20 使用的颜色键。默认值不在本模块重复，取 #10 生成的 VS Code 默认值表
+/// （`rove_theme::defaults::static_defaults`，含派生）；其中 `editor.wordHighlight*` 是 P1 键，
+/// 主题服务的 P0 登记表里没有，需经 [`theme_registry`] 一并登记，用户主题才能覆盖它们。
+pub const FEATURE_COLORS: &[&str] = &[
+    "editorBracketMatch.background",
+    "editorBracketMatch.border",
+    "editorBracketMatch.foreground",
+    "editor.wordHighlightBackground",
+    "editor.wordHighlightBorder",
+    "editor.wordHighlightStrongBackground",
+    "editor.wordHighlightStrongBorder",
+    "editor.wordHighlightTextBackground",
+    "editor.wordHighlightTextBorder",
+    "editor.selectionHighlightBackground",
+    "editor.selectionHighlightBorder",
+    "editor.foldBackground",
+    "editor.foldPlaceholderForeground",
+    "editorGutter.foldingControlForeground",
+    "editorIndentGuide.background1",
+    "editorIndentGuide.background2",
+    "editorIndentGuide.background3",
+    "editorIndentGuide.background4",
+    "editorIndentGuide.background5",
+    "editorIndentGuide.background6",
+    "editorWhitespace.foreground",
+];
+
+/// 主题服务用的颜色登记表：全部 P0 键，加上代码视图用到的其余键（[`COLORS`]、[`FEATURE_COLORS`]）。
+pub fn theme_registry() -> ColorRegistry {
+    let mut registry = rove_theme::service::p0_registry();
+    register(&mut registry).expect("code view colors");
+    registry
+}
+
 /// 登记颜色键；已存在的键跳过（主题或其他视图已登记）。
 pub fn register(registry: &mut ColorRegistry) -> Result<()> {
+    for key in FEATURE_COLORS {
+        if registry.get(key).is_some() {
+            continue;
+        }
+        if let Some(defaults) = rove_theme::defaults::static_defaults(key) {
+            registry.register(*key, defaults)?;
+        }
+    }
     for &(key, dark, light, hcd, hcl) in COLORS {
         if registry.get(key).is_some() {
             continue;
@@ -172,9 +214,26 @@ pub struct Palette {
     pub slider: Color,
     pub slider_hover: Color,
     pub slider_active: Color,
+    // #20
+    pub bracket_match_background: Option<Color>,
+    pub bracket_match_border: Option<Color>,
+    pub bracket_match_foreground: Option<Color>,
+    pub word_highlight_text_background: Option<Color>,
+    pub word_highlight_text_border: Option<Color>,
+    pub selection_highlight_background: Option<Color>,
+    pub selection_highlight_border: Option<Color>,
+    pub fold_background: Option<Color>,
+    pub fold_placeholder_foreground: Option<Color>,
+    pub folding_control_foreground: Color,
+    /// `editorIndentGuide.background1`–`background6`，按缩进层级循环取。
+    pub indent_guides: [Option<Color>; 6],
+    pub whitespace: Option<Color>,
 }
 
 fn fallback(key: &str, kind: ThemeKind) -> Option<Color> {
+    if FEATURE_COLORS.contains(&key) {
+        return rove_theme::defaults::static_defaults(key).and_then(|d| d.for_kind(kind));
+    }
     COLORS
         .iter()
         .find(|c| c.0 == key)
@@ -231,6 +290,26 @@ impl Palette {
                 .unwrap_or(Color(0x64, 0x64, 0x64, 0xB3)),
             slider_active: get("scrollbarSlider.activeBackground")
                 .unwrap_or(Color(0xBF, 0xBF, 0xBF, 0x66)),
+            bracket_match_background: get("editorBracketMatch.background"),
+            bracket_match_border: get("editorBracketMatch.border"),
+            bracket_match_foreground: get("editorBracketMatch.foreground"),
+            word_highlight_text_background: get("editor.wordHighlightTextBackground"),
+            word_highlight_text_border: get("editor.wordHighlightTextBorder"),
+            selection_highlight_background: get("editor.selectionHighlightBackground"),
+            selection_highlight_border: get("editor.selectionHighlightBorder"),
+            fold_background: get("editor.foldBackground"),
+            fold_placeholder_foreground: get("editor.foldPlaceholderForeground"),
+            folding_control_foreground: get("editorGutter.foldingControlForeground")
+                .unwrap_or(foreground),
+            indent_guides: [
+                get("editorIndentGuide.background1"),
+                get("editorIndentGuide.background2"),
+                get("editorIndentGuide.background3"),
+                get("editorIndentGuide.background4"),
+                get("editorIndentGuide.background5"),
+                get("editorIndentGuide.background6"),
+            ],
+            whitespace: get("editorWhitespace.foreground"),
         }
     }
 }
@@ -257,7 +336,10 @@ mod tests {
             .unwrap();
         register(&mut colors).unwrap();
         register(&mut colors).unwrap();
-        assert_eq!(colors.entries().count(), COLORS.len());
+        assert_eq!(
+            colors.entries().count(),
+            COLORS.len() + FEATURE_COLORS.len()
+        );
         let theme = DefaultTheme {
             colors,
             kind: ThemeKind::Dark,

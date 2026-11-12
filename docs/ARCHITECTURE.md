@@ -212,7 +212,7 @@ cargo test --workspace
 | `editors` | 已由 `rove-ui::editors` 实现（见 §17）：编辑器组网格、标签（预览/固定/拖动）、打开文档服务、导航历史、编辑器类型解析；`workbench/editor_panes.rs` 绘制组与标签栏，每个组挂一个 `CodeView`；`text.rs` 只保留文档弱引用缓存 | #17（已完成） |
 | `lists` | 已由 `rove-ui::list_widget` 实现：虚拟化列表/树/快速输入与全部 `list.*`、`quickInput.*` 命令（见下文“列表、树与快速输入组件”）；骨架文件树的数据与控制已改用 `ListWidget` + `TreeModel` | #18（已完成） |
 | `code-view` | 已由 `rove-ui::code_view` 实现：自定义 Element、f64 滚动、整形缓存与预取、行号、只读选区、命中测试、滚动条；`workbench.rs` 只挂载 `CodeView` | #19（已完成） |
-| `code-features` | `workbench.rs`：SyntaxSnapshot/Theme 到代码视图装饰层（`SyntaxColors`）的投影 | #20 |
+| `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
@@ -471,6 +471,42 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
 含装饰/选区/滚动定位/视口事件四类消费方示例、1429 万行合成文本源、7 种模式命中测试、设置逐项生效）。
 性能：`cargo xtask gen-testdata --only small`、`--only uniq` 后 `cargo xtask bench --filter scroll`
 （真实窗口，见 `xtask/benches/scroll_unique.rs`）。
+
+### 高亮、折叠与只读（#20）
+
+位置仍在 `crates/rove-ui/src/code_view/`，新增文件：
+
+| 文件 | 内容 |
+|---|---|
+| `highlight.rs` | 语法着色层：`SyntaxSnapshot` 的按行 token 经 `Theme::token_style` 解析为样式（前景、背景、粗体、斜体、下划线、删除线），按行缓存；`editor.maxTokenizationLineLength` 以上的行不着色 |
+| `brackets.rs` | 括号匹配（`editor.matchBrackets`）：按 #12 语言配置的 `brackets`，光标左右两侧；`always` 时高亮包围光标的一对；字符串与注释里的括号由语法 token 排除；每方向最多扫 5000 行 |
+| `occurrences.rs` | 文本同名高亮（单词按语言 `wordPattern` 整词、大小写敏感）与选区相似匹配（`editor.selectionHighlight*`、`selectedTextMatchMode`） |
+| `folding.rs` | 折叠：区间模型（语法、`#region` 标记、缩进、块注释、手动）、折叠状态、全部折叠命令，以及独立的“文档行 ↔ 屏幕行”映射 `FoldMap`（O(log 折叠数)；R54/R55/R57 共用） |
+| `guides.rs` | 缩进参考线层级与 `editor.renderWhitespace` 五种取值的纯计算 |
+
+- **装饰层**：语法（优先级 0）、同名高亮（25）、括号匹配（35）都是 `CodeView` 自己登记的装饰层，结果按行缓存，只在快照、
+  主题、选区或设置变化时按行或整层失效；失效后在重算前继续画旧结果，所以重新解析、换主题都不闪烁。粗体/斜体经
+  `font_runs` 进入整形缓存键，颜色不进入。
+- **语法快照**：宿主调用 `set_syntax(snapshot, changed_lines)`；`changed_lines` 为 `None` 时整层失效，否则只失效这些行
+  （`take_syntax_invalidation` 可断言）。没有快照时显示纯文本，快照到达后一次性替换。
+- **折叠**：区间在后台线程按全文计算（`compute_ranges`：`foldingStrategy=auto` 且快照有语法区间时用语法区间 + 标记区间，
+  否则用 #12 的 `fold_ranges` 缩进 + 标记区间；块注释另算），`editor.foldingMaximumRegions` 保留层级浅的。折叠状态按
+  `(首行, 末行)` 记录，区间重算后按首行重新对应；变化时发出 `CodeViewEvent::FoldsChanged`，宿主写回标签的
+  `ViewState::folds`，切换回来时先 `set_folds` 再恢复滚动（滚动坐标是屏幕行）。滚动模型、嵌入区域、命中测试、预取都按
+  屏幕行计算，行缓存与装饰按文档行。语法区间目前由快照的 `folds()` 提供（`rove-syntax` 尚未产出，见 #118）。
+- **只读**：宿主按文档计算只读原因（`presented_read_only`：超大文件、元数据视图、磁盘只读属性、`readonlyInclude` /
+  `rove.files.extraReadonlyInclude`；加载器默认的 `Session` 不算），加上“在会话中切换只读模式”的按文档覆盖（超大文件除外），
+  经 `set_read_only` 交给视图。视图发布 `editorReadonly`，在只读时输入字符发出 `CodeViewEvent::EditBlocked`，工作台按
+  UX_SPEC §6.1 第 2 级在光标处提示原因；标签（单标签时即编辑器标题）显示锁形图标。只读规则在 `FileDocuments` 打开时求值。
+- **文档级别**：`set_document_level(SizeClass)`；大文件关闭同名高亮与基于语法的折叠（保留缩进折叠），超大文件关闭语法高亮
+  与全部折叠；`disabled_features()` 返回当前关闭的功能（字符串 key 见 `Feature::label_key`），供 #22 组装状态栏提示。
+- **上下文键**：`foldingEnabled`、`hasWordHighlights`、`editorReadonly` 发布在代码视图的 key context 上。
+- **颜色**：`colors::FEATURE_COLORS` 的默认值取 #10 的 VS Code 默认值表；其中 `editor.wordHighlight*` 是 P1 键，工作台用
+  `colors::theme_registry()` 建主题服务，让用户主题也能覆盖它们。
+
+验证：`cargo test -p rove-ui code_view`（各模块单元测试）、`cargo test -p rove-ui --test code_view_features`
+（高亮、括号、同名高亮、折叠、参考线与空白、只读、级别的入口集成测试）与 `cargo test -p rove-ui readonly_`
+（工作台：PackageCache 只读、锁形图标、光标处提示、会话切换）。
 
 ## 17. 编辑器组、标签与打开文档服务（#17）
 

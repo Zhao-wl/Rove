@@ -10,6 +10,10 @@
 //! - `scroll/frame_interval_cache_miss`、`scroll/frame_cpu_cache_miss`：`uniq.txt`（每行唯一），
 //!   400 帧 × 37 行，整形缓存全未命中（M0：帧间隔 p99 16.83 ms）。
 //!
+//! - `scroll/highlighted_frame_cpu_cache_hit`、`scroll/highlighted_frame_interval_cache_miss`（#20）：
+//!   同样的两种滚动，但文本是内存生成的 C#（重复 / 每行唯一），交给代码视图正式的 tree-sitter 快照
+//!   与 Dark 2026 主题，测带语法着色的帧预算。
+//!
 //! 测量在窗口里跑完后，逐帧样本按 criterion 的结果格式写入 `target/criterion/scroll/`（见 [`record`]），
 //! 这样 `cargo xtask bench` 的汇总、基线比较与预算判定（mean / p99）照常工作。
 //! 无法创建窗口（例如没有图形设备的环境）时打印「已跳过」并正常退出。
@@ -25,6 +29,8 @@ use gpui::{
 };
 use rove_buffer::{open_path, LoadOptions, TextSource};
 use rove_config::{DefaultSettings, SettingRegistry};
+use rove_syntax::{SyntaxService, SyntaxSnapshot};
+use rove_theme::Theme;
 use rove_theme::{ColorRegistry, DefaultTheme, ThemeKind};
 use rove_ui::code_view::{self, CodeView, CodeViewServices, ScrollPosition};
 
@@ -40,6 +46,8 @@ struct Scenario {
     step: f64,
     /// 来回滚动的范围（行）；small.txt 只有 401 行，循环滚动保证命中。
     wrap: Option<f64>,
+    /// #20：带语法着色的场景（快照 + 主题）。
+    highlight: Option<(Arc<dyn SyntaxSnapshot>, Arc<dyn Theme>)>,
 }
 
 #[derive(Default, Clone)]
@@ -150,8 +158,14 @@ fn run_next(
         "scroll 基准：开始 {}（{} 帧 × {} 行）",
         scenario.file, scenario.frames, scenario.step
     );
+    let highlight = scenario.highlight.clone();
     view.update(cx, |v, cx| {
         v.set_text(Some(text), false, cx);
+        if let Some((syntax, theme)) = highlight {
+            v.set_theme(theme, rove_theme::ThemeKind::Dark, cx);
+            v.set_language(Some("csharp".into()), cx);
+            v.set_syntax(Some(syntax), None, cx);
+        }
         v.record_frames(false);
     });
     // 缓存命中场景的预热要覆盖整个循环范围。
@@ -286,6 +300,53 @@ fn record(id: &str, samples: &[Duration]) {
     }
 }
 
+/// 内存生成的 C# 文本：`unique` 时每行内容都不同（整形缓存全未命中），否则 7 种方法体循环。
+fn csharp(lines: usize, unique: bool) -> String {
+    let mut s = String::from(
+        "namespace Game.Systems\n{\n    public sealed class Generated : MonoBehaviour\n    {\n",
+    );
+    let mut i = 0;
+    while s.lines().count() < lines - 2 {
+        let k = if unique { i } else { i % 7 };
+        s.push_str(&format!(
+            "        // Method {k}: returns a value computed from the input\n        private static int Method{k}(int value, string name = \"item{k}\")\n        {{\n            if (value > {k}) {{ return value * {k} + name.Length; }}\n            return Mathf.Max(value, {k}); // fallback\n        }}\n"
+        ));
+        i += 1;
+    }
+    s.push_str("    }\n}\n");
+    s
+}
+
+/// 带着色场景的输入：文本、语法快照、主题。
+type Highlighted = (Arc<dyn TextSource>, Arc<dyn SyntaxSnapshot>, Arc<dyn Theme>);
+
+/// 用正式的语法服务与 Dark 2026 主题准备一个带着色的场景。
+fn highlighted(unique: bool, lines: usize) -> Option<Highlighted> {
+    let text: Arc<dyn TextSource> =
+        Arc::new(rove_buffer::RopeText::from_text(&csharp(lines, unique)));
+    let syntax = rove_syntax::highlight::TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::from_secs(60));
+    let update = futures_lite::future::block_on(syntax.analyze(
+        text.clone(),
+        "csharp".into(),
+        rove_base::Cancellation::default(),
+    ));
+    let update = match update {
+        Ok(u) => u,
+        Err(err) => {
+            eprintln!("已跳过带着色的 scroll 场景：语法分析失败（{err}）");
+            return None;
+        }
+    };
+    // 未设置 `workbench.colorTheme`：主题服务用 Dark 2026。
+    let theme: Arc<dyn Theme> = rove_theme::ThemeService::with_catalog(
+        Arc::new(DefaultSettings(SettingRegistry::default())),
+        rove_theme::ThemeCatalog::builtin(),
+        Arc::new(code_view::colors::theme_registry()),
+    );
+    Some((text, update.snapshot, theme))
+}
+
 fn main() {
     eprintln!("scroll 基准：加载测试数据 {}", testdata_dir().display());
     let mut scenarios = vec![];
@@ -297,6 +358,7 @@ fn main() {
                 frames: 300,
                 step: 3.0,
                 wrap: Some(300.0),
+                highlight: None,
             },
             text,
         ));
@@ -309,10 +371,37 @@ fn main() {
                 frames: 400,
                 step: 37.0,
                 wrap: None,
+                highlight: None,
             },
             text,
         ));
         names.push("miss");
+    }
+    if let Some((text, syntax, theme)) = highlighted(false, 2_000) {
+        scenarios.push((
+            Scenario {
+                file: "generated C#（重复）",
+                frames: 300,
+                step: 3.0,
+                wrap: Some(300.0),
+                highlight: Some((syntax, theme)),
+            },
+            text,
+        ));
+        names.push("hl_hit");
+    }
+    if let Some((text, syntax, theme)) = highlighted(true, 20_000) {
+        scenarios.push((
+            Scenario {
+                file: "generated C#（每行唯一）",
+                frames: 400,
+                step: 37.0,
+                wrap: None,
+                highlight: Some((syntax, theme)),
+            },
+            text,
+        ));
+        names.push("hl_miss");
     }
     if scenarios.is_empty() {
         eprintln!("已跳过 scroll 基准：缺少 small.txt / uniq.txt（先 cargo xtask gen-testdata）");
@@ -350,6 +439,14 @@ fn main() {
             "hit" => {
                 record("frame_cpu_cache_hit", &s.cpu);
                 record("frame_interval_cache_hit", &s.interval);
+            }
+            "hl_hit" => {
+                record("highlighted_frame_cpu_cache_hit", &s.cpu);
+                record("highlighted_frame_interval_cache_hit", &s.interval);
+            }
+            "hl_miss" => {
+                record("highlighted_frame_cpu_cache_miss", &s.cpu);
+                record("highlighted_frame_interval_cache_miss", &s.interval);
             }
             _ => {
                 record("frame_cpu_cache_miss", &s.cpu);

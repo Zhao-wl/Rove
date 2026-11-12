@@ -5,10 +5,17 @@
 //! 每个切片有时间预算，沿滚动方向预取；缓存未命中的行先按等宽近似画占位，下一帧换成正式结果，
 //! 行高与 y 坐标只由行号和 f64 滚动位置决定，所以替换时不会跳动。
 
+use super::brackets::{self, BracketMatch};
 use super::cache::{CacheStats, Lru};
 use super::colors::Palette;
 use super::columns::{read_line, DisplayLine, LineSource, TextLines};
-use super::decorations::{DecorationProvider, DecorationStore, LayerId, MergedLine, TextStyle};
+use super::decorations::{
+    priority, DecorationProvider, DecorationStore, InlineDecoration, LayerId, LineDecorations,
+    MergedLine, TextStyle,
+};
+use super::folding::{FoldMap, FoldRange, Folding};
+use super::highlight::{SyntaxLayer, SyntaxProvider};
+use super::occurrences::{OccurrenceProvider, Occurrences, Target, WordRule};
 use super::options::{EditorOptions, Ligatures, MAX_ZOOM, MIN_ZOOM};
 use super::scroll::{self, Metrics, Reveal, ScrollPosition, ViewZones, WheelOptions};
 use super::selection::{
@@ -19,9 +26,10 @@ use gpui::{
     FontFallbacks, FontFeatures, FontId, FontStyle, FontWeight, GlyphId, Hsla, IntoElement,
     LineLayout, Pixels, Point, Render, TextRun, Window,
 };
-use rove_base::{Line, Position, Version};
-use rove_buffer::TextSource;
+use rove_base::{Line, LineRange, Position, Version};
+use rove_buffer::{ReadOnlyReason, SizeClass, TextSource};
 use rove_config::Settings;
+use rove_syntax::SyntaxSnapshot;
 use rove_theme::{Color, Theme, ThemeKind};
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
@@ -82,6 +90,63 @@ pub enum CodeViewEvent {
     ViewportChanged(Viewport),
     /// 文本源被替换（新文档或新快照）。
     TextChanged,
+    /// 折叠状态变了（#20）；宿主把它写回标签的 `ViewState::folds`。
+    FoldsChanged(Arc<[LineRange]>),
+    /// 只读编辑器里尝试输入（#20）；宿主在光标处提示原因（UX_SPEC §6.1 第 2 级反馈）。
+    EditBlocked {
+        position: Position,
+        reasons: Arc<[ReadOnlyReason]>,
+    },
+    /// “在会话中切换只读模式”（#20）：只读状态按文档保存，由宿主决定并回填 [`CodeView::set_read_only`]。
+    ToggleReadonlyRequested,
+}
+
+/// 按文档级别（UX_SPEC §3.1）关闭的功能（#20 提供查询，#22 组装状态栏悬停文案）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Feature {
+    OccurrencesHighlight,
+    SyntaxFolding,
+    /// 语法高亮仍然有，但改为后台完成（完成前显示纯文本）。
+    BackgroundHighlighting,
+    SyntaxHighlighting,
+    Folding,
+}
+
+impl Feature {
+    /// 界面字符串 key。
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Feature::OccurrencesHighlight => "codeView.feature.occurrencesHighlight",
+            Feature::SyntaxFolding => "codeView.feature.syntaxFolding",
+            Feature::BackgroundHighlighting => "codeView.feature.backgroundHighlighting",
+            Feature::SyntaxHighlighting => "codeView.feature.syntaxHighlighting",
+            Feature::Folding => "codeView.feature.folding",
+        }
+    }
+}
+
+/// 只读原因的提示文字 key（`Session` 只在用户用命令设为只读时出现）。
+pub fn read_only_reason_key(reason: &ReadOnlyReason) -> &'static str {
+    match reason {
+        ReadOnlyReason::HugeFile => "codeView.readonly.reason.hugeFile",
+        ReadOnlyReason::Metadata => "codeView.readonly.reason.metadata",
+        ReadOnlyReason::Permissions => "codeView.readonly.reason.permissions",
+        ReadOnlyReason::Rule(r) if &**r == rove_workspace::REASON_READONLY_INCLUDE => {
+            "codeView.readonly.reason.readonlyInclude"
+        }
+        ReadOnlyReason::Rule(_) => "codeView.readonly.reason.extraReadonlyInclude",
+        ReadOnlyReason::Session => "codeView.readonly.reason.session",
+    }
+}
+
+/// 文档元数据里需要在界面上表现为只读的原因：超大文件、元数据视图、磁盘只读属性、只读规则。
+/// `Session` 是加载器的默认值（M1 尚无编辑），不显示锁。
+pub fn presented_read_only(reasons: &[ReadOnlyReason]) -> Vec<ReadOnlyReason> {
+    reasons
+        .iter()
+        .filter(|r| !matches!(r, ReadOnlyReason::Session))
+        .cloned()
+        .collect()
 }
 
 impl EventEmitter<CodeViewEvent> for CodeView {}
@@ -183,6 +248,8 @@ pub(crate) struct FrameLayout {
     pub vthumb: Option<Bounds<Pixels>>,
     pub hthumb: Option<Bounds<Pixels>>,
     pub metrics: Option<Metrics>,
+    /// 行号栏里折叠控件所在的 x 范围（相对行号栏左边，像素）；没有控件时为空区间。
+    pub fold_column: Range<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -216,7 +283,25 @@ pub struct CodeView {
     pub(crate) zoom: i32,
     pub(crate) scroll: ScrollPosition,
     animation: Option<Animation>,
+    /// 嵌入区域（按屏幕行，滚动计算用）；由 `doc_zones` 经折叠映射得到。
     pub(crate) zones: ViewZones,
+    /// 嵌入区域（按文档行，对外接口的数据）。
+    pub(crate) doc_zones: ViewZones,
+    pub(crate) folding: Folding,
+    fold_task: u64,
+    pub(crate) syntax: Rc<RefCell<SyntaxLayer>>,
+    syntax_layer: LayerId,
+    last_syntax_invalidation: Option<Option<Vec<Range<u64>>>>,
+    brackets: Rc<RefCell<(Option<BracketMatch>, TextStyle)>>,
+    bracket_layer: LayerId,
+    pub(crate) occurrences: Rc<RefCell<Occurrences>>,
+    occurrence_layer: LayerId,
+    occurrence_epoch: Rc<Cell<u64>>,
+    pub(crate) level: SizeClass,
+    /// 当前滚动坐标所基于的映射（折叠变化时据此保持视口首行稳定）。
+    applied_map: FoldMap,
+    pub(crate) read_only: Arc<[ReadOnlyReason]>,
+    pub(crate) hover_gutter: bool,
     pub(crate) cursor: Cursor,
     pub(crate) drag: Option<Drag>,
     pub(crate) decorations: DecorationStore,
@@ -261,10 +346,26 @@ impl Render for CodeView {
         if !self.cursor.selection.is_empty() {
             context.add("editorHasSelection");
         }
+        if self.is_read_only() {
+            context.add(super::commands::READONLY_CONTEXT_KEY);
+        }
+        if self.folding_enabled() {
+            context.add(super::commands::FOLDING_CONTEXT_KEY);
+        }
+        if self.has_word_highlights() {
+            context.add(super::commands::WORD_HIGHLIGHTS_CONTEXT_KEY);
+        }
         let el = gpui::div()
             .key_context(context)
             .track_focus(&self.focus)
             .size_full()
+            // 可打印字符：只读时在光标处提示原因（编辑本身由 R46 实现）。
+            .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _, cx| {
+                let m = &e.keystroke.modifiers;
+                if e.keystroke.key_char.is_some() && !m.control && !m.alt && !m.platform {
+                    v.typed(cx);
+                }
+            }))
             .child(super::element::CodeElement { view: cx.entity() });
         super::commands::on_actions(el, cx)
     }
@@ -321,7 +422,45 @@ impl CodeView {
             scale_factor: 0.0,
         };
         let focus = cx.focus_handle();
-        Self {
+        let mut decorations = DecorationStore::default();
+        let syntax = Rc::new(RefCell::new(SyntaxLayer::new(services.theme.clone())));
+        let syntax_layer = decorations
+            .add(
+                "rove.syntax",
+                priority::SYNTAX,
+                Rc::new(SyntaxProvider(syntax.clone())),
+            )
+            .expect("built-in layer");
+        let occurrences = Rc::new(RefCell::new(Occurrences::default()));
+        let occurrence_layer = decorations
+            .add(
+                "rove.occurrences",
+                priority::WORD_HIGHLIGHT,
+                Rc::new(OccurrenceProvider(occurrences.clone())),
+            )
+            .expect("built-in layer");
+        let brackets: Rc<RefCell<(Option<BracketMatch>, TextStyle)>> = Rc::default();
+        let state = brackets.clone();
+        let bracket_layer = decorations
+            .add(
+                "rove.bracketMatch",
+                priority::BRACKET_MATCH,
+                Rc::new(move |line: u64, _: &str, out: &mut LineDecorations| {
+                    let (m, style) = &*state.borrow();
+                    if let Some(m) = m {
+                        for (l, r) in [&m.open, &m.close] {
+                            if *l == line {
+                                out.inline.push(InlineDecoration {
+                                    range: r.clone(),
+                                    style: *style,
+                                });
+                            }
+                        }
+                    }
+                }),
+            )
+            .expect("built-in layer");
+        let mut view = Self {
             focus,
             text: None,
             services,
@@ -332,9 +471,24 @@ impl CodeView {
             scroll: ScrollPosition::default(),
             animation: None,
             zones: ViewZones::default(),
+            doc_zones: ViewZones::default(),
+            folding: Folding::default(),
+            fold_task: 0,
+            syntax,
+            syntax_layer,
+            last_syntax_invalidation: None,
+            brackets,
+            bracket_layer,
+            occurrences,
+            occurrence_layer,
+            occurrence_epoch: Rc::new(Cell::new(0)),
+            level: SizeClass::Normal,
+            applied_map: FoldMap::default(),
+            read_only: Arc::from([]),
+            hover_gutter: false,
             cursor: Cursor::default(),
             drag: None,
-            decorations: DecorationStore::default(),
+            decorations,
             lines: Lru::new(DEFAULT_LINE_CACHE_BYTES),
             shapes: Lru::new(DEFAULT_SHAPE_CACHE_BYTES),
             font,
@@ -357,7 +511,9 @@ impl CodeView {
             recording: None,
             slice_budget: PREPARE_SLICE,
             glyphs_painted: Cell::new(0),
-        }
+        };
+        view.apply_feature_options();
+        view
     }
 
     // ------------------------------------------------------------------ 文本源
@@ -372,17 +528,24 @@ impl CodeView {
     ) {
         self.text = text;
         self.lines.clear();
-        self.decorations.reset();
         self.content_width = 0.0;
         if keep_view_state {
+            // 同一文档的新快照：装饰重算前沿用旧结果，折叠保留（区间在后台按新文本重算）。
+            self.decorations.mark_all_stale();
             let s = self.clamp_selection(self.cursor.selection);
             self.cursor.set(s);
         } else {
+            self.decorations.reset();
             self.scroll = ScrollPosition::default();
             self.animation = None;
             self.cursor.set(Selection::default());
-            self.zones = ViewZones::default();
+            self.doc_zones = ViewZones::default();
+            self.syntax.borrow_mut().current = None;
+            self.folding.clear();
         }
+        self.sync_fold_map();
+        self.recompute_folds(cx);
+        self.update_highlights(cx);
         cx.emit(CodeViewEvent::TextChanged);
         cx.notify();
     }
@@ -401,11 +564,29 @@ impl CodeView {
         if self.language != language {
             self.language = language;
             self.reload_options(cx);
+            self.recompute_folds(cx);
+            self.update_highlights(cx);
         }
     }
 
-    fn line_count(&self) -> u64 {
+    /// 文档行数（已知部分，至少 1）。
+    pub(crate) fn doc_line_count(&self) -> u64 {
         self.text.as_ref().map_or(1, |t| t.lines().known.max(1))
+    }
+
+    /// 屏幕行数（折叠隐藏的行不算）。
+    pub(crate) fn line_count(&self) -> u64 {
+        self.folding.map().view_count(self.doc_line_count()).max(1)
+    }
+
+    /// 文档行 → 屏幕行（隐藏行映射到折叠首行）。
+    pub(crate) fn view_line(&self, doc: u64) -> u64 {
+        self.folding.map().to_view(doc)
+    }
+
+    /// 屏幕行 → 文档行。
+    pub(crate) fn doc_line(&self, view: u64) -> u64 {
+        self.folding.map().to_doc(view)
     }
 
     // ------------------------------------------------------------------ 设置、主题、字体
@@ -420,10 +601,35 @@ impl CodeView {
     pub fn set_options(&mut self, options: EditorOptions, cx: &mut Context<Self>) {
         let layout_changed = options.tab_size != self.options.tab_size
             || options.stop_rendering_line_after != self.options.stop_rendering_line_after;
+        let folds_changed = options.tab_size != self.options.tab_size
+            || options.folding != self.options.folding
+            || options.folding_strategy != self.options.folding_strategy
+            || options.folding_maximum_regions != self.options.folding_maximum_regions
+            || options.large_file_optimizations != self.options.large_file_optimizations;
+        let tokens_changed =
+            options.max_tokenization_line_length != self.options.max_tokenization_line_length;
+        let highlights_changed = options.match_brackets != self.options.match_brackets
+            || options.occurrences_highlight != self.options.occurrences_highlight
+            || options.selection_highlight != self.options.selection_highlight
+            || options.selection_highlight_max_length
+                != self.options.selection_highlight_max_length
+            || options.selection_highlight_multiline != self.options.selection_highlight_multiline
+            || options.selected_text_case_sensitive != self.options.selected_text_case_sensitive
+            || options.word_separators != self.options.word_separators;
         self.options = options;
         if layout_changed {
             self.lines.clear();
             self.content_width = 0.0;
+        }
+        self.apply_feature_options();
+        if tokens_changed {
+            self.decorations.invalidate(&self.syntax_layer, None);
+        }
+        if folds_changed {
+            self.recompute_folds(cx);
+        }
+        if highlights_changed {
+            self.update_highlights(cx);
         }
         self.refresh_font();
         cx.notify();
@@ -440,6 +646,16 @@ impl CodeView {
         self.palette = Palette::resolve(&*self.services.theme, kind);
         // 主题切换按 issue 要求视为字体/度量变化：整形结果整体失效（字体可能随主题变化）。
         self.invalidate_shapes();
+        // token 颜色与 fontStyle 整体重算（旧结果在重算前继续绘制）；同名高亮与括号换新配色。
+        self.syntax.borrow_mut().theme = self.services.theme.clone();
+        self.apply_feature_options();
+        for layer in [
+            &self.syntax_layer,
+            &self.occurrence_layer,
+            &self.bracket_layer,
+        ] {
+            self.decorations.invalidate(layer, None);
+        }
         cx.notify();
     }
 
@@ -547,17 +763,20 @@ impl CodeView {
 
     /// 在 `after` 行下方保留 `height` 像素（0 删除）。供 #41 速览窗口、#22 截断提示等使用。
     pub fn set_view_zone(&mut self, after: u64, height: f32, cx: &mut Context<Self>) {
-        self.zones.set(after, height as f64);
+        self.doc_zones.set(after, height as f64);
+        self.sync_fold_map();
         cx.notify();
     }
 
     /// 嵌入区域在窗口中的位置（行已滚出视口时为 `None`）。消费方据此摆放自己的元素。
     pub fn view_zone_bounds(&self, after: u64) -> Option<Bounds<Pixels>> {
-        let h = self.zones.get(after);
-        let m = self.layout.metrics.as_ref()?;
-        if h <= 0.0 {
+        let h = self.doc_zones.get(after);
+        let m = self.metrics()?;
+        let m = &m;
+        if h <= 0.0 || self.folding.map().is_hidden(after) {
             return None;
         }
+        let after = self.view_line(after);
         // 嵌入区域紧接在 `after` 行之后。
         let y =
             ((m.line_top(after, &self.zones) + 1.0 - self.current_top()) * m.line_height) as f32;
@@ -623,6 +842,8 @@ impl CodeView {
         cx: &mut Context<Self>,
     ) {
         let s = self.clamp_selection(selection);
+        // 光标落进折叠：展开（VS Code 行为）。
+        self.unfold_to_reveal(s.active.line.0, cx);
         self.cursor.set(s);
         if let Some(r) = reveal {
             self.reveal_position(s.active, r, cx);
@@ -716,6 +937,7 @@ impl CodeView {
     }
 
     fn selection_changed(&mut self, source: SelectionSource, cx: &mut Context<Self>) {
+        self.update_highlights(cx);
         self.caret_visible = true;
         self.blink_epoch.set(self.blink_epoch.get() + 1);
         self.blinking = false;
@@ -802,7 +1024,9 @@ impl CodeView {
 
     /// 跳转到任意行（`workbench.action.gotoLine` 的落点接口）。行号超出已知范围时钳制到最后一个已知行。
     pub fn reveal_line(&mut self, line: u64, reveal: Reveal, cx: &mut Context<Self>) {
-        let line = line.min(self.line_count().saturating_sub(1));
+        let line = line.min(self.doc_line_count().saturating_sub(1));
+        self.unfold_to_reveal(line, cx);
+        let line = self.view_line(line);
         match self.metrics() {
             Some(m) => {
                 let p = self.scroll.reveal_line(line, reveal, 0, &m, &self.zones);
@@ -820,10 +1044,12 @@ impl CodeView {
     pub fn reveal_position(&mut self, p: Position, reveal: Reveal, cx: &mut Context<Self>) {
         let p = self.clamp_position(p);
         let surrounding = self.options.cursor_surrounding_lines;
+        self.unfold_to_reveal(p.line.0, cx);
         if let Some(m) = self.metrics() {
+            let line = self.view_line(p.line.0);
             let mut s = self
                 .scroll
-                .reveal_line(p.line.0, reveal, surrounding, &m, &self.zones);
+                .reveal_line(line, reveal, surrounding, &m, &self.zones);
             if let Some((x0, x1)) = self.caret_x_range(p) {
                 s = s.reveal_x(x0, x1 + self.font.cell_width as f64, &m);
             }
@@ -849,7 +1075,7 @@ impl CodeView {
         let text = self.layout.text;
         let y = (point.y - text.origin.y).to_f64();
         let coord = self.current_top() + y / m.line_height;
-        let line = line_at_coord(coord, &m, &self.zones);
+        let line = self.doc_line(line_at_coord(coord, &m, &self.zones));
         let x = (point.x - text.origin.x).to_f64() + self.scroll.x;
         let (entry, shaped) = self.line_geometry(line)?;
         let xs = self.xs_for(&entry, shaped.as_deref());
@@ -860,7 +1086,11 @@ impl CodeView {
     /// 文档位置 → 窗口坐标（该位置左上角）。行不在视口内时为 `None`。
     pub fn point_for_position(&mut self, p: Position) -> Option<Point<Pixels>> {
         let m = self.metrics()?;
-        let top = (m.line_top(p.line.0, &self.zones) - self.current_top()) * m.line_height;
+        if self.folding.map().is_hidden(p.line.0) {
+            return None;
+        }
+        let view = self.view_line(p.line.0);
+        let top = (m.line_top(view, &self.zones) - self.current_top()) * m.line_height;
         if top + m.line_height < 0.0 || top > m.viewport_height {
             return None;
         }
@@ -920,8 +1150,10 @@ impl CodeView {
                 return true;
             };
             let tab = self.options.tab_size;
+            let before = self.cursor.selection.active.line.0;
             self.cursor
                 .move_caret(&TextLines(&*text), m, extend, tab, page);
+            self.skip_folded_lines(before);
             self.reveal_caret(cx);
             self.selection_changed(SelectionSource::Keyboard, cx);
             return true;
@@ -962,6 +1194,25 @@ impl CodeView {
                     cx.write_to_clipboard(ClipboardItem::new_string(s));
                 }
             }
+            "workbench.action.files.toggleActiveEditorReadonlyInSession" => {
+                cx.emit(CodeViewEvent::ToggleReadonlyRequested);
+            }
+            _ if super::folding::FOLD_COMMANDS.contains(&id) => {
+                if self.folding_enabled() {
+                    let s = self.cursor.selection;
+                    let lines = [s.active.line.0];
+                    let mut end = s.end().line.0;
+                    // VS Code：选区止于下一行行首时不含那一行。
+                    if end > s.start().line.0 && s.end().column.0 == 0 {
+                        end -= 1;
+                    }
+                    let before = self.folding.generation;
+                    self.folding.execute(id, &lines, (s.start().line.0, end));
+                    if self.folding.generation != before {
+                        self.folds_changed(cx);
+                    }
+                }
+            }
             "editor.action.fontZoomIn" => self.set_zoom_level(self.zoom + 1, cx),
             "editor.action.fontZoomOut" => self.set_zoom_level(self.zoom - 1, cx),
             "editor.action.fontZoomReset" => self.set_zoom_level(0, cx),
@@ -990,6 +1241,12 @@ impl CodeView {
         let Some(text) = self.text.clone() else {
             return;
         };
+        if click_count == 1 && !shift && self.click_unfolds(point, p.line.0) {
+            if self.folding.toggle_header(p.line.0) {
+                self.folds_changed(cx);
+            }
+            return;
+        }
         let separators = self.options.word_separators.clone();
         let (granularity, unit) = match click_count {
             1 => (Granularity::Character, (p, p)),
@@ -1039,7 +1296,16 @@ impl CodeView {
             return;
         };
         let y = (point.y - self.layout.text.origin.y).to_f64();
-        let line = line_at_coord(self.current_top() + y / m.line_height, &m, &self.zones);
+        let view = line_at_coord(self.current_top() + y / m.line_height, &m, &self.zones);
+        let line = self.doc_line(view);
+        // 折叠控件列：点击切换该行开始的折叠。
+        let x = f32::from(point.x - self.layout.gutter.origin.x);
+        if self.layout.fold_column.contains(&x) && self.folding.header(line).is_some() {
+            if self.folding.toggle_header(line) {
+                self.folds_changed(cx);
+            }
+            return;
+        }
         let unit = line_unit(&TextLines(&*text), line);
         let sel = if shift {
             let a = self.cursor.selection.anchor;
@@ -1095,9 +1361,10 @@ impl CodeView {
             self.cursor.set(sel);
             // 拖出视口时自动滚动（不受 cursorSurroundingLines 影响）。
             if let Some(m) = self.metrics() {
-                let s =
-                    self.scroll
-                        .reveal_line(sel.active.line.0, Reveal::Nearest, 0, &m, &self.zones);
+                let view = self.view_line(sel.active.line.0);
+                let s = self
+                    .scroll
+                    .reveal_line(view, Reveal::Nearest, 0, &m, &self.zones);
                 if s != self.scroll {
                     self.set_scroll_position(s, false, cx);
                 }
@@ -1527,7 +1794,7 @@ impl CodeView {
         }
     }
 
-    /// 需要准备的行：先可见行，再沿滚动方向预取一屏，再反方向半屏。
+    /// 需要准备的行（文档行）：先可见行，再沿滚动方向预取一屏，再反方向半屏（按屏幕行计）。
     fn pending_lines(&self) -> impl Iterator<Item = u64> + '_ {
         let count = self.line_count();
         let n = self.visible.end.saturating_sub(self.visible.start).max(1);
@@ -1538,10 +1805,12 @@ impl CodeView {
             self.visible.end..(self.visible.end + n / 2).min(count)
         };
         let known = self.text.as_ref().map_or(0, |t| t.lines().known);
+        let map = self.folding.map();
         self.visible
             .clone()
             .chain(ahead)
             .chain(behind)
+            .map(move |v| map.to_doc(v))
             .filter(move |l| *l < known)
             .filter(move |l| match self.lines.peek(l) {
                 None => true,
@@ -1558,7 +1827,8 @@ impl CodeView {
         let deadline = Instant::now() + self.slice_budget;
         let mut changed = false;
         // 可见行的文本与装饰先全部到位（很快），保证下一帧至少能画占位。
-        for line in self.visible.clone() {
+        let visible: Vec<u64> = self.visible.clone().map(|v| self.doc_line(v)).collect();
+        for &line in &visible {
             changed |= self.ensure_entry(line);
         }
         let pending: Vec<u64> = self.pending_lines().collect();
@@ -1570,7 +1840,7 @@ impl CodeView {
                 out_of_time = true;
                 break;
             }
-            let visible = self.visible.contains(&line);
+            let visible = visible.contains(&line);
             let e = self.ensure_entry(line);
             let s = self.ensure_shaped(line, window);
             progress |= e | s;
@@ -1596,7 +1866,9 @@ impl CodeView {
         }
         self.last_top = top;
         self.visible = range;
-        let keep = self.visible.start.saturating_sub(4096)..self.visible.end + 4096;
+        let first = self.doc_line(self.visible.start);
+        let last = self.doc_line(self.visible.end.saturating_sub(1));
+        let keep = first.saturating_sub(4096)..last + 4096;
         self.decorations.retain_near(keep);
     }
 
@@ -1638,6 +1910,508 @@ impl CodeView {
             ascent: layout.ascent.into(),
             descent: layout.descent.into(),
         }));
+    }
+
+    // ------------------------------------------------------------------ 语法着色（#20）
+
+    /// 换语法快照（#9/#94 的分析结果，与当前文本同一版本）。`changed` 来自
+    /// `SyntaxUpdate::changed_lines`：`None` 让整层失效（首次解析、丢失基线），`Some(ranges)` 只让这些行
+    /// 失效。重算前继续用旧样式绘制；首次结果到达前显示纯文本，到达后一次性替换。
+    pub fn set_syntax(
+        &mut self,
+        snapshot: Option<Arc<dyn SyntaxSnapshot>>,
+        changed: Option<&[LineRange]>,
+        cx: &mut Context<Self>,
+    ) {
+        let folds_of = |s: &Option<super::highlight::SyntaxPair>| {
+            s.as_ref().is_some_and(|(s, _)| !s.folds().is_empty())
+        };
+        let had_folds = folds_of(&self.syntax.borrow().current);
+        let text = self.text.clone();
+        let invalid = self.syntax.borrow_mut().update(snapshot, text, changed);
+        match &invalid {
+            None => self.decorations.invalidate(&self.syntax_layer, None),
+            Some(ranges) => {
+                for r in ranges {
+                    self.decorations
+                        .invalidate(&self.syntax_layer, Some(r.clone()));
+                }
+            }
+        }
+        self.last_syntax_invalidation = Some(invalid);
+        if had_folds || folds_of(&self.syntax.borrow().current) {
+            self.recompute_folds(cx);
+        }
+        self.update_brackets();
+        cx.notify();
+    }
+
+    /// 当前的语法快照。
+    pub fn syntax_snapshot(&self) -> Option<Arc<dyn SyntaxSnapshot>> {
+        self.syntax
+            .borrow()
+            .current
+            .as_ref()
+            .map(|(s, _)| s.clone())
+    }
+
+    /// 上一次 [`CodeView::set_syntax`] 让哪些行失效（`Some(None)` 为整层；测试用）。
+    pub fn take_syntax_invalidation(&mut self) -> Option<Option<Vec<Range<u64>>>> {
+        self.last_syntax_invalidation.take()
+    }
+
+    /// 选项、配色与级别变化后，更新各功能层的参数。
+    fn apply_feature_options(&mut self) {
+        let p = &self.palette;
+        {
+            let mut syntax = self.syntax.borrow_mut();
+            syntax.max_line_length = self.options.max_tokenization_line_length;
+            syntax.enabled = self.effective_level() != SizeClass::Huge;
+        }
+        self.brackets.borrow_mut().1 = TextStyle {
+            foreground: p.bracket_match_foreground,
+            background: p.bracket_match_background,
+            border: p.bracket_match_border,
+            ..Default::default()
+        };
+        let mut o = self.occurrences.borrow_mut();
+        o.word = TextStyle {
+            background: p.word_highlight_text_background,
+            border: p.word_highlight_text_border,
+            ..Default::default()
+        };
+        o.selection = TextStyle {
+            background: p.selection_highlight_background,
+            border: p.selection_highlight_border,
+            ..Default::default()
+        };
+    }
+
+    // ------------------------------------------------------------------ 文档级别与只读（#20）
+
+    /// 文档级别（UX_SPEC §3.1，由 #17 的打开文档服务给出）。大文件关闭同名高亮与基于语法的折叠，
+    /// 超大文件再关闭语法高亮与全部折叠。
+    pub fn set_document_level(&mut self, level: SizeClass, cx: &mut Context<Self>) {
+        if self.level == level {
+            return;
+        }
+        self.level = level;
+        self.apply_feature_options();
+        self.decorations.invalidate(&self.syntax_layer, None);
+        self.recompute_folds(cx);
+        self.update_highlights(cx);
+        cx.notify();
+    }
+
+    pub fn document_level(&self) -> SizeClass {
+        self.level
+    }
+
+    /// `editor.largeFileOptimizations` 为假时不启用“大文件”这一级。
+    fn effective_level(&self) -> SizeClass {
+        match self.level {
+            SizeClass::Large if !self.options.large_file_optimizations => SizeClass::Normal,
+            l => l,
+        }
+    }
+
+    /// 当前因文档级别被关闭的功能（#22 据此组装状态栏悬停提示）。
+    pub fn disabled_features(&self) -> Vec<Feature> {
+        match self.effective_level() {
+            SizeClass::Normal => Vec::new(),
+            SizeClass::Large => vec![
+                Feature::OccurrencesHighlight,
+                Feature::SyntaxFolding,
+                Feature::BackgroundHighlighting,
+            ],
+            SizeClass::Huge => vec![
+                Feature::OccurrencesHighlight,
+                Feature::SyntaxHighlighting,
+                Feature::Folding,
+            ],
+        }
+    }
+
+    /// 只读原因（空为可编辑）。宿主按文档计算：见 [`presented_read_only`] 与“在会话中切换只读模式”。
+    pub fn set_read_only(&mut self, reasons: Arc<[ReadOnlyReason]>, cx: &mut Context<Self>) {
+        if self.read_only != reasons {
+            self.read_only = reasons;
+            cx.notify();
+        }
+    }
+
+    pub fn read_only(&self) -> &[ReadOnlyReason] {
+        &self.read_only
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        !self.read_only.is_empty()
+    }
+
+    /// 用户在视图里输入了字符。只读时发出 [`CodeViewEvent::EditBlocked`]（编辑由 R46 实现）。
+    pub fn typed(&mut self, cx: &mut Context<Self>) {
+        if self.is_read_only() {
+            cx.emit(CodeViewEvent::EditBlocked {
+                position: self.cursor.selection.active,
+                reasons: self.read_only.clone(),
+            });
+        }
+    }
+
+    // ------------------------------------------------------------------ 折叠（#20）
+
+    /// 折叠是否可用（`foldingEnabled` 上下文键）。
+    pub fn folding_enabled(&self) -> bool {
+        self.options.folding && self.effective_level() != SizeClass::Huge && self.text.is_some()
+    }
+
+    /// 当前折叠（写回标签的 `ViewState::folds`）。
+    pub fn folds(&self) -> Vec<LineRange> {
+        self.folding.collapsed()
+    }
+
+    /// 恢复保存的折叠（切换标签时，在恢复滚动位置之前调用）。不发事件。
+    pub fn set_folds(&mut self, folds: &[LineRange], cx: &mut Context<Self>) {
+        if self.folding_enabled() {
+            self.folding.restore(folds);
+            self.sync_fold_map();
+            cx.notify();
+        }
+    }
+
+    /// 可折叠区间（语法、标记、缩进、注释、手动）。
+    pub fn fold_ranges(&self) -> &[FoldRange] {
+        self.folding.ranges()
+    }
+
+    /// 区间是否已经算出来（后台计算）。
+    pub fn folding_ready(&self) -> bool {
+        self.folding.is_ready()
+    }
+
+    /// 文档行 ↔ 屏幕行映射（R54/R55/R57 共用）。
+    pub fn fold_map(&self) -> &FoldMap {
+        self.folding.map()
+    }
+
+    /// 折叠变化后：重建屏幕行映射与嵌入区域，保持视口首行稳定。
+    fn sync_fold_map(&mut self) {
+        let doc_lines = self.doc_line_count();
+        self.folding.set_doc_lines(doc_lines);
+        let map = self.folding.map().clone();
+        if map == self.applied_map {
+            self.rebuild_view_zones();
+            return;
+        }
+        let anchor = self.metrics().map(|m| {
+            let (first, y) = self.scroll.first_visible(&m, &self.zones);
+            (m, self.applied_map.to_doc(first), y)
+        });
+        self.applied_map = map.clone();
+        self.rebuild_view_zones();
+        if let Some((mut m, doc, y)) = anchor {
+            m.line_count = self.line_count();
+            let top = m.line_top(map.to_view(doc), &self.zones) - y / m.line_height;
+            self.animation = None;
+            self.scroll = ScrollPosition {
+                top,
+                x: self.scroll.x,
+            }
+            .clamped(&m, &self.zones);
+        }
+    }
+
+    fn rebuild_view_zones(&mut self) {
+        let map = self.folding.map();
+        let mut zones = ViewZones::default();
+        for (after, h) in self.doc_zones.iter() {
+            if !map.is_hidden(after) {
+                zones.set(map.to_view(after), h);
+            }
+        }
+        self.zones = zones;
+    }
+
+    fn folds_changed(&mut self, cx: &mut Context<Self>) {
+        self.sync_fold_map();
+        // 折叠住了光标：光标回到折叠首行（VS Code 行为）。
+        let s = self.cursor.selection;
+        let map = self.folding.map();
+        if map.is_hidden(s.active.line.0) || map.is_hidden(s.anchor.line.0) {
+            let line = map.prev_visible(s.active.line.0);
+            let p = self.clamp_position(pos(line, s.active.column.0));
+            self.cursor.set(Selection::caret(p));
+            self.selection_changed(SelectionSource::Api, cx);
+        }
+        cx.emit(CodeViewEvent::FoldsChanged(self.folding.collapsed().into()));
+        cx.notify();
+    }
+
+    /// 目标行在折叠里：展开它（跳转、选区接口）。
+    fn unfold_to_reveal(&mut self, line: u64, cx: &mut Context<Self>) {
+        if self.folding.reveal(line) {
+            self.folds_changed(cx);
+        }
+    }
+
+    /// 上下移动后落进折叠：跳过整段折叠。
+    fn skip_folded_lines(&mut self, before: u64) {
+        let s = self.cursor.selection;
+        let line = s.active.line.0;
+        let map = self.folding.map();
+        if !map.is_hidden(line) {
+            return;
+        }
+        let target = if line > before {
+            map.next_visible(line, self.doc_line_count())
+                .unwrap_or_else(|| map.prev_visible(line))
+        } else {
+            map.prev_visible(line)
+        };
+        let p = self.clamp_position(pos(target, s.active.column.0));
+        let anchor = if s.is_empty() { p } else { s.anchor };
+        self.cursor.set(Selection::new(anchor, p));
+    }
+
+    /// 折叠首行行尾“⋯”占位标记的 x 范围（相对文本起点）。
+    pub(crate) fn placeholder_x(&self, line_end: f32) -> (f32, f32) {
+        let cw = self.font.cell_width;
+        let start = line_end + cw * 0.6;
+        (start, start + cw * 2.6)
+    }
+
+    /// 点击折叠首行行尾之后：点在占位标记上，或开启了 `unfoldOnClickAfterEndOfLine`，就展开。
+    fn click_unfolds(&mut self, point: Point<Pixels>, line: u64) -> bool {
+        if !matches!(self.folding.header(line), Some((_, true))) {
+            return false;
+        }
+        let Some((entry, shaped)) = self.line_geometry(line) else {
+            return false;
+        };
+        let xs = self.xs_for(&entry, shaped.as_deref());
+        let end = *xs.last().unwrap_or(&0.0);
+        let x = ((point.x - self.layout.text.origin.x).to_f64() + self.scroll.x) as f32;
+        let (a, b) = self.placeholder_x(end);
+        (a..=b).contains(&x) || (self.options.unfold_on_click_after_end_of_line && x > end)
+    }
+
+    /// 后台重算可折叠区间（文本、语言、语法快照、相关设置或级别变化时）。
+    fn recompute_folds(&mut self, cx: &mut Context<Self>) {
+        self.fold_task += 1;
+        if !self.folding_enabled() {
+            if !self.folding.ranges().is_empty() || !self.folding.collapsed_keys().is_empty() {
+                self.folding.clear();
+                self.folds_changed(cx);
+            }
+            return;
+        }
+        let Some(text) = self.text.clone() else {
+            return;
+        };
+        let task = self.fold_task;
+        let language = self.language.clone();
+        let syntax: Arc<[rove_syntax::Fold]> = self
+            .syntax
+            .borrow()
+            .current
+            .as_ref()
+            .map_or_else(|| Arc::from([]), |(s, _)| s.folds());
+        let strategy = self.options.folding_strategy;
+        let tab = self.options.tab_size as usize;
+        let syntax_allowed = self.effective_level() == SizeClass::Normal;
+        let max = self.options.folding_maximum_regions;
+        let job = cx.background_executor().spawn(async move {
+            let len = text.byte_len();
+            let mut source = String::with_capacity(len as usize);
+            let span =
+                rove_base::Span::new(rove_base::ByteOffset(0), rove_base::ByteOffset(len)).ok()?;
+            text.visit_chunks(span, &mut |c| source.push_str(c)).ok()?;
+            Some(super::folding::compute_ranges(
+                &source,
+                language.as_deref(),
+                &syntax,
+                strategy,
+                tab,
+                syntax_allowed,
+            ))
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(ranges) = job.await else {
+                return;
+            };
+            let _ = this.update(cx, |v, cx| {
+                if v.fold_task == task {
+                    v.folding.set_computed(ranges, max);
+                    v.folds_changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    // ------------------------------------------------------------------ 括号匹配与同名高亮（#20）
+
+    /// 选区变化后更新括号匹配与同名高亮。
+    pub(crate) fn update_highlights(&mut self, cx: &mut Context<Self>) {
+        self.update_brackets();
+        self.update_occurrences(cx);
+    }
+
+    /// 当前高亮的括号对。
+    pub fn bracket_match(&self) -> Option<BracketMatch> {
+        self.brackets.borrow().0.clone()
+    }
+
+    fn update_brackets(&mut self) {
+        let new = self.find_brackets();
+        let old = self.brackets.borrow().0.clone();
+        if old != new {
+            let lines: Vec<u64> = old
+                .iter()
+                .chain(new.iter())
+                .flat_map(|m| m.lines())
+                .collect();
+            self.brackets.borrow_mut().0 = new;
+            for l in lines {
+                self.decorations
+                    .invalidate(&self.bracket_layer, Some(l..l + 1));
+            }
+        }
+    }
+
+    fn language_config(
+        &self,
+    ) -> Option<&'static rove_syntax::language_config::CompiledLanguageConfiguration> {
+        let language = self.language.as_deref()?;
+        rove_syntax::language_config::BuiltinLanguages::shared()
+            .0
+            .compiled(language)
+    }
+
+    fn find_brackets(&self) -> Option<BracketMatch> {
+        let text = self.text.as_ref()?;
+        let config = self.language_config()?;
+        let a = self.cursor.selection.active;
+        let lines = TextLines(&**text);
+        let read = |l: u64| -> Option<Arc<str>> {
+            self.lines
+                .peek(&l)
+                .map(|e| e.source.clone())
+                .or_else(|| lines.line_text(l).map(Arc::from))
+        };
+        let syntax = self.syntax.borrow();
+        let skip = |l: u64, c: u32| syntax.in_string_or_comment(l, c);
+        brackets::find(
+            &config.data().brackets,
+            a.line.0,
+            a.column.0 as u32,
+            self.options.match_brackets,
+            &read,
+            &skip,
+        )
+    }
+
+    /// `hasWordHighlights` 上下文键的取值。
+    pub fn has_word_highlights(&self) -> bool {
+        self.occurrences.borrow().has_word_highlights()
+    }
+
+    /// 当前同名高亮的文本（单词或选中文本）。
+    pub fn occurrence_text(&self) -> Option<Arc<str>> {
+        match &self.occurrences.borrow().target {
+            Some(Target::Word { text, .. }) | Some(Target::Selection { text, .. }) => {
+                Some(text.clone())
+            }
+            None => None,
+        }
+    }
+
+    fn word_rule(&self) -> WordRule {
+        self.language_config()
+            .map(WordRule::Language)
+            .unwrap_or_else(|| WordRule::Separators(self.options.word_separators.clone()))
+    }
+
+    fn occurrence_target(&self) -> Option<Target> {
+        let text = self.text.as_ref()?;
+        let s = self.cursor.selection;
+        let lines = TextLines(&**text);
+        if !s.is_empty() {
+            // 跨行选区的相似匹配需要跨行查找，本视图按行匹配，暂不支持（selectionHighlightMultiline）。
+            if !self.options.selection_highlight || s.start().line != s.end().line {
+                return None;
+            }
+            let line = lines.line_text(s.start().line.0)?;
+            let (a, b) = (s.start().column.0 as usize, s.end().column.0 as usize);
+            let t = line.get(a..b)?;
+            if t.trim().is_empty()
+                || t.chars().count() > self.options.selection_highlight_max_length
+            {
+                return None;
+            }
+            return Some(Target::Selection {
+                text: t.into(),
+                case_sensitive: self.options.selected_text_case_sensitive,
+                exclude: (s.start().line.0, a),
+            });
+        }
+        if !self.options.occurrences_highlight || self.effective_level() != SizeClass::Normal {
+            return None;
+        }
+        let line = lines.line_text(s.active.line.0)?;
+        let rule = self.word_rule();
+        let (a, b) = rule.word_at(&line, s.active.column.0 as usize)?;
+        Some(Target::Word {
+            text: line[a..b].into(),
+            rule,
+        })
+    }
+
+    fn update_occurrences(&mut self, cx: &mut Context<Self>) {
+        let target = self.occurrence_target();
+        let same = match (&self.occurrences.borrow().target, &target) {
+            (None, None) => true,
+            (Some(Target::Word { text: a, .. }), Some(Target::Word { text: b, .. })) => a == b,
+            (
+                Some(Target::Selection {
+                    text: a,
+                    exclude: x,
+                    case_sensitive: c,
+                }),
+                Some(Target::Selection {
+                    text: b,
+                    exclude: y,
+                    case_sensitive: d,
+                }),
+            ) => a == b && x == y && c == d,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.occurrence_epoch.set(self.occurrence_epoch.get() + 1);
+        let delay = self.options.occurrences_highlight_delay_ms;
+        let deferred = delay > 0 && matches!(target, Some(Target::Word { .. }));
+        self.occurrences.borrow_mut().target = if deferred { None } else { target.clone() };
+        self.decorations.invalidate(&self.occurrence_layer, None);
+        if deferred {
+            let epoch = self.occurrence_epoch.clone();
+            let mine = epoch.get();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(delay))
+                    .await;
+                if epoch.get() != mine {
+                    return;
+                }
+                let _ = this.update(cx, |v, cx| {
+                    v.occurrences.borrow_mut().target = target;
+                    v.decorations.invalidate(&v.occurrence_layer, None);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     // ------------------------------------------------------------------ 统计（基准、测试）

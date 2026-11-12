@@ -1,8 +1,7 @@
 use super::{appearance, text::FileDocuments};
 use crate::{
     code_view::{
-        self, CodeView, CodeViewEvent, CodeViewServices, DecorationProvider, InlineDecoration,
-        LayerId, LineDecorations, Reveal, ScrollPosition, Selection, TextStyle,
+        self, CodeView, CodeViewEvent, CodeViewServices, Reveal, ScrollPosition, Selection,
     },
     documents::{EditorGroupId, OpenDocuments, OpenOptions, OpenSource},
     editors::{
@@ -31,10 +30,13 @@ use gpui::{
     Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, Render, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+#[cfg(test)]
+use rove_base::Line;
 use rove_base::{
-    Cancellation, DocumentId, Error, Line, Resource, Result as CoreResult, TextRange, Value,
-    Version, WorkspacePath,
+    Cancellation, DocumentId, Error, Resource, Result as CoreResult, TextRange, Value, Version,
+    WorkspacePath,
 };
+use rove_buffer::{Document, ReadOnlyReason};
 use rove_commands::{center::CommandCenter, CommandExecutor, CommandRegistry, Invocation};
 use rove_config::{Key, Scope, Settings, SettingsChange};
 use rove_i18n::{Message, StringTable, Strings};
@@ -48,10 +50,8 @@ use rove_lang_cs::lifecycle::{
 };
 use std::{
     borrow::Cow,
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -62,6 +62,9 @@ mod editor_tests;
 mod outline_host;
 #[cfg(test)]
 mod outline_tests;
+#[cfg(test)]
+#[path = "workbench_readonly_tests.rs"]
+mod readonly_tests;
 #[cfg(test)]
 mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -111,50 +114,6 @@ fn file_tree(workspace: Arc<dyn Workspace>) -> CoreResult<FileTree> {
     ))
 }
 
-// SKELETON(code-features): SyntaxSnapshot/Theme → 代码视图装饰层的投影；#20 替换为正式的
-// token 着色（主题 token 规则、语义 token、括号着色等）。
-type CurrentSyntax = (
-    Arc<dyn rove_buffer::TextSource>,
-    Arc<dyn rove_syntax::SyntaxSnapshot>,
-);
-struct SyntaxColors {
-    current: RefCell<Option<CurrentSyntax>>,
-    theme: Arc<dyn Theme>,
-}
-impl DecorationProvider for SyntaxColors {
-    fn decorate(&self, line: u64, _: &str, out: &mut LineDecorations) {
-        let current = self.current.borrow();
-        let Some((text, syntax)) = current.as_ref() else {
-            return;
-        };
-        let (Ok(range), Ok(tokens)) = (text.line_range(Line(line)), syntax.tokens(Line(line)))
-        else {
-            return;
-        };
-        for token in tokens.iter() {
-            let start = token.range.start().0.max(range.start().0) - range.start().0;
-            let end = token
-                .range
-                .end()
-                .0
-                .min(range.end().0)
-                .saturating_sub(range.start().0);
-            if start >= end {
-                continue;
-            }
-            if let Some(c) = self.theme.token_style(&token.scopes).foreground {
-                out.inline.push(InlineDecoration {
-                    range: start as u32..end as u32,
-                    style: TextStyle {
-                        foreground: Some(c),
-                        ..Default::default()
-                    },
-                });
-            }
-        }
-    }
-}
-
 /// What a code view currently displays: a tab's document at one text version.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Shown {
@@ -163,11 +122,10 @@ struct Shown {
     version: Version,
 }
 
-/// One code view of an editor group, with its own syntax colouring layer.
+/// One code view of an editor group. Syntax colouring, bracket matching, occurrences and
+/// folding live in the code view itself (#20); the host only hands it snapshots and state.
 struct CodeSlot {
     code: Entity<CodeView>,
-    colors: Rc<SyntaxColors>,
-    layer: LayerId,
     shown: Option<Shown>,
     _events: gpui::Subscription,
 }
@@ -177,6 +135,20 @@ struct CodeSlot {
 struct GroupViews {
     primary: CodeSlot,
     secondary: Option<CodeSlot>,
+}
+
+/// See [`Workbench::read_only_of`].
+fn read_only_for(
+    overrides: &BTreeMap<DocumentId, bool>,
+    document: &Document,
+) -> Arc<[ReadOnlyReason]> {
+    let base = code_view::presented_read_only(&document.metadata.read_only);
+    let huge = base.contains(&ReadOnlyReason::HugeFile);
+    match overrides.get(&document.id) {
+        Some(false) if !huge => Arc::from([]),
+        Some(true) if base.is_empty() => Arc::from([ReadOnlyReason::Session]),
+        _ => base.into(),
+    }
 }
 
 fn selection_of(state: &ViewState) -> Selection {
@@ -232,6 +204,8 @@ pub struct Workbench {
     outline: crate::outline::view::Outline,
     /// 最近一次扫描得到的工作区（面包屑的文件选择器列出目录条目）。
     workspace: Option<Arc<dyn Workspace>>,
+    /// "Toggle read-only in this session" per document: `true` read-only, `false` writable.
+    readonly_overrides: BTreeMap<DocumentId, bool>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -329,8 +303,12 @@ impl Workbench {
                 .spawn(async move |cx| {
                     let result = analysis.await;
                     let _ = owner.update(cx, |view, cx| {
+                        let changed = result
+                            .as_ref()
+                            .ok()
+                            .and_then(|update| update.changed_lines.clone());
                         if view.editor.finish_syntax(document, generation, result) {
-                            view.refresh_syntax(document, cx);
+                            view.refresh_syntax(document, changed, cx);
                         }
                     });
                 })
@@ -343,8 +321,12 @@ impl Workbench {
             store,
             cx,
         );
-        // #10 的主题服务同时供给骨架与代码视图（#19）。
-        let theme_service = rove_theme::ThemeService::new(services.clone());
+        // #10 的主题服务同时供给骨架与代码视图（#19）；登记表补上代码视图用到的 P1 颜色键（#20）。
+        let theme_service = rove_theme::ThemeService::with_catalog(
+            services.clone(),
+            rove_theme::ThemeCatalog::builtin(),
+            Arc::new(code_view::colors::theme_registry()),
+        );
         let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;
         let outline = Self::new_outline(theme.clone(), &services, cx);
@@ -386,6 +368,7 @@ impl Workbench {
             feedback_events: None,
             outline,
             workspace: None,
+            readonly_overrides: BTreeMap::new(),
         };
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
@@ -484,18 +467,11 @@ impl Workbench {
     fn theme_changed(&mut self, cx: &mut Context<Self>) {
         let kind = self.theme_service.current().kind();
         self.shell.set_theme_kind(kind);
-        let slots: Vec<_> = self
-            .views
-            .values()
-            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
-            .map(|slot| (slot.code.clone(), slot.layer.clone()))
-            .collect();
-        for (code, layer) in slots {
+        // The code view recolours tokens (colour and fontStyle) itself; stale styles stay on
+        // screen until the new ones are ready.
+        for code in self.code_views() {
             let theme = self.theme.clone();
-            code.update(cx, |code, cx| {
-                code.set_theme(theme, kind, cx);
-                code.invalidate_decorations(&layer, None, cx);
-            });
+            code.update(cx, |code, cx| code.set_theme(theme, kind, cx));
         }
         cx.notify();
     }
@@ -754,16 +730,10 @@ impl Workbench {
     // ------------------------------------------------------------- code views per group
 
     fn new_slot(&self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) -> CodeSlot {
-        let colors = Rc::new(SyntaxColors {
-            current: RefCell::new(None),
-            theme: self.theme.clone(),
-        });
-        let provider: Rc<dyn DecorationProvider> = colors.clone();
         let theme = self.theme.clone();
         let theme_kind = self.theme_service.current().kind();
         let settings = self.settings.clone();
         let zoom = self.shell.zoom() as f64;
-        let mut layer = None;
         let code = cx.new(|cx| {
             let mut code = CodeView::new(
                 CodeViewServices {
@@ -773,16 +743,13 @@ impl Workbench {
                 },
                 cx,
             );
-            layer = code
-                .add_decorations("rove.syntax", code_view::priority::SYNTAX, provider, cx)
-                .ok();
             if zoom != 1.0 {
                 apply_zoom(&mut code, zoom, cx);
             }
             code
         });
         let events = cx.subscribe(&code, move |this, _, event: &CodeViewEvent, cx| {
-            this.code_event(group, secondary, event);
+            this.code_event(group, secondary, event, cx);
             // 面包屑与大纲“跟随光标”随光标更新（#26）。
             if matches!(event, CodeViewEvent::SelectionChanged { .. }) {
                 cx.notify();
@@ -790,15 +757,28 @@ impl Workbench {
         });
         CodeSlot {
             code,
-            colors,
-            layer: layer.expect("syntax decoration layer"),
             shown: None,
             _events: events,
         }
     }
 
     /// Writes the shown tab's live scroll and selection back to its `ViewState`.
-    fn code_event(&mut self, group: EditorGroupId, secondary: bool, event: &CodeViewEvent) {
+    fn code_event(
+        &mut self,
+        group: EditorGroupId,
+        secondary: bool,
+        event: &CodeViewEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            CodeViewEvent::EditBlocked { position, reasons } => {
+                return self.edit_blocked(group, secondary, *position, reasons, cx);
+            }
+            CodeViewEvent::ToggleReadonlyRequested => {
+                return self.toggle_readonly_in_session(group, secondary, cx);
+            }
+            _ => {}
+        }
         let Some(slot) = self.views.get(&group).and_then(|views| {
             if secondary {
                 views.secondary.as_ref()
@@ -841,8 +821,116 @@ impl Workbench {
                 state.scroll = viewport.top;
                 state.scroll_x = viewport.scroll_x;
             }
-            CodeViewEvent::TextChanged => {}
+            CodeViewEvent::FoldsChanged(folds) => state.folds = folds.clone(),
+            CodeViewEvent::TextChanged
+            | CodeViewEvent::EditBlocked { .. }
+            | CodeViewEvent::ToggleReadonlyRequested => {}
         }
+    }
+
+    /// The document a code view shows, if any.
+    fn shown_document(&self, group: EditorGroupId, secondary: bool) -> Option<Arc<Document>> {
+        let views = self.views.get(&group)?;
+        let slot = if secondary {
+            views.secondary.as_ref()?
+        } else {
+            &views.primary
+        };
+        let shown = slot.shown?;
+        self.editor
+            .groups
+            .get(&group)?
+            .tab(shown.tab)
+            .and_then(Tab::opened)
+            .map(|opened| opened.document.clone())
+    }
+
+    /// Read-only reasons shown for a document (UX_SPEC §3.4): huge file, metadata view, disk
+    /// attribute and read-only rules, adjusted by "toggle read-only in this session".
+    fn read_only_of(&self, document: &Document) -> Arc<[ReadOnlyReason]> {
+        read_only_for(&self.readonly_overrides, document)
+    }
+
+    /// `workbench.action.files.toggleActiveEditorReadonlyInSession`: per document, never for
+    /// huge files (they are read-only by construction).
+    fn toggle_readonly_in_session(
+        &mut self,
+        group: EditorGroupId,
+        secondary: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(document) = self.shown_document(group, secondary) else {
+            return;
+        };
+        if document
+            .metadata
+            .read_only
+            .contains(&ReadOnlyReason::HugeFile)
+        {
+            return;
+        }
+        let now = !self.read_only_of(&document).is_empty();
+        self.readonly_overrides.insert(document.id, !now);
+        self.refresh_read_only(cx);
+    }
+
+    /// Push each shown document's read-only state into its code views.
+    fn refresh_read_only(&mut self, cx: &mut Context<Self>) {
+        let slots: Vec<(EditorGroupId, bool)> = self
+            .views
+            .iter()
+            .flat_map(|(g, v)| {
+                std::iter::once((*g, false)).chain(v.secondary.as_ref().map(|_| (*g, true)))
+            })
+            .collect();
+        for (group, secondary) in slots {
+            let reasons = self
+                .shown_document(group, secondary)
+                .map(|d| self.read_only_of(&d))
+                .unwrap_or_else(|| Arc::from([]));
+            if let Some(code) = self.group_code(group, secondary).cloned() {
+                code.update(cx, |code, cx| code.set_read_only(reasons, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Typing into a read-only editor: a cursor hint with the reason (UX_SPEC §6.1 level 2).
+    fn edit_blocked(
+        &mut self,
+        group: EditorGroupId,
+        secondary: bool,
+        position: rove_base::Position,
+        reasons: &[ReadOnlyReason],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(document) = self.shown_document(group, secondary) else {
+            return;
+        };
+        let reason = reasons
+            .first()
+            .map(|r| self.label(code_view::read_only_reason_key(r), &[]))
+            .unwrap_or_default();
+        let key = if reasons.contains(&ReadOnlyReason::HugeFile) {
+            "codeView.readonly.cannotEdit"
+        } else {
+            "codeView.readonly.cannotEditToggle"
+        };
+        let message = Message {
+            key: key.into(),
+            args: Arc::from([("reason".into(), reason.into())]),
+        };
+        let _ = shell::view::report(
+            self,
+            "codeView.readonly",
+            Reason::NoResult {
+                document: document.id,
+                position,
+            },
+            message,
+            Arc::from([]),
+            cx,
+        );
     }
 
     /// Loads each group's active tab into that group's code view. The outgoing tab's state is
@@ -881,7 +969,12 @@ impl Workbench {
     }
 
     fn sync_slot(&mut self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) {
-        let Self { editor, views, .. } = self;
+        let Self {
+            editor,
+            views,
+            readonly_overrides,
+            ..
+        } = self;
         let pane = editor.groups.get_mut(&group).unwrap();
         let views = views.get_mut(&group).unwrap();
         let slot = if secondary {
@@ -906,7 +999,6 @@ impl Workbench {
         }
         let previous = std::mem::replace(&mut slot.shown, target);
         let Some(tab) = tab else {
-            *slot.colors.current.borrow_mut() = None;
             slot.code
                 .update(cx, |code, cx| code.set_text(None, false, cx));
             return;
@@ -914,7 +1006,9 @@ impl Workbench {
         let opened = tab.opened().unwrap();
         let text = opened.document.text.clone();
         let language = opened.document.metadata.language.clone();
-        *slot.colors.current.borrow_mut() = opened.syntax.clone().map(|s| (text.clone(), s));
+        let syntax = opened.syntax.clone();
+        let level = opened.document.metadata.size;
+        let document = opened.document.clone();
         let state = if secondary {
             tab.secondary.clone().unwrap_or_default()
         } else {
@@ -924,13 +1018,18 @@ impl Workbench {
         // A new snapshot of the document already shown keeps the live view state.
         let same = matches!((previous, target), (Some(p), Some(t)) if p.tab == t.tab && p.document == t.document);
         let changed = previous != target;
-        let layer = slot.layer.clone();
-        slot.code.update(cx, |code, cx| {
+        let code = slot.code.clone();
+        let read_only = read_only_for(readonly_overrides, &document);
+        code.update(cx, |code, cx| {
             if changed {
+                code.set_document_level(level, cx);
                 code.set_text(Some(text), same, cx);
                 code.set_language(Some(language), cx);
-                code.invalidate_decorations(&layer, None, cx);
+                code.set_syntax(syntax, None, cx);
+                code.set_read_only(read_only, cx);
                 if !same {
+                    // Folds first: the saved scroll position is in screen lines.
+                    code.set_folds(&state.folds, cx);
                     code.set_scroll_position(
                         ScrollPosition {
                             top: state.scroll,
@@ -950,8 +1049,15 @@ impl Workbench {
         });
     }
 
-    /// A background analysis of `document` finished: recolour the code views showing it.
-    fn refresh_syntax(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+    /// A background analysis of `document` finished: hand the new snapshot to the code views
+    /// showing it. `changed` is the analysis' changed-line set (new snapshot coordinates);
+    /// only those lines are restyled, the rest keep their cached styles (#20).
+    fn refresh_syntax(
+        &mut self,
+        document: DocumentId,
+        changed: Option<Arc<[rove_base::LineRange]>>,
+        cx: &mut Context<Self>,
+    ) {
         let Self { editor, views, .. } = self;
         for slot in views
             .values()
@@ -969,15 +1075,24 @@ impl Workbench {
             else {
                 continue;
             };
-            *slot.colors.current.borrow_mut() = opened
-                .syntax
-                .clone()
-                .map(|syntax| (opened.document.text.clone(), syntax));
-            let layer = slot.layer.clone();
-            slot.code
-                .update(cx, |code, cx| code.invalidate_decorations(&layer, None, cx));
+            let syntax = opened.syntax.clone();
+            let changed = changed.clone();
+            slot.code.update(cx, |code, cx| {
+                code.set_syntax(syntax, changed.as_deref(), cx)
+            });
         }
         cx.notify();
+    }
+
+    /// Whether a tab's document is presented read-only (lock icon on the tab).
+    fn tab_read_only(&self, tab: &Tab) -> bool {
+        tab.opened()
+            .is_some_and(|opened| !self.read_only_of(&opened.document).is_empty())
+    }
+
+    /// Read-only reasons the focused code view shows (tests, status entries).
+    pub fn active_read_only(&self, cx: &App) -> Vec<ReadOnlyReason> {
+        self.code_view().read(cx).read_only().to_vec()
     }
 
     /// The focused group's code view (the active editor).

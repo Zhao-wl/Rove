@@ -1,6 +1,6 @@
 //! 文档加载走 `rove-buffer`（编码识别、BOM、换行符与 rope 快照）。
 use rove_base::*;
-use rove_buffer::{open_file, Document, Documents, LoadOptions};
+use rove_buffer::{open_file, Document, Documents, LoadOptions, ReadOnlyReason};
 use rove_config::Settings;
 use std::{
     collections::BTreeMap,
@@ -10,6 +10,32 @@ use std::{
         Arc, Mutex, Weak,
     },
 };
+
+/// Read-only reasons from the workspace rules (#15) for a file being opened.
+fn read_only_rules(
+    root: &std::path::Path,
+    resource: &Resource,
+    canonical: &std::path::Path,
+    settings: &dyn Settings,
+) -> Vec<ReadOnlyReason> {
+    let Ok(config) = rove_workspace::WorkspaceConfig::from_settings(settings) else {
+        return Vec::new();
+    };
+    let relative = match resource {
+        Resource::Workspace(p) => p.as_str().to_string(),
+        Resource::File(p) => {
+            let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            canonical
+                .strip_prefix(&root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/")
+        }
+        Resource::Virtual(p) => p.to_string(),
+    };
+    let permission = std::fs::metadata(canonical).is_ok_and(|m| m.permissions().readonly());
+    config.readonly.evaluate(&relative, permission)
+}
 
 /// Live documents are owned by tabs and callers. The cache only indexes their weak identities.
 #[derive(Default)]
@@ -114,6 +140,12 @@ impl Documents for FileDocuments {
             };
             let loaded = open_file(&path, &options, policy)?;
             cancel.check()?;
+            // #15 的只读规则（files.readonlyInclude/Exclude/FromPermissions 与
+            // rove.files.extraReadonlyInclude）；#20 负责表现。
+            let mut loaded = loaded;
+            let mut read_only: Vec<ReadOnlyReason> = loaded.metadata.read_only.to_vec();
+            read_only.extend(read_only_rules(&root, &resource, &path, &*settings));
+            loaded.metadata.read_only = read_only.into();
             let doc = Arc::new(Document {
                 id: DocumentId(next.fetch_add(1, Ordering::Relaxed)),
                 resource: resource.clone(),
