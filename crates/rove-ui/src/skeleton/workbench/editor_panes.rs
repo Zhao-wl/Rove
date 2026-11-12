@@ -605,7 +605,13 @@ impl Workbench {
 
     /// The group's code view (#19), which owns scrolling, selection and painting.
     fn code_viewport(&self, group: EditorGroupId, secondary: bool) -> Option<Div> {
-        let code = self.group_code(group, secondary)?.clone();
+        // #21：代码视图由查找条宿主包住（宿主把代码视图作为第一个子元素）。
+        let views = self.views.get(&group)?;
+        let code = if secondary {
+            views.secondary.as_ref()?.find.clone()
+        } else {
+            views.primary.find.clone()
+        };
         Some(
             div()
                 .flex_1()

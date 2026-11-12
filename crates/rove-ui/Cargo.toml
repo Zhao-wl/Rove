@@ -20,6 +20,7 @@ gpui.workspace = true
 serde_json.workspace = true
 unicode-segmentation.workspace = true
 memchr.workspace = true
+fancy-regex.workspace = true
 globset.workspace = true
 async-channel.workspace = true
 

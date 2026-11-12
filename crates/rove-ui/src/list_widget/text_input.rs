@@ -81,6 +81,13 @@ impl TextInput {
         self.placeholder = text.into();
     }
 
+    /// Selects the whole content (a focused find box starts with its text selected, like VS Code).
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.selected = 0..self.content.len();
+        self.reversed = false;
+        cx.notify();
+    }
+
     /// Programmatic replacement (no `Changed` event).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = text.to_string();
