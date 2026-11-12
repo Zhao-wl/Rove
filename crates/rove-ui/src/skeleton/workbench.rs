@@ -73,6 +73,10 @@ mod nav_cases_tests;
 mod nav_host;
 #[cfg(test)]
 mod nav_tests;
+// #41：速览窗口的装配与入口测试。
+mod peek_host;
+#[cfg(test)]
+mod peek_tests;
 #[cfg(test)]
 #[path = "workbench_readonly_tests.rs"]
 mod readonly_tests;
@@ -231,6 +235,8 @@ pub struct Workbench {
     nav: nav_host::Nav,
     /// #25：全局搜索视图（见 `search_host.rs`）。
     search: Entity<crate::search::view::SearchView>,
+    /// #41：各代码视图上的速览窗口、查询服务与外部符号片段登记点（见 `peek_host.rs`）。
+    peek: peek_host::Peeks,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -407,9 +413,14 @@ impl Workbench {
             quick: Default::default(),
             nav,
             search,
+            peek: Default::default(),
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
+        // #41：速览窗口的命令。
+        for (id, _, _) in crate::peek::registry::COMMANDS {
             view.shell.mark_implemented(*id);
         }
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
@@ -434,6 +445,8 @@ impl Workbench {
         view.watch_settings(cx);
         view.watch_theme(cx);
         view.watch_feedback(cx);
+        // #41：`config.editor.stablePeek` 上下文键。
+        view.peek_settings_changed(cx);
         view.sync_views(cx);
         view.scan(root, cx);
         view
@@ -488,6 +501,13 @@ impl Workbench {
                 find.update(cx, |find, cx| find.reload_settings(cx));
             }
         }
+        // #41：editor.stablePeek / editor.peekWidgetDefaultFocus 变化。
+        if keys
+            .iter()
+            .any(|k| &**k == "editor.stablePeek" || &**k == "editor.peekWidgetDefaultFocus")
+        {
+            self.peek_settings_changed(cx);
+        }
         // #36：rove.index.enabled / cacheDir 变化：关闭旧的生命周期，按新设置重新打开。
         if self.index.lifecycle().is_some()
             && keys.iter().any(|k| LifecycleConfig::is_lifecycle_key(k))
@@ -535,6 +555,8 @@ impl Workbench {
         // #40：悬停卡片、链接与语义同名高亮的颜色。
         self.nav_theme_changed(cx);
         self.search_theme_changed(cx);
+        // #41：速览窗口的配色。
+        self.peek_theme_changed(cx);
         cx.notify();
     }
     fn find_hosts(&self) -> Vec<Entity<crate::find::host::FindHost>> {
@@ -1642,6 +1664,8 @@ impl Render for Workbench {
         self.sync_nav(window, cx);
         // #25：搜索视图的全局上下文键与焦点。
         self.sync_search(window, cx);
+        // #41：代码视图换了文档时关闭它上面的速览。
+        self.sync_peeks(cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);

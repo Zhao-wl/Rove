@@ -298,6 +298,11 @@ impl EditorService {
         self.serial
     }
 
+    /// 文档加载器（#41 的速览预览与片段读取共用同一份文档缓存）。
+    pub(crate) fn loader(&self) -> Arc<dyn Documents> {
+        self.loader.clone()
+    }
+
     pub(crate) fn active(&self) -> &Group {
         &self.groups[&self.focused]
     }
