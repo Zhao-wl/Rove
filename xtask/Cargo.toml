@@ -93,3 +93,7 @@ harness = false
 [[bench]]
 name = "quickopen"
 harness = false
+
+[[bench]]
+name = "cs_overlay"
+harness = false
