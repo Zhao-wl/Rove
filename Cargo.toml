@@ -22,6 +22,7 @@ rove-theme = { path = "crates/rove-theme" }
 rove-config = { path = "crates/rove-config" }
 rove-commands = { path = "crates/rove-commands" }
 rove-i18n = { path = "crates/rove-i18n" }
+rove-fuzzy = { path = "crates/rove-fuzzy" }
 
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
 # #7 文本缓冲：rope 快照、编码推断与解码。默认 feature 里的 unicode_lines 会把
