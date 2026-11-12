@@ -33,6 +33,7 @@ use rove_syntax::{SyntaxService, SyntaxSnapshot};
 use rove_theme::Theme;
 use rove_theme::{ColorRegistry, DefaultTheme, ThemeKind};
 use rove_ui::code_view::{self, CodeView, CodeViewServices, ScrollPosition};
+use rove_ui::find::host::{FindHost, FindShared};
 
 fn testdata_dir() -> PathBuf {
     std::env::var_os("ROVE_PERF_TESTDATA")
@@ -48,6 +49,8 @@ struct Scenario {
     wrap: Option<f64>,
     /// #20：带语法着色的场景（快照 + 主题）。
     highlight: Option<(Arc<dyn SyntaxSnapshot>, Arc<dyn Theme>)>,
+    /// #21：打开查找条并搜索这个文本（匹配装饰层随每一行生成）。
+    find: Option<&'static str>,
 }
 
 #[derive(Default, Clone)]
@@ -131,6 +134,8 @@ fn measure(scenarios: Vec<(Scenario, Arc<dyn TextSource>)>) -> Vec<Samples> {
 type Queue = Rc<RefCell<std::vec::IntoIter<(Scenario, Arc<dyn TextSource>)>>>;
 
 struct Run {
+    /// #21：查找条宿主（只为让匹配装饰层保持登记，窗口根仍是代码视图）。
+    _find: Option<Entity<FindHost>>,
     view: Entity<CodeView>,
     scenario: Scenario,
     warmup: usize,
@@ -173,7 +178,26 @@ fn run_next(
         + scenario
             .wrap
             .map_or(0, |w| (w / scenario.step).ceil() as usize + 1);
+    let find = scenario.find.map(|search| {
+        let svc = services();
+        let mut strings = rove_i18n::chinese().expect("字符串表");
+        rove_ui::find::registry::register_strings(&mut strings).expect("查找字符串");
+        let host = cx.new(|cx| {
+            FindHost::new(
+                view.clone(),
+                FindShared::new(None),
+                svc.settings.clone(),
+                Arc::new(strings),
+                &svc.theme,
+                svc.theme_kind,
+                cx,
+            )
+        });
+        host.update(cx, |host, cx| host.show(search, window, cx));
+        host
+    });
     let run = Rc::new(RefCell::new(Run {
+        _find: find,
         view,
         scenario,
         warmup,
@@ -359,10 +383,26 @@ fn main() {
                 step: 3.0,
                 wrap: Some(300.0),
                 highlight: None,
+                find: None,
             },
             text,
         ));
         names.push("hit");
+    }
+    // #21：小文件滚动，但查找条已打开且每个可见行都有匹配装饰（对照 `hit`）。
+    if let Some(text) = load("small.txt") {
+        scenarios.push((
+            Scenario {
+                file: "small.txt（查找条打开）",
+                frames: 300,
+                step: 3.0,
+                wrap: Some(300.0),
+                highlight: None,
+                find: Some("e"),
+            },
+            text,
+        ));
+        names.push("find_hit");
     }
     if let Some(text) = load("uniq.txt") {
         scenarios.push((
@@ -372,6 +412,7 @@ fn main() {
                 step: 37.0,
                 wrap: None,
                 highlight: None,
+                find: None,
             },
             text,
         ));
@@ -385,6 +426,7 @@ fn main() {
                 step: 3.0,
                 wrap: Some(300.0),
                 highlight: Some((syntax, theme)),
+                find: None,
             },
             text,
         ));
@@ -398,6 +440,7 @@ fn main() {
                 step: 37.0,
                 wrap: None,
                 highlight: Some((syntax, theme)),
+                find: None,
             },
             text,
         ));
@@ -439,6 +482,10 @@ fn main() {
             "hit" => {
                 record("frame_cpu_cache_hit", &s.cpu);
                 record("frame_interval_cache_hit", &s.interval);
+            }
+            "find_hit" => {
+                record("find_visible_frame_cpu_cache_hit", &s.cpu);
+                record("find_visible_frame_interval_cache_hit", &s.interval);
             }
             "hl_hit" => {
                 record("highlighted_frame_cpu_cache_hit", &s.cpu);

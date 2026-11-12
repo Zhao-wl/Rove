@@ -279,3 +279,26 @@ status = "enforced"
 bench = "edit/insert_char_100k_lines"
 aggregate = "p99"
 reason = "issue #46 验收：事务校验 + rope 写时复制 + 新快照 + InputEdit / 按行失效通知 + 选区映射 + 撤销记录 < 100 µs"
+
+# ---------------------------------------------------------------- 当前文件查找条（#21）
+
+[[budget]]
+id = "find_input_char_100k_lines"
+metric = "10 万行文件上查找框多键入一个字符到匹配计数更新（普通文本，后台整篇扫描）"
+value = 16
+unit = "ms"
+owner = "#21"
+status = "enforced"
+bench = "find/input_char_100k_lines"
+aggregate = "p99"
+reason = "issue #21 验收标准：< 16 ms。口径是编译查询、扫描整个 4 MB 文本并把结果交回模型；扫描在后台线程，UI 线程只做登记与交回结果。正则与区分大小写的数字见 PR"
+
+[[budget]]
+id = "find_visible_frame_cpu_cache_hit"
+metric = "查找条打开（每个可见行都有匹配装饰）时连续滚动的每帧 CPU（整形缓存命中）"
+value = 1
+unit = "ms"
+owner = "#21"
+status = "enforced"
+bench = "scroll/find_visible_frame_cpu_cache_hit"
+reason = "issue #21 验收标准：查找条可见时 #19 的滚动与帧预算不退化。与 frame_cpu_cache_hit 同一份 small.txt、同样的 300 帧 × 3 行，额外打开查找条并搜索 e（几乎每行都有匹配）。无法创建窗口的环境整组跳过"
