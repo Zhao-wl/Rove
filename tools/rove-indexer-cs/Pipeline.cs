@@ -56,6 +56,17 @@ sealed class IndexContext
     public required SemaphoreSlim Io;
     public required FilePrefetcher Prefetch;
     public int Missing;
+    int _boundFiles;
+
+    /// 进度协议：每跨过 1% 在 stderr 上输出一行 `progress <已绑定文件> <磁盘文件总数>`（不带时间前缀），
+    /// 供 Rove 的索引生命周期换算进度条（`crates/rove-lang-cs/src/lifecycle/process.rs` 的 `Progress::parse`）。
+    public void FileBound()
+    {
+        int total = Results.Length;
+        int done = Interlocked.Increment(ref _boundFiles);
+        if (total > 0 && done <= total && (long)done * 100 / total != (long)(done - 1) * 100 / total)
+            Console.Error.WriteLine($"progress {done} {total}");
+    }
 
     public string RelativePath(string fullPath) => Path.GetRelativePath(Root, fullPath).Replace('\\', '/');
 }
@@ -269,6 +280,7 @@ static class Pipeline
                 items.Add(() =>
                 {
                     ctx.Results[id] = binder.Bind(p.tree, id, Encoding.UTF8.GetBytes(ctx.RelativePath(owned[index])), p.hash);
+                    ctx.FileBound();
                     parsed[index] = null;
                 });
             }

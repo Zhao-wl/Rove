@@ -139,3 +139,5 @@ cargo test -p rove-lang-cs -- --include-ignored
 ```
 
 `--report` 新增字段：`thread_seconds`（读取、解析、编译、生成器、镜像输出、绑定及其拆分）、`cpu_seconds`、`peak_gc_heap_mb`、`peak_gc_committed_mb`、`gc_collections`、`gc_pause_percent`、`soft_limit_collections`、`options`、`read_bytes`、`metadata_images`、`metadata_image_fallbacks`、`generator_issues`。原有字段保留。阶段耗时 `phases_ms` 改为 `parse_csproj`、`index_projects`、`write_index`：读取、解析、编译与绑定在流水线中重叠，不能再分段计墙钟时间，各自的 CPU 去向见 `thread_seconds`。
+
+由于阶段行不再按 M0 的 `[parse_syntax]` / `[bind_and_collect]` 输出，进程在 stderr 上改为每完成 1% 的文件绑定输出一行 `progress <已绑定> <总数>`。这是 #36 的索引生命周期（`Progress::parse`）预留的协议，进度条直接采用。进程版本 1.0.3 与 #36 的 `EXPECTED_INDEXER_VERSION` 同步更新。
