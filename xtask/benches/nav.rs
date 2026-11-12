@@ -213,7 +213,7 @@ fn frame(run: Rc<RefCell<Run>>, window: &mut Window, cx: &mut App) {
     let mut r = run.borrow_mut();
     r.frames += 1;
     let view = r.view.clone();
-    if r.frames % 500 == 0 {
+    if r.frames.is_multiple_of(500) {
         eprintln!(
             "nav 基准：第 {} 帧，第 {} 轮，活动 {:?}，等待 {:?}，回退 {}，样本 {}",
             r.frames,

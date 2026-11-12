@@ -194,7 +194,7 @@ impl SymbolNavigation {
     }
 
     /// 下一个候选（循环）。
-    pub fn next(&mut self) -> Target {
+    pub fn advance(&mut self) -> Target {
         self.index = (self.index + 1) % self.targets.len();
         self.targets[self.index].clone()
     }
@@ -530,10 +530,10 @@ mod tests {
             .into(),
         );
         assert_eq!(nav.position(), (1, 3));
-        assert_eq!(nav.next().selection.start().line.0, 2);
-        assert_eq!(nav.next().selection.start().line.0, 3);
+        assert_eq!(nav.advance().selection.start().line.0, 2);
+        assert_eq!(nav.advance().selection.start().line.0, 3);
         assert_eq!(nav.position(), (3, 3));
-        assert_eq!(nav.next().selection.start().line.0, 1);
+        assert_eq!(nav.advance().selection.start().line.0, 1);
         assert_eq!(nav.position(), (1, 3));
     }
 

@@ -597,16 +597,15 @@ impl Workbench {
                 self.hide_hover(cx);
                 self.refresh_highlights(group, secondary, true, false, cx);
             }
-            CodeViewEvent::ViewportChanged(_) => {
+            CodeViewEvent::ViewportChanged(_)
                 if self
                     .nav
                     .hover
                     .anchor
                     .as_ref()
-                    .is_some_and(|a| a.group == group && a.secondary == secondary)
-                {
-                    self.hide_hover(cx);
-                }
+                    .is_some_and(|a| a.group == group && a.secondary == secondary) =>
+            {
+                self.hide_hover(cx);
             }
             _ => {}
         }
@@ -967,7 +966,7 @@ impl Workbench {
         let Some(nav) = self.nav.symbols.as_mut() else {
             return;
         };
-        let target = nav.next();
+        let target = nav.advance();
         let group = self.editor.focused;
         self.jump(&target, false, group, Some((Instant::now(), 0.0)));
         self.symbol_status(cx);
