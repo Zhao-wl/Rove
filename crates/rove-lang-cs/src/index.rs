@@ -123,6 +123,35 @@ pub struct SymbolText {
     pub text: u32,
 }
 
+/// 元数据视图记录（段 13，#34）：一个最外层外部类型的视图正文与其成员位置区间。
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, Eq)]
+pub struct MetadataViewRecord {
+    pub type_symbol: u32,
+    pub text: u32,
+    member_start: u32,
+    member_count: u32,
+}
+
+/// 视图内成员（含类型自身与嵌套类型）的名字位置，相对于视图正文，列与长度为 UTF-8 字节。
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, Eq)]
+pub struct MetadataMember {
+    pub symbol: u32,
+    pub line: u32,
+    pub col: u32,
+    pub len: u32,
+}
+
+/// 外部符号的定义位置：视图序号 + 视图内位置。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetadataLocation {
+    pub view: u32,
+    pub line: u32,
+    pub col: Utf8Column,
+    pub len: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Role(pub u16);
 
@@ -156,6 +185,9 @@ pub struct CsIndex {
     ref_width: usize,
     path_spans: Vec<(u32, u32)>,
     string_reads: AtomicUsize,
+    /// 段 13 中视图记录与成员记录的字节区间（打开时校验）。
+    view_records: Range<usize>,
+    view_members: Range<usize>,
 }
 
 fn invalid(msg: &str) -> io::Error {
@@ -266,8 +298,11 @@ impl CsIndex {
             ref_width,
             path_spans: Vec::new(),
             string_reads: AtomicUsize::new(0),
+            view_records: 0..0,
+            view_members: 0..0,
         };
         index.path_spans = index.validate_directories()?;
+        (index.view_records, index.view_members) = index.validate_metadata_views()?;
         Ok(index)
     }
 
@@ -324,6 +359,46 @@ impl CsIndex {
             path_spans.push((start as u32, path_len as u32));
         }
         Ok(path_spans)
+    }
+
+    /// 段 13：空，或 view_count、member_count 两个 u32 后接定长记录。视图按 type_symbol 排序，
+    /// 成员区间不越界。符号与字符串 ID 在访问时检查。
+    fn validate_metadata_views(&self) -> io::Result<(Range<usize>, Range<usize>)> {
+        let range = self.sections[Section::MetadataViews as usize].clone();
+        let bytes = &self.mmap[range.clone()];
+        if bytes.is_empty() {
+            return Ok((0..0, 0..0));
+        }
+        let bad = || invalid("invalid metadata view section");
+        if bytes.len() < 8 {
+            return Err(bad());
+        }
+        let views = read_u32(&bytes[..4]) as usize;
+        let members = read_u32(&bytes[4..8]) as usize;
+        let views_end = views
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(bad)?;
+        let members_end = members
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(views_end))
+            .ok_or_else(bad)?;
+        if members_end != bytes.len() {
+            return Err(bad());
+        }
+        let records: &[MetadataViewRecord] = bytemuck::cast_slice(&bytes[8..views_end]);
+        let mut previous = 0;
+        for r in records {
+            let end = (r.member_start as usize).checked_add(r.member_count as usize);
+            if r.type_symbol < previous || end.is_none_or(|end| end > members) {
+                return Err(bad());
+            }
+            previous = r.type_symbol;
+        }
+        Ok((
+            range.start + 8..range.start + views_end,
+            range.start + views_end..range.end,
+        ))
     }
 
     pub fn header(&self) -> &IndexHeader {
@@ -388,6 +463,109 @@ impl CsIndex {
 
     pub fn metadata_views(&self) -> &[u8] {
         self.bytes(Section::MetadataViews)
+    }
+
+    pub fn metadata_view_records(&self) -> &[MetadataViewRecord] {
+        bytemuck::cast_slice(&self.mmap[self.view_records.clone()])
+    }
+
+    /// 视图正文（含 `#region` 文件头），按 C# 文件显示。
+    pub fn metadata_view_text(&self, view: u32) -> io::Result<&str> {
+        let record = self
+            .metadata_view_records()
+            .get(view as usize)
+            .ok_or_else(|| invalid("invalid metadata view ID"))?;
+        self.str(record.text)
+    }
+
+    /// 视图内有位置记录的成员，按 (symbol, line, col) 排序。
+    pub fn metadata_view_members(&self, view: u32) -> &[MetadataMember] {
+        let members: &[MetadataMember] =
+            bytemuck::cast_slice(&self.mmap[self.view_members.clone()]);
+        self.metadata_view_records()
+            .get(view as usize)
+            .and_then(|r| {
+                members.get(r.member_start as usize..(r.member_start + r.member_count) as usize)
+            })
+            .unwrap_or_default()
+    }
+
+    /// 某个最外层外部类型的视图序号区间。同名程序集的不同版本各有一份视图，所以可能多于一个。
+    pub fn metadata_views_of(&self, type_symbol: u32) -> Range<u32> {
+        let records = self.metadata_view_records();
+        let start = records.partition_point(|r| r.type_symbol < type_symbol);
+        let end = start + records[start..].partition_point(|r| r.type_symbol == type_symbol);
+        start as u32..end as u32
+    }
+
+    /// 外部符号的定义位置：沿容器找到最外层类型，在它的视图里找该符号的位置。
+    /// 源码符号或没有视图的外部符号返回空。
+    pub fn metadata_definitions(&self, symbol: u32) -> Vec<MetadataLocation> {
+        let mut outer = symbol;
+        // 嵌套层数有限；上限只防御损坏数据中的环。
+        for _ in 0..64 {
+            match self.container(outer) {
+                Some(parent) if parent != outer => outer = parent,
+                _ => break,
+            }
+        }
+        let mut result = Vec::new();
+        for view in self.metadata_views_of(outer) {
+            let members = self.metadata_view_members(view);
+            let start = members.partition_point(|m| m.symbol < symbol);
+            result.extend(
+                members[start..]
+                    .iter()
+                    .take_while(|m| m.symbol == symbol)
+                    .map(|m| MetadataLocation {
+                        view,
+                        line: m.line,
+                        col: Utf8Column(u64::from(m.col)),
+                        len: m.len,
+                    }),
+            );
+        }
+        result
+    }
+
+    fn symbol_text(&self, section: &[SymbolText], symbol: u32) -> Option<&str> {
+        let i = section.partition_point(|t| t.symbol < symbol);
+        section
+            .get(i)
+            .filter(|t| t.symbol == symbol)
+            .and_then(|t| self.str(t.text).ok())
+    }
+
+    /// 外部符号的声明签名（与视图中该成员所在行相同，不含缩进）。
+    pub fn signature(&self, symbol: u32) -> Option<&str> {
+        self.symbol_text(self.signatures(), symbol)
+    }
+
+    /// 外部符号的原始 XML 文档文本（`<summary>`、`<see cref>` 等标签原样保留）。
+    ///
+    /// #34 的索引进程把文档只存一份：元数据视图里成员上方的 `///` 行，段 12 留空。这里先查段 12，
+    /// 没有时从第一个视图中取成员上方连续的 `///` 行，去掉前缀后按行连接。
+    pub fn xml_doc(&self, symbol: u32) -> Option<String> {
+        if let Some(doc) = self.symbol_text(self.xml_docs(), symbol) {
+            return Some(doc.to_owned());
+        }
+        let location = *self.metadata_definitions(symbol).first()?;
+        let text = self.metadata_view_text(location.view).ok()?;
+        let lines: Vec<&str> = text.lines().take(location.line as usize).collect();
+        let start = lines
+            .iter()
+            .rposition(|l| !l.trim_start().starts_with("///"))
+            .map_or(0, |i| i + 1);
+        let doc: Vec<&str> = lines[start..]
+            .iter()
+            .map(|l| {
+                let l = l.trim_start();
+                l.strip_prefix("/// ")
+                    .or_else(|| l.strip_prefix("///"))
+                    .unwrap_or(l)
+            })
+            .collect();
+        (!doc.is_empty()).then(|| doc.join("\n"))
     }
 
     pub fn inactive_lines(&self, file: u32) -> &[InactiveLines] {
