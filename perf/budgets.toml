@@ -155,9 +155,9 @@ value = 16
 unit = "ms"
 owner = "#38"
 status = "enforced"
-bench = "cs_index/goto_definition"
+bench = "cs_index/router_goto_definition"
 aggregate = "p99"
-reason = "按 p99 判定（M0 也用 p99，平均值会掩盖尾延迟）。M0 实测 2.1 µs（中型）/ 3.5 µs（大型），远低于目标；#38 引入查询路由后要重新测"
+reason = "按 p99 判定（M0 也用 p99，平均值会掩盖尾延迟）。M0 实测 2.1 µs（中型）/ 3.5 µs（大型），远低于目标；#38 起经查询路由测量（CsRouter，L2 就绪、文件未修改），直接查表的数字仍在 cs_index/goto_definition"
 
 [[budget]]
 id = "find_references"
@@ -166,9 +166,29 @@ value = 50
 unit = "ms"
 owner = "#38"
 status = "enforced"
-bench = "cs_index/find_references"
+bench = "cs_index/router_find_references"
 aggregate = "p99"
-reason = "按 p99 判定。M0 实测 p99 1.4 ms / 3.4 ms；注意最重的符号有 28,671 处引用，仍要求在一帧左右"
+reason = "按 p99 判定。M0 实测 p99 1.4 ms / 3.4 ms；注意最重的符号有 28,671 处引用，仍要求在一帧左右。#38 起经查询路由测量（含结果的坐标翻译），直接查表的数字仍在 cs_index/find_references"
+
+[[budget]]
+id = "router_definition_mapped"
+metric = "查询路由：定义跳转，查询文件与目标文件都是有 100 处编辑的脏缓冲区（含两次位置映射与 L2 查表）"
+value = 100
+unit = "us"
+owner = "#38"
+status = "enforced"
+bench = "cs_router/definition_mapped"
+reason = "issue #38 验收：路由本身的开销 < 100 µs，含位置映射的情况单独给数字。这里把被调用层（L2 查表，约 1 µs）也计入，只会更严；路由开销 = 本项 − cs_router/definition_direct"
+
+[[budget]]
+id = "router_definition_clean"
+metric = "查询路由：定义跳转，文件未修改（含 L2 查表）"
+value = 100
+unit = "us"
+owner = "#38"
+status = "enforced"
+bench = "cs_router/definition_clean"
+reason = "issue #38 验收：路由本身的开销 < 100 µs；路由开销 = 本项 − cs_router/definition_direct"
 
 # ---------------------------------------------------------------- 导航界面
 

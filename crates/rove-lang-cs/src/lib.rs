@@ -18,3 +18,6 @@ pub mod lifecycle;
 
 // #37 L1 快速声明索引（tree-sitter）。
 pub mod l1;
+
+// #38 查询路由：L2 / L1 / L0 的选择、未保存修改的位置映射，实现 query::CsQueries。
+pub mod router;

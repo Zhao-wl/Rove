@@ -15,7 +15,7 @@ mod check;
 mod locate;
 mod report;
 
-use adapter::{L1Decls, L2Index, NavSource};
+use adapter::{L1Decls, L2Index, NavSource, RouterSource};
 use cases::{CaseFile, Project};
 use check::{run_case, Status, Workspace};
 use rove_test_support::UnityProject;
@@ -25,7 +25,7 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 cargo run -p rove-lang-cs --example nav_check -- [选项]
   --project medium|large|all   只跑某个项目（默认 all）
-  --source l2|l1               查询来源：完整语义索引 / L1 声明索引（默认 l2）
+  --source l2|l1|router        查询来源：完整语义索引 / L1 声明索引 / #38 查询路由（默认 l2）
   --index-medium <idx>         中型项目的索引（默认 $ROVE_NAV_INDEX_MEDIUM，再默认 target/nav-check/medium.idx）
   --index-large <idx>          大型项目的索引（默认 $ROVE_NAV_INDEX_LARGE，再默认 target/nav-check/large.idx）
   --build                      先用 tools/rove-indexer-cs 重建索引（需先 dotnet build -c Release）
@@ -80,8 +80,8 @@ fn parse_args() -> Result<Opts, String> {
             }
             "--source" => {
                 o.source = val()?;
-                if !matches!(o.source.as_str(), "l2" | "l1") {
-                    return Err(format!("未知查询来源 {}（l2 / l1）", o.source));
+                if !matches!(o.source.as_str(), "l2" | "l1" | "router") {
+                    return Err(format!("未知查询来源 {}（l2 / l1 / router）", o.source));
                 }
             }
             "--index-medium" => o.index[0] = Some(val()?.into()),
@@ -154,6 +154,9 @@ fn open_source(o: &Opts, p: Project, root: &Path) -> Result<Box<dyn NavSource>, 
                     idx.display(),
                     p.key()
                 ));
+            }
+            if o.source == "router" {
+                return Ok(Box::new(RouterSource::open(&idx, root)?));
             }
             Ok(Box::new(L2Index::open(&idx)?))
         }

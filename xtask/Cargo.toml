@@ -81,3 +81,7 @@ harness = false
 [[bench]]
 name = "edit"
 harness = false
+
+[[bench]]
+name = "cs_router"
+harness = false
