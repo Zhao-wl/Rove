@@ -246,3 +246,16 @@ status = "enforced"
 bench = "l1/workspace_symbols_large"
 aggregate = "p99"
 reason = "LANGUAGE_INTELLIGENCE §1：工作区符号搜索 < 30 ms；#24 的 fuzzyScorer 注入后要重测"
+
+# ---------------------------------------------------------------- 编辑
+
+[[budget]]
+id = "edit_insert_char_100k_lines"
+metric = "10 万行文件中插入一个字符（编辑核心，不含高亮与绘制）"
+value = 100
+unit = "us"
+owner = "#46"
+status = "enforced"
+bench = "edit/insert_char_100k_lines"
+aggregate = "p99"
+reason = "issue #46 验收：事务校验 + rope 写时复制 + 新快照 + InputEdit / 按行失效通知 + 选区映射 + 撤销记录 < 100 µs"
