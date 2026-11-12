@@ -13,8 +13,8 @@ use super::{
 use crate::lists::{QuickInputId, QuickInputOptions};
 use gpui::{
     div, prelude::*, px, AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, KeyContext, MouseButton, MouseDownEvent, ScrollDelta, ScrollWheelEvent, SharedString,
-    Window,
+    HighlightStyle, Hsla, KeyContext, MouseButton, MouseDownEvent, ScrollDelta, ScrollWheelEvent,
+    SharedString, StyledText, Window,
 };
 use rove_base::{Result, Value};
 use rove_i18n::{Message, Strings};
@@ -42,6 +42,15 @@ pub struct QuickInputView {
 
 impl EventEmitter<QuickInputViewEvent> for QuickInputView {}
 
+/// The user edited the input box (emitted after the service saw the new text). Hosts that score
+/// and sort themselves (#24) refresh the model synchronously from here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuickInputTextChanged {
+    pub id: QuickInputId,
+    pub text: Arc<str>,
+}
+impl EventEmitter<QuickInputTextChanged> for QuickInputView {}
+
 fn color(theme: &dyn Theme, key: &str) -> Option<Hsla> {
     theme.color(key).ok().flatten().map(hsla)
 }
@@ -63,7 +72,16 @@ impl QuickInputView {
         let input = cx.new(|cx| TextInput::new(cx, colors));
         let sub = cx.subscribe(&input, |v: &mut Self, _, e: &TextInputEvent, cx| {
             match e {
-                TextInputEvent::Changed { text, cursor } => v.service.set_text(text, *cursor),
+                TextInputEvent::Changed { text, cursor } => {
+                    v.service.set_text(text, *cursor);
+                    if let Some(a) = v.service.active() {
+                        let event = QuickInputTextChanged {
+                            id: a.id,
+                            text: a.text.as_str().into(),
+                        };
+                        cx.emit(event);
+                    }
+                }
                 TextInputEvent::CursorMoved { cursor } => v.service.set_cursor(*cursor),
             }
             cx.notify();
@@ -176,7 +194,10 @@ impl QuickInputView {
                 selected: focused,
                 hovered: false,
                 list_focused: true,
-                highlights: l.highlights(i),
+                highlights: match a.decor.get(i) {
+                    Some(d) => d.label_highlights.clone(),
+                    None => l.highlights(i),
+                },
                 find_open: false,
                 indent: 0.0,
                 is_tree: false,
@@ -199,10 +220,31 @@ impl QuickInputView {
             }
             content = content.child(highlighted_label(&ctx));
             if let Some(d) = &row.detail {
+                let detail = SharedString::from(d.to_string());
+                let highlights = a.decor.get(i).map_or(&[][..], |d| &d.detail_highlights[..]);
+                let styled = StyledText::new(detail.clone()).with_highlights(
+                    highlights
+                        .iter()
+                        .filter(|r| {
+                            r.end <= detail.len()
+                                && detail.is_char_boundary(r.start)
+                                && detail.is_char_boundary(r.end)
+                        })
+                        .map(|r| {
+                            (
+                                r.clone(),
+                                HighlightStyle {
+                                    color: colors.highlight_fg,
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                );
                 content = content.child(
                     div()
                         .when_some(colors.deemphasized_fg, |d, c| d.text_color(c))
-                        .child(SharedString::from(d.to_string())),
+                        .child(styled),
                 );
             }
             if a.hover_visible && focused {
@@ -210,6 +252,7 @@ impl QuickInputView {
                     content = content.child(div().px_2().child(SharedString::from(d.to_string())));
                 }
             }
+            let trailing = a.decor.get(i).and_then(|d| d.trailing.clone());
             let mut el = div()
                 .id(("quick-row", i))
                 .absolute()
@@ -221,6 +264,15 @@ impl QuickInputView {
                 .items_center()
                 .overflow_hidden()
                 .child(content)
+                .when_some(trailing, |d, t| {
+                    d.justify_between().child(
+                        div()
+                            .flex_shrink_0()
+                            .ml(px(12.))
+                            .when_some(colors.deemphasized_fg, |d, c| d.text_color(c))
+                            .child(SharedString::from(t.to_string())),
+                    )
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |v, e: &MouseDownEvent, _, cx| {

@@ -12,7 +12,9 @@ mod scorer;
 mod words;
 
 pub use compare::{compare_anything, compare_by_prefix, compare_file_names};
-pub use filters::{create_matches, fuzzy_score, matches_prefix, FuzzyScore, FuzzyScoreOptions, Match};
+pub use filters::{
+    create_matches, fuzzy_score, matches_prefix, FuzzyScore, FuzzyScoreOptions, Match,
+};
 pub use scorer::*;
 pub use words::{matches_contiguous_sub_string, matches_words, word_filter};
 
@@ -24,7 +26,10 @@ pub fn utf16_to_byte_ranges(s: &str, matches: &[Match]) -> Vec<Range<usize>> {
     let mut out = Vec::with_capacity(matches.len());
     let mut iter = s.char_indices().peekable();
     let mut unit = 0usize;
-    let offset_at = |target: usize, iter: &mut std::iter::Peekable<std::str::CharIndices>, unit: &mut usize| -> usize {
+    let offset_at = |target: usize,
+                     iter: &mut std::iter::Peekable<std::str::CharIndices>,
+                     unit: &mut usize|
+     -> usize {
         while *unit < target {
             match iter.next() {
                 Some((_, c)) => *unit += c.len_utf16(),

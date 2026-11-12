@@ -50,7 +50,8 @@ pub fn matches_words(word: &str, target: &str, contiguous: bool) -> Option<Vec<M
     let mut memo = Memo::new();
     let mut target_index = 0;
     while target_index < target.len() {
-        if let Some(result) = matches_words_at(&word, &target, 0, target_index, contiguous, &mut memo)
+        if let Some(result) =
+            matches_words_at(&word, &target, 0, target_index, contiguous, &mut memo)
         {
             return Some(result);
         }
@@ -93,14 +94,28 @@ fn compute(
         return None;
     }
     let mut next_word_index = target_index + 1;
-    let mut result = matches_words_at(word, target, word_index + 1, next_word_index, contiguous, memo);
+    let mut result = matches_words_at(
+        word,
+        target,
+        word_index + 1,
+        next_word_index,
+        contiguous,
+        memo,
+    );
     if !contiguous {
         while result.is_none() {
             next_word_index = next_word(target, next_word_index);
             if next_word_index >= target.len() {
                 break;
             }
-            result = matches_words_at(word, target, word_index + 1, next_word_index, contiguous, memo);
+            result = matches_words_at(
+                word,
+                target,
+                word_index + 1,
+                next_word_index,
+                contiguous,
+                memo,
+            );
             next_word_index += 1;
         }
     }

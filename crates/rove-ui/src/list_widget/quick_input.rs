@@ -144,6 +144,16 @@ pub enum QuickPickEvent {
     },
 }
 
+/// Per-row presentation for callers that score and sort themselves (`QuickPickConfig::filter =
+/// None`, #24): match highlights (UTF-8 byte ranges) in the label and detail, and an optional
+/// right-aligned text such as a key binding. Indexed like the model; missing entries mean "none".
+#[derive(Clone, Debug, Default)]
+pub struct RowDecor {
+    pub label_highlights: Vec<std::ops::Range<usize>>,
+    pub detail_highlights: Vec<std::ops::Range<usize>>,
+    pub trailing: Option<Arc<str>>,
+}
+
 pub struct ActiveInput {
     pub id: QuickInputId,
     pub placeholder: Message,
@@ -156,6 +166,8 @@ pub struct ActiveInput {
     pub checked: Vec<ItemId>,
     pub hover_visible: bool,
     pub config: QuickPickConfig,
+    /// See [`RowDecor`]; replaced together with the model by the caller.
+    pub decor: Vec<RowDecor>,
 }
 
 pub struct QuickInputService {
@@ -257,6 +269,7 @@ impl QuickInputService {
             checked: vec![],
             hover_visible: false,
             config,
+            decor: Vec::new(),
         };
         Self::refilter(&mut active);
         self.active = Some(active);
@@ -311,6 +324,12 @@ impl QuickInputService {
         if let Some(a) = self.active.as_mut() {
             a.input_focused = focused;
         }
+    }
+
+    /// Installs the per-row presentation matching the model last passed to `update` (#24).
+    pub fn set_decor(&mut self, id: QuickInputId, decor: Vec<RowDecor>) -> Result<()> {
+        self.require(id)?.decor = decor;
+        Ok(())
     }
 
     pub fn set_loading_tail(&mut self, id: QuickInputId, message: Option<Message>) -> Result<()> {

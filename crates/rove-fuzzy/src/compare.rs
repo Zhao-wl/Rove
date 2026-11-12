@@ -168,7 +168,11 @@ mod tests {
     #[test]
     fn prefix_and_suffix_preferences() {
         assert_eq!(compare_anything("foo.ts", "xfoo.ts", "foo"), -1);
-        assert_eq!(compare_anything("foo.ts", "foo2.ts", "foo"), -1, "同为前缀时短的在前");
+        assert_eq!(
+            compare_anything("foo.ts", "foo2.ts", "foo"),
+            -1,
+            "同为前缀时短的在前"
+        );
         assert_eq!(compare_anything("xa", "ab", "a"), 1);
     }
 }

@@ -7,8 +7,8 @@
 use crate::{
     compare::compare_anything,
     filters::{
-        create_matches, fuzzy_score, is_upper, lower_units, matches_prefix, units, FuzzyScoreOptions,
-        Match,
+        create_matches, fuzzy_score, is_upper, lower_units, matches_prefix, units,
+        FuzzyScoreOptions, Match,
     },
 };
 use std::{
@@ -244,7 +244,7 @@ fn compute_char_score(
 
 fn score_separator_at(code: u16) -> i32 {
     match code {
-        0x2F | 0x5C => 5,                                      // / \
+        0x2F | 0x5C => 5,                                    // / \
         0x5F | 0x2D | 0x2E | 0x20 | 0x27 | 0x22 | 0x3A => 4, // _ - . 空格 ' " :
         _ => 0,
     }
@@ -526,7 +526,60 @@ pub fn score_item_fuzzy<T: ?Sized>(
     score
 }
 
-/// 不经访问器与缓存的条目打分（热路径用）。
+/// 预先算好 UTF-16 与小写形式的候选：热路径（每次按键对全部候选打分）不再逐次分配。
+#[derive(Clone, Debug)]
+pub struct Target {
+    label: String,
+    description: Option<String>,
+    path: Option<String>,
+    label_units: Vec<u16>,
+    label_lower: Vec<u16>,
+    /// `description + SEP + label`（没有路径时为 `description + label`）的 UTF-16 与小写形式。
+    combined_units: Vec<u16>,
+    combined_lower: Vec<u16>,
+    /// 组合串里 description 前缀的长度（UTF-16 码元）。
+    prefix_len: usize,
+}
+
+impl Target {
+    pub fn new(label: &str, description: Option<&str>, path: Option<&str>) -> Self {
+        let description = description.filter(|d| !d.is_empty());
+        let path = path.filter(|p| !p.is_empty());
+        let (combined_units, combined_lower, prefix_len) = match description {
+            Some(d) => {
+                let prefix = if path.is_some() {
+                    format!("{d}{SEP}")
+                } else {
+                    d.to_owned()
+                };
+                let combined = format!("{prefix}{label}");
+                (units(&combined), lower_units(&combined), utf16_len(&prefix))
+            }
+            None => (Vec::new(), Vec::new(), 0),
+        };
+        Self {
+            label: label.to_owned(),
+            description: description.map(str::to_owned),
+            path: path.map(str::to_owned),
+            label_units: units(label),
+            label_lower: lower_units(label),
+            combined_units,
+            combined_lower,
+            prefix_len,
+        }
+    }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+/// 不经访问器与缓存的条目打分。
 pub fn score_item(
     label: &str,
     description: Option<&str>,
@@ -537,9 +590,23 @@ pub fn score_item(
     if label.is_empty() || query.normalized.is_empty() {
         return NO_ITEM_SCORE;
     }
-    let description = description.filter(|d| !d.is_empty());
-    let path = path.filter(|p| !p.is_empty());
-    do_score_item_fuzzy(label, description, path, query, allow_non_contiguous_matches)
+    score_target(
+        &Target::new(label, description, path),
+        query,
+        allow_non_contiguous_matches,
+    )
+}
+
+/// 对预先准备好的候选打分（热路径用）。
+pub fn score_target(
+    target: &Target,
+    query: &PreparedQuery,
+    allow_non_contiguous_matches: bool,
+) -> ItemScore {
+    if target.label.is_empty() || query.normalized.is_empty() {
+        return NO_ITEM_SCORE;
+    }
+    do_score_item_fuzzy(target, query, allow_non_contiguous_matches)
 }
 
 fn equals_ignore_case(a: &str, b: &str) -> bool {
@@ -547,12 +614,15 @@ fn equals_ignore_case(a: &str, b: &str) -> bool {
 }
 
 fn do_score_item_fuzzy(
-    label: &str,
-    description: Option<&str>,
-    path: Option<&str>,
+    target: &Target,
     query: &PreparedQuery,
     allow_non_contiguous_matches: bool,
 ) -> ItemScore {
+    let (label, description, path) = (
+        target.label.as_str(),
+        target.description.as_deref(),
+        target.path.as_deref(),
+    );
     let prefer_label_matches = path.is_none() || !query.contains_path_separator;
 
     // 完整路径一致的最高
@@ -576,18 +646,14 @@ fn do_score_item_fuzzy(
 
     if let Some(values) = query.values.as_ref().filter(|v| v.len() > 1) {
         return do_score_item_fuzzy_multiple(
-            label,
-            description,
-            path,
+            target,
             values,
             prefer_label_matches,
             allow_non_contiguous_matches,
         );
     }
     do_score_item_fuzzy_single(
-        label,
-        description,
-        path,
+        target,
         &query.piece,
         prefer_label_matches,
         allow_non_contiguous_matches,
@@ -595,9 +661,7 @@ fn do_score_item_fuzzy(
 }
 
 fn do_score_item_fuzzy_multiple(
-    label: &str,
-    description: Option<&str>,
-    path: Option<&str>,
+    target: &Target,
     query: &[QueryPiece],
     prefer_label_matches: bool,
     allow_non_contiguous_matches: bool,
@@ -607,9 +671,7 @@ fn do_score_item_fuzzy_multiple(
     let mut total_description_matches = Vec::new();
     for piece in query {
         let s = do_score_item_fuzzy_single(
-            label,
-            description,
-            path,
+            target,
             piece,
             prefer_label_matches,
             allow_non_contiguous_matches,
@@ -633,9 +695,7 @@ fn do_score_item_fuzzy_multiple(
 }
 
 fn do_score_item_fuzzy_single(
-    label: &str,
-    description: Option<&str>,
-    path: Option<&str>,
+    target: &Target,
     query: &QueryPiece,
     prefer_label_matches: bool,
     allow_non_contiguous_matches: bool,
@@ -643,24 +703,23 @@ fn do_score_item_fuzzy_single(
     let allow = allow_non_contiguous_matches && !query.expect_contiguous_match;
 
     // 要求优先 label 或没有 description 时先只对 label 打分
-    if prefer_label_matches || description.is_none() {
-        let label_units = units(label);
+    if prefer_label_matches || target.description.is_none() {
+        let label_units = &target.label_units;
         let scored = score_fuzzy_units(
-            &label_units,
-            &lower_units(label),
+            label_units,
+            &target.label_lower,
             &query.normalized_units,
             &query.normalized_lower_units,
             allow,
         );
         if scored.score != 0 {
             // label 前缀匹配给高得多的基础分，让输入文件名的结果排在“label 中间包含”的前面
-            let label_prefix_match = matches_prefix(&query.normalized, label);
+            let label_prefix_match = label_prefix(target, query);
             let base_score = if label_prefix_match.is_some() {
                 // 再按“查询占 label 的比例”加分：window 查询里 window.ts 要比 windowActions.ts 高
-                let prefix_length_boost = ((query.normalized_units.len() as f64
-                    / label_units.len() as f64)
-                    * 100.0)
-                    .round() as i32;
+                let prefix_length_boost =
+                    ((query.normalized_units.len() as f64 / label_units.len() as f64) * 100.0)
+                        .round() as i32;
                 LABEL_PREFIX_SCORE_THRESHOLD + prefix_length_boost
             } else {
                 LABEL_SCORE_THRESHOLD
@@ -676,17 +735,12 @@ fn do_score_item_fuzzy_single(
     }
 
     // 最后对 description + label 一起打分
-    if let Some(description) = description {
-        let description_prefix: Cow<str> = if path.is_some() {
-            Cow::Owned(format!("{description}{SEP}")) // 视为文件路径
-        } else {
-            Cow::Borrowed(description)
-        };
-        let description_prefix_length = utf16_len(&description_prefix);
-        let description_and_label = format!("{description_prefix}{label}");
+    if target.description.is_some() {
+        // 前缀是 description（有路径时再加分隔符：视为文件路径）
+        let description_prefix_length = target.prefix_len;
         let scored = score_fuzzy_units(
-            &units(&description_and_label),
-            &lower_units(&description_and_label),
+            &target.combined_units,
+            &target.combined_lower,
             &query.normalized_units,
             &query.normalized_lower_units,
             allow,
@@ -722,6 +776,22 @@ fn do_score_item_fuzzy_single(
         }
     }
     NO_ITEM_SCORE
+}
+
+/// `matchesPrefix(query.normalized, label)`：用预先算好的小写形式比较（长度不一致时回退）。
+fn label_prefix(target: &Target, query: &QueryPiece) -> Option<Vec<Match>> {
+    if target.label_lower.len() != target.label_units.len() {
+        return matches_prefix(&query.normalized, &target.label);
+    }
+    let n = query.normalized_units.len();
+    if target.label_lower.len() < n || target.label_lower[..n] != query.normalized_lower_units[..] {
+        return None;
+    }
+    Some(if n == 0 {
+        Vec::new()
+    } else {
+        vec![Match { start: 0, end: n }]
+    })
 }
 
 fn create_matches_from(offsets: &[usize]) -> Vec<Match> {
@@ -841,8 +911,10 @@ pub fn compare_scored(a: &Scored, b: &Scored, query: &PreparedQuery) -> Ordering
 
         // 更紧凑的匹配优先（前缀匹配除外：那里匹配更长的前缀反而优先）
         if score_a < LABEL_PREFIX_SCORE_THRESHOLD && score_b < LABEL_PREFIX_SCORE_THRESHOLD {
-            let by_length =
-                compare_by_match_length(a.score.label_match.as_deref(), b.score.label_match.as_deref());
+            let by_length = compare_by_match_length(
+                a.score.label_match.as_deref(),
+                b.score.label_match.as_deref(),
+            );
             if by_length != Ordering::Equal {
                 return by_length;
             }
@@ -944,7 +1016,10 @@ fn fallback_compare(a: &Scored, b: &Scored, query: &PreparedQuery) -> Ordering {
     }
 
     // 路径短的优先
-    if let (Some(pa), Some(pb)) = (a.path.filter(|p| !p.is_empty()), b.path.filter(|p| !p.is_empty())) {
+    if let (Some(pa), Some(pb)) = (
+        a.path.filter(|p| !p.is_empty()),
+        b.path.filter(|p| !p.is_empty()),
+    ) {
         let (la, lb) = (utf16_len(pa), utf16_len(pb));
         if la != lb {
             return la.cmp(&lb);
@@ -963,7 +1038,10 @@ fn fallback_compare(a: &Scored, b: &Scored, query: &PreparedQuery) -> Ordering {
             return compare_anything(da, db, &query.normalized).cmp(&0);
         }
     }
-    if let (Some(pa), Some(pb)) = (a.path.filter(|p| !p.is_empty()), b.path.filter(|p| !p.is_empty())) {
+    if let (Some(pa), Some(pb)) = (
+        a.path.filter(|p| !p.is_empty()),
+        b.path.filter(|p| !p.is_empty()),
+    ) {
         if pa != pb {
             return compare_anything(pa, pb, &query.normalized).cmp(&0);
         }

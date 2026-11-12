@@ -32,7 +32,7 @@ use rove_commands::{
     context::ContextKeyService,
     keybindings::{default_rules, KeybindingService, RawRule},
     keys::{format_keybinding, parse_keybinding, stroke},
-    Command, ContextChange, ContextKeys, KeyStroke,
+    ContextChange, ContextKeys, KeyStroke,
 };
 use std::{
     cell::RefCell,
@@ -82,24 +82,13 @@ impl Global for Keys {}
 /// also provides its GPUI action through [`action_for`].
 pub fn default_commands() -> Result<CommandCenter> {
     let mut registry = rove_commands::CommandRegistry::default();
-    // Quick open and the command palette are implemented by #24; registered so keys resolve.
-    for (id, title) in [
-        ("workbench.action.quickOpen", "commands.quickOpen"),
-        ("workbench.action.showCommands", "commands.palette"),
-    ] {
-        registry.register(
-            id,
-            Command {
-                title_key: title.into(),
-                category_key: None,
-            },
-        )?;
-    }
     crate::shell::catalog::register_commands(&mut registry)?;
     crate::code_view::commands::register(&mut registry)?;
     crate::editors::actions::register(&mut registry)?;
     crate::list_widget::registry::register_commands(&mut registry)?;
     crate::outline::registry::register_commands(&mut registry)?;
+    // #24：快速打开、命令面板、转到行。
+    crate::quick_access::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -131,6 +120,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::list_widget::keys::action_for(id))
         .or_else(|| crate::index_status::action_for(id))
         .or_else(|| crate::outline::registry::action_for(id))
+        .or_else(|| crate::quick_access::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

@@ -77,3 +77,7 @@ harness = false
 [[bench]]
 name = "l1"
 harness = false
+
+[[bench]]
+name = "quickopen"
+harness = false

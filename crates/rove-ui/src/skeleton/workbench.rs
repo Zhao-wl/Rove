@@ -62,6 +62,9 @@ mod editor_tests;
 mod outline_host;
 #[cfg(test)]
 mod outline_tests;
+mod quick_access_host;
+#[cfg(test)]
+mod quick_access_tests;
 #[cfg(test)]
 #[path = "workbench_readonly_tests.rs"]
 mod readonly_tests;
@@ -206,6 +209,8 @@ pub struct Workbench {
     workspace: Option<Arc<dyn Workspace>>,
     /// "Toggle read-only in this session" per document: `true` read-only, `false` writable.
     readonly_overrides: BTreeMap<DocumentId, bool>,
+    /// #24：快速打开与命令面板的状态（见 `quick_access_host.rs`）。
+    quick: quick_access_host::QuickAccess,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -369,7 +374,12 @@ impl Workbench {
             outline,
             workspace: None,
             readonly_overrides: BTreeMap::new(),
+            quick: Default::default(),
         };
+        // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
+        for (id, _, _) in crate::quick_access::registry::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
             assert!(
@@ -509,6 +519,8 @@ impl Workbench {
                 let tree = result.and_then(|workspace| {
                     view.watch_workspace(&workspace, cx);
                     view.workspace = Some(workspace.clone());
+                    // #24：后台建快速打开的文件索引。
+                    view.quick_workspace_ready(cx);
                     file_tree(workspace)
                 });
                 match tree {
@@ -534,9 +546,12 @@ impl Workbench {
             while let Ok(first) = receive.recv().await {
                 let mut removed = BTreeSet::new();
                 let mut changes = Vec::new();
+                // #24：快速打开的文件列表按事件增量更新。
+                let mut quick = Vec::new();
                 for batch in
                     std::iter::once(first).chain(std::iter::from_fn(|| receive.try_recv().ok()))
                 {
+                    quick.push((batch.revision.0, batch.events.clone()));
                     changes.extend(batch.events.iter().map(index_change));
                     for event in batch.events.iter() {
                         if let FileEvent::Removed(path) | FileEvent::Renamed { from: path, .. } =
@@ -550,6 +565,7 @@ impl Workbench {
                     .update(cx, |view, cx| {
                         // #36：源文件变化标记过期，项目配置变化触发重建。
                         view.index_files_changed(&changes);
+                        view.quick_files_changed(quick, cx);
                         if !view.editor.settings.close_on_delete {
                             return;
                         }
@@ -1498,7 +1514,15 @@ impl ShellHost for Workbench {
     fn editor_focus(&self) -> FocusHandle {
         self.focus.clone()
     }
-    fn run_external_command(&mut self, id: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn run_external_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // #24：快速打开、命令面板、转到行。
+        if crate::quick_access::registry::COMMANDS
+            .iter()
+            .any(|(cmd, _, _)| *cmd == id)
+        {
+            self.quick_access_command(id, window, cx);
+            return;
+        }
         self.command(id, cx);
     }
     fn zoom_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -1525,6 +1549,8 @@ impl Render for Workbench {
         self.editor.flush_ready();
         // #26: outline, breadcrumbs and symbol requests follow the active editor.
         self.sync_outline(window, cx);
+        // #24：最近打开、失去焦点时关闭、关闭后还焦点或运行选中的命令。
+        self.sync_quick_access(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1565,6 +1591,7 @@ impl Render for Workbench {
             .set(&shell.contributions, appearance::STATUS_FILE, status);
         let workbench = shell::view::render(self, window, cx);
         let goto = self.goto_overlay(cx);
+        let quick = self.quick_overlay(cx);
         let context = editor_actions::context(&self.editor) + self.breadcrumbs_context();
         div()
             .size_full()
@@ -1603,8 +1630,14 @@ impl Render for Workbench {
                     v.outline_command(a.0, window, cx)
                 },
             ))
+            .on_action(cx.listener(
+                |v, a: &crate::quick_access::registry::QuickAccessAction, window, cx| {
+                    v.quick_action_handler(a, window, cx)
+                },
+            ))
             .child(workbench)
             .children(goto)
+            .children(quick)
     }
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
@@ -1815,7 +1848,7 @@ mod tests {
             r#"// shared with VS Code
             [
                 { "key": "ctrl+p", "command": "-workbench.action.quickOpen" },
-                { "key": "ctrl+k ctrl+o", "command": "workbench.action.quickOpen" },
+                { "key": "ctrl+k ctrl+o", "command": "rove.contextBasket.add" },
                 { "key": "ctrl+b", "command": "-workbench.action.toggleSidebarVisibility" },
                 { "key": "ctrl+alt+b", "command": "workbench.action.toggleSidebarVisibility" },
                 { "key": "f5", "command": "workbench.action.debug.start" },
@@ -1855,7 +1888,7 @@ mod tests {
         });
         cx.simulate_keystrokes("ctrl-o");
         view.read_with(cx, |v, _| {
-            assert_eq!(v.status(), v.label("commands.quickOpen", &[]))
+            assert_eq!(v.status(), v.label("command.rove.contextBasket.add", &[]))
         });
         // Escape aborts a pending chord.
         cx.simulate_keystrokes("ctrl-k escape");

@@ -9,8 +9,9 @@
 //! 测试按 Windows 的语义写：`URI.file(p).fsPath` 是补前导 `/` 后把 `/` 换成 `\`；`basename` 与
 //! `dirname` 按 `\` 取；`posix.normalize` / `win32.normalize` 只需要换分隔符。
 use crate::{
-    compare_items_by_fuzzy_score, piece_to_query, prepare_query, score_fuzzy as score_fuzzy_impl, score_fuzzy2,
-    score_item_fuzzy, FuzzyScorerCache, ItemAccessor, ItemScore, Match, Score, Score2, SEP,
+    compare_items_by_fuzzy_score, piece_to_query, prepare_query, score_fuzzy as score_fuzzy_impl,
+    score_fuzzy2, score_item_fuzzy, FuzzyScorerCache, ItemAccessor, ItemScore, Match, Score,
+    Score2, SEP,
 };
 use std::borrow::Cow;
 
@@ -26,7 +27,11 @@ struct Uri {
 /// `URI.file(p)`（Windows）。
 fn file(p: &str) -> Uri {
     let p = p.replace('\\', "/");
-    let path = if p.starts_with('/') { p } else { format!("/{p}") };
+    let path = if p.starts_with('/') {
+        p
+    } else {
+        format!("/{p}")
+    };
     let fs_path = path.replace('/', "\\");
     Uri { path, fs_path }
 }
@@ -120,7 +125,9 @@ impl ItemAccessor<Uri> for NullAccessor {
 /// `resourceAccessorWithDescription`：label 与 path 同 `ResourceAccessor`，description 固定。
 struct AccessorWithDescription(Option<&'static str>);
 
-fn resource_accessor_with_description(description: Option<&'static str>) -> AccessorWithDescription {
+fn resource_accessor_with_description(
+    description: Option<&'static str>,
+) -> AccessorWithDescription {
     AccessorWithDescription(description)
 }
 
@@ -160,7 +167,13 @@ fn score_item(
     allow_non_contiguous_matches: bool,
     accessor: &dyn ItemAccessor<Uri>,
 ) -> ItemScore {
-    score_item_with_cache(item, query, allow_non_contiguous_matches, accessor, &mut FuzzyScorerCache::new())
+    score_item_with_cache(
+        item,
+        query,
+        allow_non_contiguous_matches,
+        accessor,
+        &mut FuzzyScorerCache::new(),
+    )
 }
 
 fn score_item_with_cache(
@@ -170,7 +183,13 @@ fn score_item_with_cache(
     accessor: &dyn ItemAccessor<Uri>,
     cache: &mut FuzzyScorerCache,
 ) -> ItemScore {
-    score_item_fuzzy(item, &prepare_query(query), allow_non_contiguous_matches, accessor, cache)
+    score_item_fuzzy(
+        item,
+        &prepare_query(query),
+        allow_non_contiguous_matches,
+        accessor,
+        cache,
+    )
 }
 
 /// 用 `compareItemsByFuzzyScore`（每次比较新建缓存）排序，断言结果开头与 `expected` 逐个一致
@@ -188,7 +207,11 @@ fn assert_sorted(input: &[&Uri], query: &str, expected: &[&Uri]) {
             &mut FuzzyScorerCache::new(),
         )
     });
-    let actual: Vec<&str> = res.iter().take(expected.len()).map(|r| r.fs_path.as_str()).collect();
+    let actual: Vec<&str> = res
+        .iter()
+        .take(expected.len())
+        .map(|r| r.fs_path.as_str())
+        .collect();
     let wanted: Vec<&str> = expected.iter().map(|r| r.fs_path.as_str()).collect();
     assert_eq!(actual, wanted, "query {query:?}");
 }
@@ -260,7 +283,10 @@ fn score_non_fuzzy() {
     let target = "HelLo-World";
 
     assert!(do_score(target, "HelLo-World", Some(false)).score > 0);
-    assert_eq!(do_score(target, "HelLo-World", Some(false)).positions.len(), "HelLo-World".len());
+    assert_eq!(
+        do_score(target, "HelLo-World", Some(false)).positions.len(),
+        "HelLo-World".len()
+    );
 
     assert!(do_score(target, "hello-world", Some(false)).score > 0);
     assert_eq!(do_score(target, "HW", Some(false)).score, 0);
@@ -281,10 +307,21 @@ fn score_item_matches_are_proper() {
     assert_eq!(res.score, 0);
 
     // Path Identity
-    let identity_res = score_item(Some(&resource), &path_of(&resource), true, &ResourceAccessor);
+    let identity_res = score_item(
+        Some(&resource),
+        &path_of(&resource),
+        true,
+        &ResourceAccessor,
+    );
     assert_ne!(identity_res.score, 0);
-    assert_matches(&identity_res.description_match, &[(0, len16(&description_of(&resource)))]);
-    assert_matches(&identity_res.label_match, &[(0, len16(&label_of(&resource)))]);
+    assert_matches(
+        &identity_res.description_match,
+        &[(0, len16(&description_of(&resource)))],
+    );
+    assert_matches(
+        &identity_res.label_match,
+        &[(0, len16(&label_of(&resource)))],
+    );
 
     // Basename Prefix
     let basename_prefix_res = score_item(Some(&resource), "som", true, &ResourceAccessor);
@@ -313,8 +350,12 @@ fn score_item_matches_are_proper() {
     assert_matches(&path_res.description_match, &[(1, 4)]);
 
     // Ellipsis Match
-    let ellipsis_res =
-        score_item(Some(&resource), "…me/path/someFile123.txt", true, &ResourceAccessor);
+    let ellipsis_res = score_item(
+        Some(&resource),
+        "…me/path/someFile123.txt",
+        true,
+        &ResourceAccessor,
+    );
     assert_ne!(ellipsis_res.score, 0);
     assert!(path_res.description_match.is_some());
     assert!(path_res.label_match.is_some());
@@ -356,7 +397,12 @@ fn score_item_multiple() {
     assert_matches(&res2.label_match, &[(0, 4)]);
     assert_matches(&res2.description_match, &[(1, 4)]);
 
-    let res3 = score_item(Some(&resource), "some xyz file file123", true, &ResourceAccessor);
+    let res3 = score_item(
+        Some(&resource),
+        "some xyz file file123",
+        true,
+        &ResourceAccessor,
+    );
     assert_ne!(res3.score, 0);
     assert!(res3.score > res2.score);
     assert_matches(&res3.label_match, &[(0, 11)]);
@@ -373,13 +419,23 @@ fn score_item_multiple() {
 fn score_item_multiple_with_cache_yields_different_results() {
     let resource = file("/xyz/some/path/someFile123.txt");
     let mut cache = FuzzyScorerCache::new();
-    let res1 =
-        score_item_with_cache(Some(&resource), "xyz sm", true, &ResourceAccessor, &mut cache);
+    let res1 = score_item_with_cache(
+        Some(&resource),
+        "xyz sm",
+        true,
+        &ResourceAccessor,
+        &mut cache,
+    );
     assert_ne!(res1.score, 0);
 
     // from the cache's perspective this should be a totally different query
-    let res2 =
-        score_item_with_cache(Some(&resource), "xyz \"sm\"", true, &ResourceAccessor, &mut cache);
+    let res2 = score_item_with_cache(
+        Some(&resource),
+        "xyz \"sm\"",
+        true,
+        &ResourceAccessor,
+        &mut cache,
+    );
     assert_eq!(res2.score, 0);
 }
 
@@ -420,7 +476,11 @@ fn score_item_cache_keys_separate_items_queries_and_match_modes() {
     let empty_description = resource_accessor_with_description(Some(""));
     score_item_with_cache(Some(&r), "some", true, &empty_description, &mut cache);
 
-    assert_eq!(cache.len(), 9, "each distinct scoring input needs its own cache entry");
+    assert_eq!(
+        cache.len(),
+        9,
+        "each distinct scoring input needs its own cache entry"
+    );
 }
 
 // 改写：原测试用 `Object.keys(cache).length === 1` 与对象恒等；这里用 `cache.len()` 与结果相等。
@@ -430,10 +490,20 @@ fn score_item_repeated_scoring_hits_the_cache_and_preserves_the_result() {
 
     for query_value in ["somefile", "xyz sm", "xyz \"sm\"", "ünïcödé"] {
         let mut cache = FuzzyScorerCache::new();
-        let cold =
-            score_item_with_cache(Some(&resource), query_value, true, &ResourceAccessor, &mut cache);
-        let warm =
-            score_item_with_cache(Some(&resource), query_value, true, &ResourceAccessor, &mut cache);
+        let cold = score_item_with_cache(
+            Some(&resource),
+            query_value,
+            true,
+            &ResourceAccessor,
+            &mut cache,
+        );
+        let warm = score_item_with_cache(
+            Some(&resource),
+            query_value,
+            true,
+            &ResourceAccessor,
+            &mut cache,
+        );
 
         assert_eq!(cache.len(), 1);
         assert_eq!(warm, cold, "warm scoring should return the cached result");
@@ -557,8 +627,11 @@ fn score_item_match_if_using_slash_or_backslash_local_remote_resource() {
     let remote_resource = remote("abcde/super/duper");
 
     for resource in [&local_resource, &remote_resource] {
-        let accessors: [&dyn ItemAccessor<Uri>; 3] =
-            [&ResourceAccessor, &ResourceWithSlashAccessor, &ResourceWithBackslashAccessor];
+        let accessors: [&dyn ItemAccessor<Uri>; 3] = [
+            &ResourceAccessor,
+            &ResourceWithSlashAccessor,
+            &ResourceWithBackslashAccessor,
+        ];
         for query in ["abcde\\super\\duper", "abcde/super/duper"] {
             for accessor in accessors {
                 let res = score_item(Some(resource), query, true, accessor);
@@ -588,14 +661,30 @@ fn compare_items_by_score_identity() {
     // Full resource A path
     let query = path_of(&resource_a);
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], &query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], &query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        &query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        &query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 
     // Full resource B path
     let query = path_of(&resource_b);
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], &query, &[&resource_b, &resource_a, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], &query, &[&resource_b, &resource_a, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        &query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        &query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
 }
 
 #[test]
@@ -607,14 +696,30 @@ fn compare_files_by_score_basename_prefix() {
     // Full resource A basename
     let query = label_of(&resource_a);
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], &query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], &query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        &query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        &query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 
     // Full resource B basename
     let query = label_of(&resource_b);
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], &query, &[&resource_b, &resource_a, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], &query, &[&resource_b, &resource_a, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        &query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        &query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
 }
 
 #[test]
@@ -626,14 +731,30 @@ fn compare_files_by_score_basename_camelcase() {
     // resource A camelcase
     let query = "fA";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 
     // resource B camelcase
     let query = "fB";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_b, &resource_a, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_b, &resource_a, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
 }
 
 #[test]
@@ -645,14 +766,30 @@ fn compare_files_by_score_basename_scores() {
     // Resource A part of basename
     let query = "fileA";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 
     // Resource B part of basename
     let query = "fileB";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_b, &resource_a, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_b, &resource_a, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
 }
 
 #[test]
@@ -664,14 +801,30 @@ fn compare_files_by_score_path_scores() {
     // Resource A part of path
     let query = "pathfileA";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 
     // Resource B part of path
     let query = "pathfileB";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_b, &resource_a, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_b, &resource_a, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
 }
 
 #[test]
@@ -683,8 +836,16 @@ fn compare_files_by_score_prefer_shorter_basenames() {
     // Resource A part of path
     let query = "somepath";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 }
 
 #[test]
@@ -696,8 +857,16 @@ fn compare_files_by_score_prefer_shorter_basenames_match_on_basename() {
     // Resource A part of path
     let query = "file";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_c, &resource_b]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_c, &resource_b]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_c, &resource_b],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_c, &resource_b],
+    );
 }
 
 #[test]
@@ -709,8 +878,16 @@ fn compare_files_by_score_prefer_shorter_paths() {
     // Resource A part of path
     let query = "somepath";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_b, &resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_b, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b, &resource_c],
+    );
 }
 
 #[test]
@@ -721,7 +898,11 @@ fn compare_files_by_score_prefer_shorter_paths_bug_17443() {
 
     let query = "co/te";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_b, &resource_a, &resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_b, &resource_a, &resource_c],
+    );
 }
 
 #[test]
@@ -731,7 +912,11 @@ fn compare_files_by_score_prefer_matches_in_label_over_description_if_scores_are
 
     let query = "partsquick";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -740,8 +925,16 @@ fn compare_files_by_score_prefer_camel_case_matches() {
     let resource_b = file("config/test/nopointerexception.java");
 
     for query in ["npe", "NPE"] {
-        assert_sorted(&[&resource_a, &resource_b], query, &[&resource_a, &resource_b]);
-        assert_sorted(&[&resource_b, &resource_a], query, &[&resource_a, &resource_b]);
+        assert_sorted(
+            &[&resource_a, &resource_b],
+            query,
+            &[&resource_a, &resource_b],
+        );
+        assert_sorted(
+            &[&resource_b, &resource_a],
+            query,
+            &[&resource_a, &resource_b],
+        );
     }
 }
 
@@ -752,8 +945,16 @@ fn compare_files_by_score_prefer_more_compact_camel_case_matches() {
 
     let query = "AH";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -763,8 +964,16 @@ fn compare_files_by_score_prefer_more_compact_matches_label() {
 
     let query = "xp";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -774,8 +983,16 @@ fn compare_files_by_score_prefer_more_compact_matches_path() {
 
     let query = "xp";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -785,8 +1002,16 @@ fn compare_files_by_score_prefer_more_compact_matches_label_and_path() {
 
     let query = "exfile";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -799,13 +1024,29 @@ fn compare_files_by_score_avoid_match_scattering_bug_34210() {
     // isWindows
     let query = "modu1\\index.js";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c, &resource_d], query, &[&resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a, &resource_d], query, &[&resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c, &resource_d],
+        query,
+        &[&resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a, &resource_d],
+        query,
+        &[&resource_c],
+    );
 
     let query = "un1\\index.js";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c, &resource_d], query, &[&resource_b]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a, &resource_d], query, &[&resource_b]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c, &resource_d],
+        query,
+        &[&resource_b],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a, &resource_d],
+        query,
+        &[&resource_b],
+    );
 }
 
 #[test]
@@ -820,8 +1061,16 @@ fn compare_files_by_score_avoid_match_scattering_bug_21019_1() {
 
     let query = "StatVideoindex";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_c],
+    );
 }
 
 #[test]
@@ -843,8 +1092,16 @@ fn compare_files_by_score_avoid_match_scattering_bug_26649() {
 
     let query = "bookpageIndex";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_c]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_c]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_c],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_c],
+    );
 }
 
 #[test]
@@ -883,14 +1140,21 @@ fn compare_files_by_score_avoid_match_scattering_bug_36166() {
 #[test]
 fn compare_files_by_score_avoid_match_scattering_bug_32918() {
     let resource_a = file("adsys/protected/config.php");
-    let resource_b =
-        file("adsys/protected/framework/smarty/sysplugins/smarty_internal_config.php");
+    let resource_b = file("adsys/protected/framework/smarty/sysplugins/smarty_internal_config.php");
     let resource_c = file("duowanVideo/wap/protected/config.php");
 
     let query = "protectedconfig.php";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_a, &resource_c, &resource_b]);
-    assert_sorted(&[&resource_c, &resource_b, &resource_a], query, &[&resource_a, &resource_c, &resource_b]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_a, &resource_c, &resource_b],
+    );
+    assert_sorted(
+        &[&resource_c, &resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_c, &resource_b],
+    );
 }
 
 #[test]
@@ -980,8 +1244,16 @@ fn compare_files_by_score_avoid_match_scattering_bug_12095() {
 
     let query = "filesexplorerview.ts";
 
-    assert_sorted(&[&resource_a, &resource_b, &resource_c], query, &[&resource_b]);
-    assert_sorted(&[&resource_a, &resource_c, &resource_b], query, &[&resource_b]);
+    assert_sorted(
+        &[&resource_a, &resource_b, &resource_c],
+        query,
+        &[&resource_b],
+    );
+    assert_sorted(
+        &[&resource_a, &resource_c, &resource_b],
+        query,
+        &[&resource_b],
+    );
 }
 
 #[test]
@@ -1001,8 +1273,16 @@ fn compare_files_by_score_prefer_shorter_match_bug_103052_foo_bar() {
     let resource_b = file("app/emails/other-footer.other-bar.js");
 
     for query in ["foo bar", "foobar"] {
-        assert_sorted(&[&resource_a, &resource_b], query, &[&resource_a, &resource_b]);
-        assert_sorted(&[&resource_b, &resource_a], query, &[&resource_a, &resource_b]);
+        assert_sorted(
+            &[&resource_a, &resource_b],
+            query,
+            &[&resource_a, &resource_b],
+        );
+        assert_sorted(
+            &[&resource_b, &resource_a],
+            query,
+            &[&resource_a, &resource_b],
+        );
     }
 }
 
@@ -1013,8 +1293,16 @@ fn compare_files_by_score_prefer_shorter_match_bug_103052_payment_model() {
         file("app/components/online-payments-history/online-payments-history.model.js");
 
     for query in ["payment model", "paymentmodel"] {
-        assert_sorted(&[&resource_a, &resource_b], query, &[&resource_a, &resource_b]);
-        assert_sorted(&[&resource_b, &resource_a], query, &[&resource_a, &resource_b]);
+        assert_sorted(
+            &[&resource_a, &resource_b],
+            query,
+            &[&resource_a, &resource_b],
+        );
+        assert_sorted(
+            &[&resource_b, &resource_a],
+            query,
+            &[&resource_a, &resource_b],
+        );
     }
 }
 
@@ -1024,8 +1312,16 @@ fn compare_files_by_score_prefer_shorter_match_bug_103052_color() {
     let resource_b = file("app/components/model/input/pick-avatar-color.js");
 
     for query in ["color js", "colorjs"] {
-        assert_sorted(&[&resource_a, &resource_b], query, &[&resource_a, &resource_b]);
-        assert_sorted(&[&resource_b, &resource_a], query, &[&resource_a, &resource_b]);
+        assert_sorted(
+            &[&resource_a, &resource_b],
+            query,
+            &[&resource_a, &resource_b],
+        );
+        assert_sorted(
+            &[&resource_b, &resource_a],
+            query,
+            &[&resource_a, &resource_b],
+        );
     }
 }
 
@@ -1036,13 +1332,29 @@ fn compare_files_by_score_prefer_strict_case_prefix() {
 
     let query = "Color";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 
     let query = "color";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_a, &resource_b]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_a, &resource_b]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_a, &resource_b],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b],
+    );
 }
 
 #[test]
@@ -1052,8 +1364,16 @@ fn compare_files_by_score_prefer_prefix_bug_103052() {
 
     let query = "smoke main.ts";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_a, &resource_b]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_a, &resource_b]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_a, &resource_b],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_a, &resource_b],
+    );
 }
 
 #[test]
@@ -1061,9 +1381,22 @@ fn compare_files_by_score_boost_better_prefix_match_if_multiple_queries_are_used
     let resource_a = file("src/vs/workbench/services/host/browser/browserHostService.ts");
     let resource_b = file("src/vs/workbench/browser/workbench.ts");
 
-    for query in ["workbench.ts browser", "browser workbench.ts", "browser workbench", "workbench browser"] {
-        assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-        assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    for query in [
+        "workbench.ts browser",
+        "browser workbench.ts",
+        "browser workbench",
+        "workbench browser",
+    ] {
+        assert_sorted(
+            &[&resource_a, &resource_b],
+            query,
+            &[&resource_b, &resource_a],
+        );
+        assert_sorted(
+            &[&resource_b, &resource_a],
+            query,
+            &[&resource_b, &resource_a],
+        );
     }
 }
 
@@ -1073,8 +1406,16 @@ fn compare_files_by_score_boost_shorter_prefix_match_if_multiple_queries_are_use
     let resource_b = file("src/vs/workbench/electron-node/window.ts");
 
     for query in ["window node", "window.ts node"] {
-        assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-        assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+        assert_sorted(
+            &[&resource_a, &resource_b],
+            query,
+            &[&resource_b, &resource_a],
+        );
+        assert_sorted(
+            &[&resource_b, &resource_a],
+            query,
+            &[&resource_b, &resource_a],
+        );
     }
 }
 
@@ -1085,8 +1426,16 @@ fn compare_files_by_score_skip_preference_on_label_match_when_using_path_sep() {
 
     let query = "url/def";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -1096,8 +1445,16 @@ fn compare_files_by_score_boost_shorter_prefix_match_if_multiple_queries_are_use
 
     let query = "m life, life m";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -1107,8 +1464,16 @@ fn compare_files_by_score_boost_consecutive_matches_in_the_beginning_over_end() 
 
     let query = "notStatus";
 
-    assert_sorted(&[&resource_a, &resource_b], query, &[&resource_b, &resource_a]);
-    assert_sorted(&[&resource_b, &resource_a], query, &[&resource_b, &resource_a]);
+    assert_sorted(
+        &[&resource_a, &resource_b],
+        query,
+        &[&resource_b, &resource_a],
+    );
+    assert_sorted(
+        &[&resource_b, &resource_a],
+        query,
+        &[&resource_b, &resource_a],
+    );
 }
 
 #[test]
@@ -1120,10 +1485,19 @@ fn prepare_query_cases() {
     assert_eq!(prepare_query("foo*").normalized, "foo");
     assert_eq!(prepare_query("foo*").original, "foo*");
     assert_eq!(prepare_query("model Tester.ts").original, "model Tester.ts");
-    assert_eq!(prepare_query("model Tester.ts").original_lowercase, "model Tester.ts".to_lowercase());
-    assert_eq!(prepare_query("model Tester.ts").normalized, "modelTester.ts");
+    assert_eq!(
+        prepare_query("model Tester.ts").original_lowercase,
+        "model Tester.ts".to_lowercase()
+    );
+    assert_eq!(
+        prepare_query("model Tester.ts").normalized,
+        "modelTester.ts"
+    );
     assert!(!prepare_query("model Tester.ts").expect_contiguous_match); // doesn't have quotes in it
-    assert_eq!(prepare_query("Model Tester.ts").normalized_lowercase, "modeltester.ts");
+    assert_eq!(
+        prepare_query("Model Tester.ts").normalized_lowercase,
+        "modeltester.ts"
+    );
     assert!(!prepare_query("ModelTester.ts").contains_path_separator);
     assert!(prepare_query(&format!("Model{SEP}Tester.ts")).contains_path_separator);
     assert!(prepare_query("\"hello\"").expect_contiguous_match);
@@ -1145,13 +1519,22 @@ fn prepare_query_cases() {
 
     let restored_query = piece_to_query(query.values.as_ref().unwrap());
     assert_eq!(restored_query.original, query.original);
-    assert_eq!(restored_query.values.as_ref().map(Vec::len), query.values.as_ref().map(Vec::len));
-    assert_eq!(restored_query.contains_path_separator, query.contains_path_separator);
+    assert_eq!(
+        restored_query.values.as_ref().map(Vec::len),
+        query.values.as_ref().map(Vec::len)
+    );
+    assert_eq!(
+        restored_query.contains_path_separator,
+        query.contains_path_separator
+    );
 
     // with spaces that are empty
     query = prepare_query(" Hello   World  \t");
     assert_eq!(query.original, " Hello   World  \t");
-    assert_eq!(query.original_lowercase, " Hello   World  \t".to_lowercase());
+    assert_eq!(
+        query.original_lowercase,
+        " Hello   World  \t".to_lowercase()
+    );
     assert_eq!(query.normalized, "HelloWorld");
     assert_eq!(query.normalized_lowercase, "HelloWorld".to_lowercase());
     let values = query.values.as_ref().unwrap();
@@ -1166,10 +1549,16 @@ fn prepare_query_cases() {
     assert_eq!(values[1].normalized_lowercase, "World".to_lowercase());
 
     // Path related（isWindows 分支）
-    assert_eq!(prepare_query("C:\\some\\path").path_normalized, "C:\\some\\path");
+    assert_eq!(
+        prepare_query("C:\\some\\path").path_normalized,
+        "C:\\some\\path"
+    );
     assert_eq!(prepare_query("C:\\some\\path").normalized, "C:\\some\\path");
     assert!(prepare_query("C:\\some\\path").contains_path_separator);
-    assert_eq!(prepare_query("C:/some/path").path_normalized, "C:\\some\\path");
+    assert_eq!(
+        prepare_query("C:/some/path").path_normalized,
+        "C:\\some\\path"
+    );
     assert_eq!(prepare_query("C:/some/path").normalized, "C:\\some\\path");
     assert!(prepare_query("C:/some/path").contains_path_separator);
 }
@@ -1179,7 +1568,11 @@ fn fuzzy_score2_matching() {
     let target = "HelLo-World";
 
     for offset in [0usize, 3] {
-        let t = if offset == 0 { target.to_owned() } else { format!("123{target}") };
+        let t = if offset == 0 {
+            target.to_owned()
+        } else {
+            format!("123{target}")
+        };
         let (score, matches) = do_score2(&t, "HelLo-World", offset);
 
         assert!(truthy(score));
@@ -1204,12 +1597,16 @@ fn fuzzy_score2_multiple_queries() {
 
     let (first_single_score, first_single_matches) = do_score2(target, "HelLo", 0);
     let (second_single_score, second_single_matches) = do_score2(target, "World", 0);
-    let first_and_second_single_matches: Vec<Match> =
-        first_single_matches.iter().chain(second_single_matches.iter()).copied().collect();
+    let first_and_second_single_matches: Vec<Match> = first_single_matches
+        .iter()
+        .chain(second_single_matches.iter())
+        .copied()
+        .collect();
 
     let assert_score = |multi_score: Option<i32>, multi_matches: &[Match]| {
         assert!(
-            multi_score.unwrap_or(0) >= first_single_score.unwrap_or(0) + second_single_score.unwrap_or(0)
+            multi_score.unwrap_or(0)
+                >= first_single_score.unwrap_or(0) + second_single_score.unwrap_or(0)
         );
         for (i, multi_match) in multi_matches.iter().enumerate() {
             let first_and_second_single_match = first_and_second_single_matches
@@ -1281,7 +1678,10 @@ fn workspace_symbol_search_with_special_characters() {
     assert_eq!(query.original, "main#"); // Sent to language server
     assert_eq!(query.normalized, "main"); // Used for fuzzy matching
     let (mut score, mut matches) = do_score2("main", "main#", 0);
-    assert!(score.is_some_and(|s| s > 0), "Should match \"main\" symbol when query is \"main#\"");
+    assert!(
+        score.is_some_and(|s| s > 0),
+        "Should match \"main\" symbol when query is \"main#\""
+    );
     assert!(!matches.is_empty());
 
     // Test *: User types "foo*", language server returns "foo" symbol
@@ -1289,7 +1689,10 @@ fn workspace_symbol_search_with_special_characters() {
     assert_eq!(query.original, "foo*"); // Sent to language server
     assert_eq!(query.normalized, "foo"); // Used for fuzzy matching
     (score, matches) = do_score2("foo", "foo*", 0);
-    assert!(score.is_some_and(|s| s > 0), "Should match \"foo\" symbol when query is \"foo*\"");
+    assert!(
+        score.is_some_and(|s| s > 0),
+        "Should match \"foo\" symbol when query is \"foo*\""
+    );
     assert!(!matches.is_empty());
 
     // Test both: User types "MyClass#*", should match "MyClass"
@@ -1330,6 +1733,9 @@ fn workspace_symbol_search_with_special_characters() {
     assert_eq!(query.original, "#");
     assert_eq!(query.normalized, "#", "Standalone # should not be removed");
     (score, matches) = do_score2("#", "#", 0);
-    assert!(score.is_some_and(|s| s > 0), "Should match \"#\" symbol when query is \"#\"");
+    assert!(
+        score.is_some_and(|s| s > 0),
+        "Should match \"#\" symbol when query is \"#\""
+    );
     assert!(!matches.is_empty());
 }

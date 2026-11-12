@@ -22,3 +22,6 @@ pub mod app_settings;
 // #36：C# 索引状态（状态栏条目、详情面板、失败通知、rove.index.* 命令）。
 pub mod index_status;
 pub mod outline;
+
+// #24：快速打开与命令面板（`:` `@` `#` `>` 前缀、命令中心入口）。
+pub mod quick_access;

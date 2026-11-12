@@ -168,3 +168,22 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 
 - C# 声明提取直接使用 #9 已登记的 `tree-sitter 0.25` 与 `tree-sitter-c-sharp 0.23.5`（MIT），没有复制额外的查询文件。
 - `crates/rove-lang-cs/src/l1/names.rs` 的 `FxHasher` 按 [rustc-hash](https://github.com/rust-lang/rustc-hash)（MIT OR Apache-2.0）的 FxHash 思路（乘法-旋转散列与种子常量）重新实现，没有复制源码。
+
+## VS Code 模糊匹配与快速打开排序（#24）
+
+`crates/rove-fuzzy` 逐条移植 Microsoft VS Code 的下列文件（MIT 许可，取自 `main` 分支提交
+`7d28f73cae52e9fda9662bf6cdc815333b461720`，其中 `fuzzyScorer.ts` 最后一次修改的提交是
+`f6c56f75d0f9ff0774c14303046f43acfde240f3`）：
+
+- `src/vs/base/common/fuzzyScorer.ts` → `src/scorer.rs`：`scoreFuzzy`、`scoreFuzzy2`、`scoreItemFuzzy`、
+  `compareItemsByFuzzyScore`、`prepareQuery`、`pieceToQuery`。
+- `src/vs/base/common/filters.ts` 中被它用到的部分 → `src/filters.rs`（`fuzzyScore`、`createMatches`、
+  `matchesPrefix`）与 `src/words.rs`（命令面板的 `WORD_FILTER`：`matchesWords`、`matchesContiguousSubString`）。
+- `src/vs/base/common/comparers.ts` 中的 `compareAnything`、`compareByPrefix`、`compareFileNames` → `src/compare.rs`
+  （没有 ICU：`Intl.Collator` 换成数字按数值、忽略大小写的近似比较，只影响分数与长度都相同之后的决胜）。
+- `src/vs/base/test/common/fuzzyScorer.test.ts` → `src/tests.rs`：全部 68 个用例一对一移植，其中 1 个
+  （校验 VS Code 内部 32 位 `hash` 缓存键）因实现不同只留带说明的 `#[ignore]` 空壳。
+
+来源：<https://github.com/microsoft/vscode/tree/7d28f73cae52e9fda9662bf6cdc815333b461720>
+原始许可证：<https://github.com/microsoft/vscode/blob/7d28f73cae52e9fda9662bf6cdc815333b461720/LICENSE.txt>
+（MIT，Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。
