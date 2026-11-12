@@ -59,11 +59,11 @@ use std::{
 mod editor_panes;
 #[cfg(test)]
 mod editor_tests;
-#[cfg(test)]
-mod syntax_tests;
 mod outline_host;
 #[cfg(test)]
 mod outline_tests;
+#[cfg(test)]
+mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
