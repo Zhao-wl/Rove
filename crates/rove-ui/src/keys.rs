@@ -96,6 +96,8 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::nav::registry::register_commands(&mut registry)?;
     // #25：全局搜索视图。
     crate::search::registry::register_commands(&mut registry)?;
+    // #41：速览窗口。
+    crate::peek::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -109,6 +111,8 @@ pub fn default_commands() -> Result<CommandCenter> {
 fn module_defaults() -> Vec<RawRule> {
     crate::list_widget::keys::EXTRA_DEFAULTS
         .iter()
+        // #41：预览里 `alt+f12` 嵌套速览。
+        .chain(crate::peek::registry::EXTRA_DEFAULTS)
         .map(|(key, command, when)| RawRule {
             key: Some((*key).into()),
             command: (*command).into(),
@@ -131,6 +135,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::quick_access::registry::action_for(id))
         .or_else(|| crate::nav::registry::action_for(id))
         .or_else(|| crate::search::registry::action_for(id))
+        .or_else(|| crate::peek::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the
