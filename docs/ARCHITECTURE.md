@@ -981,7 +981,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 **并行、流式与取消**：`ignore` 的并行 walker 在工作线程里直接搜索（`search.ripgrep.maxThreads`，0 自动）；每个有匹配的文件整体
 送回调用线程，第一批立即交出、之后约 30 ms 一批；视图经通道收到后按代次丢弃过期批次。取消令牌检查点：每个目录项、每个文件、
-每 1 MiB 块、每处匹配，`search` 返回时线程已全部结束（`std::thread::scope`），测试断言取消到返回 < 50 ms。
+每 256 KiB 块、每处匹配，`search` 返回时线程已全部结束（`std::thread::scope`），测试断言取消到返回 < 50 ms。
 `search.maxResults` 按匹配处数原子扣减，恰好截断并报告 `limit_hit`。
 
 **编码与二进制**：先读开头 8 KiB，含 NUL（且无 UTF-16 BOM）即按二进制跳过、不读剩余内容；UTF-8 BOM 去掉、UTF-16 BOM 转码；

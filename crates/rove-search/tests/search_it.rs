@@ -357,9 +357,14 @@ fn multiline_regex() {
     assert_eq!(files[0].lines[0].ranges, vec![6..8]);
 }
 
+/// 两个计时测试互斥。
+static TIMING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 取消后 50 ms 内全部工作线程停止：`search` 返回即表示所有线程已经结束（scoped 线程）。
 #[test]
 fn cancellation_stops_all_workers_within_50_ms() {
+    // 计时测试不与本文件里的大型项目测试并行跑（同一进程里的测试默认并行，会抢光 CPU）。
+    let _serial = TIMING.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let line = "abcdefghijklmnopqrstuvwxyz0123456789 lorem ipsum dolor sit amet\n";
@@ -367,13 +372,21 @@ fn cancellation_stops_all_workers_within_50_ms() {
     for i in 0..48 {
         write(root, &format!("d{}/f{i}.txt", i % 6), &body);
     }
-    let cfg = config(&[
-        (settings::MAX_THREADS, Value::Number(4.0)),
-        (settings::MAX_RESULTS, Value::Null),
-    ]);
-    // 每一行都匹配（约 240 万处、不设上限）：release 构建下也要搜好几百毫秒，保证取消时搜索仍在进行，
-    // 并且取消发生在工作线程的内层循环（逐处匹配）里而不只是文件之间。
-    let q = SearchQuery::new("lorem");
+    let cfg = config(&[(settings::MAX_THREADS, Value::Number(4.0))]);
+    // 没有字面量可预筛、也没有任何匹配的正则：每一块都要由正则引擎真正扫描，保证取消时搜索仍在进行，
+    // 并且取消发生在工作线程的内层循环（块之间）而不只是文件之间。
+    let q = SearchQuery {
+        is_regex: true,
+        ..SearchQuery::new(r"[a-z]+[0-9]{12}")
+    };
+    // 正则编译发生在启动任何线程之前（调试构建下要几十毫秒）：等它过去再取消，量的是工作线程的停止。
+    let compiled = Instant::now();
+    rove_search::query::compile(&q, false).unwrap();
+    let compile = compiled.elapsed();
+    // 先完整搜一遍：新写的文件第一次读取可能被杀毒软件扫描阻塞几百毫秒（磁盘 I/O，不是取消路径）。
+    let warm = Instant::now();
+    search(root, &q, &cfg, &Cancellation::default(), |_| {}).unwrap();
+    eprintln!("完整搜索一遍：{:?}", warm.elapsed());
     let mut worst = Duration::ZERO;
     for _ in 0..3 {
         let cancel = Cancellation::default();
@@ -390,7 +403,7 @@ fn cancellation_stops_all_workers_within_50_ms() {
             *done.lock().unwrap() = Some(Instant::now());
             r
         });
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(compile + Duration::from_millis(30));
         assert!(
             started.lock().unwrap().is_none(),
             "搜索在取消前就已结束，数据不够大"
@@ -410,6 +423,11 @@ fn cancellation_stops_all_workers_within_50_ms() {
 #[test]
 fn unity_large_common_identifier_timing() {
     let project = rove_test_support::require_unity_project!(rove_test_support::UnityProject::Large);
+    if cfg!(debug_assertions) {
+        eprintln!("已跳过：大型项目计时只在 release 构建下有意义（cargo test --release -p rove-search unity）");
+        return;
+    }
+    let _serial = TIMING.lock().unwrap_or_else(|e| e.into_inner());
     let q = SearchQuery::new("GetComponent");
     for threads in [0.0, 16.0] {
         let cfg = config(&[(settings::MAX_THREADS, Value::Number(threads))]);

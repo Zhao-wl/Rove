@@ -8,7 +8,7 @@
 //! - **并行**：`ignore` 的并行 walker 在每个工作线程里直接搜索遍历到的文件（ripgrep 的做法）；
 //!   线程数取 `search.ripgrep.maxThreads`，0 为自动。
 //! - **流式**：每个有匹配的文件整体经通道送回调用线程，调用线程按批（第一批立即，之后约 30 ms 一批）交给回调。
-//! - **取消**：取消令牌传到每个工作线程的内层循环——每个目录项、每个文件、每 1 MiB 的块、每一处匹配都检查，
+//! - **取消**：取消令牌传到每个工作线程的内层循环——每个目录项、每个文件、每 256 KiB 的块、每一处匹配都检查，
 //!   所以取消后几毫秒内所有线程退出；[`search`] 返回时工作线程已全部结束。
 //! - **编码**：先按字节快速判定（BOM、合法 UTF-8），只有疑似非 UTF-8 的文件才走 #7 的完整编码识别
 //!   （`files.autoGuessEncoding`，GBK 中文能搜到）。含 NUL 的文件按二进制跳过（与 ripgrep / VS Code 一致）。
@@ -30,8 +30,13 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// 一次 `search_slice` 处理的最大字节数：内层循环在块之间检查取消。
-const CHUNK: usize = 1 << 20;
+/// 一次 `search_slice` 处理的最大字节数：内层循环在块之间检查取消。按时间而不是字节定间隔：
+/// release 下 256 KiB 约 0.3 ms，调试构建的正则引擎慢一个数量级，用 64 KiB 让取消间隔同样在几毫秒内。
+const CHUNK: usize = if cfg!(debug_assertions) {
+    64 << 10
+} else {
+    256 << 10
+};
 /// 超过这个大小的文件用内存映射读取（不复制、不做 UTF-8 校验，只看 BOM 与二进制）。
 const MMAP_THRESHOLD: u64 = 16 << 20;
 /// 二进制判定只看文件开头这么多字节里有没有 NUL（与 ripgrep 的快速判定一致）。
@@ -470,7 +475,7 @@ fn decode<'a>(bytes: &'a [u8], shared: &Shared, validate: bool) -> Result<Cow<'a
     }
 }
 
-/// 分块搜索：每块约 1 MiB、在行边界切开，块之间检查取消。多行正则需要整段文本，不分块。
+/// 分块搜索：每块约 256 KiB、在行边界切开，块之间检查取消。多行正则需要整段文本，不分块。
 fn search_text(
     text: &[u8],
     shared: &Shared,
