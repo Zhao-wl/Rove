@@ -217,7 +217,7 @@ cargo test --workspace
 | `code-view` | 已由 `rove-ui::code_view` 实现：自定义 Element、f64 滚动、整形缓存与预取、行号、只读选区、命中测试、滚动条；`workbench.rs` 只挂载 `CodeView` | #19（已完成） |
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
 | `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
-| `nav` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::nav` 与 `skeleton/workbench/nav_host.rs` 实现（见 §29）：转到定义 / 声明 / 实现、`Ctrl+悬停` 与 `Ctrl+点击`、悬停卡片、符号导航模式、语义同名高亮、近似结果提示，以及 #38 `CsRouter` 的装配（语义来源、L1、`BufferStates` 的打开 / 重新载入 / 关闭） | #40（已完成） |
+| `nav` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::nav` 与 `skeleton/workbench/nav_host.rs` 实现（见 §31）：转到定义 / 声明 / 实现、`Ctrl+悬停` 与 `Ctrl+点击`、悬停卡片、符号导航模式、语义同名高亮、近似结果提示，以及 #38 `CsRouter` 的装配（语义来源、L1、`BufferStates` 的打开 / 重新载入 / 关闭） | #40（已完成） |
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；命令与字符串已登记，窗口装配（`ctrl+s` → `SaveController`、重载后刷新视图）随 #47 的可编辑代码视图接入 | #49 |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
