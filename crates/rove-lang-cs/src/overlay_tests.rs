@@ -296,13 +296,14 @@ fn later_segments_win_and_relations_follow_their_owner() {
     assert_eq!(implementations, vec![(FOO_RUN, 2)]);
     // 段 1 新建的 D.cs 仍在
     assert!(view.file_id("Assets/D.cs").is_some());
-    // 段 1 的 Go 已经没有任何出现位置
+    // 段 1 的 Go 只出现在被取代的文件版本里：不再解析成符号，也没有任何出现位置
     let go = overlay
         .extra
         .iter()
         .position(|r| r.key == OvKey::Global("A|M:Foo.Go".into()));
-    let go = index.symbols().len() as u32 + go.unwrap() as u32;
-    assert!(view.occurrences(go).is_empty());
+    assert!(go.is_none_or(|g| view
+        .occurrences(index.symbols().len() as u32 + g as u32)
+        .is_empty()));
 }
 
 #[test]
@@ -384,4 +385,38 @@ fn find_symbol_uses_utf16_ordinal_order() {
         }),
         None
     );
+}
+
+#[test]
+fn superseded_file_versions_lose_their_relation_ownership() {
+    let (_dir, index) = base();
+    // 段 1：A.cs 被（影响分析）重绑，仍声明 Run，Run 实现 IFoo.Run
+    let first = Segment {
+        sequence: 1,
+        symbols: vec![
+            sym("A|T:Foo", "Foo", KIND_TYPE, None),
+            sym("A|M:Foo.Run", "Run", KIND_METHOD, Some("A|T:Foo")),
+            sym("A|T:IFoo", "IFoo", KIND_TYPE, None),
+            sym("A|M:IFoo.Run", "Run", KIND_METHOD, Some("A|T:IFoo")),
+        ],
+        files: vec![SegFile {
+            path: "Assets/A.cs".into(),
+            hash: 21,
+            occurrences: vec![occ(0, 6, 0, true), occ(0, 12, 2, false), occ(1, 9, 1, true)],
+            ..Default::default()
+        }],
+        owners: vec![(0, OWNER_SELF), (0, OWNER_MEMBERS), (1, OWNER_SELF)],
+        relations: vec![(0, 2, 1), (1, 3, 2), (1, 3, 3)],
+    };
+    // 段 2：A.cs 再被改写，Run 改名为 Go（Run 不再声明）；Foo 的成员关系重算为空
+    let mut second = rename_segment();
+    second.sequence = 2;
+    let overlay = Overlay::build(&index, &[first, second]);
+    let view = L2View::new(&index, Some(&overlay));
+    assert!(view.definitions(FOO_RUN).is_empty());
+    assert!(
+        view.bases(FOO_RUN).is_empty(),
+        "stale ownership from the superseded version"
+    );
+    assert!(view.implementations(IFOO_RUN).is_empty());
 }

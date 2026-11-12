@@ -16,7 +16,8 @@
 //! - 延迟（`--latency N`）：在副本上做 N 次“普通保存”（随机文件里插一行注释），记录索引进程的重绑耗时、
 //!   往返耗时，以及读覆盖层、合并、在该文件上查询到新结果的端到端耗时，给出 p50 / p99；另报冷启动
 //!   （第一次重绑要预热项目）、常驻进程预热后与空闲修剪后的内存，以及全量索引的峰值内存。
-//! - 结果写 `target/incr-check/report-<项目>.json`。
+//! - 结果写 `target/incr-check/report-<项目>.json`；每次编辑记在副本目录的 `edits.log`。
+//! - 只比较：`--compare <全量索引> <基础索引> <覆盖层日志>`（排查不一致时用留下的文件重新比较）。
 use rove_base::Utf8Column;
 use rove_lang_cs::overlay::{read_journal, L2View, Overlay};
 use rove_lang_cs::CsIndex;
@@ -557,6 +558,21 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 只比较：--compare <全量索引> <基础索引> <覆盖层日志>（排查用，不需要项目）
+    if let Some(i) = args.iter().position(|a| a == "--compare") {
+        let [full, base, journal] = [1, 2, 3].map(|k| PathBuf::from(&args[i + k]));
+        let full = CsIndex::open(full).unwrap();
+        let (index, overlay) = merged(&base, &journal);
+        let diffs = compare(
+            &L2View::new(&full, None),
+            &L2View::new(&index, overlay.as_ref()),
+        );
+        for d in &diffs {
+            println!("{d}");
+        }
+        println!("{} differences", diffs.len());
+        std::process::exit(i32::from(!diffs.is_empty()));
+    }
     let which = arg(&args, "--project").unwrap_or_else(|| "large".into());
     let var = match which.as_str() {
         "medium" => "ROVE_TEST_UNITY_MEDIUM",

@@ -623,10 +623,26 @@ impl Overlay {
         }
         ov.by_symbol = by_symbol;
 
-        // 4. 关系：每个（符号, 部分）以最后一个声明它的段为准
+        // 4. 关系：每个（符号, 部分）以最后一个声明它的段为准。归属只在“段里声明它的文件版本仍是该文件的
+        //    最新版本”时有效：文件后来被改写、不再声明这个符号时，旧段的归属与关系一并作废（否则改名或
+        //    删掉的成员会留下旧关系）。
         let mut owner_seg: FxMap<(u32, u8), usize> = FxMap::default();
         for (si, seg) in segments.iter().enumerate() {
+            let mut declared = vec![false; seg.symbols.len()];
+            for (fi, f) in seg.files.iter().enumerate() {
+                if latest.get(f.path.as_str()) != Some(&(si, fi)) {
+                    continue;
+                }
+                for o in &f.occurrences {
+                    if u16::from(o.role) & Role::DEF != 0 {
+                        declared[o.symbol as usize] = true;
+                    }
+                }
+            }
             for &(s, part) in &seg.owners {
+                if !declared[s as usize] {
+                    continue;
+                }
                 let id = r.symbol(&mut ov, si, s);
                 owner_seg.insert((id, part), si);
             }
