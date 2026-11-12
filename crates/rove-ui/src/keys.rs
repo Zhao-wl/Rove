@@ -90,6 +90,8 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::find::registry::register_commands(&mut registry)?;
     // #24：快速打开、命令面板、转到行。
     crate::quick_access::registry::register_commands(&mut registry)?;
+    // #49：保存、另存为、全部保存、还原、保存冲突的两个命令与换行符统一。
+    crate::save::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;

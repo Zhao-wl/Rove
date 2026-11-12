@@ -218,6 +218,7 @@ cargo test --workspace
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
 | `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
+| `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；命令与字符串已登记，窗口装配（`ctrl+s` → `SaveController`、重载后刷新视图）随 #47 的可编辑代码视图接入 | #49 |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
@@ -968,3 +969,48 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 #38 的接线：`IndexHolder::view()` 返回 `L2View`（基础索引 + 覆盖层），路由的全部 L2 查询改走视图；文件在索引中的版本取 `L2View::file_hash`（覆盖层重绑过的文件是覆盖层里的哈希），所以保存并增量更新后缓冲区直接回到“干净”。`SemanticSource::request_update` 经 `files_changed(Changed)` 进入增量更新。
 
 验证：`cargo test -p rove-lang-cs --lib overlay`（合并规则：替换文件、删除不留悬空位置、新文件、后写优先、关系归属、局部键、日志截断与校验）；`cargo test -p rove-lang-cs --test incremental -- --nocapture`（真实常驻进程：生命周期“启动 → 通知变更 → 查询得到新结果 → 改签名后后台更新引用 → 新增 / 重命名 / 删除 → `.csproj` 全量重建 → 关闭”，协议层的被独占文件重试、空闲修剪与退出、全量索引消息、`--self-test`；需要先 `dotnet build tools/rove-indexer-cs -c Release`，否则跳过）；同一测试文件里的 `overlay_limit_triggers_background_rebuild`（假常驻进程：覆盖层达到阈值触发后台全量重建，重建期间旧索引 + 覆盖层可查询，不依赖索引进程）。合并后的查询复杂度：`cargo xtask bench --filter cs_overlay/`（段数 0 → 1024）。真实项目的一致性与延迟：`cargo run --release -p rove-lang-cs --example incr_check`（见 AGENTS.md §8.3）。
+
+## 30. 保存与外部修改（#49）
+
+核心在 `crates/rove-buffer/src/save/`（不依赖 gpui；`lib.rs` 只追加 `pub mod save;`，不改 #1 的契约），界面层在
+`crates/rove-ui/src/save/`（`lib.rs` 只追加 `pub mod save;`）。#46 的 `EditSession` 只追加了三个方法：`history_marker`
+（撤销单元身份，用于脏标记）、`edit_joined`（保存时的变换并入最后一个撤销单元）、`replace_from_disk`（重载 / 还原，
+只替换首尾公共部分之间的区间，选区自然保留，可撤销）。`rove-buffer` 新增 Windows 目标依赖 `windows-sys`
+（`Win32_Storage_FileSystem`：`ReplaceFileW`、临时文件的删除处置）。
+
+| 模块 | 内容 |
+|---|---|
+| `save/encode.rs` | 文本 → 磁盘字节：BOM + 原编码（UTF-16 自编码，`encoding_rs` 没有 UTF-16 编码器）；无法编码字符的计数与 `?` 替换 |
+| `save/write.rs` | `write_atomic`：同目录临时文件（创建即设“关闭即删除”，强杀后由系统清理）→ 刷盘 → `ReplaceFileW`（保留属性、创建时间、ACL）/ 目标不存在时重命名；共享冲突、锁冲突、映射中、无法移除被替换文件 → `Busy` 并自动重试一次；只读属性 → `ReadOnly`（可清除后写）；不提供提权写入；故障注入点 `FailPoint` |
+| `save/stamp.rs` | `DiskStamp`（长度、修改时间、FNV-1a 内容哈希）：长度或时间变了才读内容，以哈希为准 |
+| `save/transforms.rs` | 保存时的变换（VS Code 保存参与者的顺序）：去行尾空白（只认空格 / Tab，可跳过字符串 / 正则与指定行）→ 去末尾多余空行 → 补末尾换行 |
+| `save/watch.rs` | `SelfWrites`（路径 + 时间窗 + 内容哈希三者结合判定自写）、`ChangeCoalescer`（按路径去抖，安静期 100 ms、最长等待 1 s） |
+| `save/settings.rs` | `files.eol`、`insertFinalNewline`、`trimFinalNewlines`、`trimTrailingWhitespace(InRegexAndStrings)`、`saveConflictResolution`、`autoSave` / `autoSaveDelay` / `autoSaveWorkspaceFilesOnly` / `autoSaveWhenNoErrors` 的登记（已登记则跳过）与 `SaveOptions::read`；`auto_save_due` 给出 VS Code 的自动保存判定（没有问题提供方时视为无错误） |
+| `save/file.rs` | `TextFile`：编辑会话 + 路径（或未命名名字）+ 编码 / BOM + 保存点 + 磁盘标记 + 删除 / 外部修改状态。保存三步：`begin_save`（UI 线程：变换、编码）→ `SaveJob::run`（后台：冲突检测 + 原子写入）→ `complete_save`；`disk_changed` / `revert` / `keep_local_changes`；`untitled` 按 `files.encoding` / `files.eol` 新建 |
+| `rove-ui/src/save/registry.rs` | 命令（`workbench.action.files.save` / `saveAs` / `saveAll`（含 `ctrl+k s` 的短 ID `saveAll`）/ `saveFiles` / `saveWithoutFormatting`、`workbench.files.action.saveAllInGroup` / `revertLocalChanges` / `acceptLocalChanges`、`workbench.action.files.revert`、`workbench.action.editor.changeEOL`）、界面字符串、反馈键与动作 ID |
+| `rove-ui/src/save/controller.rs` | `SaveController`（不依赖 GPUI）：`SaveOutcome` / `DiskChange` → #16 的五级反馈，反馈按钮的后续动作，关闭确认（`set_hot_exit` 是 #50 的开关点），外部修改的合并、自写去重与提示条 |
+
+**语义**：
+
+- **原样写回**：文本快照保留原始行终止符，混合换行保存后仍混合；编码与 BOM 按打开时写回（合法输入的解码再编码逐字节可逆），保存路径上没有格式化。
+- **脏标记**：当前撤销单元身份 ≠ 保存点即为已修改；撤销回保存点重新变为未修改。未命名文档有内容或被编辑过即为已修改。
+- **保存冲突**：保存前比较磁盘与最后一次已知的标记；`files.saveConflictResolution = overwriteFileOnDisk` 或选择“覆盖”时不检测。文件已被删除时直接新建写入。
+- **外部修改**：事件先按路径合并，再排除自写；磁盘内容等于已知内容 → 无事发生；本地无修改 → 静默重载（`replace_from_disk`，选区映射保持，编码与换行符重新识别）；本地有修改 → 提示条（只弹一次，不堆积）；文件不存在 → “已删除”，内容保留。“保留本地修改”以这次外部修改为新基准，之后保存不再报冲突。
+- **反馈**（`UX_SPEC` §6.1 / §6.4）：占用、只读属性、保存冲突、其他写入失败是第 4 级通知，键带文档 ID，同因再次触发只更新次数；“比较”在对比视图（P2）前隐藏；无法编码的字符与关闭确认是第 5 级模态；外部修改是第 3 级提示条（不可“不再提示”）。
+
+**装配**：设置经 `app_settings` 登记（`rove-buffer-save`）；命令经 `keys::default_commands` 登记、字符串经
+`appearance::strings` 登记。当前代码视图只读，窗口里没有可保存的修改，所以命令只登记、**暂不**接入
+`keys::action_for`（不进命令面板）。#47 接入可编辑视图时：每个可编辑文档建一个 `TextFile` 交给窗口的
+`SaveController`；`SaveAction` 分发给控制器；`Effect::Saved` 时清除标签脏标记并调用 #38 的
+`BufferStates::saved(path, hash)`（保存事件的唯一出口，#40 负责装配）；`Effect::Reloaded` 时把新快照交给代码视图与
+语法（`BufferStates::reloaded`）；工作区 `FileEvent` 经 `note_change` → `due` → 后台读盘 → `apply_disk`。
+#50（热退出）用 `set_hot_exit` 跳过关闭确认，`SaveJob::bytes` 可用于备份；#52、#62 经 `TextFile::session_mut`
+编辑、经 `write_atomic` / `TextFile::save` 写盘。
+
+验证：`cargo test -p rove-buffer --test save`（入口集成测试：五类文件编码往返字节级比对、混合换行与统一换行一次撤销、
+撤销回保存点、无法编码字符三条路径、强杀写入中的子进程后原文件完整且无临时残留、持有独占句柄的辅助进程（自动重试一次后
+报告 / 重试间隔内释放则静默成功 / 释放后“重试”成功）、只读属性与“覆盖”、保存冲突三条路径、静默重载保持光标、提示条两个选项、
+删除后保存重建、外部脚本连续改写 100 次、连续保存 20 次零误报、保存时变换参数化且与用户改动同一撤销单元、字符串内行尾空白、
+自动保存判定、未命名文档、另存为）；`cargo test -p rove-buffer --lib save`（编码、写入、变换、去重与去抖的单元测试）；
+`cargo test -p rove-ui --lib save::`（控制器：各反馈的级别与按钮、按钮后续动作、关闭确认三条路径与热退出开关、提示条不堆积、
+自写零误报、“编辑 → 保存 → 外部修改 → 重载”）。

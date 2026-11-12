@@ -103,6 +103,9 @@ pub(crate) struct Step {
 /// 一个撤销单元。
 #[derive(Clone, Debug)]
 pub(crate) struct UndoGroup {
+    /// 单元的身份（#49 的脏标记：撤销 / 重做回到保存时的单元即为“未修改”）。从 1 开始，同一
+    /// 历史内不重复；向单元里追加编辑不改变身份。
+    pub id: u64,
     pub steps: Vec<Step>,
     pub selections_before: Selections,
     pub selections_after: Selections,
@@ -116,6 +119,8 @@ pub(crate) struct UndoHistory {
     pub redo: Vec<UndoGroup>,
     /// 栈顶单元是否还能继续合并。
     pub open: bool,
+    /// 上一个分配出去的单元身份。
+    pub last_id: u64,
 }
 
 impl UndoHistory {
@@ -135,14 +140,23 @@ impl UndoHistory {
                 group.selections_after = selections_after.clone();
                 group.last_edit = now;
             }
-            _ => self.undo.push(UndoGroup {
-                steps: vec![step],
-                selections_before: selections_before.clone(),
-                selections_after: selections_after.clone(),
-                last_edit: now,
-            }),
+            _ => {
+                self.last_id += 1;
+                self.undo.push(UndoGroup {
+                    id: self.last_id,
+                    steps: vec![step],
+                    selections_before: selections_before.clone(),
+                    selections_after: selections_after.clone(),
+                    last_edit: now,
+                })
+            }
         }
         self.open = true;
+    }
+
+    /// 当前文本对应的撤销位置：栈顶单元的身份，空栈为 0（#49）。
+    pub fn marker(&self) -> u64 {
+        self.undo.last().map_or(0, |group| group.id)
     }
 
     /// 栈顶单元在 `now` 时是否因超时而不能再合并。

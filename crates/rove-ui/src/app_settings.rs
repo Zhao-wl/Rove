@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 7] {
+fn modules() -> [(&'static str, Register); 8] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -26,6 +26,8 @@ fn modules() -> [(&'static str, Register); 7] {
         ),
         ("rove-workspace", rove_workspace::register_settings),
         ("rove-syntax", rove_syntax::highlight::register_settings),
+        // #49：保存路径读取的 files.*（eol、insertFinalNewline、trim*、saveConflictResolution、autoSave*）。
+        ("rove-buffer-save", rove_buffer::save::settings::register),
     ]
 }
 
