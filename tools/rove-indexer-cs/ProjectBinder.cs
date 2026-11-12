@@ -15,6 +15,19 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
     /// 本项目里已登记过元数据视图的最外层外部类型。
     readonly ConcurrentDictionary<INamedTypeSymbol, byte> _noted = new(ReferenceEqualityComparer.Instance);
     readonly string _assembly = comp.AssemblyName ?? "";
+    /// #35 常驻模式：每个声明（规范化后的符号与它的记录）回调一次，用于声明指纹与关系归属。
+    public Action<ISymbol, SymRec>? Declared;
+
+    /// 符号的规范键（不创建记录）。
+    public SymbolKey KeyOf(ISymbol s) => ctx.Symbols.Canonical(Key(Symbols.Norm(s)));
+
+    /// 符号的记录（规范化后），不存在时创建。#35 用它给关系的两端取键。
+    public SymRec Record(ISymbol s)
+    {
+        s = Symbols.Norm(s);
+        GetSym(s);
+        return _cache[s];
+    }
 
     public FileResult Bind(SyntaxTree tree, uint id, byte[] path, ulong hash)
     {
@@ -78,6 +91,9 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
                 if (ds == null) continue;
                 ds = Symbols.Norm(ds);
                 Add(tok.Span, ds, Role.Def);
+                if (ctx.Declarations is { } declarations && Fingerprints.IsSurface(ds) && _cache[ds].Key.Text is { } declared)
+                    declarations.TryAdd(declared, Fingerprints.Of(ds));
+                Declared?.Invoke(ds, _cache[ds]);
                 if (ds is IParameterSymbol p && p.ContainingSymbol?.GetDocumentationCommentId() is { } owner
                     && Key(p) is { Text: null } local)
                     ctx.Symbols.RegisterSourceParameter(_assembly + "|" + owner, p.Ordinal, local);
