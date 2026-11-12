@@ -12,7 +12,9 @@
 //!
 //! - [`edit`]（#46）：编辑事务、撤销重做、选区、单词边界、剪贴板语义与改写事务。
 //!
-//! 不包含保存、文件监听（#15）与界面（#22、#27）。
+//! - [`save`]（#49）：原样写回（编码、BOM、混合换行）、原子写入、保存冲突、外部修改与自动重载。
+//!
+//! 不包含文件监听（#15）与界面（#22、#27）。
 
 pub mod contracts;
 pub use contracts::*;
@@ -36,3 +38,6 @@ pub use size::{disabled_features, session_toggle_allowed, ReducedFeature, SizePo
 
 // #46 编辑核心：事务、撤销重做、选区、单词边界、剪贴板语义与改写事务。
 pub mod edit;
+
+// #49 保存与外部修改：编码保持、原子写入、占用重试、冲突、自写去重、外部修改与自动重载。
+pub mod save;

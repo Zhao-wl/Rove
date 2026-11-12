@@ -212,6 +212,25 @@ impl EditSession {
             || !self.history.open
             || kind.breaks_after(self.previous_kind)
             || self.history.timed_out(now, self.options.undo_group_timeout);
+        self.commit_grouped(
+            transaction,
+            kind,
+            now,
+            start_new,
+            line_endings_after,
+            selections_after,
+        )
+    }
+
+    fn commit_grouped(
+        &mut self,
+        transaction: &Transaction,
+        kind: EditKind,
+        now: Instant,
+        start_new: bool,
+        line_endings_after: Option<LineEndings>,
+        selections_after: impl FnOnce(&AppliedEdit) -> Result<Selections>,
+    ) -> Result<AppliedEdit> {
         let line_endings_before = self.buffer.line_endings().clone();
         let applied = self.buffer.apply(transaction)?;
         if let Some(line_endings) = line_endings_after {
@@ -540,6 +559,85 @@ impl EditSession {
     }
 
     /// 便于测试与调试：当前全文。
+    /// 撤销位置标记（#49）：文本回到某个标记时的内容，标记就相同。保存时记下标记，
+    /// “当前标记 ≠ 保存时的标记”即为有未保存的修改（撤销回保存点后重新变为未修改）。
+    pub fn history_marker(&self) -> u64 {
+        self.history.marker()
+    }
+
+    /// 把事务并入最后一个撤销单元（#49：保存时的文本变换与用户的改动是同一个撤销单元）。
+    /// 撤销栈为空时开启新单元。之后的编辑开始新单元。
+    pub fn edit_joined(&mut self, transaction: Transaction, now: Instant) -> Result<AppliedEdit> {
+        let before = self.selections.clone();
+        let start_new = self.history.undo.is_empty();
+        // 栈顶单元即使已关闭（间隔超时、上一次是“其他编辑”）也照样并入。
+        self.history.open = true;
+        self.commit_grouped(
+            &transaction,
+            EditKind::Other,
+            now,
+            start_new,
+            None,
+            |applied| before.map(|s| Ok(map_selection(applied, s))),
+        )
+    }
+
+    /// 用磁盘上的新内容替换全文（#49：外部修改后的重新加载、还原）。只替换首尾公共部分
+    /// 之间的区间，所以未变的部分里的选区原样保留；是一个可撤销的单元。文档带只读原因时同样
+    /// 生效（重新加载不是用户编辑）。内容相同时返回 `None`，只更新换行符信息。
+    pub fn replace_from_disk(
+        &mut self,
+        text: &str,
+        line_endings: LineEndings,
+        now: Instant,
+    ) -> Result<Option<AppliedEdit>> {
+        let current = self.buffer.contents();
+        let old = current.as_bytes();
+        let new = text.as_bytes();
+        let mut prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        while !current.is_char_boundary(prefix) || !text.is_char_boundary(prefix) {
+            prefix -= 1;
+        }
+        let max_suffix = old.len().min(new.len()) - prefix;
+        let mut suffix = old
+            .iter()
+            .rev()
+            .zip(new.iter().rev())
+            .take(max_suffix)
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !current.is_char_boundary(old.len() - suffix)
+            || !text.is_char_boundary(new.len() - suffix)
+        {
+            suffix -= 1;
+        }
+        let range = Span::new(
+            ByteOffset(prefix as u64),
+            ByteOffset((old.len() - suffix) as u64),
+        )?;
+        if range.start() == range.end() && prefix + suffix == new.len() {
+            self.buffer.set_line_endings(line_endings);
+            return Ok(None);
+        }
+        let inserted = &text[prefix..new.len() - suffix];
+        let transaction = Transaction::single(range, inserted).verbatim();
+        let reasons: std::sync::Arc<[crate::ReadOnlyReason]> =
+            std::sync::Arc::from(self.buffer.read_only());
+        self.buffer.set_read_only(std::sync::Arc::from([]));
+        self.history.close();
+        let before = self.selections.clone();
+        let result = self.commit(
+            &transaction,
+            EditKind::Other,
+            now,
+            true,
+            Some(line_endings),
+            |applied| before.map(|s| Ok(map_selection(applied, s))),
+        );
+        self.buffer.set_read_only(reasons);
+        result.map(Some)
+    }
+
     pub fn contents(&self) -> String {
         self.buffer.contents()
     }
