@@ -199,7 +199,7 @@ impl CodeView {
             viewport_height: viewport_h as f64,
             viewport_width: text_w_guess,
             line_count,
-            padding_top: o.padding_top,
+            padding_top: o.padding_top + self.top_inset as f64,
             padding_bottom: o.padding_bottom,
             scroll_beyond_last_line: o.scroll_beyond_last_line,
             content_width: self.content_width,

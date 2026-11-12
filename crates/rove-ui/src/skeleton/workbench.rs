@@ -59,6 +59,8 @@ use std::{
 mod editor_panes;
 #[cfg(test)]
 mod editor_tests;
+#[cfg(test)]
+mod find_tests;
 mod outline_host;
 #[cfg(test)]
 mod outline_tests;
@@ -126,6 +128,8 @@ struct Shown {
 /// folding live in the code view itself (#20); the host only hands it snapshots and state.
 struct CodeSlot {
     code: Entity<CodeView>,
+    /// #21：包住代码视图并在右上角浮出查找条。
+    find: Entity<crate::find::host::FindHost>,
     shown: Option<Shown>,
     _events: gpui::Subscription,
 }
@@ -206,6 +210,9 @@ pub struct Workbench {
     workspace: Option<Arc<dyn Workspace>>,
     /// "Toggle read-only in this session" per document: `true` read-only, `false` writable.
     readonly_overrides: BTreeMap<DocumentId, bool>,
+    /// #21：窗口内所有查找条共享的选项、上次的查找文本与历史。
+    find_shared: crate::find::host::SharedFind,
+    find_strings: Arc<dyn Strings>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -314,6 +321,7 @@ impl Workbench {
                 })
                 .detach();
         };
+        let find_history = store.find_history_path();
         let shell = Shell::new(
             &root,
             appearance::contributions().unwrap(),
@@ -369,6 +377,8 @@ impl Workbench {
             outline,
             workspace: None,
             readonly_overrides: BTreeMap::new(),
+            find_shared: crate::find::host::FindShared::new(find_history),
+            find_strings: Arc::new(appearance::strings().unwrap()),
         };
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
@@ -433,6 +443,15 @@ impl Workbench {
         for code in self.code_views() {
             code.update(cx, |code, cx| apply_zoom(code, zoom, cx));
         }
+        // #21：editor.find.* 变化。
+        if keys
+            .iter()
+            .any(|k| k.starts_with("editor.find.") || &**k == "editor.wordSeparators")
+        {
+            for find in self.find_hosts() {
+                find.update(cx, |find, cx| find.reload_settings(cx));
+            }
+        }
         // #36：rove.index.enabled / cacheDir 变化：关闭旧的生命周期，按新设置重新打开。
         if self.index.lifecycle().is_some()
             && keys.iter().any(|k| LifecycleConfig::is_lifecycle_key(k))
@@ -473,7 +492,18 @@ impl Workbench {
             let theme = self.theme.clone();
             code.update(cx, |code, cx| code.set_theme(theme, kind, cx));
         }
+        for find in self.find_hosts() {
+            let theme = self.theme.clone();
+            find.update(cx, |find, cx| find.set_theme(&theme, kind, cx));
+        }
         cx.notify();
+    }
+    fn find_hosts(&self) -> Vec<Entity<crate::find::host::FindHost>> {
+        self.views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
+            .map(|slot| slot.find.clone())
+            .collect()
     }
     fn code_views(&self) -> Vec<Entity<CodeView>> {
         self.views
@@ -755,8 +785,19 @@ impl Workbench {
                 cx.notify();
             }
         });
+        let find = {
+            let (code, shared) = (code.clone(), self.find_shared.clone());
+            let (settings, strings) = (self.settings.clone(), self.find_strings.clone());
+            let theme = self.theme.clone();
+            cx.new(|cx| {
+                crate::find::host::FindHost::new(
+                    code, shared, settings, strings, &theme, theme_kind, cx,
+                )
+            })
+        };
         CodeSlot {
             code,
+            find,
             shown: None,
             _events: events,
         }

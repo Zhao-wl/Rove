@@ -79,6 +79,7 @@ pub fn strings() -> Result<StringTable> {
     // #36：C# 索引状态的文案。
     crate::index_status::register_strings(&mut t)?;
     crate::outline::registry::register_strings(&mut t)?;
+    crate::find::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

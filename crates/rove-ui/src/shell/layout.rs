@@ -218,6 +218,14 @@ impl LayoutStore {
                 .join("layout.json")
         })
     }
+    /// #21：查找历史（`editor.find.history = workspace`）。
+    pub fn find_history_path(&self) -> Option<PathBuf> {
+        self.base.as_ref().map(|b| {
+            b.join("workspaceStorage")
+                .join(&self.workspace_key)
+                .join("find-history.json")
+        })
+    }
     pub fn global_path(&self) -> Option<PathBuf> {
         self.base.as_ref().map(|b| b.join("globalState.json"))
     }

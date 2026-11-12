@@ -163,6 +163,7 @@ pub const FEATURE_COLORS: &[&str] = &[
 pub fn theme_registry() -> ColorRegistry {
     let mut registry = rove_theme::service::p0_registry();
     register(&mut registry).expect("code view colors");
+    crate::find::registry::register_colors(&mut registry).expect("find colors");
     registry
 }
 

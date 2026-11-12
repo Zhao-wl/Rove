@@ -327,6 +327,8 @@ pub struct CodeView {
     pub(crate) recording: Option<Vec<FrameStats>>,
     pub(crate) slice_budget: Duration,
     pub(crate) glyphs_painted: Cell<u32>,
+    /// 第一行之上的额外空间（像素）：#21 的 `editor.find.addExtraSpaceOnTop`。
+    pub(crate) top_inset: f32,
 }
 
 impl Focusable for CodeView {
@@ -511,6 +513,7 @@ impl CodeView {
             recording: None,
             slice_budget: PREPARE_SLICE,
             glyphs_painted: Cell::new(0),
+            top_inset: 0.0,
         };
         view.apply_feature_options();
         view
@@ -2314,6 +2317,42 @@ impl CodeView {
     /// `hasWordHighlights` 上下文键的取值。
     pub fn has_word_highlights(&self) -> bool {
         self.occurrences.borrow().has_word_highlights()
+    }
+
+    /// 第一行之上的额外空间（像素，缩放前）。查找条打开时留出它的高度，让第一行能滚到查找条下面
+    /// （#21，`editor.find.addExtraSpaceOnTop`）。已滚动时同步调整滚动位置，内容不跳动。
+    pub fn set_top_inset(&mut self, inset: f32, cx: &mut Context<Self>) {
+        let inset = inset.max(0.0);
+        if (inset - self.top_inset).abs() < f32::EPSILON {
+            return;
+        }
+        let delta = (inset - self.top_inset) as f64;
+        self.top_inset = inset;
+        let lh = self.font.line_height as f64;
+        if self.scroll.top > 0.0 && lh > 0.0 {
+            let target = ScrollPosition {
+                top: (self.scroll.top + delta / lh).max(0.0),
+                x: self.scroll.x,
+            };
+            self.set_scroll_position(target, false, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn top_inset(&self) -> f32 {
+        self.top_inset
+    }
+
+    /// 插入符所在的单词（#21 `actions.find` 的种子；与同名高亮用同一套分词规则）。
+    pub fn word_at_caret(&self) -> Option<String> {
+        let text = self.text.as_ref()?;
+        let s = self.cursor.selection;
+        let lines = TextLines(&**text);
+        let line = lines.line_text(s.active.line.0)?;
+        let (a, b) = self
+            .word_rule()
+            .word_at(&line, s.active.column.0 as usize)?;
+        Some(line[a..b].to_string())
     }
 
     /// 当前同名高亮的文本（单词或选中文本）。
