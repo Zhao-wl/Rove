@@ -27,3 +27,6 @@ pub mod outline;
 pub mod find;
 // #24：快速打开与命令面板（`:` `@` `#` `>` 前缀、命令中心入口）。
 pub mod quick_access;
+
+// #49：保存与外部修改（命令、反馈映射、关闭确认、外部修改提示）。核心在 rove_buffer::save。
+pub mod save;

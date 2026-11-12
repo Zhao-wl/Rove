@@ -80,6 +80,8 @@ pub fn strings() -> Result<StringTable> {
     crate::find::registry::register_strings(&mut t)?;
     // #24：快速打开、命令面板与转到行的标题和提示。
     crate::quick_access::registry::register_strings(&mut t)?;
+    // #49：保存失败通知、无法编码字符与关闭确认的模态框、外部修改提示条。
+    crate::save::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
