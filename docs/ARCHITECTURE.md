@@ -46,7 +46,7 @@ flowchart TD
 | crate | 职责 | GPUI |
 |---|---|---|
 | rove-base | 坐标、资源身份、版本、编辑、取消、订阅、错误、通用登记容器 | 禁止 |
-| rove-buffer | 不可变文本快照、文档元信息、后台打开服务 | 禁止 |
+| rove-buffer | 不可变文本快照、文档元信息、后台打开服务；编辑核心（事务、撤销重做、选区、单词边界，#46，见 §24） | 禁止 |
 | rove-syntax | token/scope、折叠、符号树、语言配置数据 | 禁止 |
 | rove-theme | 颜色登记与主题读取、token 样式 | 禁止 |
 | rove-config | 设置登记、强类型读取、显式写入、变更 | 禁止 |
@@ -776,3 +776,31 @@ Markdown 局部更新与回退、可见区域优先、按文档基线、设置�
 与 #26 大纲的关系：大纲和面包屑使用 `rove-syntax` 的文档符号（单个打开文件、随编辑增量更新）；L1 是全工作区的磁盘声明表（跨文件、持久化）。两者都基于 tree-sitter C# grammar，但数据各自独立，不互相替代：打开文件里的结构以 #26 为准，跨文件查找以 L1 为准。
 
 验证：`cargo test -p rove-lang-cs`（`src/l1/tests.rs`：partial 三文件聚合、嵌套/泛型重名/record/文件级命名空间、using static 与别名、成员种类与“一律近似”、持久化与增量的扫描计数、缓存损坏回退、BOM/UTF-16 列；`tests/l1_workspace.rs`：工作区扫描 → 符号搜索 → 类型跳转 → 文件事件增量 → 重新打开不重扫，以及中型/大型 Unity 项目往返）。准确率：`cargo run --release -p rove-lang-cs --example nav_check -- --source l1`（#39 测试集的 `type_ref` 分类即验收口径；其余分类需要语义信息，不由 L1 回答）。性能：`cargo xtask bench --filter l1/`（预算 `l1_*`），真实项目数字用 `cargo run --release -p rove-lang-cs --example l1_bench -- <项目>`。
+
+## 24. 编辑核心模型（#46）
+
+位置：`crates/rove-buffer/src/edit/`（核心层，不依赖 gpui；`lib.rs` 只追加 `pub mod edit;`，不改 `contracts.rs` 与 #1 的契约）。
+R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存）、R62（全局替换）都不自己改文本，一律经过 `EditSession` / `EditBuffer`。
+本 issue 不登记命令、界面字符串，也没有 `SKELETON(...)` 标记（骨架是只读的）。
+
+| 模块 | 内容 |
+|---|---|
+| `transaction.rs` | `Transaction`：多区间、按位置排序、重叠报 `InvalidInput`；区间都用事务前的坐标，从后往前应用。`EditBuffer`：rope 写时复制，每次事务产出新的 `RopeText` 快照（新 `Version`）与 `AppliedEdit`（`InputEdit` 按应用顺序、逐个 `TextEdit`、`coalesced()` 合并成一个 `TextEdit`、`LineChanges` 按行失效、反向事务）。插入的换行统一为主换行符，其余行尾不动；超大文件 / 有只读原因时返回 `Unsupported` |
+| `history.rs` | `EditKind` 与 VS Code 的撤销分组规则（连续输入合并、空格与 VS Code 一致、输入/向左删/向右删之间断开、其他编辑前后断开），另加 `UNDO_GROUP_TIMEOUT`（1 s）；撤销栈只存正反事务与编辑前后的选区。光标撤销栈独立，最多 50 条，文本变化即清空 |
+| `selection.rs` | `Selection`（anchor/active 字节偏移 + 期望可见列）、`Selections`（下标 0 为主选区，`normalize` 按 `multiCursorLimit` 截断、按 `multiCursorMergeOverlapping` 合并）；左右按字素簇、上下按可见列（Tab 到制表位、全角两列） |
+| `word.rs` | VS Code `cursorWordOperations.ts` 的移植：`move_word`（`cursorWord*`、`cursorWordPart*`、无障碍版本）、`delete_word`（`deleteWord*`、`deleteWordPart*`）、`delete_inside_word`、`word_at` / `select_word`（按 `editor.wordSeparators`）、`word_at_with_pattern`（接 #12 `CompiledLanguageConfiguration::word_at`，语言级 `wordPattern`） |
+| `clipboard.rs` | 复制 / 剪切 / 粘贴的文本语义：`emptySelectionClipboard`、多选区分段、`multiCursorPaste` 的 spread/full；系统剪贴板读写在 R46 |
+| `rewrite.rs` | 缩进转换（只改前导空白）与换行符统一（一次事务、一次撤销） |
+| `session.rs` | `EditSession`：`edit`（任意事务，R47/R62）、`edit_each`（每个选区一处替换）、`type_text`、`delete_left/right`、`move_word`、`delete_word`、`undo/redo`（恢复编辑前 / 后的选区）、`cursor_undo/redo`、`copy/cut/paste`、`convert_indentation`、`change_eol`。时间由调用方传入 |
+| `settings.rs` | `editor.wordSeparators`、`emptySelectionClipboard`、`multiCursorMergeOverlapping`、`multiCursorLimit`、`multiCursorPaste`、`tabSize`、`indentSize` 的登记（已登记则跳过）与 `EditOptions::read` |
+
+接线提示：
+
+- 语法：把 `AppliedEdit::coalesced(&snapshot)` 交给 #94 的 `DocumentHighlighter::analyze` 走增量路径；多区间事务也可逐个使用 `text_edits` / `input_edits`（顺序即应用顺序）。
+- 视图：`LineChanges` 的 `old`/`new` 行区间与 `line_delta` 直接用于按行失效（§16 的装饰协议）。
+- 撤销 / 重做返回的 `AppliedEdit` 与普通编辑一样需要通知语法与视图。
+- 与 VS Code 的差异：没有移植 `editor.wordSegmenterLocales`（`Intl.Segmenter` 词典分词，等同默认值 `[]`）；自动闭合对的“一起删除”判定属于 R52，`DeleteWordContext::auto_closing_pair` 只执行结果；撤销分组多了超时规则。
+
+验证：`cargo test -p rove-buffer`——`tests/edit_word_operations.rs`（VS Code `wordOperations` / `wordPartOperations` 用例逐例对拍，`wordSegmenterLocales: 'ja'` 两例除外）、
+`tests/edit_word_pattern.rs`（Markdown / XML `wordPattern` 与 #12 用例对齐）、`tests/edit_core.rs`（入口“打开 → 编辑 → 撤销 → 变更通知与 InputEdit”、事务、撤销分组四种情况、选区、剪贴板、改写事务、混合换行符字节级比对）、
+`tests/edit_proptest.rs`（随机多区间事务 / 输入 / 删除 / 撤销后全部撤销逐字节回到初始文本、全部重做回到撤销前）。性能：`cargo xtask bench --filter edit/ --check-budgets`（预算 `edit_insert_char_100k_lines`，p99 < 100 µs）。
