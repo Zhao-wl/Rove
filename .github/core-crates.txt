@@ -15,3 +15,4 @@ rove-config
 rove-i18n
 rove-theme
 rove-fuzzy
+rove-search

@@ -28,6 +28,8 @@ fn modules() -> [(&'static str, Register); 8] {
         ("rove-syntax", rove_syntax::highlight::register_settings),
         // #49：保存路径读取的 files.*（eol、insertFinalNewline、trim*、saveConflictResolution、autoSave*）。
         ("rove-buffer-save", rove_buffer::save::settings::register),
+        // #25：search.*（全局搜索）。
+        ("rove-search", rove_search::settings::register_settings),
     ]
 }
 
