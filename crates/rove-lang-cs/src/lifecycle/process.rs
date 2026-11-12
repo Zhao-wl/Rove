@@ -4,15 +4,19 @@
 //!   换成 #43 定义的安装位置即可。
 //! - 进程的 stdout/stderr 逐行写进索引日志，同时解析进度（见 [`Progress::parse`]）。
 //! - 取消（关项目、重建）时结束进程；崩溃、非零退出码由调用方（`service`）重试一次再降级。
-//! - #35 合并后常驻进程也由这里拉起：空闲退出由进程自己决定，`service` 在需要时重新调用 `build`。
-use super::log::IndexLog;
+//! - #35 的常驻进程用同一个组件（`--serve`，见 `resident`）：空闲退出由进程自己决定，`service` 在
+//!   有文件变化时重新拉起。
+use super::{
+    log::IndexLog,
+    resident::{IncrementalIndexer, ProcessResident},
+};
 use rove_base::Cancellation;
 use std::{
     ffi::OsString,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Arc},
     time::{Duration, Instant},
 };
 
@@ -168,24 +172,39 @@ pub trait IndexBuilder: Send + Sync {
         log: &IndexLog,
         cancel: &Cancellation,
     ) -> Result<(), BuildFailure>;
+
+    /// #35：增量更新用的常驻进程。`None`（默认）时源文件变化只标记过期，等下一次全量重建。
+    fn incremental(&self) -> Option<Arc<dyn IncrementalIndexer>> {
+        None
+    }
 }
 
 /// 用索引进程构建。
 pub struct ProcessBuilder {
-    locate: Box<dyn Fn() -> Option<IndexerComponent> + Send + Sync>,
+    locate: Arc<dyn Fn() -> Option<IndexerComponent> + Send + Sync>,
+    resident: bool,
 }
 
 impl Default for ProcessBuilder {
+    /// 正式装配：全量构建与增量更新（常驻模式，#35）都用 [`locate_indexer`] 找到的组件。
     fn default() -> Self {
-        Self::new(locate_indexer)
+        Self::new(locate_indexer).with_resident(true)
     }
 }
 
 impl ProcessBuilder {
+    /// 只做全量构建（测试用任意命令模拟索引进程时，不会被当成常驻进程拉起）。
     pub fn new(locate: impl Fn() -> Option<IndexerComponent> + Send + Sync + 'static) -> Self {
         Self {
-            locate: Box::new(locate),
+            locate: Arc::new(locate),
+            resident: false,
         }
+    }
+
+    /// 同一个组件也用于常驻模式（`--serve`）。
+    pub fn with_resident(mut self, resident: bool) -> Self {
+        self.resident = resident;
+        self
     }
 }
 
@@ -299,6 +318,13 @@ impl IndexBuilder for ProcessBuilder {
             }
             None => Err(BuildFailure::Crashed(0)),
         }
+    }
+
+    fn incremental(&self) -> Option<Arc<dyn IncrementalIndexer>> {
+        let locate = self.locate.clone();
+        self.resident.then(|| {
+            Arc::new(ProcessResident::new(move || locate())) as Arc<dyn IncrementalIndexer>
+        })
     }
 }
 

@@ -26,6 +26,9 @@ static class Program
 
     static int Main(string[] args)
     {
+        // #35 常驻模式：stdin/stdout 上逐行的 JSON-RPC，见 Server.cs 与 docs/CS_INDEX_FORMAT.md「常驻模式与覆盖层」。
+        if (args.Length > 0 && args[0] == "--serve") return Server.Run(args[1..]);
+        if (args.Length > 0 && args[0] == "--self-test") return SelfTest.Run();
         if (args.Length < 2) { Console.Error.WriteLine(Usage); return 2; }
         var root = Path.GetFullPath(args[0]);
         var outPath = Path.GetFullPath(args[1]);
@@ -53,29 +56,25 @@ static class Program
         options.GcEveryFiles = Int("--gc-every-files") ?? options.GcEveryFiles;
         string? reportPath = Value("--report");
         bool reconcile = !args.Contains("--no-reconcile");
-        using var sampler = new MemorySampler(options.Profile, (Int("--soft-memory-mb") ?? 2200) * (1L << 20));
+        return FullIndex(root, outPath, options, reportPath, reconcile, (Int("--soft-memory-mb") ?? 2200) * (1L << 20), null, printReport: true);
+    }
+
+    /// 一次全量索引（命令行与常驻模式的 `index` 消息共用）。`progress` 为空时进度行写 stderr。
+    internal static int FullIndex(string root, string outPath, IndexOptions options, string? reportPath, bool reconcile,
+        long softMemoryLimit, Action<int, int>? progress, bool printReport)
+    {
+        Total.Restart();
+        Phases.Clear();
+        using var sampler = new MemorySampler(options.Profile, softMemoryLimit);
 
         // 1. 解析 csproj
         var sw = Stopwatch.StartNew();
-        var projects = Directory.GetFiles(root, "*.csproj").Select(ParseCsproj).Where(p => p != null).Cast<ProjectInfo>()
-            .ToDictionary(p => p.Path, StringComparer.OrdinalIgnoreCase);
-        Log($"projects: {projects.Count}, source entries: {projects.Values.Sum(p => p.Sources.Length)}");
-        if (reconcile)
-        {
-            var (added, removed) = UnityProjectModel.Reconcile(root, projects);
-            Log($"reconcile with disk: +{added} files not in csproj, -{removed} listed but missing");
-        }
+        var projects = LoadProjects(root, reconcile);
         var configHash = ProjectConfigHash.Compute(root, projects.Values, options.Generators, reconcile);
         Phase("parse_csproj", sw);
 
         // 文件归属第一个列出它的项目（按项目路径序）；磁盘文件按最终的路径字节序预先编号。
-        var fileOwner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var parseOpts = new Dictionary<string, CSharpParseOptions>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in projects.Values.OrderBy(p => p.Path, StringComparer.OrdinalIgnoreCase))
-        {
-            parseOpts[p.Path] = new CSharpParseOptions(p.LangVersion, DocumentationMode.None, SourceCodeKind.Regular, p.Defines);
-            foreach (var s in p.Sources) fileOwner.TryAdd(s, p.Path);
-        }
+        var (fileOwner, parseOpts) = Ownership(projects);
         string RelativePath(string fullPath) => Path.GetRelativePath(root, fullPath).Replace('\\', '/');
         var ordered = fileOwner.Keys.Select(f => (f, path: Encoding.UTF8.GetBytes(RelativePath(f)))).ToArray();
         Array.Sort(ordered, (a, b) => a.path.AsSpan().SequenceCompareTo(b.path));
@@ -96,6 +95,8 @@ static class Program
             Io = io,
             Prefetch = new FilePrefetcher(io, options.PrefetchBytes, options.IoConcurrency),
             NextGeneratedId = ordered.Length - 1,
+            Progress = progress,
+            Declarations = new(StringComparer.Ordinal),
         };
 
         // 2. 按依赖拓扑的流水线：读取、解析、编译、元数据镜像、绑定，项目完成即释放
@@ -146,6 +147,8 @@ static class Program
         long namesTotal = Stats.Names;
         var metadata = new MetadataStats();
         var stats = IndexWriter.Write(outPath, configHash, files, ctx.Symbols, ctx.Relations, () => viewsTask.Result, metadata);
+        // #35：声明指纹旁路文件，供常驻模式判断“签名或可见性是否变化”（不属于索引格式，丢失时退回较弱的比较）。
+        DeclarationTable.Write(outPath, ctx.Declarations!);
         Phase("write_index", sw);
         Phases["metadata_views_concurrent"] = metadataMs;
         sampler.Sample();
@@ -196,8 +199,40 @@ static class Program
         };
         var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         if (reportPath != null) File.WriteAllText(reportPath, json);
-        Console.WriteLine(json);
+        if (printReport) Console.WriteLine(json);
+        LastFullIndex = (files.Length, stats.symbols);
         return 0;
+    }
+
+    /// 最近一次全量索引的文件数与符号数（常驻模式的 `index` 回复用）。
+    internal static (int files, long symbols) LastFullIndex;
+
+    /// 解析根目录下的全部 csproj，按需与磁盘对齐（UnityProjectModel.Reconcile）。
+    internal static Dictionary<string, ProjectInfo> LoadProjects(string root, bool reconcile)
+    {
+        var projects = Directory.GetFiles(root, "*.csproj").Select(ParseCsproj).Where(p => p != null).Cast<ProjectInfo>()
+            .ToDictionary(p => p.Path, StringComparer.OrdinalIgnoreCase);
+        Log($"projects: {projects.Count}, source entries: {projects.Values.Sum(p => p.Sources.Length)}");
+        if (reconcile)
+        {
+            var (added, removed) = UnityProjectModel.Reconcile(root, projects);
+            Log($"reconcile with disk: +{added} files not in csproj, -{removed} listed but missing");
+        }
+        return projects;
+    }
+
+    /// 文件归属第一个列出它的项目（按项目路径序）；每个项目按自己的宏解析。
+    internal static (Dictionary<string, string> fileOwner, Dictionary<string, CSharpParseOptions> parseOptions) Ownership(
+        Dictionary<string, ProjectInfo> projects)
+    {
+        var fileOwner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var parseOpts = new Dictionary<string, CSharpParseOptions>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in projects.Values.OrderBy(p => p.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            parseOpts[p.Path] = new CSharpParseOptions(p.LangVersion, DocumentationMode.None, SourceCodeKind.Regular, p.Defines);
+            foreach (var s in p.Sources) fileOwner.TryAdd(s, p.Path);
+        }
+        return (fileOwner, parseOpts);
     }
 
     static void Phase(string name, Stopwatch sw)
@@ -231,7 +266,7 @@ static class Program
     internal static double Elapsed(long timestamp) => (double)(timestamp - StartTimestamp) / Stopwatch.Frequency;
     internal static void Log(string s) => Console.Error.WriteLine($"{Total.Elapsed.TotalSeconds,7:F1}s  {s}");
 
-    static ProjectInfo? ParseCsproj(string path)
+    internal static ProjectInfo? ParseCsproj(string path)
     {
         try
         {

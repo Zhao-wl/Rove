@@ -21,3 +21,6 @@ pub mod l1;
 
 // #38 查询路由：L2 / L1 / L0 的选择、未保存修改的位置映射，实现 query::CsQueries。
 pub mod router;
+
+// #35 增量索引：覆盖层日志的读取、“基础索引 + 覆盖层”的合并查询视图。
+pub mod overlay;

@@ -34,9 +34,10 @@ mod tests;
 pub use buffers::{hash_bytes, BufferState, BufferStates};
 pub use mapping::{EditMap, LineEdit, Mapped};
 
-use crate::index::{CsIndex, Occurrence, Role, SymbolKey, REL_BASE_TYPE};
+use crate::index::{CsIndex, Occurrence, Role, REL_BASE_TYPE};
 use crate::l1::L1Index;
 use crate::lifecycle::{IndexLifecycle, IndexSnapshot, IndexState, SourceChange};
+use crate::overlay::L2View;
 use crate::query::{
     ApproximationReason, CsQueries, Hover, NavigationKind, Precision, QueryPoint, QueryResult,
     SemanticToken, Target, WorkspaceSymbol,
@@ -99,11 +100,18 @@ impl SemanticStatus {
 /// 持有一份打开的 L2 索引（生命周期的快照，或测试/基准直接打开的索引）。
 pub trait IndexHolder: Send + Sync {
     fn index(&self) -> &CsIndex;
+    /// 查询用的视图：基础索引 + 覆盖层（#35）。没有覆盖层的持有者就是基础索引本身。
+    fn view(&self) -> L2View<'_> {
+        L2View::new(self.index(), None)
+    }
 }
 
 impl IndexHolder for IndexSnapshot {
     fn index(&self) -> &CsIndex {
         IndexSnapshot::index(self)
+    }
+    fn view(&self) -> L2View<'_> {
+        IndexSnapshot::view(self)
     }
 }
 
@@ -132,7 +140,7 @@ pub trait SemanticSource: Send + Sync {
     fn has_stale(&self) -> bool {
         true
     }
-    /// 文件的磁盘内容与索引不一致：请求增量重建（#35 合并前由 #36 标记过期）。
+    /// 文件的磁盘内容与索引不一致：请求增量重建（#35：转发给常驻索引进程，没有常驻进程时由 #36 标记过期）。
     fn request_update(&self, path: &str);
 }
 
@@ -410,13 +418,14 @@ impl CsRouter {
 
     fn file_state(
         &self,
-        index: &CsIndex,
+        index: L2View<'_>,
         file: u32,
         rel: &str,
         doc: Option<&BufferState>,
         has_stale: bool,
     ) -> FileState {
-        let indexed = index.files().get(file as usize).map_or(0, |f| f.hash);
+        // 文件在索引中的版本：覆盖层重绑过的文件取覆盖层里的哈希（#35 向 #38 暴露的“索引版本”）。
+        let indexed = index.file_hash(file).unwrap_or(0);
         match doc {
             Some(d) if d.base_hash == indexed => {
                 // 编辑记录仍然有效；磁盘已经变了（保存或外部修改后重新载入）就请求重建。
@@ -461,7 +470,7 @@ impl CsRouter {
             };
         };
         let generation = snap.generation;
-        let index = snap.holder.index();
+        let index = snap.holder.view();
         let Some(file) = index.file_id(rel) else {
             return Located::Fallback {
                 reason: ApproximationReason::Other("file-not-indexed".into()),
@@ -503,8 +512,7 @@ impl CsRouter {
         let cap = Cap::of(&snap);
         let found = u32::try_from(old.line.0)
             .ok()
-            .and_then(|line| index.occurrence_at(file, line, old.column))
-            .and_then(|i| index.occurrence(i));
+            .and_then(|line| index.occurrence_at(file, line, old.column));
         match found {
             Some(occurrence) => Located::Symbol {
                 snap,
@@ -526,24 +534,24 @@ impl CsRouter {
         version: Version,
         cancel: &Cancellation,
     ) -> Result<QueryResult<Arc<[RoutedTarget]>>> {
-        let index = snap.holder.index();
+        let index = snap.holder.view();
         let symbol = at.symbol;
         let symbols: Vec<u32> = match kind {
             NavigationKind::Definition => vec![symbol],
             NavigationKind::TypeDefinition => {
                 // 索引不记录符号的类型：只有类型本身能回答（= 定义）。
-                if index.symbols().get(symbol as usize).map(|s| s.kind) != Some(KIND_NAMED_TYPE) {
+                if index.kind(symbol) != Some(KIND_NAMED_TYPE) {
                     return Err(Error::Unsupported);
                 }
                 vec![symbol]
             }
             NavigationKind::References => Vec::new(),
             NavigationKind::Implementations => {
-                let is_type =
-                    index.symbols().get(symbol as usize).map(|s| s.kind) == Some(KIND_NAMED_TYPE);
+                let is_type = index.kind(symbol) == Some(KIND_NAMED_TYPE);
                 closure(symbol, cancel, |s| {
                     index
                         .implementations(s)
+                        .into_iter()
                         .filter(|r| (r.kind == REL_BASE_TYPE) == is_type)
                         .map(|r| r.from)
                         .collect()
@@ -552,6 +560,7 @@ impl CsRouter {
             NavigationKind::DerivedTypes => closure(symbol, cancel, |s| {
                 index
                     .implementations(s)
+                    .into_iter()
                     .filter(|r| r.kind == REL_BASE_TYPE)
                     .map(|r| r.from)
                     .collect()
@@ -559,6 +568,7 @@ impl CsRouter {
             NavigationKind::BaseTypes => closure(symbol, cancel, |s| {
                 index
                     .bases(s)
+                    .into_iter()
                     .filter(|r| r.kind == REL_BASE_TYPE)
                     .map(|r| r.to)
                     .collect()
@@ -566,6 +576,7 @@ impl CsRouter {
             NavigationKind::Overrides => closure(symbol, cancel, |s| {
                 index
                     .bases(s)
+                    .into_iter()
                     .filter(|r| r.kind != REL_BASE_TYPE)
                     .map(|r| r.to)
                     .collect()
@@ -574,7 +585,7 @@ impl CsRouter {
         let mut mapper = ResultMapper::new(self, index, cap.clone());
         let mut out = Vec::new();
         if matches!(kind, NavigationKind::References) {
-            for (n, o) in index.symbol_occurrences(symbol).enumerate() {
+            for (n, o) in index.occurrences(symbol).into_iter().enumerate() {
                 if n % 1024 == 1023 {
                     cancel.check()?;
                 }
@@ -591,17 +602,14 @@ impl CsRouter {
             for s in symbols {
                 cancel.check()?;
                 let before = out.len();
-                for o in index
-                    .symbol_occurrences(s)
-                    .take_while(|o| Role(o.role).is_def())
-                {
+                for o in index.definitions(s) {
                     if let Some(t) = mapper.map(&o, TargetRole::Definition) {
                         out.push(t);
                     }
                 }
                 if out.len() == before {
                     // 没有源码位置：外部符号指向元数据视图。
-                    if let Ok(SymbolKey::Global(key)) = index.symbol_key(s) {
+                    if let Some(key) = index.global_key(s) {
                         out.push(RoutedTarget {
                             target: Target {
                                 resource: Resource::Virtual(
@@ -774,7 +782,8 @@ impl CsRouter {
                 cap,
                 query_state,
             } => {
-                let index = snap.holder.index();
+                let view = snap.holder.view();
+                let index = view.base;
                 let text_of = |list: &[crate::index::SymbolText]| {
                     let i = list.partition_point(|t| t.symbol < o.symbol);
                     list.get(i)
@@ -782,12 +791,7 @@ impl CsRouter {
                         .and_then(|t| index.str(t.text).ok())
                         .map(str::to_owned)
                 };
-                let display = index
-                    .symbols()
-                    .get(o.symbol as usize)
-                    .and_then(|s| index.str(s.display).ok())
-                    .unwrap_or_default()
-                    .to_owned();
+                let display = view.display(o.symbol).unwrap_or_default().to_owned();
                 let signature = text_of(index.signatures()).unwrap_or(display);
                 let documentation = text_of(index.xml_docs()).unwrap_or_default();
                 let start = position(o.line, o.col.0);
@@ -952,7 +956,7 @@ fn batch(
 /// 把 L2 的位置翻译成当前坐标；每个文件的状态在一次查询内只算一次。
 struct ResultMapper<'a> {
     router: &'a CsRouter,
-    index: &'a CsIndex,
+    index: L2View<'a>,
     cap: Cap,
     has_stale: bool,
     files: HashMap<u32, Option<(Resource, FileState)>>,
@@ -960,7 +964,7 @@ struct ResultMapper<'a> {
 }
 
 impl<'a> ResultMapper<'a> {
-    fn new(router: &'a CsRouter, index: &'a CsIndex, cap: Cap) -> Self {
+    fn new(router: &'a CsRouter, index: L2View<'a>, cap: Cap) -> Self {
         Self {
             router,
             index,
@@ -1214,7 +1218,7 @@ impl CsQueries for CsRouter {
             return Err(Error::Stale);
         }
         let snap = self.semantic.snapshot().ok_or(Error::NotReady)?;
-        let index = snap.holder.index();
+        let index = snap.holder.view();
         let cap = Cap::of(&snap);
         let result = |value: Vec<TextRange>, precision, reason| QueryResult {
             value: value.into(),

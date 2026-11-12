@@ -214,6 +214,18 @@ fn read_reference_id(id: &[u8], width: usize) -> u32 {
     u32::from_le_bytes([id[0], id[1], id[2], if width == 4 { id[3] } else { 0 }])
 }
 
+/// UTF-16 码元序的字符串比较（与写入端的 `StringComparer.Ordinal` 一致）。UTF-8 字节序只在
+/// 补充平面字符与 U+E000–U+FFFF 相比时和它不同，所以先按字节找第一个不同处，两边都是 ASCII 时直接定序。
+fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    let i = x.iter().zip(y).position(|(p, q)| p != q);
+    match i {
+        None => x.len().cmp(&y.len()),
+        Some(i) if x[i] < 0x80 && y[i] < 0x80 => x[i].cmp(&y[i]),
+        Some(_) => a.encode_utf16().cmp(b.encode_utf16()),
+    }
+}
+
 fn header_checksum(header: &[u8]) -> u64 {
     header[..88]
         .iter()
@@ -802,6 +814,56 @@ impl CsIndex {
 
     pub fn byte_len(&self) -> usize {
         self.mmap.len()
+    }
+
+    /// #35：覆盖层与基础索引的配套标识，头部校验和（偏移 88）接文件总长（偏移 16），共 16 字节。
+    /// 覆盖层段在头部记录它，读取时不配套的段整体丢弃。
+    pub fn identity(&self) -> [u8; 16] {
+        let mut id = [0; 16];
+        id[..8].copy_from_slice(&self.mmap[88..96]);
+        id[8..].copy_from_slice(&self.mmap[16..24]);
+        id
+    }
+
+    /// #35：按键找符号（O(log n)）。符号表里全局键在前，按 UTF-16 码元的 Ordinal 序排列（与写入端的
+    /// `StringComparer.Ordinal` 一致）；局部键在后，按（文件, 偏移）排列。
+    pub fn find_symbol(&self, key: SymbolKey<'_>) -> Option<u32> {
+        let symbols = self.symbols();
+        let first_local = symbols.partition_point(|s| s.key & LOCAL_BIT == 0);
+        match key {
+            SymbolKey::Global(text) => {
+                let (mut lo, mut hi) = (0, first_local);
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    let probe = self.str(symbols[mid].key).ok()?;
+                    match utf16_cmp(probe, text) {
+                        std::cmp::Ordering::Equal => return Some(mid as u32),
+                        std::cmp::Ordering::Less => lo = mid + 1,
+                        std::cmp::Ordering::Greater => hi = mid,
+                    }
+                }
+                None
+            }
+            SymbolKey::Local { file, offset } => {
+                let keys: &[[u32; 2]] = self.section(Section::LocalKeys);
+                let needle = (file, u32::try_from(offset.0).ok()?);
+                let locals = &symbols[first_local..];
+                let i = locals.partition_point(|s| {
+                    keys.get((s.key & !LOCAL_BIT) as usize)
+                        .is_some_and(|&[f, o]| (f, o) < needle)
+                });
+                let s = locals.get(i)?;
+                let &[f, o] = keys.get((s.key & !LOCAL_BIT) as usize)?;
+                ((f, o) == needle).then_some((first_local + i) as u32)
+            }
+        }
+    }
+
+    /// 符号的定义数（段 3 的 definition_count，`u16::MAX` 表示至少这么多）。
+    pub fn definition_count(&self, symbol: u32) -> u16 {
+        self.symbols()
+            .get(symbol as usize)
+            .map_or(0, |s| s.definition_count)
     }
 }
 

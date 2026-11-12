@@ -60,6 +60,10 @@ sealed class IndexContext
     public required FilePrefetcher Prefetch;
     public int Missing;
     int _boundFiles;
+    /// 常驻模式的 `index` 消息：进度改为协议通知（null 时写 stderr）。
+    public Action<int, int>? Progress;
+    /// 源码中声明的类型与成员 → 声明指纹（#35 判断签名或可见性变化）。null 时不收集。
+    public ConcurrentDictionary<string, ulong>? Declarations;
 
     /// 进度协议：每跨过 1% 在 stderr 上输出一行 `progress <已绑定文件> <磁盘文件总数>`（不带时间前缀），
     /// 供 Rove 的索引生命周期换算进度条（`crates/rove-lang-cs/src/lifecycle/process.rs` 的 `Progress::parse`）。
@@ -68,7 +72,10 @@ sealed class IndexContext
         int total = Results.Length;
         int done = Interlocked.Increment(ref _boundFiles);
         if (total > 0 && done <= total && (long)done * 100 / total != (long)(done - 1) * 100 / total)
-            Console.Error.WriteLine($"progress {done} {total}");
+        {
+            if (Progress is { } report) report(done, total);
+            else Console.Error.WriteLine($"progress {done} {total}");
+        }
     }
 
     public string RelativePath(string fullPath) => Path.GetRelativePath(Root, fullPath).Replace('\\', '/');
@@ -326,7 +333,7 @@ static class Pipeline
     }
 
     /// 先按 Roslyn 的方式打开；被其他进程以不兼容的共享方式占用时，改用可共享读取重试，仍失败则跳过并警告。
-    static MetadataReference? LoadReference(string path)
+    internal static MetadataReference? LoadReference(string path)
     {
         try { return MetadataReference.CreateFromFile(path); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException)
@@ -356,7 +363,7 @@ static class Pipeline
 
     static readonly EmitOptions ImageOptions = new(metadataOnly: true, tolerateErrors: true, includePrivateMembers: true);
 
-    static MetadataReference EmitImage(CSharpCompilation comp)
+    internal static MetadataReference EmitImage(CSharpCompilation comp)
     {
         long t = Stats.Now();
         try

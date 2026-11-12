@@ -90,6 +90,11 @@ const TARGETS: &[BenchTarget] = &[
         // 合成候选总会跑；大型 Unity 项目用例缺 ROVE_TEST_UNITY_LARGE 时在基准内部跳过。
         requires: "",
     },
+    BenchTarget {
+        // #35：覆盖层段数递增时合并查询的耗时（合成索引）。
+        name: "cs_overlay",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

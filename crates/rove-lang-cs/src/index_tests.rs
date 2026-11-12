@@ -221,7 +221,7 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     let index = CsIndex::open(&index_path).unwrap();
-    assert_eq!(index.header().indexer_version, [1, 1, 0, 0]);
+    assert_eq!(index.header().indexer_version, [1, 2, 0, 0]);
     let rel_path = "Assets/Unicode.cs";
     let file = index.file_id(rel_path).unwrap();
     let line = source_text.lines().nth(1).unwrap();
@@ -1025,7 +1025,7 @@ namespace Rove.Fixture
     );
 
     let index = CsIndex::open(&first).unwrap();
-    assert_eq!(index.header().indexer_version, [1, 1, 0, 0]);
+    assert_eq!(index.header().indexer_version, [1, 2, 0, 0]);
     let at = |file: &str, source: &str, token: &str| {
         let col = source.lines().nth(2).unwrap().find(token).unwrap();
         index

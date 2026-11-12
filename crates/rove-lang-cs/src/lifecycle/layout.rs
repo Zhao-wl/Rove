@@ -25,6 +25,8 @@ pub const L1_DIR: &str = "l1";
 pub const L1_FILE: &str = "l1-decls.bin";
 pub const L2_DIR: &str = "l2";
 pub const L2_EXT: &str = "rvcsidx";
+/// #35 覆盖层日志的扩展名。
+pub const OVERLAY_EXT: &str = "rvcsovl";
 pub const LOG_DIR: &str = "logs";
 pub const LOG_FILE: &str = "indexer.log";
 
@@ -169,6 +171,18 @@ impl ProjectCache {
             .collect();
         found.sort_by_key(|g| std::cmp::Reverse(g.0));
         found
+    }
+    /// #35：与世代配套的覆盖层日志 `l2\<世代>.rvcsovl`（常驻索引进程追加写入）。
+    pub fn overlay_path(&self, generation: u64) -> PathBuf {
+        self.l2_dir()
+            .join(format!("{generation:016x}.{OVERLAY_EXT}"))
+    }
+    /// #35：一个世代的全部文件：索引、覆盖层日志、声明指纹旁路文件（`<索引>.decls`，索引进程写出）。
+    pub fn generation_files(&self, generation: u64) -> [PathBuf; 3] {
+        let index = self.l2_path(generation);
+        let mut decls = index.clone().into_os_string();
+        decls.push(".decls");
+        [index, self.overlay_path(generation), PathBuf::from(decls)]
     }
     /// 下一个世代号（比现有最大的大 1）。
     pub fn next_generation(&self) -> u64 {

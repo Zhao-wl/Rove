@@ -19,16 +19,8 @@ static class UnityProjectModel
         int removed = projects.Values.Sum(p => p.Sources.Length) - sources.Values.Sum(l => l.Count);
 
         // 目录 → 程序集名
-        var dirAsm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var scanRoots = new[] { "Assets", "Packages" }.Select(d => Path.Combine(root, d)).Where(Directory.Exists).ToArray();
-        foreach (var sr in scanRoots)
-        {
-            foreach (var f in Directory.EnumerateFiles(sr, "*.asmdef", SearchOption.AllDirectories))
-                if (ReadJsonString(f, "name") is { } n) dirAsm[Path.GetDirectoryName(f)!] = n;
-            foreach (var f in Directory.EnumerateFiles(sr, "*.asmref", SearchOption.AllDirectories))
-                if (ReadJsonString(f, "reference") is { } r && !r.StartsWith("GUID:", StringComparison.OrdinalIgnoreCase))
-                    dirAsm[Path.GetDirectoryName(f)!] = r;
-        }
+        var scanRoots = ScanRoots(root);
+        var dirAsm = AssemblyDirectories(root);
 
         int added = 0;
         foreach (var sr in scanRoots)
@@ -43,6 +35,33 @@ static class UnityProjectModel
         foreach (var key in projects.Keys.ToList())
             projects[key] = projects[key] with { Sources = sources[key].ToArray() };
         return (added, removed);
+    }
+
+    static string[] ScanRoots(string root) =>
+        new[] { "Assets", "Packages" }.Select(d => Path.Combine(root, d)).Where(Directory.Exists).ToArray();
+
+    /// asmdef / asmref 所在目录 → 程序集名。
+    static Dictionary<string, string> AssemblyDirectories(string root)
+    {
+        var dirAsm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sr in ScanRoots(root))
+        {
+            foreach (var f in Directory.EnumerateFiles(sr, "*.asmdef", SearchOption.AllDirectories))
+                if (ReadJsonString(f, "name") is { } n) dirAsm[Path.GetDirectoryName(f)!] = n;
+            foreach (var f in Directory.EnumerateFiles(sr, "*.asmref", SearchOption.AllDirectories))
+                if (ReadJsonString(f, "reference") is { } r && !r.StartsWith("GUID:", StringComparison.OrdinalIgnoreCase))
+                    dirAsm[Path.GetDirectoryName(f)!] = r;
+        }
+        return dirAsm;
+    }
+
+    static (string root, Dictionary<string, string> map)? _cached;
+
+    /// #35：运行中新建的文件归属哪个程序集（与 Reconcile 同一规则）。asmdef 变化会触发全量重建，所以目录表可以缓存。
+    public static string? AssemblyFor(string file, string root)
+    {
+        if (_cached is not { } c || c.root != root) _cached = c = (root, AssemblyDirectories(root));
+        return AssemblyFor(file, root, c.map);
     }
 
     static string? AssemblyFor(string file, string root, Dictionary<string, string> dirAsm)
