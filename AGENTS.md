@@ -204,7 +204,7 @@ CI 上不做绝对性能判定（托管机器波动大）；相对比较与预�
   **固定随机种子**：输出第一行打印 `seed`，用 `--seed <值>` 复现同一串编辑。
 - 延迟与内存：`--latency N` 做 N 次普通保存，给出单文件更新（索引进程重绑 / 往返 / 查询可见）的 p50、p99，冷启动耗时，
   常驻进程预热后与空闲时的内存，以及全量索引的峰值内存。**注明机器负载**：本机同时开着 Unity 等程序时数字只能作参考。
-- 副本与报告在 `target/incr-check/`（`report-<项目>.json`）。大型项目一次检查点约等于一次全量索引（约 1–2 分钟、峰值数 GB 内存）。
+- 副本与报告在 `target/incr-check/`（`report-<项目>.json`，副本目录里有逐次编辑的 `edits.log`）；排查时可用 `--compare <全量索引> <基础索引> <覆盖层日志>` 对留下的文件重新比较。大型项目一次检查点约等于一次全量索引（约 1–2 分钟、峰值数 GB 内存）。
 
 ```powershell
 cargo run --release -p rove-lang-cs --example incr_check -- --project large --latency 50 --edits 0
