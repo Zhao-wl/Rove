@@ -943,3 +943,98 @@ fn peek_keybindings_match_the_navigation_table() {
     }
     assert_eq!(checked, 14, "导航一节里速览相关的 14 行");
 }
+
+/// 速览用 #40 装配的正式 `CsRouter`（不注入替身）：引用落在一个**有未保存修改**的打开文件里时，
+/// 位置经 #38 的映射平移到当前文本，且未修改的行仍然精确（与 `router` 集成测试的同类断言对齐）。
+#[gpui::test]
+fn peek_uses_the_nav_router_and_maps_unsaved_edits(cx: &mut TestAppContext) {
+    use rove_base::{ByteOffset, ByteRange, TextEdit};
+    use rove_lang_cs::router::testing::{
+        find_word, sample_index, HERO_CS, HERO_PATH, PLAYER_CS, PLAYER_PATH,
+    };
+    use rove_lang_cs::router::{ManualSemantic, SemanticSource};
+
+    let folder = tempfile::tempdir().unwrap();
+    for (path, text) in [(PLAYER_PATH, PLAYER_CS), (HERO_PATH, HERO_CS)] {
+        let full = folder.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    let file = folder.path().join("index.idx");
+    sample_index(PLAYER_CS, HERO_CS).0.write(&file).unwrap();
+    let index = Arc::new(rove_lang_cs::CsIndex::open(&file).unwrap());
+    let semantic: Arc<dyn SemanticSource> = Arc::new(ManualSemantic::ready(index));
+    let root: PathBuf = folder.path().into();
+    let (view, cx) = cx.add_window_view(|_, cx| Workbench::new(root, Instant::now(), cx));
+    cx.run_until_parked();
+    view.update(cx, |v, cx| v.attach_semantic(Some(semantic), cx));
+    // Hero.cs 与 Player.cs 都以固定标签打开（Hero.cs 留在后台，它的缓冲区仍登记在路由里）。
+    for path in [HERO_PATH, PLAYER_PATH] {
+        view.update(cx, |v, cx| {
+            v.open_documents()
+                .open(
+                    Resource::Workspace(WorkspacePath::new(path).unwrap()),
+                    OpenOptions {
+                        preview_tab: false,
+                        ..OpenOptions::default()
+                    },
+                    Cancellation::default(),
+                )
+                .unwrap();
+            cx.notify();
+        });
+        refresh(cx);
+    }
+    focus_code(&view, cx);
+    let hero = WorkspacePath::new(HERO_PATH).unwrap();
+    let before = view
+        .read_with(cx, |v, _| v.cs_buffers().get(HERO_PATH))
+        .expect("Hero.cs 已登记给路由")
+        .text;
+    // 未保存的编辑（M3 编辑事务经 `cs_buffers().edited` 登记）：Hero.cs 开头插入两行。
+    let inserted = "// one\n// two\n";
+    let after = Arc::new(rove_buffer::RopeText::new(format!("{inserted}{HERO_CS}")));
+    view.read_with(cx, |v, _| {
+        v.cs_buffers()
+            .edited(
+                &hero,
+                &*before,
+                &TextEdit {
+                    version: before.version(),
+                    range: ByteRange::new(ByteOffset(0), ByteOffset(0)).unwrap(),
+                    inserted: inserted.into(),
+                },
+                after,
+            )
+            .unwrap()
+    });
+    // Player.cs 里 `Move` 的声明上 Shift+F12。
+    let (line, col) = find_word(PLAYER_CS, "Move", 0);
+    caret(&view, pos(line as u64, col as u64 + 1), cx);
+    press("shift-f12", cx);
+    let w = widget(&view, cx);
+    let (line_in_hero, _) = find_word(HERO_CS, "Move", 0);
+    let hero_items = w.read_with(cx, |w, _| {
+        let r = w.results().unwrap();
+        let f = r
+            .files
+            .iter()
+            .find(|f| f.resource == Resource::Workspace(hero.clone()))
+            .expect("Hero.cs 里的引用")
+            .clone();
+        r.items[f.items()]
+            .iter()
+            .map(|i| (i.range.start().line.0, i.precision))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        hero_items,
+        [(line_in_hero as u64 + 2, Precision::Exact)],
+        "未修改的行精确平移两行"
+    );
+    assert_eq!(
+        w.read_with(cx, |w, _| w.title_text()).1,
+        None,
+        "精确结果无标记"
+    );
+}
