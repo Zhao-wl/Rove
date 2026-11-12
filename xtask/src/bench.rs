@@ -90,6 +90,11 @@ const TARGETS: &[BenchTarget] = &[
         // 合成候选总会跑；大型 Unity 项目用例缺 ROVE_TEST_UNITY_LARGE 时在基准内部跳过。
         requires: "",
     },
+    // #40：F12 → 目标行画面完成（真实窗口；无法建窗口时在基准内部跳过）。
+    BenchTarget {
+        name: "nav",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

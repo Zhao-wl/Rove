@@ -336,3 +336,16 @@ owner = "#24"
 status = "pending"
 bench = "quickopen/first_key_large"
 reason = "issue #24 验收要求 ROVE_TEST_UNITY_LARGE 上每次按键 p99 < 16 ms。本机的大型项目有约 15.6 万个文件（issue 写的是约 2.1 万个 .cs 外加其他文件），安静时第一个字符约 14 ms、p99 约 40 ms，目录名类查询（如 Script）与多段查询（如 enemy spa）最慢约 22 ms，还没达标；候选在 2.5 万个量级时 p99 < 16 ms。进一步需要为 description 里的匹配做上界剪枝或增量/异步刷新，见 #24 的 PR"
+
+# ---------------------------------------------------------------- C# 导航交互（#40）
+
+[[budget]]
+id = "goto_definition_e2e"
+metric = "F12 → 目标行画面完成（目标文件已打开；按键到目标帧绘制完成，含查询、打开文档服务、代码视图定位与一帧绘制）"
+value = 50
+unit = "ms"
+owner = "#40"
+status = "enforced"
+bench = "nav/f12_to_paint"
+aggregate = "p99"
+reason = "issue #40 验收：p99 < 50 ms。与索引侧的 goto_definition（< 16 ms，查询口径）分开报；分解见 nav/f12_query（后台查询）与 nav/f12_to_frame（目标位置进入这一帧、开始绘制前）。目标文件未打开时的打开耗时计入 #17 打开文档服务的预算"

@@ -8,6 +8,31 @@ use rove_lang_cs::router::{RoutedTarget, TargetRole, METADATA_SCHEME};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// 一次 `F12` → 目标行画面完成的耗时分解（毫秒）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NavSample {
+    /// 后台查询（`CsRouter::navigate_detailed`）。
+    pub query_ms: f64,
+    /// 从按键到“目标位置进入这一帧”（查询 + 打开文档服务 + 代码视图定位，开始绘制前）。
+    pub frame_ms: f64,
+    /// 这一帧代码视图的绘制 CPU（prepaint → paint）；`frame_ms + paint_cpu_ms` 即按键到画面完成。
+    /// 下一帧回调里读出，测试环境的假平台没有帧回调时为 `None`。
+    pub paint_cpu_ms: Option<f64>,
+    /// 这一帧里用等宽占位或尚未读到的行数（0 表示目标画面是正式整形结果）。
+    pub placeholders: Option<u32>,
+    /// 从按键到下一帧回调（含等待下一次垂直同步，是画面完成的上界）。
+    pub next_frame_ms: Option<f64>,
+    /// 从按键到第一帧没有占位行的帧回调（目标区域整形缓存未命中时晚一两帧；上界，含等待垂直同步）。
+    pub full_ms: Option<f64>,
+}
+
+impl NavSample {
+    /// 按键到画面完成（这一帧绘制结束）。
+    pub fn painted_ms(&self) -> Option<f64> {
+        Some(self.frame_ms + self.paint_cpu_ms?)
+    }
+}
+
 /// 用户发起的跳转种类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavKind {

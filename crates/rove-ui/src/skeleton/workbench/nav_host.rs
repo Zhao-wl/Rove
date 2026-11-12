@@ -17,8 +17,8 @@ use crate::documents::OpenTarget;
 use crate::nav::{
     hover::{parse_xml_doc, HoverContent, HoverMove, HoverScroll, PREVIEW_LINES},
     model::{
-        self, is_csharp, peek_annotation, plan, ApproxNotices, HighlightKind, NavKind, PeekRequest,
-        Plan, SymbolHighlights, SymbolNavigation,
+        self, is_csharp, peek_annotation, plan, ApproxNotices, HighlightKind, NavKind, NavSample,
+        PeekRequest, Plan, SymbolHighlights, SymbolNavigation,
     },
     registry::{self as nav_registry, context as nav_context, NavColors},
     semantic::{BufferChange, LiveSemantic, OpenBuffer, OpenBuffers},
@@ -122,15 +122,6 @@ struct Pending {
     query_ms: f64,
     resource: Resource,
     position: Position,
-}
-
-/// 一次 `F12` → 目标行画面完成的耗时分解（毫秒）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NavSample {
-    /// 后台查询（`CsRouter::navigate_detailed`）。
-    pub query_ms: f64,
-    /// 从按键到目标位置的画面提交（含查询、打开文档服务、代码视图定位与一帧绘制）。
-    pub total_ms: f64,
 }
 
 /// 窗口内的导航状态。
@@ -387,8 +378,21 @@ impl Workbench {
             .detach();
     }
 
-    /// 换上（或换掉）语义来源：#36 的生命周期，测试注入固定索引。
-    pub(crate) fn attach_semantic(
+    /// 焦点组活动标签的项目相对路径（基准等待跳转完成）。
+    pub fn active_path(&self) -> Option<String> {
+        match &self.editor.active().current()?.resource {
+            Resource::Workspace(p) => Some(p.as_str().to_owned()),
+            _ => None,
+        }
+    }
+
+    /// `F12` → 目标行画面完成的计时样本（测试与 `cargo xtask bench --filter nav/` 读取）。
+    pub fn navigation_samples(&self) -> &[NavSample] {
+        &self.nav.samples
+    }
+
+    /// 换上（或换掉）语义来源：#36 的生命周期（应用入口自动装配），基准与测试注入固定索引。
+    pub fn attach_semantic(
         &mut self,
         source: Option<Arc<dyn SemanticSource>>,
         cx: &mut Context<Self>,
@@ -993,21 +997,45 @@ impl Workbench {
             return;
         }
         let pending = self.nav.pending.take().unwrap();
-        // 目标位置进入了这一帧：记一个样本（到这一帧开始绘制）；`ROVE_NAV_TRACE=1` 时在下一帧回调里
-        // 再输出包含本帧绘制的端到端耗时。
+        // 目标位置进入了这一帧：记一个样本。这一帧的代码视图绘制（prepaint → paint）结束即“画面完成”；
+        // 它的 CPU 耗时与占位行数在下一帧回调里从代码视图的帧统计读出。
         self.nav.samples.push(NavSample {
             query_ms: pending.query_ms,
-            total_ms: pending.started.elapsed().as_secs_f64() * 1000.0,
+            frame_ms: pending.started.elapsed().as_secs_f64() * 1000.0,
+            paint_cpu_ms: None,
+            placeholders: None,
+            next_frame_ms: None,
+            full_ms: None,
         });
-        if self.nav.trace {
-            window.on_next_frame(move |_, _| {
-                println!(
-                    "NAV_F12_TO_PAINT_MS {:.3} QUERY_MS {:.3}",
-                    pending.started.elapsed().as_secs_f64() * 1000.0,
-                    pending.query_ms
-                );
+        let index = self.nav.samples.len() - 1;
+        let trace = self.nav.trace;
+        let this = cx.entity().downgrade();
+        let watch = this.clone();
+        window.on_next_frame(move |window, cx| {
+            let next = pending.started.elapsed().as_secs_f64() * 1000.0;
+            let _ = this.update(cx, |v, cx| {
+                let stats = v.code_view().read(cx).last_frame();
+                if let Some(sample) = v.nav.samples.get_mut(index) {
+                    sample.paint_cpu_ms = Some(stats.cpu.as_secs_f64() * 1000.0);
+                    sample.placeholders = Some(stats.placeholders + stats.missing);
+                    sample.next_frame_ms = Some(next);
+                    if stats.placeholders + stats.missing == 0 {
+                        sample.full_ms = Some(next);
+                    }
+                    if trace {
+                        println!(
+                            "NAV_F12_TO_PAINT_MS {:.3} QUERY_MS {:.3} NEXT_FRAME_MS {next:.3} PLACEHOLDERS {}",
+                            sample.frame_ms + sample.paint_cpu_ms.unwrap_or(0.0),
+                            sample.query_ms,
+                            stats.placeholders + stats.missing
+                        );
+                    }
+                }
             });
-        }
+            // 目标帧里有等宽占位（整形缓存未命中，空闲切片随后替换）：继续看后面的帧，记下第一帧
+            // 全部是正式整形结果的时刻（上界，含等待垂直同步）。
+            watch_full(watch, index, pending.started, 0, window);
+        });
     }
 
     // ------------------------------------------------------------------ 语义同名高亮
@@ -1814,4 +1842,38 @@ fn preview_lines(router: &CsRouter, root: &std::path::Path, target: &Target) -> 
         .take((last - first + 1) as usize)
         .map(str::to_owned)
         .collect()
+}
+
+/// 等到代码视图某一帧没有占位行，记下 `full_ms`（最多看 30 帧）。
+fn watch_full(
+    this: gpui::WeakEntity<Workbench>,
+    index: usize,
+    started: Instant,
+    frames: u32,
+    window: &mut Window,
+) {
+    if frames >= 30 {
+        return;
+    }
+    window.on_next_frame(move |window, cx| {
+        let done = this
+            .update(cx, |v, cx| {
+                let stats = v.code_view().read(cx).last_frame();
+                let Some(sample) = v.nav.samples.get_mut(index) else {
+                    return true;
+                };
+                if sample.full_ms.is_some() {
+                    return true;
+                }
+                if stats.placeholders + stats.missing == 0 {
+                    sample.full_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                    return true;
+                }
+                false
+            })
+            .unwrap_or(true);
+        if !done {
+            watch_full(this, index, started, frames + 1, window);
+        }
+    });
 }

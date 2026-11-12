@@ -33,6 +33,8 @@ rove-ui.workspace = true
 rove-commands.workspace = true
 rove-i18n.workspace = true
 gpui.workspace = true
+# #40 的 nav 基准在临时目录里生成 C# 项目与索引。
+tempfile = "3"
 
 [[bench]]
 name = "text_source"
@@ -92,4 +94,8 @@ harness = false
 
 [[bench]]
 name = "quickopen"
+harness = false
+
+[[bench]]
+name = "nav"
 harness = false

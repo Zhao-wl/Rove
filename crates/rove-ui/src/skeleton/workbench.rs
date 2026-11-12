@@ -68,6 +68,8 @@ mod quick_access_host;
 #[cfg(test)]
 mod quick_access_tests;
 // #40：C# 导航交互（转到定义 / 实现、悬停、Ctrl+点击、语义同名高亮）。
+#[cfg(test)]
+mod nav_cases_tests;
 mod nav_host;
 #[cfg(test)]
 mod nav_tests;
