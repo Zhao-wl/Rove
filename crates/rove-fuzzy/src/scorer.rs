@@ -150,6 +150,20 @@ impl Text for Ascii<'_> {
     }
 }
 
+/// 查询（小写）是否按顺序出现在文本里（`consider_as_equal`）。
+fn is_subsequence<T: Text>(target: &T, query_lower: &[u16]) -> bool {
+    let mut qi = 0;
+    for i in 0..target.len() {
+        if consider_as_equal(query_lower[qi], target.low(i)) {
+            qi += 1;
+            if qi == query_lower.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn starts_with_at<T: Text>(target: &T, at: usize, query_lower: &[u16]) -> bool {
     at + query_lower.len() <= target.len()
         && query_lower
@@ -1051,6 +1065,7 @@ fn summary_single(
         query,
         prefer_label_matches,
         allow_non_contiguous_matches,
+        false,
         || label_has_prefix(target, query),
     )
 }
@@ -1065,6 +1080,7 @@ fn summary_generic<T: Text>(
     query: &QueryPiece,
     prefer_label_matches: bool,
     allow_non_contiguous_matches: bool,
+    skip_combined: bool,
     has_prefix: impl FnOnce() -> bool,
 ) -> Summary {
     let allow = allow_non_contiguous_matches && !query.expect_contiguous_match;
@@ -1097,6 +1113,18 @@ fn summary_generic<T: Text>(
             }
         }
         if let Some(combined) = combined.filter(|_| query.mask & !combined_mask == 0) {
+            if skip_combined {
+                // 只关心“有没有匹配”（供下一次按键剪枝）：分数用不上，不必跑矩阵
+                return if is_subsequence(combined, &query.normalized_lower_units) {
+                    Summary {
+                        score: 1,
+                        label: None,
+                        description: None,
+                    }
+                } else {
+                    Summary::default()
+                };
+            }
             let score = score_core(
                 combined,
                 &query.normalized_units,
@@ -1140,12 +1168,16 @@ pub fn ascii_masks(text: &[u8], label_start: usize) -> (u64, u64) {
 
 /// 对纯 ASCII 的候选打分（查询也必须是纯 ASCII，见 [`PreparedQuery::is_ascii`]）：结果与对同一条路径用
 /// [`score_target_summary`] 打分相同，但数据只有一段连续的字节。
+///
+/// `combined_is_useless` 为真（已经有足够多的 label 级结果，description 里的匹配排不进去）且查询只有一段时，
+/// 只在 label 里打分；label 里没有的候选，只要整条路径里有匹配就返回分数 1（“有匹配但用不上”）。
 pub fn score_ascii_summary(
     text: &[u8],
     label_start: usize,
     masks: (u64, u64),
     query: &PreparedQuery,
     allow_non_contiguous_matches: bool,
+    combined_is_useless: bool,
 ) -> Summary {
     let label_bytes = &text[label_start..];
     if label_bytes.is_empty() || query.normalized.is_empty() {
@@ -1164,6 +1196,8 @@ pub fn score_ascii_summary(
     }
     let label = Ascii(label_bytes);
     let combined = Ascii(text);
+    let single_piece = query.values.as_ref().is_none_or(|v| v.len() <= 1);
+    let skip_combined = combined_is_useless && single_piece;
     let one = |piece: &QueryPiece| {
         summary_generic(
             &label,
@@ -1173,6 +1207,7 @@ pub fn score_ascii_summary(
             piece,
             prefer_label_matches,
             allow_non_contiguous_matches,
+            skip_combined,
             || {
                 let n = piece.normalized_units.len();
                 n <= label.len()

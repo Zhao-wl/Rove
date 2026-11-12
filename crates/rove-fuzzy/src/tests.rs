@@ -1961,7 +1961,14 @@ fn ascii_entry_point_agrees_with_the_target_path() {
             let masks = ascii_masks(native.as_bytes(), label_start);
             for allow in [true, false] {
                 assert_eq!(
-                    score_ascii_summary(native.as_bytes(), label_start, masks, &query, allow),
+                    score_ascii_summary(
+                        native.as_bytes(),
+                        label_start,
+                        masks,
+                        &query,
+                        allow,
+                        false
+                    ),
                     score_target_summary(&target, &query, allow),
                     "{q:?} {p:?} allow={allow}"
                 );

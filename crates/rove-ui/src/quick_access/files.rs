@@ -15,7 +15,7 @@ use rove_base::WorkspacePath;
 use rove_fuzzy::{
     ascii_masks, compare_keys, compare_scored, prepare_query, score_ascii_summary, score_item,
     score_target_summary, utf16_to_byte_ranges, CmpKey, CmpTexts, ItemScore, PreparedQuery, Scored,
-    Summary, Target, SEP,
+    Summary, Target, LABEL_SCORE_THRESHOLD, SEP,
 };
 use rove_workspace::{EntryKind, FileEvent, Workspace};
 use std::{
@@ -215,7 +215,13 @@ impl FileIndex {
     }
 
     /// 打分（摘要）。`ascii_query` 为真且候选是 ASCII 时走紧凑的字节路径。
-    fn summary(&self, index: u32, query: &PreparedQuery, ascii_query: bool) -> Summary {
+    fn summary(
+        &self,
+        index: u32,
+        query: &PreparedQuery,
+        ascii_query: bool,
+        combined_is_useless: bool,
+    ) -> Summary {
         let i = index as usize;
         let hot = &self.hot[i];
         if hot.ascii && ascii_query {
@@ -226,6 +232,7 @@ impl FileIndex {
                 (hot.label_mask, hot.combined_mask),
                 query,
                 true,
+                combined_is_useless,
             );
         }
         match &self.entries[i].wide {
@@ -556,7 +563,9 @@ fn score_chunk(
     let mut top: Vec<SummaryHit> = Vec::with_capacity(MAX_RESULTS + 1);
     let ascii_query = query.is_ascii();
     let mut score_one = |entry: u32| {
-        let summary = index.summary(entry, query, ascii_query);
+        // 前 N 名已经全是 label 级的结果时，只在 description 里匹配的候选排不进去，不必再为它们跑矩阵。
+        let useless = floor.load(AtomicOrdering::Relaxed) >= LABEL_SCORE_THRESHOLD;
+        let summary = index.summary(entry, query, ascii_query, useless);
         if summary.score == 0 {
             return;
         }

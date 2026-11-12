@@ -417,6 +417,89 @@ fn parallel_scoring_gives_the_same_results_as_a_single_thread() {
     }
 }
 
+/// 整条优化过的流水线（紧凑数据、摘要打分、前缀剪枝、共享下限、并行、跳过用不上的 description 匹配）必须给出
+/// 与朴素实现（逐个 `score_item` + VS Code 比较器，选出前 N 名）完全相同的结果。
+#[test]
+fn optimized_pipeline_matches_a_plain_vscode_implementation() {
+    use rove_fuzzy::{compare_scored, prepare_query, score_item, ItemScore, Scored};
+    let mut paths = synthetic_paths(5000);
+    // 再加一些非 ASCII 与重名的候选，走另一条数据路径
+    paths.extend(
+        [
+            "Assets/角色/玩家Player.cs",
+            "Docs/攻略/Enemy攻略.md",
+            "a/Enemy.cs",
+            "b/Enemy.cs",
+        ]
+        .map(String::from),
+    );
+    let idx = index(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+    let top = 40;
+    for target in [
+        "Enemy",
+        "enemy spawner",
+        "PlayerHealth",
+        "Scripts/UI",
+        "ui menu",
+        "\"Menu\"",
+        "角色",
+        "e",
+    ] {
+        let mut search = Search::default();
+        search.set_threads(Some(4));
+        let mut typed = String::new();
+        for ch in target.chars() {
+            typed.push(ch);
+            let got = search.run(&idx, &typed, &[], SearchOptions::default());
+            let query = prepare_query(&typed);
+            // 朴素实现：所有候选打分，重复选出最好的
+            let mut scored: Vec<(u32, ItemScore)> = (0..idx.len() as u32)
+                .map(|i| (i, idx.full_score(i, &query)))
+                .filter(|(_, s)| s.score != 0)
+                .collect();
+            let mut want = Vec::new();
+            while want.len() < top && !scored.is_empty() {
+                let mut best = 0;
+                for i in 1..scored.len() {
+                    let (a, b) = (&scored[i], &scored[best]);
+                    let (ta, tb) = (idx.text(a.0).unwrap(), idx.text(b.0).unwrap());
+                    let less = compare_scored(
+                        &Scored {
+                            score: &a.1,
+                            label: ta.label,
+                            description: ta.description,
+                            path: Some(ta.path),
+                        },
+                        &Scored {
+                            score: &b.1,
+                            label: tb.label,
+                            description: tb.description,
+                            path: Some(tb.path),
+                        },
+                        &query,
+                    ) == std::cmp::Ordering::Less;
+                    if less {
+                        best = i;
+                    }
+                }
+                want.push(scored.swap_remove(best).0);
+            }
+            let got: Vec<u32> = got.files.iter().take(top).map(|h| h.entry).collect();
+            let name = |v: &[u32]| -> Vec<String> {
+                v.iter()
+                    .map(|i| idx.entry(*i).unwrap().path.as_str().to_owned())
+                    .collect()
+            };
+            assert_eq!(
+                name(&got),
+                name(&want[..got.len().min(want.len())]),
+                "查询 {typed:?}"
+            );
+            assert_eq!(got.len(), want.len().min(top), "查询 {typed:?}");
+        }
+    }
+}
+
 #[test]
 fn results_are_capped_like_vscode() {
     let paths = synthetic_paths(2000);
