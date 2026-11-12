@@ -1,117 +1,72 @@
-// rove-indexer-cs: M0 原型。不走 MSBuild，直接解析 Unity 生成的 .csproj 构造 Roslyn 编译，
+// rove-indexer-cs：不走 MSBuild，直接解析 Unity 生成的 .csproj 构造 Roslyn 编译，
 // 生成预计算的语义索引（定义/引用/关系），供 Rove 主进程内存映射查询。
 // 用法: rove-indexer-cs <unity-project-dir> <out.idx> [--generators] [--report <report.json>]
+//       [--io-concurrency N] [--max-active-files N] [--prefetch-mb N] [--bind-concurrency N] [--gc-every-files N]
+//       [--soft-memory-mb N]
+//       [--no-reconcile] [--diag <AssemblyName>] [--profile]
 
-using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Reflection;
-using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Diagnostics;
-using Microsoft.CodeAnalysis.Text;
 
 namespace Rove.Indexer;
-
-record ProjectInfo(
-    string Path, string AssemblyName, string[] Sources, string[] References,
-    string[] ProjectRefs, string[] Analyzers, string[] Defines, LanguageVersion LangVersion, bool Unsafe);
-
-enum Role : ushort { Ref = 1, Def = 2, Candidate = 4 }
-enum RelKind : uint { BaseType = 1, Implements = 2, Overrides = 3 }
-
-sealed class SymRec
-{
-    public int Id;
-    public required SymbolKey Key;
-    public required string Name;
-    public required string Display;
-    public required byte Kind;
-    public required bool InSource;
-    public SymbolKey? ContainerKey;
-}
-
-struct Occ { public uint Line, Col, Len; public int Sym; public ushort Role; }
-
-readonly record struct SymbolKey(string? Text, uint File, uint Offset)
-{
-    public static SymbolKey Global(string text) => new(text, 0, 0);
-    public static SymbolKey Local(uint file, uint offset) => new(null, file, offset);
-}
-
-sealed record IndexedFile(uint Id, byte[] Path, SyntaxTree Tree, ulong Hash, Utf8Coordinates Coordinates);
-
-sealed class Utf8Coordinates
-{
-    readonly (int utf16, int extra)[] _checkpoints;
-
-    public Utf8Coordinates(SourceText source)
-    {
-        var text = source.ToString();
-        var checkpoints = new List<(int, int)>();
-        int extra = 0;
-        for (int i = 0; i < text.Length; i++)
-        {
-            char c = text[i];
-            if (c <= 0x7F) continue;
-            if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
-            {
-                extra += 2;
-                i++;
-            }
-            else extra += c <= 0x7FF ? 1 : 2;
-            checkpoints.Add((i + 1, extra));
-        }
-        _checkpoints = checkpoints.ToArray();
-    }
-
-    public uint ByteOffset(int utf16)
-    {
-        int low = 0, high = _checkpoints.Length;
-        while (low < high)
-        {
-            int mid = low + (high - low) / 2;
-            if (_checkpoints[mid].utf16 <= utf16) low = mid + 1;
-            else high = mid;
-        }
-        return (uint)utf16 + (low == 0 ? 0 : (uint)_checkpoints[low - 1].extra);
-    }
-}
 
 static class Program
 {
     static readonly Stopwatch Total = Stopwatch.StartNew();
     static readonly Dictionary<string, double> Phases = new();
 
+    const string Usage = "usage: rove-indexer-cs <project-dir> <out.idx> [--generators] [--report file] [--io-concurrency N] "
+        + "[--max-active-files N] [--prefetch-mb N] [--bind-concurrency N] [--gc-every-files N] [--soft-memory-mb N] [--no-reconcile] [--diag asm] [--profile]";
+
     static int Main(string[] args)
     {
-        if (args.Length < 2) { Console.Error.WriteLine("usage: rove-indexer-cs <project-dir> <out.idx> [--generators] [--report file]"); return 2; }
+        if (args.Length < 2) { Console.Error.WriteLine(Usage); return 2; }
         var root = Path.GetFullPath(args[0]);
         var outPath = Path.GetFullPath(args[1]);
-        bool runGenerators = args.Contains("--generators");
-        int ri = Array.IndexOf(args, "--report");
-        string? reportPath = ri >= 0 && ri + 1 < args.Length ? args[ri + 1] : null;
+        string? Value(string name)
+        {
+            int i = Array.IndexOf(args, name);
+            return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        }
+        int? Int(string name)
+        {
+            if (Value(name) is not { } v) return null;
+            if (int.TryParse(v, out int n) && n > 0) return n;
+            throw new ArgumentException($"{name} expects a positive integer, got '{v}'");
+        }
+        var options = new IndexOptions
+        {
+            Generators = args.Contains("--generators"),
+            DiagAssembly = Value("--diag"),
+            Profile = args.Contains("--profile"),
+        };
+        options.IoConcurrency = Int("--io-concurrency") ?? options.IoConcurrency;
+        options.MaxActiveFiles = Int("--max-active-files") ?? options.MaxActiveFiles;
+        options.PrefetchBytes = (Int("--prefetch-mb") ?? (int)(options.PrefetchBytes >> 20)) * (1L << 20);
+        options.BindConcurrency = Int("--bind-concurrency") ?? options.BindConcurrency;
+        options.GcEveryFiles = Int("--gc-every-files") ?? options.GcEveryFiles;
+        string? reportPath = Value("--report");
+        bool reconcile = !args.Contains("--no-reconcile");
+        using var sampler = new MemorySampler(options.Profile, (Int("--soft-memory-mb") ?? 2200) * (1L << 20));
 
         // 1. 解析 csproj
         var sw = Stopwatch.StartNew();
         var projects = Directory.GetFiles(root, "*.csproj").Select(ParseCsproj).Where(p => p != null).Cast<ProjectInfo>()
             .ToDictionary(p => p.Path, StringComparer.OrdinalIgnoreCase);
         Log($"projects: {projects.Count}, source entries: {projects.Values.Sum(p => p.Sources.Length)}");
-        if (!args.Contains("--no-reconcile"))
+        if (reconcile)
         {
             var (added, removed) = UnityProjectModel.Reconcile(root, projects);
             Log($"reconcile with disk: +{added} files not in csproj, -{removed} listed but missing");
         }
+        var configHash = ProjectConfigHash.Compute(root, projects.Values, options.Generators, reconcile);
         Phase("parse_csproj", sw);
 
-        var configHash = ProjectConfigHash.Compute(root, projects.Values, runGenerators, !args.Contains("--no-reconcile"));
-
-        // 2. 并行解析语法树。预处理指令（#if UNITY_EDITOR 等）在解析时求值，
-        //    所以必须用文件所属项目的宏来解析；文件归属第一个列出它的项目。
+        // 文件归属第一个列出它的项目（按项目路径序）；磁盘文件按最终的路径字节序预先编号。
         var fileOwner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var parseOpts = new Dictionary<string, CSharpParseOptions>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in projects.Values.OrderBy(p => p.Path, StringComparer.OrdinalIgnoreCase))
@@ -119,228 +74,96 @@ static class Program
             parseOpts[p.Path] = new CSharpParseOptions(p.LangVersion, DocumentationMode.None, SourceCodeKind.Regular, p.Defines);
             foreach (var s in p.Sources) fileOwner.TryAdd(s, p.Path);
         }
-        var trees = new ConcurrentDictionary<string, (SyntaxTree tree, ulong hash, Utf8Coordinates coordinates)>(StringComparer.OrdinalIgnoreCase);
-        int missing = 0;
-        Parallel.ForEach(fileOwner, kv =>
-        {
-            var f = kv.Key;
-            var bytes = ReadShared(f);
-            if (bytes == null) { Interlocked.Increment(ref missing); return; }
-            var hash = System.IO.Hashing.XxHash64.HashToUInt64(bytes);
-            var text = SourceText.From(new MemoryStream(bytes), throwIfBinaryDetected: false, canBeEmbedded: false);
-            trees[f] = (CSharpSyntaxTree.ParseText(text, parseOpts[kv.Value], path: f), hash, new Utf8Coordinates(text));
-        });
-        Phase("parse_syntax", sw);
-        Log($"files: {trees.Count}, missing: {missing}");
-
-        // 3. 构造编译（按项目引用拓扑，Lazy 递归）
-        var metaRefs = new ConcurrentDictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
-        var analyzerRefs = new ConcurrentDictionary<string, AnalyzerFileReference>(StringComparer.OrdinalIgnoreCase);
-        var loader = new SimpleAnalyzerLoader();
-        var comps = new Dictionary<string, Lazy<CSharpCompilation>>(StringComparer.OrdinalIgnoreCase);
-        var generatedTrees = new Dictionary<string, SyntaxTree[]>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in projects.Values)
-        {
-            var proj = p;
-            comps[p.Path] = new Lazy<CSharpCompilation>(() =>
-            {
-                var po = parseOpts[proj.Path];
-                // 同一文件被多个项目包含时（少见），非所属项目按自己的宏重新解析
-                var ptrees = proj.Sources.Where(trees.ContainsKey).Select(s =>
-                {
-                    var t = trees[s].tree;
-                    return fileOwner[s] == proj.Path ? t : CSharpSyntaxTree.ParseText(t.GetText(), po, path: s);
-                }).ToList();
-                var refs = new List<MetadataReference>();
-                foreach (var r in proj.References)
-                    if (File.Exists(r)) refs.Add(metaRefs.GetOrAdd(r, x => MetadataReference.CreateFromFile(x)));
-                foreach (var pr in proj.ProjectRefs)
-                    if (comps.TryGetValue(pr, out var dep)) refs.Add(dep.Value.ToMetadataReference());
-                var opts = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
-                    allowUnsafe: proj.Unsafe, concurrentBuild: true,
-                    metadataImportOptions: MetadataImportOptions.Internal);
-                var comp = CSharpCompilation.Create(proj.AssemblyName, ptrees, refs, opts);
-                if (runGenerators && proj.Analyzers.Length > 0)
-                {
-                    var gens = proj.Analyzers.Where(File.Exists)
-                        .SelectMany(a => analyzerRefs.GetOrAdd(a, x => new AnalyzerFileReference(x, loader)).GetGenerators(LanguageNames.CSharp))
-                        .ToArray();
-                    if (gens.Length > 0)
-                    {
-                        try
-                        {
-                            GeneratorDriver driver = CSharpGeneratorDriver.Create(gens, parseOptions: po);
-                            driver = driver.RunGeneratorsAndUpdateCompilation(comp, out var newComp, out _);
-                            generatedTrees.Add(proj.Path, driver.GetRunResult().GeneratedTrees.ToArray());
-                            comp = (CSharpCompilation)newComp;
-                        }
-                        catch (Exception e) { Log($"generator failed in {proj.AssemblyName}: {e.GetType().Name} {e.Message}"); }
-                    }
-                }
-                return comp;
-            }, LazyThreadSafetyMode.ExecutionAndPublication);
-        }
-        // 先在单线程里触发依赖链，避免并行时死锁式等待
-        foreach (var c in comps.Values) _ = c.Value;
-        int di = Array.IndexOf(args, "--diag");
-        if (di >= 0 && di + 1 < args.Length)
-        {
-            var target = comps.Values.Select(c => c.Value).First(c => c.AssemblyName == args[di + 1]);
-            foreach (var d in target.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).GroupBy(d => d.Id).OrderByDescending(g => g.Count()).Take(8))
-                Log($"diag {d.Key} x{d.Count()}: {d.First().GetMessage()} @ {d.First().Location.GetLineSpan()}");
-            return 0;
-        }
-        Phase(runGenerators ? "create_compilations+generators" : "create_compilations", sw);
-
         string RelativePath(string fullPath) => Path.GetRelativePath(root, fullPath).Replace('\\', '/');
-        var inputs = new List<(string? fullPath, byte[] path, CSharpCompilation comp, SyntaxTree tree,
-            ulong hash, Utf8Coordinates coordinates)>(trees.Count);
-        foreach (var (fullPath, (tree, hash, coordinates)) in trees)
-            inputs.Add((fullPath, Encoding.UTF8.GetBytes(RelativePath(fullPath)), comps[fileOwner[fullPath]].Value,
-                tree, hash, coordinates));
+        var ordered = fileOwner.Keys.Select(f => (f, path: Encoding.UTF8.GetBytes(RelativePath(f)))).ToArray();
+        Array.Sort(ordered, (a, b) => a.path.AsSpan().SequenceCompareTo(b.path));
+        var fileIds = new Dictionary<string, uint>(ordered.Length, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < ordered.Length; i++) fileIds[ordered[i].f] = (uint)i;
 
-        foreach (var (project, generated) in generatedTrees)
+        var io = new SemaphoreSlim(options.IoConcurrency);
+        var ctx = new IndexContext
         {
-            var prefix = "rove-generated://" + Uri.EscapeDataString(RelativePath(project)) + "/";
-            var ordinals = new Dictionary<string, int>(StringComparer.Ordinal);
-            foreach (var tree in generated)
-            {
-                var path = prefix + Uri.EscapeDataString(tree.FilePath.Replace('\\', '/'));
-                ordinals.TryGetValue(path, out int ordinal);
-                ordinals[path] = ordinal + 1;
-                if (ordinal != 0) path += "#" + ordinal;
-                var text = tree.GetText();
-                var hash = System.IO.Hashing.XxHash64.HashToUInt64(Encoding.UTF8.GetBytes(text.ToString()));
-                inputs.Add((null, Encoding.UTF8.GetBytes(path), comps[project].Value, tree, hash, new Utf8Coordinates(text)));
-            }
+            Root = root,
+            Options = options,
+            Projects = projects,
+            FileOwner = fileOwner,
+            ParseOptions = parseOpts,
+            FileIds = fileIds,
+            Results = new FileResult?[ordered.Length],
+            ProjectAssemblies = new HashSet<string>(projects.Values.Select(p => p.AssemblyName), StringComparer.Ordinal),
+            Io = io,
+            Prefetch = new FilePrefetcher(io, options.PrefetchBytes, options.IoConcurrency),
+            NextGeneratedId = ordered.Length - 1,
+        };
+
+        // 2. 按依赖拓扑的流水线：读取、解析、编译、元数据镜像、绑定，项目完成即释放
+        Pipeline.Run(ctx);
+        Phase("index_projects", sw);
+        if (options.Profile)
+        {
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+            Log($"PROFILE retained after pipeline: {GC.GetTotalMemory(false) >> 20}MB (symbols {ctx.Symbols.Map.Count}, "
+                + $"occurrences {ctx.Results.Sum(r => (long)(r?.Occs.Length ?? 0))})");
+            sw.Restart();
         }
+        Log($"files: {ctx.Results.Count(r => r != null)}, missing: {ctx.Missing}, symbols: {ctx.Symbols.Map.Count}, "
+            + $"images: {Stats.Images} (+{Stats.ImageFailures} fallback)");
+        foreach (var issue in Stats.GeneratorIssues.Distinct().Take(40)) Log($"generator: {issue}");
+        if (options.DiagAssembly != null) return 0;
 
-        inputs.Sort((a, b) => a.path.AsSpan().SequenceCompareTo(b.path));
-        var files = new IndexedFile[inputs.Count];
-        var filesByPath = new Dictionary<string, IndexedFile>(trees.Count, StringComparer.OrdinalIgnoreCase);
-        var filesByGeneratedTree = new Dictionary<SyntaxTree, IndexedFile>(ReferenceEqualityComparer.Instance);
-        for (int i = 0; i < inputs.Count; i++)
-        {
-            var input = inputs[i];
-            var file = files[i] = new IndexedFile((uint)i, input.path, input.tree, input.hash, input.coordinates);
-            if (input.fullPath is { } fullPath) filesByPath.Add(fullPath, file);
-            else filesByGeneratedTree.Add(file.Tree, file);
-        }
-        SymbolKey Key(ISymbol symbol) => GetSymbolKey(symbol, filesByPath, filesByGeneratedTree);
-
-        // 4. 绑定 + 收集出现位置
-        var symbols = new ConcurrentDictionary<SymbolKey, SymRec>();
-        int nextSym = -1;
-        var fileOccs = new List<Occ>?[files.Length];
-        var rels = new ConcurrentBag<(SymbolKey from, SymbolKey to, RelKind kind)>();
-        var unresolved = new ConcurrentDictionary<string, int>();
-        var unresolvedByProject = new ConcurrentDictionary<string, int>();
-        long totalNames = 0, unresolvedNames = 0, candidateNames = 0;
-
-        int GetSym(ISymbol s, out SymRec rec)
-        {
-            var key = Key(s);
-            rec = symbols.GetOrAdd(key, k => new SymRec
-            {
-                Id = Interlocked.Increment(ref nextSym), Key = k, Name = s.Name,
-                Display = SafeDisplay(s), Kind = (byte)s.Kind, InSource = s.Locations.Any(l => l.IsInSource),
-                ContainerKey = s.ContainingSymbol is { } c && c.Kind != SymbolKind.Namespace && c.Kind != SymbolKind.Assembly && c.Kind != SymbolKind.NetModule
-                    ? Key(Norm(c)) : null,
-            });
-            return rec.Id;
-        }
-
-        Parallel.For(0, files.Length, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, i =>
-        {
-            var file = files[i];
-            var tree = file.Tree;
-            var comp = inputs[i].comp;
-            var model = comp.GetSemanticModel(tree);
-            var text = tree.GetText();
-            var coordinates = file.Coordinates;
-            var occs = new List<Occ>(1024);
-            long names = 0, unres = 0, cand = 0;
-            void Add(TextSpan span, ISymbol sym, Role role)
-            {
-                var id = GetSym(sym, out _);
-                var line = text.Lines.GetLineFromPosition(span.Start);
-                uint start = coordinates.ByteOffset(span.Start);
-                occs.Add(new Occ
-                {
-                    Line = (uint)line.LineNumber,
-                    Col = start - coordinates.ByteOffset(line.Start),
-                    Len = coordinates.ByteOffset(span.End) - start,
-                    Sym = id,
-                    Role = (ushort)role,
-                });
-            }
-            foreach (var node in tree.GetRoot().DescendantNodes())
-            {
-                if (node is SimpleNameSyntax name)
-                {
-                    if (name.IsVar || name.IsUnmanaged || name.IsNotNull || name.IsNint || name.IsNuint
-                        || name.Identifier.ValueText == "nameof" && name.Parent is InvocationExpressionSyntax) continue;
-                    names++;
-                    var info = model.GetSymbolInfo(name);
-                    var sym = info.Symbol;
-                    var role = Role.Ref;
-                    if (sym == null && info.CandidateSymbols.Length > 0) { sym = info.CandidateSymbols[0]; role |= Role.Candidate; cand++; }
-                    if (sym == null)
-                    {
-                        // 命名空间声明中的名字、未知特性目标等
-                        var t2 = model.GetTypeInfo(name).Type;
-                        if (t2 is { TypeKind: not TypeKind.Error }) sym = t2;
-                    }
-                    if (sym == null) { unres++; unresolved.AddOrUpdate(name.Identifier.ValueText, 1, (_, v) => v + 1); continue; }
-                    sym = Norm(sym);
-                    if (sym is IMethodSymbol { MethodKind: MethodKind.Constructor } ctor) sym = ctor.ContainingType; // new Foo() / [Foo] 计为类型引用
-                    if (sym is IErrorTypeSymbol) { unres++; unresolved.AddOrUpdate(name.Identifier.ValueText, 1, (_, v) => v + 1); continue; }
-                    Add(name.Identifier.Span, sym, role);
-                }
-                else if (DeclIdentifier(node) is { } tok && tok.Span.Length > 0)
-                {
-                    var ds = model.GetDeclaredSymbol(node);
-                    if (ds == null) continue;
-                    ds = Norm(ds);
-                    Add(tok.Span, ds, Role.Def);
-                    CollectRelations(ds, rels, Key);
-                }
-            }
-            fileOccs[i] = occs;
-            Interlocked.Add(ref totalNames, names);
-            Interlocked.Add(ref unresolvedNames, unres);
-            Interlocked.Add(ref candidateNames, cand);
-            if (unres > 0) unresolvedByProject.AddOrUpdate(comp.AssemblyName!, (int)unres, (_, v) => v + (int)unres);
-        });
-        Phase("bind_and_collect", sw);
-        long peakAfterBind = Process.GetCurrentProcess().PeakWorkingSet64;
-
-        // 5. 写索引
-        var stats = IndexWriter.Write(outPath, configHash, files, fileOccs, symbols, rels);
+        // 3. 写索引。先把流水线留下的空闲堆还给系统，写入阶段的临时数组不再叠在上面。
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        if (options.Profile) Log($"write: gc {sw.Elapsed.TotalSeconds:F1}s");
+        IndexWriter.Verbose = options.Profile;
+        var files = ctx.Results.OfType<FileResult>().Concat(ctx.Generated).ToArray();
+        Array.Sort(files, (a, b) => a.Path.AsSpan().SequenceCompareTo(b.Path));
+        long namesTotal = Stats.Names;
+        var stats = IndexWriter.Write(outPath, configHash, files, ctx.Symbols, ctx.Relations);
         Phase("write_index", sw);
+        sampler.Sample();
 
         var proc = Process.GetCurrentProcess();
+        var gc = GC.GetGCMemoryInfo();
         var report = new
         {
             project = root,
-            generators = runGenerators,
+            generators = options.Generators,
             projects = projects.Count,
             files = files.Length,
-            missing_files = missing,
+            missing_files = ctx.Missing,
             phases_ms = Phases,
             total_ms = Total.Elapsed.TotalMilliseconds,
-            peak_working_set_mb = Math.Max(proc.PeakWorkingSet64, peakAfterBind) / 1048576.0,
-            names = totalNames,
-            unresolved_names = unresolvedNames,
-            unresolved_ratio = totalNames == 0 ? 0 : (double)unresolvedNames / totalNames,
-            candidate_names = candidateNames,
-            symbols = symbols.Count,
+            cpu_seconds = Math.Round(proc.TotalProcessorTime.TotalSeconds, 1),
+            peak_working_set_mb = Math.Max(proc.PeakWorkingSet64, sampler.PeakWorkingSet) / 1048576.0,
+            peak_gc_heap_mb = sampler.PeakHeap / 1048576.0,
+            peak_gc_committed_mb = sampler.PeakCommitted / 1048576.0,
+            thread_seconds = Stats.ThreadSeconds(),
+            gc_collections = new[] { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) },
+            gc_pause_percent = gc.PauseTimePercentage,
+            soft_limit_collections = sampler.SoftLimitCollections,
+            options = new
+            {
+                io_concurrency = options.IoConcurrency,
+                max_active_files = options.MaxActiveFiles,
+                prefetch_mb = options.PrefetchBytes >> 20,
+                bind_concurrency = options.BindConcurrency,
+                gc_every_files = options.GcEveryFiles,
+            },
+            read_bytes = Stats.ReadBytes,
+            metadata_images = Stats.Images,
+            metadata_image_fallbacks = Stats.ImageFailures,
+            names = namesTotal,
+            unresolved_names = Stats.UnresolvedNames,
+            unresolved_ratio = namesTotal == 0 ? 0 : (double)Stats.UnresolvedNames / namesTotal,
+            candidate_names = Stats.CandidateNames,
+            symbols = stats.symbols,
             occurrences = stats.occurrences,
             relations = stats.relations,
             index_bytes = stats.bytes,
-            generated_trees = filesByGeneratedTree.Count,
-            top_unresolved = unresolved.OrderByDescending(kv => kv.Value).Take(40).ToDictionary(kv => kv.Key, kv => kv.Value),
-            unresolved_by_project = unresolvedByProject.OrderByDescending(kv => kv.Value).Take(20).ToDictionary(kv => kv.Key, kv => kv.Value),
+            generated_trees = Stats.GeneratedTrees,
+            generator_issues = Stats.GeneratorIssues.Distinct().Take(40).ToArray(),
+            top_unresolved = Stats.Unresolved.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Take(40).ToDictionary(kv => kv.Key, kv => kv.Value),
+            unresolved_by_project = Stats.UnresolvedByProject.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Take(20).ToDictionary(kv => kv.Key, kv => kv.Value),
         };
         var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         if (reportPath != null) File.WriteAllText(reportPath, json);
@@ -351,7 +174,7 @@ static class Program
     static void Phase(string name, Stopwatch sw)
     {
         Phases[name] = Math.Round(sw.Elapsed.TotalMilliseconds);
-        Log($"[{name}] {sw.Elapsed.TotalSeconds:F1}s  ws={Process.GetCurrentProcess().WorkingSet64 / 1048576}MB");
+        Log($"[{name}] {sw.Elapsed.TotalSeconds:F1}s  ws={Environment.WorkingSet / 1048576}MB");
         sw.Restart();
     }
 
@@ -375,7 +198,9 @@ static class Program
         return null;
     }
 
-    static void Log(string s) => Console.Error.WriteLine($"{Total.Elapsed.TotalSeconds,7:F1}s  {s}");
+    static readonly long StartTimestamp = Stopwatch.GetTimestamp();
+    internal static double Elapsed(long timestamp) => (double)(timestamp - StartTimestamp) / Stopwatch.Frequency;
+    internal static void Log(string s) => Console.Error.WriteLine($"{Total.Elapsed.TotalSeconds,7:F1}s  {s}");
 
     static ProjectInfo? ParseCsproj(string path)
     {
@@ -405,102 +230,4 @@ static class Program
         }
         catch (Exception e) { Log($"bad csproj {path}: {e.Message}"); return null; }
     }
-
-    static ISymbol Norm(ISymbol s)
-    {
-        if (s is IAliasSymbol a) s = a.Target;
-        if (s is IMethodSymbol m && m.ReducedFrom != null) s = m.ReducedFrom;
-        return s.OriginalDefinition;
-    }
-
-    /// 符号的全局唯一键：可跨编译稳定（同一源符号被不同项目引用时得到相同键）。
-    static SymbolKey GetSymbolKey(ISymbol s, Dictionary<string, IndexedFile> files,
-        Dictionary<SyntaxTree, IndexedFile> generatedFiles)
-    {
-        if (s is INamespaceSymbol ns) return SymbolKey.Global("N:" + ns.ToDisplayString());
-        var id = s.Kind switch
-        {
-            SymbolKind.Local or SymbolKind.Parameter or SymbolKind.RangeVariable or SymbolKind.Label or SymbolKind.TypeParameter => null,
-            SymbolKind.Method when s is IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction } => null,
-            _ => s.GetDocumentationCommentId(),
-        };
-        if (id != null) return SymbolKey.Global((s.ContainingAssembly?.Name ?? "") + "|" + id);
-
-        var loc = s.Locations.FirstOrDefault(l => l.IsInSource);
-        if (loc?.SourceTree is { } tree
-            && (generatedFiles.TryGetValue(tree, out var file) || files.TryGetValue(tree.FilePath, out file)))
-        {
-            // 单参数 lambda 的起点也是参数名的起点。用箭头作为 lambda 自己的声明位置。
-            int offset = s is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction }
-                ? s.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() switch
-                {
-                    SimpleLambdaExpressionSyntax lambda => lambda.ArrowToken.SpanStart,
-                    ParenthesizedLambdaExpressionSyntax lambda => lambda.ArrowToken.SpanStart,
-                    AnonymousMethodExpressionSyntax method => method.DelegateKeyword.SpanStart,
-                    _ => loc.SourceSpan.Start,
-                }
-                : loc.SourceSpan.Start;
-            return SymbolKey.Local(file.Id, file.Coordinates.ByteOffset(offset));
-        }
-
-        return SymbolKey.Global($"?{s.Kind}:{s.ToDisplayString()}");
-    }
-
-    static string SafeDisplay(ISymbol s)
-    {
-        try { return s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat); } catch { return s.Name; }
-    }
-
-    static SyntaxToken? DeclIdentifier(SyntaxNode n) => n switch
-    {
-        BaseTypeDeclarationSyntax t => t.Identifier,
-        DelegateDeclarationSyntax d => d.Identifier,
-        MethodDeclarationSyntax m => m.Identifier,
-        ConstructorDeclarationSyntax c => c.Identifier,
-        DestructorDeclarationSyntax d => d.Identifier,
-        PropertyDeclarationSyntax p => p.Identifier,
-        EventDeclarationSyntax e => e.Identifier,
-        IndexerDeclarationSyntax i => i.ThisKeyword,
-        VariableDeclaratorSyntax v => v.Identifier,
-        ParameterSyntax p when p.Identifier.Span.Length > 0 => p.Identifier,
-        TypeParameterSyntax tp => tp.Identifier,
-        EnumMemberDeclarationSyntax em => em.Identifier,
-        SingleVariableDesignationSyntax sv => sv.Identifier,
-        ForEachStatementSyntax fe => fe.Identifier,
-        CatchDeclarationSyntax cd when cd.Identifier.Span.Length > 0 => cd.Identifier,
-        LocalFunctionStatementSyntax lf => lf.Identifier,
-        _ => null,
-    };
-
-    static void CollectRelations(ISymbol s, ConcurrentBag<(SymbolKey, SymbolKey, RelKind)> rels, Func<ISymbol, SymbolKey> key)
-    {
-        switch (s)
-        {
-            case INamedTypeSymbol t:
-                if (t.BaseType is { SpecialType: not SpecialType.System_Object and not SpecialType.System_ValueType and not SpecialType.System_Enum } bt)
-                    rels.Add((key(t), key(Norm(bt)), RelKind.BaseType));
-                foreach (var i in t.Interfaces) rels.Add((key(t), key(Norm(i)), RelKind.BaseType));
-                foreach (var iface in t.AllInterfaces)
-                    foreach (var m in iface.GetMembers())
-                    {
-                        if (m.IsStatic) continue;
-                        var impl = t.FindImplementationForInterfaceMember(m);
-                        if (impl != null && SymbolEqualityComparer.Default.Equals(impl.ContainingType, t))
-                            rels.Add((key(Norm(impl)), key(Norm(m)), RelKind.Implements));
-                    }
-                break;
-            case IMethodSymbol { OverriddenMethod: { } om } m:
-                rels.Add((key(m), key(Norm(om)), RelKind.Overrides)); break;
-            case IPropertySymbol { OverriddenProperty: { } op } p:
-                rels.Add((key(p), key(Norm(op)), RelKind.Overrides)); break;
-            case IEventSymbol { OverriddenEvent: { } oe } e:
-                rels.Add((key(e), key(Norm(oe)), RelKind.Overrides)); break;
-        }
-    }
-}
-
-sealed class SimpleAnalyzerLoader : IAnalyzerAssemblyLoader
-{
-    public void AddDependencyLocation(string fullPath) { }
-    public Assembly LoadFromPath(string fullPath) => AssemblyLoadContext.Default.LoadFromAssemblyPath(fullPath);
 }
