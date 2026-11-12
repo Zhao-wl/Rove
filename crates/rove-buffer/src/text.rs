@@ -40,11 +40,16 @@ impl RopeText {
         Self::from_rope(Rope::from_str(text))
     }
 
-    fn from_rope(rope: Rope) -> Self {
+    pub(crate) fn from_rope(rope: Rope) -> Self {
         Self {
             rope,
             version: next_version(),
         }
+    }
+
+    /// 底层 rope（#46 编辑核心用它做写时复制：克隆是 O(1)，修改只复制路径上的节点）。
+    pub(crate) fn rope(&self) -> &Rope {
+        &self.rope
     }
 
     /// 第 `line` 行的内容在全文中的字节区间（不含行终止符）。

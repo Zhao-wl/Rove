@@ -1,0 +1,201 @@
+//! 撤销分组与光标撤销（#46）。
+//!
+//! 分组规则照搬 VS Code（`cursorTypeEditOperations.ts` 的 `shouldPushStackElementBetween`、
+//! `cursorDeleteOperations.ts` 与 `cursor.ts` 的 `_executeEditOperation`）：
+//!
+//! - 连续输入合并为一个撤销单元；输入第一个空格时断开（`abc| ` → 新单元），空格后紧跟的
+//!   输入不断开（`abc |d` 仍在同一单元），连续多个空格之后再输入时断开；
+//! - 输入与删除之间、向左删与向右删之间断开；连续同方向删除合并；
+//! - 其他编辑（粘贴、剪切、替换、缩进转换……）前后都断开：一次多区间事务永远是一个撤销单元；
+//! - 显式移动光标（点击、方向键、按单词移动）断开（VS Code 的命令在移动时 `pushStackElement`）；
+//! - Rove 额外规则：同一单元内两次编辑间隔超过 [`UNDO_GROUP_TIMEOUT`] 时断开（VS Code 没有）。
+//!
+//! 撤销栈只保存“反向事务 + 正向事务 + 编辑前后的选区”，不保存整份文本的快照。
+//!
+//! 光标撤销（`cursorUndo` / `cursorRedo`，移植 `cursorUndo.ts`）是独立的栈：只记录非编辑引起的
+//! 选区变化，最多 50 条；文本一旦变化就清空（与 VS Code 相同）。
+
+use std::time::{Duration, Instant};
+
+use super::selection::Selections;
+use super::transaction::Transaction;
+use crate::contracts::LineEndings;
+
+/// 同一撤销单元内两次编辑的最大间隔（Rove 的差异规则）。
+pub const UNDO_GROUP_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// 光标撤销栈的上限（VS Code 相同）。
+pub const CURSOR_UNDO_LIMIT: usize = 50;
+
+/// 编辑类型（VS Code `EditOperationType`），决定与上一次编辑之间是否断开撤销单元。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EditKind {
+    /// 粘贴、剪切、替换、缩进转换、多区间批量编辑等：前后都断开。
+    #[default]
+    Other,
+    DeletingLeft,
+    DeletingRight,
+    TypingOther,
+    TypingFirstSpace,
+    TypingConsecutiveSpace,
+}
+
+impl EditKind {
+    /// `getTypingOperation`：输入 `text` 时的编辑类型。
+    pub fn typing(text: &str, previous: EditKind) -> EditKind {
+        if text == " " {
+            if matches!(
+                previous,
+                EditKind::TypingFirstSpace | EditKind::TypingConsecutiveSpace
+            ) {
+                EditKind::TypingConsecutiveSpace
+            } else {
+                EditKind::TypingFirstSpace
+            }
+        } else {
+            EditKind::TypingOther
+        }
+    }
+
+    pub fn is_typing(self) -> bool {
+        matches!(
+            self,
+            EditKind::TypingOther | EditKind::TypingFirstSpace | EditKind::TypingConsecutiveSpace
+        )
+    }
+
+    fn normalized(self) -> EditKind {
+        match self {
+            EditKind::TypingConsecutiveSpace => EditKind::TypingFirstSpace,
+            other => other,
+        }
+    }
+
+    /// 在 `previous` 之后执行 `self` 前是否断开撤销单元。
+    pub fn breaks_after(self, previous: EditKind) -> bool {
+        match self {
+            EditKind::Other => true,
+            EditKind::DeletingLeft => previous != EditKind::DeletingLeft,
+            EditKind::DeletingRight => previous != EditKind::DeletingRight,
+            typing => {
+                if previous.is_typing() != typing.is_typing() {
+                    // 从非输入切到输入；输入切到非输入在上面的分支处理。
+                    return true;
+                }
+                if previous == EditKind::TypingFirstSpace {
+                    return false;
+                }
+                previous.normalized() != typing.normalized()
+            }
+        }
+    }
+}
+
+/// 一次事务在撤销栈中的记录。
+#[derive(Clone, Debug)]
+pub(crate) struct Step {
+    pub forward: Transaction,
+    pub inverse: Transaction,
+    pub line_endings_before: LineEndings,
+    pub line_endings_after: LineEndings,
+}
+
+/// 一个撤销单元。
+#[derive(Clone, Debug)]
+pub(crate) struct UndoGroup {
+    pub steps: Vec<Step>,
+    pub selections_before: Selections,
+    pub selections_after: Selections,
+    pub last_edit: Instant,
+}
+
+/// 文本撤销 / 重做栈。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct UndoHistory {
+    pub undo: Vec<UndoGroup>,
+    pub redo: Vec<UndoGroup>,
+    /// 栈顶单元是否还能继续合并。
+    pub open: bool,
+}
+
+impl UndoHistory {
+    /// 记录一次编辑。`start_new` 为真时开启新单元。
+    pub fn record(
+        &mut self,
+        step: Step,
+        start_new: bool,
+        selections_before: &Selections,
+        selections_after: &Selections,
+        now: Instant,
+    ) {
+        self.redo.clear();
+        match self.undo.last_mut() {
+            Some(group) if self.open && !start_new => {
+                group.steps.push(step);
+                group.selections_after = selections_after.clone();
+                group.last_edit = now;
+            }
+            _ => self.undo.push(UndoGroup {
+                steps: vec![step],
+                selections_before: selections_before.clone(),
+                selections_after: selections_after.clone(),
+                last_edit: now,
+            }),
+        }
+        self.open = true;
+    }
+
+    /// 栈顶单元在 `now` 时是否因超时而不能再合并。
+    pub fn timed_out(&self, now: Instant, timeout: Duration) -> bool {
+        self.undo
+            .last()
+            .is_some_and(|group| now.saturating_duration_since(group.last_edit) > timeout)
+    }
+
+    /// `pushStackElement`：关闭栈顶单元。
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+}
+
+/// 光标撤销 / 重做栈：只记录选区。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CursorHistory {
+    undo: Vec<Selections>,
+    redo: Vec<Selections>,
+}
+
+impl CursorHistory {
+    /// 非编辑引起的选区变化：记录变化前的选区（与栈顶相同则不重复记录）。
+    pub fn record(&mut self, previous: &Selections) {
+        if self
+            .undo
+            .last()
+            .is_some_and(|top| top.same_ranges(previous))
+        {
+            return;
+        }
+        self.undo.push(previous.clone());
+        self.redo.clear();
+        if self.undo.len() > CURSOR_UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+    }
+
+    pub fn undo(&mut self, current: &Selections) -> Option<Selections> {
+        let target = self.undo.pop()?;
+        self.redo.push(current.clone());
+        Some(target)
+    }
+
+    pub fn redo(&mut self, current: &Selections) -> Option<Selections> {
+        let target = self.redo.pop()?;
+        self.undo.push(current.clone());
+        Some(target)
+    }
+
+    pub fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+}

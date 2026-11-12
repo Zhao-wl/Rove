@@ -12,6 +12,12 @@ chardetng.workspace = true
 encoding_rs.workspace = true
 memchr.workspace = true
 memmap2.workspace = true
+# #46：按字素簇移动光标（UAX #29）。
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# #46：随机编辑序列的撤销 / 重做往返。
+proptest = "1"
+# #46：Markdown / XML 的 wordPattern 与 R12 对齐（开发依赖环只用于集成测试）。
+rove-syntax.workspace = true
