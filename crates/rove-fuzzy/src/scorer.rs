@@ -1220,6 +1220,10 @@ pub fn score_ascii_summary(
         )
     };
     if let Some(values) = query.values.as_ref().filter(|v| v.len() > 1) {
+        // 每一段都必须能在整条路径里匹配：先用掩码一次性否决，省得前面的段白跑矩阵
+        if values.iter().any(|p| p.mask & !masks.1 != 0) {
+            return Summary::default();
+        }
         let mut total = Summary::default();
         for piece in values {
             let s = one(piece);
