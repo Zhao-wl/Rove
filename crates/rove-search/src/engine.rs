@@ -581,7 +581,10 @@ fn line_end(bytes: &[u8], start: usize) -> usize {
 
 fn preview(line: u64, text: &[u8], ranges: Vec<Range<u32>>) -> LineMatch {
     let text = String::from_utf8_lossy(text);
-    let first = ranges.first().map_or(0, |r| r.start as usize).min(text.len());
+    let first = ranges
+        .first()
+        .map_or(0, |r| r.start as usize)
+        .min(text.len());
     let mut start = if text.len() > PREVIEW_BYTES {
         floor_boundary(&text, first.saturating_sub(PREVIEW_LEAD))
     } else {

@@ -16,7 +16,12 @@ fn settings_with(overrides: &[(&str, Value)]) -> Arc<dyn Settings> {
             .iter()
             .find(|(k, _)| *k == id)
             .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| setting.rove_default.clone().unwrap_or(setting.default.clone()));
+            .unwrap_or_else(|| {
+                setting
+                    .rove_default
+                    .clone()
+                    .unwrap_or(setting.default.clone())
+            });
         registry
             .register(
                 id,
@@ -41,7 +46,11 @@ fn write(root: &Path, rel: &str, bytes: impl AsRef<[u8]>) {
     std::fs::write(path, bytes).unwrap();
 }
 
-fn run(root: &Path, query: &SearchQuery, config: &SearchConfig) -> (Vec<FileMatches>, SearchSummary) {
+fn run(
+    root: &Path,
+    query: &SearchQuery,
+    config: &SearchConfig,
+) -> (Vec<FileMatches>, SearchSummary) {
     let mut files = vec![];
     let summary = search(root, query, config, &Cancellation::default(), |batch| {
         files.extend(batch)
@@ -99,7 +108,11 @@ fn results_are_grouped_by_file_with_lines_previews_and_byte_ranges() {
 fn regex_whole_word_and_case_options() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, "a.cs", "GetComponent<Rigidbody>()\nmove Move MoveTo\n");
+    write(
+        root,
+        "a.cs",
+        "GetComponent<Rigidbody>()\nmove Move MoveTo\n",
+    );
     let cfg = config(&[]);
     let regex = SearchQuery {
         is_regex: true,
@@ -192,10 +205,7 @@ fn exclude_settings_merge_and_the_rove_default_flag() {
     write(root, "Library/PackageCache/X.cs", "needle\n");
     write(root, "node_modules/x.js", "needle\n");
     write(root, "Build/out.txt", "needle\n");
-    let cfg = config(&[(
-        rove_workspace::FILES_EXCLUDE,
-        object(&[("**/Build", true)]),
-    )]);
+    let cfg = config(&[(rove_workspace::FILES_EXCLUDE, object(&[("**/Build", true)]))]);
     // Library 由 rove.files.extraExclude 排除，node_modules 由 search.exclude，Build 由 files.exclude。
     let (files, summary) = run(root, &SearchQuery::new("needle"), &cfg);
     assert!(files.is_empty());
@@ -221,7 +231,10 @@ fn exclude_settings_merge_and_the_rove_default_flag() {
         object(&[("**/Library", false)]),
     )]);
     let (files, summary) = run(root, &SearchQuery::new("needle"), &cfg);
-    assert_eq!(paths(&files), vec!["Build/out.txt", "Library/PackageCache/X.cs"]);
+    assert_eq!(
+        paths(&files),
+        vec!["Build/out.txt", "Library/PackageCache/X.cs"]
+    );
     assert!(!summary.excluded_by_rove_defaults);
 }
 
@@ -282,8 +295,16 @@ fn gbk_files_are_decoded_through_the_buffer_encoding_detection() {
         utf16_bytes.extend_from_slice(&unit.to_le_bytes());
     }
     write(root, "Assets/Utf16.txt", &utf16_bytes);
-    write(root, "Assets/Bom.cs", b"\xEF\xBB\xBF\xE9\x80\x9F\xE5\xBA\xA6\n");
-    write(root, "Assets/binary.bin", b"\x00\x01\x02\xE9\x80\x9F\xE5\xBA\xA6");
+    write(
+        root,
+        "Assets/Bom.cs",
+        b"\xEF\xBB\xBF\xE9\x80\x9F\xE5\xBA\xA6\n",
+    );
+    write(
+        root,
+        "Assets/binary.bin",
+        b"\x00\x01\x02\xE9\x80\x9F\xE5\xBA\xA6",
+    );
     let (files, summary) = run(root, &SearchQuery::new("速度"), &config(&[]));
     assert_eq!(
         paths(&files),
@@ -369,7 +390,10 @@ fn cancellation_stops_all_workers_within_50_ms() {
             r
         });
         std::thread::sleep(Duration::from_millis(30));
-        assert!(started.lock().unwrap().is_none(), "搜索在取消前就已结束，数据不够大");
+        assert!(
+            started.lock().unwrap().is_none(),
+            "搜索在取消前就已结束，数据不够大"
+        );
         let at = Instant::now();
         cancel.cancel();
         let result = handle.join().unwrap();

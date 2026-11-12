@@ -258,8 +258,10 @@ impl Results {
     pub fn rows(&self) -> Arc<ResultRows> {
         let mut starts = Vec::with_capacity(self.files.len());
         let mut expanded = Vec::with_capacity(self.files.len());
+        let mut index = HashMap::with_capacity(self.files.len());
         let mut total = 0;
-        for f in &self.files {
+        for (i, f) in self.files.iter().enumerate() {
+            index.insert(Arc::from(f.path.as_str()), i);
             starts.push(total);
             let open = self.is_expanded(f);
             expanded.push(open);
@@ -269,6 +271,7 @@ impl Results {
             files: self.files.clone(),
             expanded,
             starts,
+            index,
             total,
             revision: Version(self.revision),
         })
@@ -321,6 +324,7 @@ pub struct ResultRows {
     expanded: Vec<bool>,
     /// 每个文件行的行号。
     starts: Vec<usize>,
+    index: HashMap<Arc<str>, usize>,
     total: usize,
     revision: Version,
 }
@@ -353,10 +357,35 @@ impl ResultRows {
 
     /// 文件行的下标。
     pub fn file_row(&self, path: &WorkspacePath) -> Option<usize> {
-        self.files
-            .iter()
-            .position(|f| &f.path == path)
-            .map(|i| self.starts[i])
+        self.index.get(path.as_str()).map(|&i| self.starts[i])
+    }
+
+    /// 按路径取文件（O(1)，行渲染用）。
+    pub fn file(&self, path: &WorkspacePath) -> Option<&Arc<FileNode>> {
+        self.index.get(path.as_str()).map(|&i| &self.files[i])
+    }
+
+    /// 行 ID 对应的行下标。
+    pub fn index_of(&self, target: &Target) -> Option<usize> {
+        match target {
+            Target::File(path) => self.file_row(path),
+            Target::Match(path, line, range) => {
+                let i = *self.index.get(path.as_str())?;
+                if !self.expanded[i] {
+                    return None;
+                }
+                let k = self.files[i].starts.get(*line)? + range;
+                Some(self.starts[i] + 1 + k)
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.total
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
     }
 
     pub fn is_expanded_at(&self, file_index: usize) -> bool {
@@ -453,17 +482,17 @@ mod tests {
         r.add(file("a/B.cs", &[(0, &[0..1, 2..3]), (5, &[4..5])]));
         r.add(file("a/a.cs", &[(1, &[1..2])]));
         let rows = r.rows();
-        assert_eq!(rows.count(), 3 + 4);
+        assert_eq!(rows.count(), 3 + 5);
         assert_eq!(
             rows.rows(0..1).unwrap()[0].id,
             file_id(&WorkspacePath::new("a/a.cs").unwrap())
         );
         assert_eq!(
-            rows.target(3),
+            rows.target(4),
             Some(Target::Match(WorkspacePath::new("a/B.cs").unwrap(), 0, 1))
         );
         assert_eq!(
-            rows.target(4),
+            rows.target(5),
             Some(Target::Match(WorkspacePath::new("a/B.cs").unwrap(), 1, 0))
         );
         assert_eq!(r.match_count(), 5);

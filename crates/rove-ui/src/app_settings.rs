@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 7] {
+fn modules() -> [(&'static str, Register); 8] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -26,6 +26,8 @@ fn modules() -> [(&'static str, Register); 7] {
         ),
         ("rove-workspace", rove_workspace::register_settings),
         ("rove-syntax", rove_syntax::highlight::register_settings),
+        // #25：search.*（全局搜索）。
+        ("rove-search", rove_search::settings::register_settings),
     ]
 }
 

@@ -70,6 +70,9 @@ mod quick_access_tests;
 #[cfg(test)]
 #[path = "workbench_readonly_tests.rs"]
 mod readonly_tests;
+mod search_host;
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -218,6 +221,8 @@ pub struct Workbench {
     find_strings: Arc<dyn Strings>,
     /// #24：快速打开与命令面板的状态（见 `quick_access_host.rs`）。
     quick: quick_access_host::QuickAccess,
+    /// #25：全局搜索视图（见 `search_host.rs`）。
+    search: Entity<crate::search::view::SearchView>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -343,6 +348,7 @@ impl Workbench {
         let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;
         let outline = Self::new_outline(theme.clone(), &services, cx);
+        let search = Self::new_search(root.clone(), services.clone(), theme.clone(), cx);
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
@@ -385,6 +391,7 @@ impl Workbench {
             find_shared: crate::find::host::FindShared::new(find_history),
             find_strings: Arc::new(appearance::strings().unwrap()),
             quick: Default::default(),
+            search,
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -448,6 +455,8 @@ impl Workbench {
             }
         }
         self.outline_settings_changed(keys, cx);
+        // #25：search.* 变化。
+        self.search_settings_changed(keys, cx);
         // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
@@ -506,6 +515,7 @@ impl Workbench {
             let theme = self.theme.clone();
             find.update(cx, |find, cx| find.set_theme(&theme, kind, cx));
         }
+        self.search_theme_changed(cx);
         cx.notify();
     }
     fn find_hosts(&self) -> Vec<Entity<crate::find::host::FindHost>> {
@@ -1491,13 +1501,14 @@ impl Workbench {
 }
 
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 6] = [
+const KNOWN_FACTORIES: [&str; 7] = [
     CONTAINER_FACTORY,
     STATUS_FACTORY,
     FILE_VIEW,
     PROBLEMS,
     crate::index_status::DETAILS_VIEW,
     crate::outline::registry::OUTLINE_VIEW,
+    search_host::SEARCH_FACTORY,
 ];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
@@ -1539,6 +1550,7 @@ impl ShellHost for Workbench {
             PROBLEMS => Some(shell::view::render_problems_empty(self)),
             crate::index_status::DETAILS_VIEW => Some(self.render_index_details(cx)),
             crate::outline::registry::OUTLINE_VIEW => Some(self.render_outline(cx)),
+            search_host::SEARCH_FACTORY => Some(self.render_search()),
             _ => None,
         }
     }
@@ -1592,6 +1604,8 @@ impl Render for Workbench {
         self.sync_outline(window, cx);
         // #24：最近打开、失去焦点时关闭、关闭后还焦点或运行选中的命令。
         self.sync_quick_access(window, cx);
+        // #25：搜索视图的全局上下文键与焦点。
+        self.sync_search(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1676,6 +1690,11 @@ impl Render for Workbench {
                     v.quick_action_handler(a, window, cx)
                 },
             ))
+            .on_action(
+                cx.listener(|v, a: &crate::search::registry::SearchAction, window, cx| {
+                    v.search_command(a, window, cx)
+                }),
+            )
             .child(workbench)
             .children(goto)
             .children(quick)

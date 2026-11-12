@@ -204,7 +204,10 @@ mod tests {
             ..SearchQuery::new(r"Get\w+<\w+>")
         };
         assert_eq!(
-            find_all(&compile(&q, false).unwrap(), "x = GetComponent<Rigidbody>();"),
+            find_all(
+                &compile(&q, false).unwrap(),
+                "x = GetComponent<Rigidbody>();"
+            ),
             vec![(4, 27)]
         );
         let bad = SearchQuery {
@@ -222,7 +225,13 @@ mod tests {
     fn include_patterns_follow_vscode_expansion() {
         assert_eq!(
             patterns("*.cs, ./Assets/Scripts/ ,Editor,{a,b}.txt,**/x"),
-            vec!["**/*.cs", "Assets/Scripts", "**/Editor", "**/{a,b}.txt", "**/x"]
+            vec![
+                "**/*.cs",
+                "Assets/Scripts",
+                "**/Editor",
+                "**/{a,b}.txt",
+                "**/x"
+            ]
         );
         assert!(patterns(" , ").is_empty());
         let r = rules("Scripts, *.shader").unwrap();

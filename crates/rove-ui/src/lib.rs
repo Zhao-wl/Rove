@@ -27,3 +27,5 @@ pub mod outline;
 pub mod find;
 // #24：快速打开与命令面板（`:` `@` `#` `>` 前缀、命令中心入口）。
 pub mod quick_access;
+// #25：全局搜索视图（引擎在核心层 `rove-search`）。
+pub mod search;

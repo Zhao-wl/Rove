@@ -5044,6 +5044,7 @@ dependencies = [
  "rove-fuzzy",
  "rove-i18n",
  "rove-lang-cs",
+ "rove-search",
  "rove-syntax",
  "rove-theme",
  "rove-workspace",
