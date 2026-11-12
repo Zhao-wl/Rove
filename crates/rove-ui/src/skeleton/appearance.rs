@@ -76,6 +76,8 @@ pub fn strings() -> Result<StringTable> {
     // #14：列表/快速输入的命令标题（它们的命令登记在键位服务的命令表里）、Rove 专有命令与和弦提示。
     crate::list_widget::registry::register_strings(&mut t)?;
     rove_commands::builtin::register_strings(&mut t)?;
+    // #36：C# 索引状态的文案。
+    crate::index_status::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -105,6 +107,8 @@ pub fn contributions() -> Result<ContributionRegistry> {
             factory_key: crate::shell::catalog::STATUS_FACTORY.into(),
         },
     )?;
+    // #36：C# 索引状态条目与索引详情面板。
+    crate::index_status::register_contributions(&mut r)?;
     Ok(r)
 }
 /// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。

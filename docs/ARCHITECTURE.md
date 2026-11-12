@@ -40,6 +40,7 @@ flowchart TD
  cs --> base
  docview --> syntax
  docview --> base
+ cs --> config
 ```
 
 | crate | 职责 | GPUI |
@@ -562,3 +563,60 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 验证：`cargo test -p rove-buffer`（`tests/large_file.rs` 覆盖“打开超大文件 → 只读原因 → 进度 → 转到行”、
 真值表、追加/改写/截断、边界用例、单行 100 MB）；性能：`cargo xtask bench --filter huge/`（`xtask/benches/huge_file.rs`，
 1 GB 用例需要本地 `big1g.txt`）。
+
+## 20. C# 索引生命周期与状态（#36）
+
+位置：核心逻辑在 `crates/rove-lang-cs/src/lifecycle/`（不依赖 gpui，`lib.rs` 只追加 `pub mod lifecycle;`）；
+界面在 `crates/rove-ui/src/index_status.rs`，装配在 `skeleton/workbench.rs` 末尾的 `#36` 段。
+`rove-lang-cs` 新增依赖 `rove-config`（读 `rove.index.*`），见 §2 的依赖图。
+
+### 缓存目录布局（#37 共用）
+
+```text
+<缓存根>\                      rove.index.cacheDir；为空时 %LOCALAPPDATA%\Rove\index（必须是绝对路径）
+  <小写文件夹名>-<16 位哈希>\    每个项目一个目录；哈希是规范化项目根路径（去 \?\、反斜杠、不分大小写）的 FNV-1a-64
+    project.json              项目路径、最近打开时间（淘汰依据）、最近一次构建记录（世代、头部配置哈希、输入指纹、文件数、符号数）
+    l1\l1-decls.bin           L1 快速声明索引：目录由 ProjectCache::l1_dir() 给出，文件名由 #37 固定
+    l2\<16 位十六进制世代>.rvcsidx   L2 语义索引；最大的世代是当前索引，其余是待删除的旧世代
+    l2\*.tmp                  索引进程写入中的临时文件（超过 1 小时视为崩溃遗留，打开时清理）
+    logs\indexer.log          索引日志；超过 1 MiB 轮转为 indexer.1.log … indexer.3.log
+```
+
+- **#37 的接入方式**：`ProjectCache::new(&cache_root, &project_root).l1_dir()` 就是传给 L1 持久化接口的目录；
+  生命周期在打开项目时已经创建好它（`rove.index.enabled = false` 或工作区没有 C# 代码时不创建任何目录）。
+  淘汰按项目目录整体删除，L1 随之删除，不需要单独处理。
+- **原子替换**：Windows 上正在被内存映射的文件不能被覆盖，所以新索引写到新世代文件（索引进程自己先写
+  同目录临时文件再改名），切换是把 `IndexLifecycle::snapshot()` 里的 `Arc<IndexSnapshot>` 换成新的；
+  已经拿到旧快照的查询继续读旧映射，不会读到半截文件。旧快照最后一个持有者放手时删除旧世代文件
+  （Rust 的 `remove_file` 在 Windows 上使用 POSIX 删除语义，映射中的文件名也能立即移除，数据在解除映射前有效）。
+
+### 生命周期（`IndexLifecycle`，每个项目一个后台线程）
+
+| 步骤 | 内容 |
+|---|---|
+| 打开 | `rove.index.enabled = false` → `Disabled`；扫描项目输入（根目录 `*.csproj`，`Assets/`、`Packages/` 下的 `*.asmdef`/`*.asmref` 内容与 `*.cs` 路径），没有 C# → `NoCSharp`（条目不显示）；创建缓存目录、写 `project.json`（同时验证可写，失败 → `Failed(CacheDir)`）、淘汰 |
+| 有效性检查 | ① magic 与格式版本 ② 索引进程版本（`validity::EXPECTED_INDEXER_VERSION`，测试对照 `RoveIndexer.csproj`）③ 项目配置：头部配置哈希与构建记录一致且输入指纹与磁盘一致 ④ 抽样文件哈希：`max(200, 2%)` 个文件比对 xxHash64，命中率 < 90% 重建，否则只把不一致的文件标记过期。①–③ 同步完成后立即发布索引（`Ready`），④ 在预读之后的后台进行 |
+| 预读 | `prefetch::prefetch`：`FILE_FLAG_SEQUENTIAL_SCAN` 全速顺序读整个文件、普通 I/O 优先级、可取消（关项目即停）；刚构建的索引跳过。限速与低优先级两种策略保留给基准，实测在 HDD 上都更差（数据见 `prefetch.rs` 注释与 #36 的 PR） |
+| 构建 | `process::locate_indexer`（唯一的组件查找函数，#43 合并后替换）→ `ProcessBuilder` 拉起 `rove-indexer-cs <项目> <新世代路径>`，stdout/stderr 逐行写日志并解析进度（阶段行与 `files: N`；将来的 `progress <done> <total>` 直接采用）；失败重试一次，组件缺失 → `NotInstalled`，其余 → `Failed`；已知对不上的旧索引不再提供（降级到 L1/L0） |
+| 文件变化 | `files_changed(&[SourceChange])`（界面从 #15 的 `FileEvent` 转换）：源文件只标记过期（`is_stale` 供 #38 降级为近似），项目配置文件变化全量重建，监听溢出重新检查。**#35 合并后的切换点**在 `IndexLifecycle::files_changed` 的注释处：改为转发给常驻进程（状态 `Updating`） |
+| 淘汰 | `CachePolicy` 默认 10 个项目、总量 5 GiB（依据见 `evict.rs`），按 `project.json` 的最近打开时间从旧到新删除，当前项目永远保留，只删除带 `project.json` 的项目目录 |
+
+状态机 `IndexState`：`Checking`、`NoCSharp`、`Disabled`、`NotInstalled`、`Building { progress, eta, rebuilding }`、`Ready`、
+`Updating { files }`、`Failed(Failure)`；所有迁移只在后台线程里发生，订阅 `changes()` 拿到 `IndexStatus`（状态 + 详情数据 + 修订号）。
+项目配置哈希的 Rust 侧判定见 `inputs.rs` 的模块注释（头部哈希由 C# 计算，Rust 无法逐字节重算，所以在构建记录里绑定头部哈希与输入指纹）。
+
+### 界面（UX_SPEC §2.1）
+
+- 登记：状态栏条目 `rove.status.index`（`StatusLeft`，order 40，在问题计数右侧，默认命令 `rove.index.showDetails`）、
+  面板视图 `rove.index.details`（“C# 索引”详情，工厂 key 同 ID，已加入装配校验的 `KNOWN_FACTORIES`）；文案全部是 `index.*` 字符串。
+- 命令：`rove.index.rebuild` / `showDetails` / `openLog` 由 #14 的 `rove_commands::builtin` 登记，这里提供 GPUI action
+  （`index_status::action_for`，已接入 `keys::action_for`，因此命令面板可见），`Workbench::run_invocation` 也直接处理命令 ID。
+- 失败通知：进入 `Failed` 时经 `shell::view::report(…, Reason::Global(Error), …)` 报一次，key 为 `rove.index.failed.<类别>`，
+  同因去重与勿扰由反馈层负责；按钮“查看详情”“重试”的动作 ID 就是命令 ID。恢复到 `Ready` 时收起失败通知。
+- 设置热加载：`rove.index.enabled` / `rove.index.cacheDir` 变化时关闭旧生命周期并按新设置重新打开。
+
+验证：`cargo test -p rove-lang-cs --test lifecycle`（打开 → 检查 → 预读 → 就绪 → 文件变更 → 标记过期；四类失效各自重建；
+原子替换；进程缺失 / 启动失败 / 非零退出 / 崩溃；禁用与自定义缓存目录；淘汰）与 `cargo test -p rove-ui index_tests`
+（五种状态 + 已禁用 + 不显示的条目文字、悬停与点击，通知去重，命令面板，真实生命周期的失败与重试）。
+预读基准：`cargo run --release -p rove-lang-cs --example index_prefetch_bench -- <index> <scratch-dir>`（无缓冲复制制造冷缓存，
+对比不预读 / 预读 / 限速预读），数据见 #36 的 PR。

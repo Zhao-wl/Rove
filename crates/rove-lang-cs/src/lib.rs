@@ -12,3 +12,6 @@ pub use index::{CsIndex, Location, Occurrence, Role, SymbolRecord};
 // Keep query contracts namespaced: storage exports above (notably Location) remain
 // separate from navigation targets and coordinate units; avoid wildcard re-exports.
 pub mod query;
+
+// #36：索引生命周期与状态（缓存目录、预读、原子替换、进程管理、状态机）。
+pub mod lifecycle;
