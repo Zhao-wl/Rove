@@ -12,6 +12,18 @@ chardetng.workspace = true
 encoding_rs.workspace = true
 memchr.workspace = true
 memmap2.workspace = true
+# #46：按字素簇移动光标（UAX #29）。
+unicode-segmentation.workspace = true
+# #46：`editor.wordSegmenterLocales` 的词典分词（ICU4X，数据编译进二进制，约 +2.4 MB），默认关闭。
+icu_segmenter = { version = "2.4", optional = true }
+
+[features]
+# 启用 `editor.wordSegmenterLocales`（日文 / 中文 / 泰文等按词停靠）。体积代价见 PR #121。
+intl-segmenter = ["dep:icu_segmenter"]
 
 [dev-dependencies]
 tempfile = "3"
+# #46：随机编辑序列的撤销 / 重做往返。
+proptest = "1"
+# #46：Markdown / XML 的 wordPattern 与 R12 对齐（开发依赖环只用于集成测试）。
+rove-syntax.workspace = true

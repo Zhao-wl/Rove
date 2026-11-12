@@ -168,3 +168,36 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 
 - C# 声明提取直接使用 #9 已登记的 `tree-sitter 0.25` 与 `tree-sitter-c-sharp 0.23.5`（MIT），没有复制额外的查询文件。
 - `crates/rove-lang-cs/src/l1/names.rs` 的 `FxHasher` 按 [rustc-hash](https://github.com/rust-lang/rustc-hash)（MIT OR Apache-2.0）的 FxHash 思路（乘法-旋转散列与种子常量）重新实现，没有复制源码。
+
+## 编辑核心模型（#46）
+
+以下移植自 Microsoft VS Code **1.145.2**（提交 `c4453f8ea430795f941c1b2ff6c9321135a74a02`，MIT 许可，
+版权与许可全文见上文“VS Code 默认主题与主题引擎”一节）：
+
+- `crates/rove-buffer/src/edit/word.rs`：`src/vs/editor/common/cursor/cursorWordOperations.ts`
+  （`WordOperations` / `WordPartOperations` 的单词边界、删除区间与选词）与
+  `src/vs/editor/common/core/wordCharacterClassifier.ts`（字符分类）。
+- `crates/rove-buffer/tests/edit_word_operations.rs`：逐例翻译自
+  `src/vs/editor/contrib/wordOperations/test/browser/wordOperations.test.ts` 与
+  `src/vs/editor/contrib/wordPartOperations/test/browser/wordPartOperations.test.ts`（用例文本与期望值原样保留），
+  辅助函数改写自同目录的 `wordTestUtils.ts`。
+- `crates/rove-buffer/src/edit/history.rs`：撤销分组规则取自 `src/vs/editor/common/cursor/cursorTypeEditOperations.ts`
+  （`getTypingOperation`、`shouldPushStackElementBetween`）与 `cursorDeleteOperations.ts`；光标撤销取自
+  `src/vs/editor/contrib/cursorUndo/browser/cursorUndo.ts`。
+- `crates/rove-buffer/src/edit/selection.rs`：多光标合并取自 `src/vs/editor/common/cursor/cursorCollection.ts`
+  （`_mergeCursorsIfNecessary`），可见列换算取自 `cursorColumns.ts` 与 `src/vs/base/common/strings.ts`
+  （`isFullWidthCharacter`）。
+- `crates/rove-buffer/src/edit/clipboard.rs`：`src/vs/editor/common/viewModel/viewModelImpl.ts`
+  （`getPlainTextToCopy`）、`cursorDeleteOperations.ts`（`cut`）与 `cursorTypeEditOperations.ts`（`PasteOperation`）。
+- `crates/rove-buffer/src/edit/rewrite.rs`：`src/vs/editor/contrib/indentation/browser/indentation.ts`
+  （`getIndentationEditOperations`）。
+- `crates/rove-buffer/src/edit/word.rs` 中 `editor.wordSegmenterLocales` 的分词停靠逻辑移植自
+  `wordCharacterClassifier.ts`（`findPrevIntlWordBeforeOrAtOffset` / `findNextIntlWordAtOrAfterOffset`）。
+
+可选 feature `intl-segmenter`（默认关闭）依赖 Unicode Consortium 的 ICU4X
+[`icu_segmenter`](https://crates.io/crates/icu_segmenter) 2.4 及其编译进二进制的分词数据
+（`icu_segmenter_data`：中日文词典、东南亚文字 LSTM 模型），许可为
+[Unicode License v3](https://www.unicode.org/license.txt)（`Unicode-3.0`）。启用该 feature 发布时，
+需按 #75 的分发清单附上该许可全文。
+
+来源：<https://github.com/microsoft/vscode/tree/1.145.2>

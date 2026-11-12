@@ -10,7 +10,9 @@
 //! - [`open_file`]（#8）：按文件大小分级（[`size`]）；超大文件走 [`MappedText`]
 //!   （内存映射 + 分块行索引 + 追加内容的增量索引）。
 //!
-//! 不包含编辑、保存、文件监听（#15）与界面（#22、#27）。
+//! - [`edit`]（#46）：编辑事务、撤销重做、选区、单词边界、剪贴板语义与改写事务。
+//!
+//! 不包含保存、文件监听（#15）与界面（#22、#27）。
 
 pub mod contracts;
 pub use contracts::*;
@@ -31,3 +33,6 @@ pub mod size;
 pub use mapped::{MappedText, Reload, INDEX_CHUNK_BYTES, SYNC_INDEX_BYTES};
 pub use open::{open_file, FileText, OpenedFile};
 pub use size::{disabled_features, session_toggle_allowed, ReducedFeature, SizePolicy};
+
+// #46 编辑核心：事务、撤销重做、选区、单词边界、剪贴板语义与改写事务。
+pub mod edit;
