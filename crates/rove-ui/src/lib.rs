@@ -25,3 +25,5 @@ pub mod outline;
 
 // #21：当前文件查找条。
 pub mod find;
+// #24：快速打开与命令面板（`:` `@` `#` `>` 前缀、命令中心入口）。
+pub mod quick_access;

@@ -25,8 +25,6 @@ pub fn strings() -> Result<StringTable> {
         ("workbench.scanFailed", "无法扫描文件夹，请检查路径和权限。"),
         ("workbench.status", "{name}  |  {lines} 行  |  {encoding}"),
         ("encoding.utf8", "UTF-8"),
-        ("commands.quickOpen", "快速打开（尚未实现）"),
-        ("commands.palette", "命令面板（尚未实现）"),
         ("tree.open", "▾ {name}"),
         ("tree.closed", "▸ {name}"),
         ("workbench.statusTitle", "文件状态"),
@@ -80,6 +78,8 @@ pub fn strings() -> Result<StringTable> {
     crate::index_status::register_strings(&mut t)?;
     crate::outline::registry::register_strings(&mut t)?;
     crate::find::registry::register_strings(&mut t)?;
+    // #24：快速打开、命令面板与转到行的标题和提示。
+    crate::quick_access::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
