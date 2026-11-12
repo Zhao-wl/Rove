@@ -1733,6 +1733,9 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|v, a: &crate::nav::registry::NavAction, window, cx| {
                     v.nav_command(a.0, window, cx)
+                }),
+            )
+            // #25：全局搜索命令。
             .on_action(
                 cx.listener(|v, a: &crate::search::registry::SearchAction, window, cx| {
                     v.search_command(a, window, cx)

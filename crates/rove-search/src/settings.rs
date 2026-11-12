@@ -160,7 +160,7 @@ pub enum Collapse {
     AlwaysExpand,
 }
 
-/// `search.sortOrder`。`modified` 需要文件修改时间，按 `default` 处理（见 ARCHITECTURE §29）。
+/// `search.sortOrder`。`modified` 需要文件修改时间，按 `default` 处理（见 ARCHITECTURE §32）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortOrder {
     Default,
