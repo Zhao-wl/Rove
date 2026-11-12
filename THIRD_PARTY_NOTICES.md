@@ -163,3 +163,8 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 - `crates/rove-ui/src/list_widget/registry.rs` 的颜色默认值、命令 ID、键位与 `when` 条件，以及
   `widget.rs` 中翻页、全选、展开/折叠等行为，参照 Microsoft VS Code 1.145（`listWidget.ts`、
   `listCommands.ts`、`colorRegistry` 的列表颜色，MIT，许可见上文）；为 Rove 重写，未复制源码。
+
+## C# L1 声明索引（#37）
+
+- C# 声明提取直接使用 #9 已登记的 `tree-sitter 0.25` 与 `tree-sitter-c-sharp 0.23.5`（MIT），没有复制额外的查询文件。
+- `crates/rove-lang-cs/src/l1/names.rs` 的 `FxHasher` 按 [rustc-hash](https://github.com/rust-lang/rustc-hash)（MIT OR Apache-2.0）的 FxHash 思路（乘法-旋转散列与种子常量）重新实现，没有复制源码。

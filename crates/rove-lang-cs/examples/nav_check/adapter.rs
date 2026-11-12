@@ -5,7 +5,7 @@
 //!
 //! 现有两个查询来源：
 //! - [`L2Index`]：完整语义索引（`CsIndex::goto_definition` / `find_references`）；
-//! - [`L1Decls`]：L1 快速声明索引（#37）。#37 合并前返回“不支持”，合并后在这里接入。
+//! - [`L1Decls`]：L1 快速声明索引（#37），只回答定义（类型名解析），不做查找引用。
 //!
 //! 迁移路径（#38 合并后）：把 [`L2Index`] 换成调用 #1 的 `query::CsQueries::navigate`
 //! （`NavigationKind::Definition` / `References`），把 `QueryResult::precision` 填进
@@ -188,19 +188,206 @@ impl NavSource for L2Index {
 
 /// L1 快速声明索引（#37）。
 ///
-/// TODO(#37)：L1 合并后在这里构建/加载声明索引，`definition` 返回其候选（精确度 approximate），
-/// `references` 保持 Unsupported（L1 不做查找引用）。统计时 `type_ref` 分类的准确率即 #37 的验收数字。
-pub struct L1Decls;
+/// 打开时用 #15 的工作区扫描拿文件列表，构建一次 L1（不读写缓存）。`definition` 取光标处写出的
+/// 类型名（含左侧的 `A.B.` / `global::` 限定与右侧泛型实参个数），交给 `L1Index::resolve_type`，
+/// 返回全部候选的全部声明位置（partial 多处、歧义多个），精确度 approximate。
+/// `references` 保持 Unsupported（L1 不做查找引用）。统计时 `type_ref` 分类的准确率即 #37 的验收数字；
+/// 其余分类需要语义信息，L1 答不对是预期内的。
+pub struct L1Decls {
+    root: std::path::PathBuf,
+    index: rove_lang_cs::l1::L1Index,
+    desc: String,
+}
+
+impl L1Decls {
+    pub fn open(root: &Path) -> Result<Self, String> {
+        use rove_workspace::{default_settings, EntryKind, Folder, Workspace, WorkspaceConfig};
+        let config = WorkspaceConfig::from_settings(&default_settings())
+            .map_err(|e| format!("工作区默认设置：{e}"))?
+            .without_watching();
+        let folder = Folder::scan_root(root, config).map_err(|e| format!("扫描工作区失败：{e}"))?;
+        let mut files = Vec::new();
+        let mut start = 0;
+        loop {
+            let page = folder
+                .files(start..start + 4096)
+                .map_err(|e| format!("读取文件列表失败：{e}"))?;
+            start += page.items.len();
+            files.extend(
+                page.items
+                    .iter()
+                    .filter(|e| matches!(e.kind, EntryKind::File))
+                    .map(|e| e.path.clone()),
+            );
+            if page.items.len() < 4096 {
+                break;
+            }
+        }
+        let index = rove_lang_cs::l1::L1Index::new(rove_lang_cs::l1::L1Options::new(root));
+        let report = index
+            .build(files, &rove_base::Cancellation::default())
+            .map_err(|e| format!("构建 L1 失败：{e}"))?;
+        let desc = format!(
+            "L1 快速声明索引（{} 个 .cs，{} 个符号，构建 {} ms）",
+            report.files,
+            index.stats().symbols,
+            report.elapsed.as_millis()
+        );
+        Ok(L1Decls {
+            root: root.to_owned(),
+            index,
+            desc,
+        })
+    }
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
+}
+
+/// 光标处写出的类型名：标识符本身 + 左侧的限定（`A.B.`、`global::`）+ 右侧泛型实参个数
+/// （写成 `Name<,>` 形式）。泛型实参必须在同一行闭合，否则按非泛型处理。
+pub fn type_text_at(line: &str, col: usize) -> Option<String> {
+    let b = line.as_bytes();
+    if col >= b.len() || !is_ident_byte(b[col]) {
+        return None;
+    }
+    let mut start = col;
+    while start > 0 && is_ident_byte(b[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < b.len() && is_ident_byte(b[end]) {
+        end += 1;
+    }
+    // 向左吞并限定符（`@` 逐字标识符前缀一并去掉）。
+    let mut left = start;
+    loop {
+        if left > 0 && b[left - 1] == b'@' {
+            left -= 1;
+        }
+        let sep = if left >= 2 && &b[left - 2..left] == b"::" {
+            2
+        } else if left >= 1 && b[left - 1] == b'.' {
+            1
+        } else {
+            break;
+        };
+        let mut s = left - sep;
+        while s > 0 && is_ident_byte(b[s - 1]) {
+            s -= 1;
+        }
+        if s == left - sep {
+            break;
+        }
+        left = s;
+        if sep == 2 {
+            break; // `global::` 只能在最左边。
+        }
+    }
+    let mut text = line[left..end].replace('@', "");
+    // 向右数泛型实参个数。
+    let mut i = end;
+    while i < b.len() && b[i] == b' ' {
+        i += 1;
+    }
+    if i < b.len() && b[i] == b'<' {
+        let (mut depth, mut commas, mut closed) = (0i32, 0usize, false);
+        for &c in &b[i..] {
+            match c {
+                b'<' | b'(' | b'[' => depth += 1,
+                b'>' | b')' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closed = c == b'>';
+                        break;
+                    }
+                }
+                b',' if depth == 1 => commas += 1,
+                b';' | b'{' | b'=' => break,
+                _ => {}
+            }
+        }
+        if closed {
+            text.push('<');
+            text.push_str(&",".repeat(commas));
+            text.push('>');
+        }
+    }
+    Some(text)
+}
 
 impl NavSource for L1Decls {
     fn name(&self) -> &'static str {
         "l1"
     }
 
-    fn definition(&self, _: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
-        Err(SourceError::Unsupported(
-            "L1 声明索引（#37）尚未接入适配层".to_owned(),
-        ))
+    fn describe(&self) -> String {
+        self.desc.clone()
+    }
+
+    fn definition(&self, at: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
+        use rove_base::{Cancellation, Line, Position, Resource, WorkspacePath};
+        let none = |why: &str| DefAnswer {
+            symbol: Some(format!("<{why}>")),
+            precision: Some("approximate"),
+            ..DefAnswer::default()
+        };
+        let Ok(bytes) = std::fs::read(self.root.join(at.file)) else {
+            return Ok(none("读不到文件"));
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let Some(line) = text.lines().nth(at.line0 as usize) else {
+            return Ok(none("行号越界"));
+        };
+        let Some(written) = type_text_at(line, at.utf8_col0 as usize) else {
+            return Ok(none("光标处不是标识符"));
+        };
+        let Ok(file) = WorkspacePath::new(at.file) else {
+            return Ok(none("路径不合法"));
+        };
+        let position = Position {
+            line: Line(u64::from(at.line0)),
+            column: rove_base::Utf8Column(u64::from(at.utf8_col0)),
+        };
+        let found =
+            match self
+                .index
+                .resolve_type(&file, position, &written, &Cancellation::default())
+            {
+                Ok(r) => r.value,
+                Err(e) => return Ok(none(&format!("{written}：{e}"))),
+            };
+        let mut defs: Vec<SrcLine> = found
+            .iter()
+            .flat_map(|s| s.locations.iter())
+            .filter_map(|t| match &t.resource {
+                Resource::Workspace(p) => Some(SrcLine {
+                    file: p.as_str().to_owned(),
+                    line0: t.selection.start().line.0 as u32,
+                }),
+                _ => None,
+            })
+            .collect();
+        defs.sort();
+        defs.dedup();
+        let names: Vec<String> = found
+            .iter()
+            .map(|s| {
+                if s.container.is_empty() {
+                    s.name.to_string()
+                } else {
+                    format!("{}.{}", s.container, s.name)
+                }
+            })
+            .collect();
+        Ok(DefAnswer {
+            defs,
+            external: None,
+            symbol: Some(format!("{written} → [{}]", names.join(", "))),
+            precision: Some("approximate"),
+        })
     }
 
     fn references(&self, _: &QueryPos<'_>) -> Result<RefsAnswer, SourceError> {

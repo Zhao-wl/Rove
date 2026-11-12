@@ -69,6 +69,10 @@ const TARGETS: &[BenchTarget] = &[
         name: "outline",
         requires: "",
     },
+    BenchTarget {
+        name: "l1",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

@@ -15,3 +15,6 @@ pub mod query;
 
 // #36：索引生命周期与状态（缓存目录、预读、原子替换、进程管理、状态机）。
 pub mod lifecycle;
+
+// #37 L1 快速声明索引（tree-sitter）。
+pub mod l1;
