@@ -810,6 +810,8 @@ Markdown 局部更新与回退、可见区域优先、按文档基线、设置�
     字符串只在整数部分全部相同时才取（`compare_keys`）。排名确定后才给最终的前 512 名生成完整的高亮区间。
   - 查询是上一次查询的延长（且没有引号）时，只在上一次的匹配集合里重新打分；候选集变化（`FileIndex::generation`）时作废。
   - 候选超过 1.2 万个时在 rayon 线程池里分块并行，各块共享“第 512 名的分数下限”（原子变量），最后归并各块的前 512 名。
+  - 前 512 名已经全是 label 级结果（分数 ≥ `LABEL_SCORE_THRESHOLD`）且查询只有一段时，只在 description 里匹配的候选排不进去：
+    不再为它们跑矩阵，只用顺序检查判断“有没有匹配”（供下一次按键剪枝）。
   - 只保留最好的 512 条，用二分插入而不是 `sort`（VS Code 的比较规则不保证严格全序，`sort` 可能 panic）。
 - **历史**：窗口内最近打开的文件（最近的在前，最多 100 个，不持久化）。空查询只列历史；有查询时历史中匹配的排在前面，
   `search.quickOpen.history.filterSortOrder` 为 `default` 时按相关度、`recency` 时按最近打开；文件结果不重复历史里的文件；
@@ -827,7 +829,7 @@ Markdown 局部更新与回退、可见区域优先、按文档基线、设置�
 - **没有的**：`#` 工作区符号（R59）只显示“尚不可用”并提示 `Ctrl+P`；命令的 `when`/前置条件没有数据模型，命令面板不按
   `when` 过滤；最近打开的文件不持久化；`@` 在 `文件名@符号` 的组合写法不支持。
 
-验证：`cargo test -p rove-fuzzy`（移植的 VS Code 用例）；`cargo test -p rove-ui quick_access`（前缀解析、转到行、命令面板、
-索引增量、剪枝与完整扫描等价、历史）；`skeleton/workbench/quick_access_tests.rs`（真实 GPUI 窗口：`Ctrl+P` → 输入 → 选中
+验证：`cargo test -p rove-fuzzy`（移植的 VS Code 用例，另有与稠密矩阵参考实现、`Target` 路径的随机对照）；`cargo test -p rove-ui quick_access`（前缀解析、转到行、命令面板、
+索引增量、剪枝与完整扫描等价、并行与单线程等价、优化后的整条流水线与朴素 VS Code 实现等价、历史）；`skeleton/workbench/quick_access_tests.rs`（真实 GPUI 窗口：`Ctrl+P` → 输入 → 选中
 → 文档已打开并定位、四个前缀、命令面板与键位、`Ctrl+Enter`、`Esc`、命令中心入口、设置）。性能：
 `cargo xtask bench --filter quickopen/`（预算 `quickopen_*`）。
