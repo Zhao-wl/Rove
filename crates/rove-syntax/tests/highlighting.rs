@@ -428,11 +428,8 @@ fn markdown_inline_regions_keep_paragraph_boundaries() {
 
 #[test]
 fn large_csharp_document_preserves_line_diffs_after_partitioned_open() {
-    if std::thread::available_parallelism().is_ok_and(|cores| cores.get() < 2) {
-        eprintln!("Skipped partitioned C# test: at least two hardware threads are required");
-        return;
-    }
-    let service = TreeSitterSyntax::default().document();
+    // A private pool: the partitioned path does not depend on other analyses in the process.
+    let service = TreeSitterSyntax::default().with_parallelism(4).document();
     let padding = "Long member description. ".repeat(6);
     let mut initial = String::from("class Example {\n");
     for index in 0..3_100 {

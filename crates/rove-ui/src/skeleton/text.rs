@@ -105,7 +105,7 @@ impl Documents for FileDocuments {
                     return Ok(doc);
                 }
             }
-            let language = rove_syntax::highlight::language_for_path(&path, None);
+            let language = rove_syntax::highlight::language_for_path(&path, Some(&*settings));
             let options = LoadOptions::new(&language, &*settings);
             // 分级（普通/大文件/超大文件）与超大文件的内存映射都在 rove-buffer（#8）。
             let policy = rove_buffer::SizePolicy {

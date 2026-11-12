@@ -620,3 +620,36 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 （五种状态 + 已禁用 + 不显示的条目文字、悬停与点击，通知去重，命令面板，真实生命周期的失败与重试）。
 预读基准：`cargo run --release -p rove-lang-cs --example index_prefetch_bench -- <index> <scratch-dir>`（无缓冲复制制造冷缓存，
 对比不预读 / 预读 / 限速预读），数据见 #36 的 PR。
+
+## 21. 语法高亮的性能、增量解析与编辑器接线（#94）
+
+位置：`crates/rove-syntax/src/highlight/`（#9 的实现之上），接线在 `crates/rove-ui/src/editors/syntax.rs`、
+`editors/mod.rs`（打开与释放）和 `skeleton/workbench.rs`（后台任务与重新着色）。`contracts.rs` 的冻结契约未改动。
+
+| 模块 | 内容 |
+|---|---|
+| `source.rs` | 解析输入：从 `TextSource::visit_chunks` 读一次，存成至多 64 KiB 的共享分片；tree-sitter 的读取回调和查询的 `TextProvider` 直接读分片。编辑只重建受影响的分片，其余分片与上一版共享，增量路径不再复制全文 |
+| `csharp_parts.rs` | C# 分区并行：词法扫描识别注释、普通/逐字/插值字符串（含嵌套插值洞）、字符、`@标识符` 与条件指令（`#if/#elif/#else/#endif` 必须在同一花括号深度配对），只在没有括号、方括号和条件块未闭合的成员边界切分。容器取“唯一的一对花括号”逐层下探（`namespace N { class C { … } }`），多顶层类型时取编译单元。每个分区带真实的头尾作为 included ranges 解析，校验无错误且直接成员都是独立声明后，在同一个工作线程里查询并排序 capture。线程来自 `WorkerPool`：默认是进程共享池（硬件线程数，最多 16），并发文档按剩余线程分配；`TreeSitterSyntax::with_parallelism(n)` 用私有池（测试据此与其他分析隔离）。工作线程 panic 转成 `NotReady`，panic 信息写到 stderr（前缀 `rove-syntax:`） |
+| `rows.rs` | 行表：一次扫描按 LF/CRLF/单独 CR 切分，再与 `TextSource::line_range` 核对行数和 64 个抽样行，不一致时逐行读取；编辑时只重读编辑附近的行，其后的行按字节差平移 |
+| `documents.rs` | `DocumentHighlighter`（编辑器持有的接缝：`analyze(document, text, language, edit, visible, cancel)` 与 `close(document)`）；`SyntaxDocuments` 按 `DocumentId` 各自保存基线，`Stateless` 把任意 `SyntaxService`（如 `EmptySyntaxService`）包装成同一接口 |
+| `mod.rs` | 编辑：只核对编辑区及前后 256 字节和总长度（`EDIT_CONTEXT`），编辑点的 tree-sitter 坐标从旧树就近节点推算，不再从头扫描。整树基线做常规增量解析；分区基线只重解析包含编辑的那个分区（编辑落在头尾或分区边界时整文件重建），变化行取该分区新旧树的 changed ranges。Markdown 把扫描行扩到完整的行内区域（`inline`、表格单元格）和代码围栏，只重新注入这些区域。`DocumentSyntax::with_visible(lines)` 在没有基线时只给可见行生成 token（结果标为 partial，不作为编辑基线）；对同一文本再分析一次时复用其解析结果补全其余行。`ROVE_SYNTAX_TRACE=1` 时每次分析在 stderr 打印读取、解析、行表、查询、token 生成的分段耗时 |
+| `settings.rs` | `[csharp]` 行长：提供方对语言作用域和全局作用域返回同一个值时视为没有语言级值，保留内置的 2500（VS Code 的默认语言覆盖高于用户全局值）；用户的 `[csharp]` 值优先 |
+
+接线：
+
+- `FileDocuments::open` 把共享设置实例传给 `language_for_path`，`files.associations` 在正式打开路径生效（例如 `*.asset` → JSON）。
+- `Workbench` 装配 `SyntaxDocuments::new(TreeSitterSyntax::default().with_settings(settings))`，与其他模块共用 #104 的设置实例。
+- 打开：`SizeClass::Huge` 不高亮；小于 256 KiB（`editors::syntax::INLINE_BYTES`）的普通文档在标签就绪前分析完；
+  更大的文档先就绪显示文本，`finish` 后启动后台分析：先分析当前视口附近的行，再补全全文。结果只应用到仍显示该文档、
+  且文本版本与结果一致的标签，然后 `refresh_syntax` 重新给显示它的代码视图着色。不支持的语言按纯文本打开，不让打开失败。
+- 生命周期：文档的最后一个标签释放时（关闭、被预览标签替换、换成别的文档）取消它正在进行的分析，并 `close` 它的基线；
+  之后才完成的结果被丢弃。同一文档的不同版本、不同文档的相同版本号互不影响。
+- 应用内目前没有产生 `TextEdit` 的编辑入口（编辑交互属于 M3 的 #46）；编辑入口接入时把 `edit` 传给
+  `DocumentHighlighter::analyze` 即可走增量路径，按文档管理基线与过期结果的处理已经在上面这一层完成。
+- 对 #20 的接口：token 仍按 `SyntaxSnapshot::tokens(line)` 读取，scope 由外到内；新增的只有“快照会在后台到达”：
+  显示中的文档收到新快照时，工作台会更新 `SyntaxColors` 并失效语法装饰层。partial 快照中未覆盖的行返回空 token。
+
+验证：`cargo test -p rove-syntax`（`tests/incremental.rs`：分区增量与整文件解析逐 token 一致、混合换行（#92）、
+Markdown 局部更新与回退、可见区域优先、按文档基线、设置层；`csharp_parts` 单元测试覆盖 Unity 特征分区、不安全边界与分区重解析）；
+`cargo test -p rove-ui syntax_tests`（真实窗口：大文件先显示后着色、版本不符与关闭后的结果、`files.associations`、
+主题按选择器特异性取色）。性能：`cargo xtask bench --filter syntax/ --check-budgets`，用 `RopeText` 计入缓冲区读取与取行开销。

@@ -173,11 +173,11 @@ status = "enforced"
 bench = "syntax/csharp_edit_5000_lines"
 
 [[budget]]
-id = "csharp_initial_1mb"
+id = "csharp_initial_1mb_unity"
 metric = "1 MB Unity 特征 C# 首次全量高亮"
 value = 50
 unit = "ms"
-owner = "#9"
+owner = "#94"
 status = "pending"
 bench = "syntax/csharp_initial_1mb_unity"
-reason = "含预处理指令和插值字符串的 Unity 特征样本走整文件解析，实测仍超过 50 ms"
+reason = "#94 把含预处理指令、插值/逐字字符串的 Unity 样本改为分区并行解析+查询并并行组装 token，RopeText 口径下从约 350 ms（单线程）降到 66–76 ms（8 核 16 线程开发机，分段见 ROVE_SYNTAX_TRACE）。剩余瓶颈是 tree-sitter C# 解析与查询本身的 CPU 量（单线程约 250 ms + 95 ms），超线程下每线程变慢约一倍；达标需要减少查询开销（直接遍历语法树）或换可扩展的分配器，见 #94 的 PR"
