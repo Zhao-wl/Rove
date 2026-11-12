@@ -6,6 +6,10 @@
 //!   已经拿到旧快照的查询继续读旧 mmap，不会读到半截文件；
 //! - [`IndexLifecycle::is_stale`]：被修改过、索引里的位置可能已经不对的文件；
 //! - [`IndexLifecycle::rebuild`]、[`IndexLifecycle::files_changed`]、关闭（drop）。
+//!
+//! #35 增量更新：源文件变化转发给常驻索引进程（`resident`），状态进入 `Updating`；进程把重绑结果追加到
+//! 与基础索引配套的覆盖层日志，这里读出新段、与基础索引合并（`overlay`），发布新的快照并清除过期标记。
+//! 覆盖层的文件数或日志体积超过 [`OverlayLimits`] 时触发后台全量重建，期间旧索引 + 覆盖层照常可查询。
 use super::{
     evict::{evict, CachePolicy},
     inputs::{self, is_config_path, is_source_path, ProjectInputs},
@@ -14,10 +18,15 @@ use super::{
     meta::{hex, now_ms, BuildRecord, ProjectMeta},
     prefetch::{prefetch, PrefetchMode},
     process::{BuildFailure, BuildRequest, IndexBuilder, Progress},
+    resident::{
+        IncrementalIndexer, Pending, ResidentEvent, ResidentOptions, ResidentSession,
+        SessionRequest,
+    },
     state::{Failure, FailureKind, IndexState, IndexStatus, PrefetchState},
     validity::{open_checked, sample_files, Invalid, SampleRule, EXPECTED_INDEXER_VERSION},
 };
 use crate::index::CsIndex;
+use crate::overlay::{read_journal_from, KeyCache, L2View, Overlay, Segment};
 use rove_base::{Cancellation, Events, Subscription};
 use rove_config::{Key, Scope, Settings};
 use std::{
@@ -44,6 +53,38 @@ pub struct LifecycleConfig {
     pub prefetch: PrefetchMode,
     pub sample: SampleRule,
     pub cache: CachePolicy,
+    /// #35：覆盖层达到这个规模时后台全量重建。
+    pub overlay: OverlayLimits,
+    /// #35：常驻索引进程的空闲退出等策略。
+    pub resident: ResidentOptions,
+}
+
+/// 覆盖层的上限（#35）：超过任一项就“该重建了”，由生命周期在后台全量重建并原子替换。
+///
+/// 默认 256 个文件或 32 MiB 日志。依据：每次更新都要把合并结构整体重建一次，耗时与覆盖层的出现位置总数
+/// 成正比——`cs_overlay/build_1024` 在合成的最坏情况（每个文件约 550 个出现位置、符号互不相同）上约 0.5 ms / 文件，
+/// 256 个文件约 130 ms，加上重绑仍在单文件更新 300 ms 的目标之内；再大就该在后台全量重建（大型项目约 90 s，
+/// 期间旧索引照常可查询）。日志只追加、同一文件改多次会留下多份，所以另设体积上限。查询本身与段数无关。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayLimits {
+    pub max_files: usize,
+    pub max_journal_bytes: u64,
+}
+
+impl Default for OverlayLimits {
+    fn default() -> Self {
+        Self {
+            max_files: 256,
+            max_journal_bytes: 32 << 20,
+        }
+    }
+}
+
+impl OverlayLimits {
+    /// 是否该重建了。
+    pub fn exceeded(&self, files: usize, journal_bytes: u64) -> bool {
+        files >= self.max_files || journal_bytes >= self.max_journal_bytes
+    }
 }
 
 impl LifecycleConfig {
@@ -54,6 +95,8 @@ impl LifecycleConfig {
             prefetch: PrefetchMode::default(),
             sample: SampleRule::default(),
             cache: CachePolicy::default(),
+            overlay: OverlayLimits::default(),
+            resident: ResidentOptions::default(),
         }
     }
     /// 通过设置读取接口取 `rove.index.enabled` 与 `rove.index.cacheDir`（不自己读文件）。
@@ -87,29 +130,47 @@ pub enum SourceChange {
     Rescan,
 }
 
-/// 一份可查询的 L2 索引。
-pub struct IndexSnapshot {
+/// 一个世代的基础索引文件（同一世代的多个快照共享一份映射）。
+struct BaseFile {
     index: Option<CsIndex>,
-    pub generation: u64,
-    pub path: PathBuf,
-    /// false：这份索引已知与项目对不上（配置变化、抽样不一致），正在重建；结果整体按近似处理。
-    pub trusted: bool,
+    /// 这个世代的全部文件（索引、覆盖层日志、声明指纹表），被替换后一并删除。
+    files: Vec<PathBuf>,
     retired: AtomicBool,
 }
 
-impl IndexSnapshot {
-    pub fn index(&self) -> &CsIndex {
-        self.index.as_ref().expect("index present until drop")
-    }
-}
-
-impl Drop for IndexSnapshot {
+impl Drop for BaseFile {
     /// 被新世代替换后，最后一个持有者放手时删除文件（先解除映射，Windows 上映射中的文件删不掉）。
     fn drop(&mut self) {
         drop(self.index.take());
         if self.retired.load(Ordering::Acquire) {
-            let _ = fs::remove_file(&self.path);
+            for path in &self.files {
+                let _ = fs::remove_file(path);
+            }
         }
+    }
+}
+
+/// 一份可查询的 L2 索引：基础索引 + 覆盖层（#35）。覆盖层更新时发布新的快照，共享同一个基础映射。
+pub struct IndexSnapshot {
+    base: Arc<BaseFile>,
+    overlay: Option<Arc<Overlay>>,
+    pub generation: u64,
+    pub path: PathBuf,
+    /// false：这份索引已知与项目对不上（配置变化、抽样不一致），正在重建；结果整体按近似处理。
+    pub trusted: bool,
+}
+
+impl IndexSnapshot {
+    /// 基础索引（不含覆盖层）。查询请用 [`IndexSnapshot::view`]。
+    pub fn index(&self) -> &CsIndex {
+        self.base.index.as_ref().expect("index present until drop")
+    }
+    /// 基础索引 + 覆盖层的查询视图。
+    pub fn view(&self) -> L2View<'_> {
+        L2View::new(self.index(), self.overlay.as_deref())
+    }
+    pub fn overlay(&self) -> Option<&Overlay> {
+        self.overlay.as_deref()
     }
 }
 
@@ -177,6 +238,12 @@ enum Command {
     ConfigChanged,
     /// 重新打开（监听溢出、原本没有 C# 代码的工作区出现了 .cs 文件）。
     Reopen,
+    /// #35：源文件变化（项目相对路径），转发给常驻索引进程。
+    Sources(Vec<String>),
+    /// #35：常驻索引进程的回复与通知。
+    Resident(ResidentEvent),
+    /// 关闭项目（常驻进程的事件回调持有发送端，所以不能只靠通道断开）。
+    Close,
 }
 
 /// 一个项目的索引生命周期。drop 时取消后台工作并结束索引进程，不等待。
@@ -199,6 +266,7 @@ impl IndexLifecycle {
         let worker = Worker {
             root: project_root,
             config,
+            incremental: builder.incremental(),
             builder,
             shared: shared.clone(),
             cancel: cancel.clone(),
@@ -206,6 +274,11 @@ impl IndexLifecycle {
             log: None,
             meta: ProjectMeta::default(),
             inputs: ProjectInputs::default(),
+            tx: tx.clone(),
+            resident: None,
+            pending: Pending::default(),
+            next_request: 1,
+            journal: None,
         };
         thread::Builder::new()
             .name("rove-index-lifecycle".into())
@@ -240,9 +313,10 @@ impl IndexLifecycle {
 
     /// 订阅 #15 的文件事件后调用。
     ///
-    /// **#35（增量索引）合并前后的切换点就在这里**：目前源文件变化只标记为过期，项目配置变化
-    /// 全量重建；#35 合并后，源文件变化改为转发给常驻索引进程（状态进入 `Updating`），
-    /// 更新完成后再清除这些文件的过期标记。
+    /// 源文件变化先标记为过期（#38 据此降级为近似），再转发给常驻索引进程（#35，状态进入 `Updating`），
+    /// 覆盖层写入后清除过期标记；没有常驻进程（组件缺失、测试替身）时停留在“过期”，等下一次全量重建。
+    /// 项目结构文件（`.csproj` / `.asmdef` / `.asmref`）变化不做增量，直接全量重建。重命名按“删除旧路径 +
+    /// 新建新路径”处理。
     pub fn files_changed(&self, changes: &[SourceChange]) {
         let mut reopen = false;
         let mut config = false;
@@ -276,10 +350,13 @@ impl IndexLifecycle {
         if !marked.is_empty() && self.snapshot().is_some() {
             let count = {
                 let mut stale = lock(&self.shared.stale);
-                stale.extend(marked);
+                stale.extend(marked.iter().cloned());
                 stale.len()
             };
             self.shared.update(|s| s.info.stale_files = count);
+            if !config {
+                let _ = self.tx.send(Command::Sources(marked));
+            }
         }
         if config && state != IndexState::NoCSharp && state != IndexState::Disabled {
             self.shared.cancel_prefetch();
@@ -311,16 +388,33 @@ impl IndexLifecycle {
 
 impl Drop for IndexLifecycle {
     fn drop(&mut self) {
-        // 关项目：立刻停止预读与构建（索引进程被结束），后台线程自行退出。
+        // 关项目：立刻停止预读与构建（索引进程被结束），常驻进程落盘退出，后台线程自行退出。
         self.cancel.cancel();
         self.shared.cancel_prefetch();
+        let _ = self.tx.send(Command::Close);
     }
+}
+
+/// 一个世代的覆盖层日志读取状态。
+struct JournalState {
+    generation: u64,
+    segments: Vec<Segment>,
+    offset: u64,
+    keys: KeyCache,
 }
 
 struct Worker {
     root: PathBuf,
     config: LifecycleConfig,
     builder: Arc<dyn IndexBuilder>,
+    incremental: Option<Arc<dyn IncrementalIndexer>>,
+    /// 给常驻进程的事件回调用（事件进同一个命令队列，由本线程处理）。
+    tx: mpsc::Sender<Command>,
+    resident: Option<Box<dyn ResidentSession>>,
+    pending: Pending,
+    next_request: u64,
+    /// 当前世代已读出的覆盖层段（只追加；每次更新只读日志的新增部分）。
+    journal: Option<JournalState>,
     shared: Arc<Shared>,
     cancel: Cancellation,
     cache: Option<ProjectCache>,
@@ -336,12 +430,41 @@ impl Worker {
     fn run(mut self, rx: mpsc::Receiver<Command>) {
         self.open();
         while let Ok(first) = rx.recv() {
-            if self.cancel.check().is_err() {
+            if self.cancel.check().is_err() || matches!(first, Command::Close) {
                 break;
             }
-            // 合并排队的命令：任何一个要求重建就重建一次。
+            // 合并排队的命令：任何一个要求重建就重建一次。增量相关的命令按顺序逐个处理。
             let mut commands = vec![first];
             commands.extend(rx.try_iter());
+            if commands.iter().any(|c| matches!(c, Command::Close)) {
+                break;
+            }
+            let mut sources = Vec::new();
+            let mut rebuild = Vec::new();
+            for command in commands {
+                match command {
+                    Command::Sources(paths) => sources.extend(paths),
+                    Command::Resident(event) => {
+                        if self.on_resident(event) {
+                            rebuild.push(Command::Rebuild);
+                        }
+                    }
+                    other => rebuild.push(other),
+                }
+            }
+            if !sources.is_empty() && rebuild.is_empty() {
+                self.forward(sources);
+            } else if !sources.is_empty() {
+                // 随后全量重建会包含它们；重建完成前它们保持“过期”。
+                self.log(&format!(
+                    "{} changed files wait for the rebuild",
+                    sources.len()
+                ));
+            }
+            if rebuild.is_empty() {
+                continue;
+            }
+            let commands = rebuild;
             if commands.iter().any(|c| matches!(c, Command::Reopen)) {
                 self.open();
             } else if commands.iter().any(|c| matches!(c, Command::ConfigChanged)) {
@@ -358,6 +481,267 @@ impl Worker {
             }
         }
         self.shared.cancel_prefetch();
+        self.stop_resident("project closed");
+    }
+
+    // ───────────── #35 增量更新 ─────────────
+
+    /// 把源文件变化交给常驻进程（必要时先拉起）。没有常驻组件时只保留过期标记。
+    fn forward(&mut self, mut paths: Vec<String>) {
+        paths.sort();
+        paths.dedup();
+        let Some(snapshot) = lock(&self.shared.snapshot).clone() else {
+            return;
+        };
+        if !snapshot.trusted {
+            return;
+        }
+        // 重建期间排队的变化：adopt 清掉了过期标记，这里重新标上，直到覆盖层写入
+        {
+            let mut stale = lock(&self.shared.stale);
+            stale.extend(paths.iter().cloned());
+            let count = stale.len();
+            drop(stale);
+            self.shared.update(|s| s.info.stale_files = count);
+        }
+        if self.resident.is_none() && !self.start_resident(&snapshot) {
+            return;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.request(id, &paths);
+        let ok = self
+            .resident
+            .as_mut()
+            .is_some_and(|r| r.changed(id, &paths));
+        if !ok {
+            self.log("resident indexer is gone: changes stay stale");
+            self.stop_resident("pipe closed");
+            return;
+        }
+        let files = self.pending.len() as u32;
+        self.set_state(IndexState::Updating { files });
+    }
+
+    fn start_resident(&mut self, snapshot: &IndexSnapshot) -> bool {
+        let (Some(incremental), Some(cache), Some(log)) = (
+            self.incremental.clone(),
+            self.cache.clone(),
+            self.log.clone(),
+        ) else {
+            return false;
+        };
+        let request = SessionRequest {
+            project_root: self.root.clone(),
+            base: snapshot.path.clone(),
+            journal: cache.overlay_path(snapshot.generation),
+            options: self.config.resident.clone(),
+        };
+        let tx = self.tx.clone();
+        let generation = snapshot.generation;
+        let events = Box::new(move |event: ResidentEvent| {
+            let _ = tx.send(Command::Resident(event));
+        });
+        match incremental.start(&request, events, log) {
+            Ok(session) => {
+                self.log(&format!(
+                    "resident indexer started for generation {generation:016x}"
+                ));
+                self.resident = Some(session);
+                true
+            }
+            Err(BuildFailure::Missing) => {
+                // 没有组件：以后不再尝试（全量构建也会报告“未安装”）
+                self.incremental = None;
+                false
+            }
+            Err(e) => {
+                self.log(&format!("resident indexer failed to start: {e}"));
+                false
+            }
+        }
+    }
+
+    fn stop_resident(&mut self, why: &str) {
+        if let Some(mut session) = self.resident.take() {
+            self.log(&format!("stopping resident indexer: {why}"));
+            session.shutdown();
+        }
+        self.pending.clear();
+    }
+
+    /// 处理常驻进程的事件；返回 true 表示需要全量重建。
+    fn on_resident(&mut self, event: ResidentEvent) -> bool {
+        match event {
+            ResidentEvent::Ready { indexer_version } => {
+                self.log(&format!("resident indexer ready ({indexer_version})"));
+                false
+            }
+            ResidentEvent::Applied {
+                id,
+                files,
+                locked,
+                rebuild_required,
+                queued,
+                elapsed_ms,
+            } => {
+                if rebuild_required {
+                    self.log("project structure changed: full rebuild");
+                    return true;
+                }
+                self.log(&format!(
+                    "incremental update #{id}: {} files in {elapsed_ms:.0} ms, {} locked, {queued} queued",
+                    files.len(),
+                    locked.len()
+                ));
+                let done = self.pending.applied(id, &files);
+                self.reload_overlay(&done)
+            }
+            ResidentEvent::Overlay { files, queued } => {
+                self.log(&format!(
+                    "background update: {} files, {queued} queued",
+                    files.len()
+                ));
+                let done = self.pending.completed(&files);
+                self.reload_overlay(&done)
+            }
+            ResidentEvent::Failed { id, message } => {
+                self.log(&format!("resident request {id:?} failed: {message}"));
+                if id == Some(0) {
+                    self.stop_resident("initialize failed");
+                }
+                false
+            }
+            ResidentEvent::Exited { idle } => {
+                if self.resident.is_some() {
+                    self.log(if idle {
+                        "resident indexer exited after being idle"
+                    } else {
+                        "resident indexer exited"
+                    });
+                    self.resident = None;
+                }
+                // 在途请求作废：这些文件保持过期，下一次变化会重新拉起进程
+                self.pending.clear();
+                if matches!(self.status().state, IndexState::Updating { .. }) {
+                    self.set_state(IndexState::Ready);
+                }
+                false
+            }
+        }
+    }
+
+    fn status(&self) -> super::state::IndexStatus {
+        lock(&self.shared.status).clone()
+    }
+
+    /// 重新读覆盖层日志并发布新快照；清除 `done` 的过期标记。返回 true 表示覆盖层超过上限、该重建了。
+    fn reload_overlay(&mut self, done: &[String]) -> bool {
+        let Some(snapshot) = lock(&self.shared.snapshot).clone() else {
+            return false;
+        };
+        let Some(cache) = self.cache.clone() else {
+            return false;
+        };
+        let journal = cache.overlay_path(snapshot.generation);
+        let Some(overlay) = self.read_overlay(snapshot.generation, snapshot.index(), &journal)
+        else {
+            return false;
+        };
+        let files = overlay.file_count();
+        let bytes = fs::metadata(&journal).map_or(0, |m| m.len());
+        self.publish_overlay(&snapshot, Some(Arc::new(overlay)));
+        if !done.is_empty() {
+            let count = {
+                let mut stale = lock(&self.shared.stale);
+                for f in done {
+                    stale.remove(f);
+                }
+                stale.len()
+            };
+            self.shared.update(|s| s.info.stale_files = count);
+        }
+        if self.pending.is_empty() {
+            self.set_state(IndexState::Ready);
+        } else {
+            let files = self.pending.len() as u32;
+            self.set_state(IndexState::Updating { files });
+        }
+        if self.config.overlay.exceeded(files, bytes) {
+            self.log(&format!(
+                "overlay reached {files} files / {bytes} bytes: background full rebuild"
+            ));
+            return true;
+        }
+        false
+    }
+
+    /// 读出日志的新增段，与已读的段一起合并（键查找缓存同一世代复用）。没有任何段时返回 `None`。
+    fn read_overlay(
+        &mut self,
+        generation: u64,
+        index: &CsIndex,
+        journal: &Path,
+    ) -> Option<Overlay> {
+        if self
+            .journal
+            .as_ref()
+            .is_none_or(|j| j.generation != generation)
+        {
+            self.journal = Some(JournalState {
+                generation,
+                segments: Vec::new(),
+                offset: 0,
+                keys: KeyCache::default(),
+            });
+        }
+        let state = self.journal.as_mut().expect("journal state");
+        let last = state.segments.last().map_or(0, |s| s.sequence);
+        match read_journal_from(journal, &index.identity(), state.offset, last) {
+            Ok((segments, offset)) => {
+                state.segments.extend(segments);
+                state.offset = offset;
+            }
+            Err(e) => {
+                let message = format!("cannot read overlay journal: {e}");
+                self.log(&message);
+                return None;
+            }
+        }
+        let state = self.journal.as_mut().expect("journal state");
+        (!state.segments.is_empty())
+            .then(|| Overlay::build_cached(index, &state.segments, &mut state.keys))
+    }
+
+    /// 同一世代换上新的覆盖层（共享基础映射）。
+    fn publish_overlay(&self, current: &Arc<IndexSnapshot>, overlay: Option<Arc<Overlay>>) {
+        let next = Arc::new(IndexSnapshot {
+            base: current.base.clone(),
+            overlay,
+            generation: current.generation,
+            path: current.path.clone(),
+            trusted: current.trusted,
+        });
+        let mut slot = lock(&self.shared.snapshot);
+        if slot
+            .as_ref()
+            .is_some_and(|s| s.generation == current.generation)
+        {
+            *slot = Some(next);
+        }
+    }
+
+    /// 打开世代时读出与它配套的覆盖层日志（上次会话落盘的增量）。
+    fn load_overlay(&mut self, generation: u64, index: &CsIndex) -> Option<Arc<Overlay>> {
+        let journal = self.cache.as_ref()?.overlay_path(generation);
+        self.journal = None;
+        let overlay = self.read_overlay(generation, index, &journal)?;
+        self.log(&format!(
+            "overlay journal: {} segments, {} files",
+            overlay.segments,
+            overlay.file_count()
+        ));
+        Some(Arc::new(overlay))
     }
 
     fn log(&self, text: &str) {
@@ -493,7 +877,7 @@ impl Worker {
         };
         let started = Instant::now();
         let outcome = sample_files(
-            snapshot.index(),
+            snapshot.view(),
             &self.root,
             &self.config.sample,
             now_ms() ^ generation,
@@ -520,28 +904,30 @@ impl Worker {
             self.log(&format!("cached index invalid: {invalid}"));
             self.publish_untrusted();
             self.build();
+        } else if !outcome.mismatched.is_empty() {
+            // 项目关闭期间改过的文件：交给常驻进程增量更新（#35）
+            let _ = self.tx.send(Command::Sources(outcome.mismatched));
         }
     }
 
-    fn publish_untrusted(&self) {
+    fn publish_untrusted(&mut self) {
+        // 配置对不上：增量更新停下（常驻进程的项目模型也过时了），等全量重建。
+        self.stop_resident("index no longer trusted");
         let mut slot = lock(&self.shared.snapshot);
         if let Some(old) = slot.take() {
-            // 同一世代换成“不可信”标记的新快照；旧 Arc 的持有者继续读同一个文件。
-            let index = CsIndex::open(&old.path).ok();
-            *slot = index.map(|index| {
-                Arc::new(IndexSnapshot {
-                    index: Some(index),
-                    generation: old.generation,
-                    path: old.path.clone(),
-                    trusted: false,
-                    retired: AtomicBool::new(false),
-                })
-            });
+            // 同一世代换成“不可信”标记的新快照；旧 Arc 的持有者继续读同一个映射。
+            *slot = Some(Arc::new(IndexSnapshot {
+                base: old.base.clone(),
+                overlay: old.overlay.clone(),
+                generation: old.generation,
+                path: old.path.clone(),
+                trusted: false,
+            }));
         }
     }
 
     fn publish(
-        &self,
+        &mut self,
         generation: u64,
         path: PathBuf,
         index: CsIndex,
@@ -550,16 +936,26 @@ impl Worker {
     ) {
         let files = index.files().len() as u64;
         let symbols = index.symbols().len() as u64;
+        let overlay = self.load_overlay(generation, &index);
+        let generation_files = self
+            .cache
+            .as_ref()
+            .map(|c| c.generation_files(generation).to_vec())
+            .unwrap_or_else(|| vec![path.clone()]);
         let snapshot = Arc::new(IndexSnapshot {
-            index: Some(index),
+            base: Arc::new(BaseFile {
+                index: Some(index),
+                files: generation_files,
+                retired: AtomicBool::new(false),
+            }),
+            overlay,
             generation,
             path,
             trusted,
-            retired: AtomicBool::new(false),
         });
         let old = lock(&self.shared.snapshot).replace(snapshot);
         if let Some(old) = old.filter(|o| o.generation != generation) {
-            old.retired.store(true, Ordering::Release);
+            old.base.retired.store(true, Ordering::Release);
             // 先放手旧快照（没有其他持有者时文件随即删除），再发布状态。
             drop(old);
         }
@@ -602,12 +998,21 @@ impl Worker {
         self.shared.update(|s| s.info.prefetch = state);
     }
 
-    /// 删除当前世代以外的旧文件与遗留的临时文件（被别的窗口映射着的删不掉，下次再试）。
+    /// 删除当前世代以外的旧文件（含 #35 的覆盖层日志与声明指纹表）与遗留的临时文件
+    /// （被别的窗口映射着的删不掉，下次再试）。
     fn clean_l2(&self, cache: &ProjectCache, keep: Option<u64>) {
         let keep = keep.or_else(|| cache.generations().first().map(|g| g.0));
         for (generation, path) in cache.generations() {
             if Some(generation) != keep {
                 let _ = fs::remove_file(path);
+            }
+        }
+        for entry in fs::read_dir(cache.l2_dir()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let sidecar = name.ends_with(".rvcsovl") || name.ends_with(".rvcsidx.decls");
+            let generation = name.get(..16).and_then(|g| u64::from_str_radix(g, 16).ok());
+            if sidecar && generation.is_some() && generation != keep {
+                let _ = fs::remove_file(entry.path());
             }
         }
         for entry in fs::read_dir(cache.l2_dir()).into_iter().flatten().flatten() {
@@ -625,6 +1030,9 @@ impl Worker {
     /// 全量构建：失败重试一次，仍失败就降级（没有组件 → 未安装；其他 → 失败）。
     fn build(&mut self) {
         self.shared.cancel_prefetch();
+        // 常驻进程属于旧世代（它的覆盖层日志配套旧的基础索引）；新世代就绪后按需重新拉起。
+        // 重建期间旧索引 + 已写入的覆盖层照常可查询，新的变化排队，重建后转发。
+        self.stop_resident("full rebuild");
         let Some(cache) = self.cache.clone() else {
             return;
         };

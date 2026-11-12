@@ -9,6 +9,7 @@
 //! 前三项只读几百字节，打开时同步完成；第 4 项要读源文件，放在索引可用之后的后台检查里。
 use super::{hash::xxh64, inputs::ProjectInputs, meta::hex, meta::BuildRecord};
 use crate::index::CsIndex;
+use crate::overlay::L2View;
 use rove_base::Cancellation;
 use std::{
     fs,
@@ -19,7 +20,7 @@ use std::{
 pub const EXPECTED_FORMAT: u32 = 2;
 /// 与 `tools/rove-indexer-cs/RoveIndexer.csproj` 的 `<Version>` 一致（测试对照该文件，改版本时
 /// 会提醒同步这里）。#43 合并后改为与安装的组件握手得到的版本。
-pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 1, 0, 0];
+pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 2, 0, 0];
 const GENERATED_PREFIX: &str = "rove-generated://";
 
 /// 失效原因（写进日志；界面只显示“正在重建”）。
@@ -150,14 +151,16 @@ fn source_path(root: &Path, rel: &str) -> PathBuf {
 }
 
 /// 检查 4：随机抽样比对文件内容哈希。跳过 `rove-generated://` 虚拟文件。取消时返回已抽查的部分。
+/// 抽样比对文件哈希。`index` 是基础索引 + 覆盖层（#35）：覆盖层重绑过的文件按覆盖层里的哈希比对，
+/// 已清空（删除）的文件不参与。
 pub fn sample_files(
-    index: &CsIndex,
+    index: L2View<'_>,
     root: &Path,
     rule: &SampleRule,
     seed: u64,
     cancel: &Cancellation,
 ) -> SampleOutcome {
-    let mut candidates: Vec<u32> = (0..index.files().len() as u32)
+    let mut candidates: Vec<u32> = (0..index.base.files().len() as u32)
         .filter(|&i| {
             index
                 .file_path(i)
@@ -183,7 +186,9 @@ pub fn sample_files(
             continue;
         };
         outcome.sampled += 1;
-        let expected = index.files()[file as usize].hash;
+        let Some(expected) = index.file_hash(file) else {
+            continue;
+        };
         match fs::read(source_path(root, rel)) {
             Ok(bytes) if xxh64(&bytes, 0) == expected => outcome.matched += 1,
             _ => outcome.mismatched.push(rel.to_owned()),

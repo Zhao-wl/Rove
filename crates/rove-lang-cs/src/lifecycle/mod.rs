@@ -11,6 +11,7 @@ pub mod log;
 pub mod meta;
 pub mod prefetch;
 pub mod process;
+pub mod resident;
 pub mod service;
 pub mod state;
 #[doc(hidden)]
@@ -21,6 +22,10 @@ pub use evict::CachePolicy;
 pub use layout::ProjectCache;
 pub use prefetch::PrefetchMode;
 pub use process::{locate_indexer, BuildFailure, IndexBuilder, ProcessBuilder, Progress};
-pub use service::{IndexLifecycle, IndexSnapshot, LifecycleConfig, SourceChange};
+pub use resident::{
+    IncrementalIndexer, ProcessResident, ResidentEvent, ResidentOptions, ResidentSession,
+    SessionRequest,
+};
+pub use service::{IndexLifecycle, IndexSnapshot, LifecycleConfig, OverlayLimits, SourceChange};
 pub use state::{Failure, FailureKind, IndexInfo, IndexState, IndexStatus, PrefetchState};
 pub use validity::SampleRule;
