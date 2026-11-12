@@ -3,14 +3,12 @@
 //! **索引格式或查询接口变化时只改这个文件。** 用例文件（`cases.rs`）、定位（`locate.rs`）
 //! 与统计（`report.rs`）只认识这里定义的 [`NavSource`] / [`DefAnswer`] / [`RefsAnswer`]。
 //!
-//! 现有两个查询来源：
+//! 现有三个查询来源：
 //! - [`L2Index`]：完整语义索引（`CsIndex::goto_definition` / `find_references`）；
-//! - [`L1Decls`]：L1 快速声明索引（#37），只回答定义（类型名解析），不做查找引用。
-//!
-//! 迁移路径（#38 合并后）：把 [`L2Index`] 换成调用 #1 的 `query::CsQueries::navigate`
-//! （`NavigationKind::Definition` / `References`），把 `QueryResult::precision` 填进
-//! [`DefAnswer::precision`] / [`RefsAnswer::precision`]；用例里写了 `expect.precision`
-//! 的会同时断言精确度标记。
+//! - [`L1Decls`]：L1 快速声明索引（#37），只回答定义（类型名解析），不做查找引用；
+//! - [`RouterSource`]：#38 查询路由（`CsRouter::navigate_detailed`，L2 就绪、文件未修改），
+//!   `QueryResult::precision` 填进 [`DefAnswer::precision`] / [`RefsAnswer::precision`]；
+//!   用例里写了 `expect.precision` 的会同时断言精确度标记。通过率应与 `l2` 一致。
 
 use rove_lang_cs::index::Utf8Column;
 use rove_lang_cs::CsIndex;
@@ -90,7 +88,7 @@ impl L2Index {
         Ok(L2Index { idx, built_at })
     }
 
-    fn symbol_desc(&self, sym: u32) -> Option<String> {
+    pub fn symbol_desc(&self, sym: u32) -> Option<String> {
         use rove_lang_cs::index::SymbolKey;
         let rec = self.idx.symbols().get(sym as usize)?;
         let display = self.idx.str(rec.display).unwrap_or("?");
@@ -392,5 +390,144 @@ impl NavSource for L1Decls {
 
     fn references(&self, _: &QueryPos<'_>) -> Result<RefsAnswer, SourceError> {
         Err(SourceError::Unsupported("L1 不提供查找引用".to_owned()))
+    }
+}
+
+/// #38 查询路由：L2 就绪、文件未打开（未修改）时经 `CsRouter` 查询，用来验证路由没有引入偏差
+/// （`--source router` 的通过率应与 `--source l2` 完全一致）。精确度取路由给出的批级精确度。
+pub struct RouterSource {
+    index: std::sync::Arc<CsIndex>,
+    router: rove_lang_cs::router::CsRouter,
+    direct: L2Index,
+}
+
+impl RouterSource {
+    pub fn open(path: &Path, root: &Path) -> Result<Self, String> {
+        use rove_lang_cs::router::{BufferStates, CsRouter, IndexHolder, ManualSemantic};
+        use std::sync::Arc;
+        let index = Arc::new(
+            CsIndex::open(path).map_err(|e| format!("打开索引 {} 失败：{e}", path.display()))?,
+        );
+        let holder: Arc<dyn IndexHolder> = index.clone();
+        let router = CsRouter::new(
+            Arc::new(ManualSemantic::ready(holder)),
+            Arc::new(BufferStates::new()),
+        )
+        .with_root(root);
+        Ok(RouterSource {
+            index,
+            router,
+            direct: L2Index::open(path)?,
+        })
+    }
+
+    fn query(
+        &self,
+        kind: rove_lang_cs::query::NavigationKind,
+        at: &QueryPos<'_>,
+    ) -> Result<
+        rove_lang_cs::query::QueryResult<std::sync::Arc<[rove_lang_cs::router::RoutedTarget]>>,
+        SourceError,
+    > {
+        use rove_base::{Cancellation, Line, Position, Resource, Version, WorkspacePath};
+        use rove_lang_cs::query::QueryPoint;
+        let path = WorkspacePath::new(at.file).map_err(|_| {
+            SourceError::Unsupported(format!("路径不是工作区相对路径：{}", at.file))
+        })?;
+        let point = QueryPoint {
+            resource: Resource::Workspace(path),
+            position: Position {
+                line: Line(u64::from(at.line0)),
+                column: Utf8Column(u64::from(at.utf8_col0)),
+            },
+            version: Version(0),
+        };
+        self.router
+            .navigate_detailed(kind, &point, &Cancellation::default())
+            .map_err(|e| SourceError::Unsupported(format!("路由返回错误：{e}")))
+    }
+}
+
+fn precision_name(p: rove_lang_cs::query::Precision) -> &'static str {
+    match p {
+        rove_lang_cs::query::Precision::Exact => "exact",
+        rove_lang_cs::query::Precision::Approximate => "approximate",
+        rove_lang_cs::query::Precision::Syntax => "syntax",
+    }
+}
+
+fn src_line(t: &rove_lang_cs::router::RoutedTarget) -> Option<SrcLine> {
+    match &t.target.resource {
+        rove_base::Resource::Workspace(p) => Some(SrcLine {
+            file: p.as_str().to_owned(),
+            line0: t.target.selection.start().line.0 as u32,
+        }),
+        rove_base::Resource::File(p) => Some(SrcLine {
+            file: p.to_string_lossy().replace('\\', "/"),
+            line0: t.target.selection.start().line.0 as u32,
+        }),
+        rove_base::Resource::Virtual(v)
+            if !v.starts_with(rove_lang_cs::router::METADATA_SCHEME) =>
+        {
+            Some(SrcLine {
+                file: v.to_string(),
+                line0: t.target.selection.start().line.0 as u32,
+            })
+        }
+        rove_base::Resource::Virtual(_) => None,
+    }
+}
+
+impl NavSource for RouterSource {
+    fn name(&self) -> &'static str {
+        "router"
+    }
+
+    fn built_at(&self) -> Option<std::time::SystemTime> {
+        self.direct.built_at()
+    }
+
+    fn describe(&self) -> String {
+        format!("#38 查询路由 → {}", self.direct.describe())
+    }
+
+    fn definition(&self, at: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
+        use rove_lang_cs::router::{metadata_symbol_key, TargetRole};
+        let r = self.query(rove_lang_cs::query::NavigationKind::Definition, at)?;
+        let defs = r.value.iter().filter_map(src_line).collect();
+        // 与 `L2Index` 同一口径：索引带元数据视图时才算外部符号有落点。
+        let external = r
+            .value
+            .iter()
+            .filter(|t| t.role == TargetRole::Metadata)
+            .find_map(|t| metadata_symbol_key(&t.target.resource))
+            .filter(|_| !self.index.metadata_views().is_empty())
+            .map(|k| doc_comment_id(k).to_owned());
+        let col = Utf8Column(u64::from(at.utf8_col0));
+        let symbol = match self.index.symbol_at(at.file, at.line0, col) {
+            Some(sym) => self.direct.symbol_desc(sym),
+            None => Some("<该位置没有出现位置记录>".to_owned()),
+        };
+        Ok(DefAnswer {
+            defs,
+            external,
+            symbol,
+            precision: Some(precision_name(r.precision)),
+        })
+    }
+
+    fn references(&self, at: &QueryPos<'_>) -> Result<RefsAnswer, SourceError> {
+        use rove_lang_cs::router::TargetRole;
+        let r = self.query(rove_lang_cs::query::NavigationKind::References, at)?;
+        let refs = r
+            .value
+            .iter()
+            .filter(|t| t.role != TargetRole::Definition)
+            .filter_map(src_line)
+            .collect();
+        Ok(RefsAnswer {
+            refs,
+            precision: Some(precision_name(r.precision)),
+        })
     }
 }

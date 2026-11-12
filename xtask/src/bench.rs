@@ -77,6 +77,10 @@ const TARGETS: &[BenchTarget] = &[
         name: "edit",
         requires: "",
     },
+    BenchTarget {
+        name: "cs_router",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
