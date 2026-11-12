@@ -639,7 +639,7 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 | 有效性检查 | ① magic 与格式版本 ② 索引进程版本（`validity::EXPECTED_INDEXER_VERSION`，测试对照 `RoveIndexer.csproj`）③ 项目配置：头部配置哈希与构建记录一致且输入指纹与磁盘一致 ④ 抽样文件哈希：`max(200, 2%)` 个文件比对 xxHash64，命中率 < 90% 重建，否则只把不一致的文件标记过期。①–③ 同步完成后立即发布索引（`Ready`），④ 在预读之后的后台进行 |
 | 预读 | `prefetch::prefetch`：`FILE_FLAG_SEQUENTIAL_SCAN` 全速顺序读整个文件、普通 I/O 优先级、可取消（关项目即停）；刚构建的索引跳过。限速与低优先级两种策略保留给基准，实测在 HDD 上都更差（数据见 `prefetch.rs` 注释与 #36 的 PR） |
 | 构建 | `process::locate_indexer`（唯一的组件查找函数，#43 合并后替换）→ `ProcessBuilder` 拉起 `rove-indexer-cs <项目> <新世代路径>`，stdout/stderr 逐行写日志并解析进度（阶段行与 `files: N`；将来的 `progress <done> <total>` 直接采用）；失败重试一次，组件缺失 → `NotInstalled`，其余 → `Failed`；已知对不上的旧索引不再提供（降级到 L1/L0） |
-| 文件变化 | `files_changed(&[SourceChange])`（界面从 #15 的 `FileEvent` 转换）：源文件只标记过期（`is_stale` 供 #38 降级为近似），项目配置文件变化全量重建，监听溢出重新检查。**#35 合并后的切换点**在 `IndexLifecycle::files_changed` 的注释处：改为转发给常驻进程（状态 `Updating`） |
+| 文件变化 | `files_changed(&[SourceChange])`（界面从 #15 的 `FileEvent` 转换）：源文件先标记过期（`is_stale` 供 #38 降级为近似），再转发给常驻索引进程增量更新（#35，状态 `Updating`，覆盖层写入后清除过期标记；没有常驻组件时停留在过期），项目配置文件变化全量重建，监听溢出重新检查。见 §29 |
 | 淘汰 | `CachePolicy` 默认 10 个项目、总量 5 GiB（依据见 `evict.rs`），按 `project.json` 的最近打开时间从旧到新删除，当前项目永远保留，只删除带 `project.json` 的项目目录 |
 
 状态机 `IndexState`：`Checking`、`NoCSharp`、`Disabled`、`NotInstalled`、`Building { progress, eta, rebuilding }`、`Ready`、
@@ -829,7 +829,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 1. 没有 L2 快照 → 回退；原因按 #36 的状态：构建中/检查中 `IndexNotReady`（界面用 `CsRouter::semantic_status()` 的百分比）、未安装 `ComponentUnavailable`、已禁用 `IndexDisabled`、失败 `Other("index-failed")`。
 2. 文件不在索引里 → 回退（`Other("file-not-indexed")`）。
 3. 文件状态：打开的缓冲区按“基线哈希 = 索引文件表里的哈希”判定编辑记录有效；“当前磁盘哈希 = 索引哈希”（保存后已重建）时丢弃编辑记录；都不等则**无法映射**。未打开的文件按 #36 的 `is_stale`。版本比对只是查表（索引文件表的哈希 + 缓冲区登记时算好的哈希），查询路径上不算哈希。
-4. 查询位置先映射回索引坐标：落在修改块里、或所在行被修改过 → 回退（`ModifiedRegion`）；无法映射 → 回退，并在磁盘内容与索引不同时向 #36 请求重建（`files_changed(Changed)`，#35 合并后转为增量；未保存的编辑不请求，索引进程只读磁盘）。同一（文件, 内容哈希）只请求一次。
+4. 查询位置先映射回索引坐标：落在修改块里、或所在行被修改过 → 回退（`ModifiedRegion`）；无法映射 → 回退，并在磁盘内容与索引不同时向 #36 请求重建（`files_changed(Changed)`，由 #35 的常驻进程增量更新；未保存的编辑不请求，索引进程只读磁盘）。同一（文件, 内容哈希）只请求一次。
 5. 映射后的位置落在 `#if` 不生效的行区间里（L2 不收集这些代码）→ 回退（`Other("inactive-preprocessor-region")`），不把“没有出现位置”当成精确的空结果。
 6. L2 结果逐条反向映射到当前坐标：干净文件原样；脏缓冲区里未修改的行精确平移；落在修改行上的结果尽力平移并**标为近似**；无法映射的文件原样给出并标为近似。不可信的快照（`trusted = false`，配置变化后重建中）所有结果为近似。
 7. 回退：L0 先认局部名字（结果“语法”）；否则定义/类型定义问 L1：类型名解析（`resolve_type`），没有再列同名成员（`member_candidates`），结果“近似”；其他查询返回空结果。
@@ -948,3 +948,23 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 索引增量、剪枝与完整扫描等价、并行与单线程等价、优化后的整条流水线与朴素 VS Code 实现等价、历史）；`skeleton/workbench/quick_access_tests.rs`（真实 GPUI 窗口：`Ctrl+P` → 输入 → 选中
 → 文档已打开并定位、四个前缀、命令面板与键位、`Ctrl+Enter`、`Esc`、命令中心入口、设置）。性能：
 `cargo xtask bench --filter quickopen/`（预算 `quickopen_*`）。
+
+## 29. C# 增量索引：常驻模式、单文件重绑、覆盖层（#35）
+
+位置：索引进程 `tools/rove-indexer-cs/`（`Server.cs` 协议与调度、`Incremental.cs` 引擎、`Impact.cs` 影响分析与声明指纹、`Overlay.cs` 覆盖层段与日志、`BaseIndex.cs` 读基础索引、`SelfTest.cs`）；Rust 侧 `crates/rove-lang-cs/src/overlay.rs`（日志读取、合并视图 `L2View`，`lib.rs` 只追加 `pub mod overlay;`）与 `lifecycle/resident.rs`（拉起常驻进程、消息解析）。格式与协议见 [CS_INDEX_FORMAT](CS_INDEX_FORMAT.md)「覆盖层」「常驻模式与协议」。`query.rs` 的冻结契约未改动；本 issue 没有 `SKELETON(...)` 标记。
+
+三方边界（issue #35 的约定）：本 issue 定消息内容；#36 定何时启停（`IndexLifecycle` 在第一次源文件变化时拉起，项目关闭、全量重建、索引不可信时关闭，进程空闲自行退出）；#43 定版本如何协商（第一条消息 `hello` 带 `protocol` 与 `indexer_version`，本端只检查协议号一致）。
+
+| 环节 | 内容 |
+|---|---|
+| 转发 | `files_changed` 标记过期并把源文件路径交给后台线程；后台线程按需拉起 `rove-indexer-cs --serve`（`IndexBuilder::incremental()`，`ProcessBuilder::default()` 开启，测试替身默认关闭），发 `changed`，状态 `Updating { files }` |
+| 重绑 | 进程按项目预热编译（依赖项目用元数据镜像），`ReplaceSyntaxTree` 只重绑变化的文件，结果追加为覆盖层段，回复段位置 |
+| 合并 | 生命周期读出日志的新段，`Overlay::build` 与基础索引合并，发布新的 `IndexSnapshot`（同一世代共享基础映射，`IndexSnapshot::view()` 是查询视图），清除已满足的过期标记 |
+| 影响分析 | 声明签名或可见性变了 → 引用者进后台队列；新名字 → 可见项目内文本查找；后台段到达时同样合并发布 |
+| 阈值 | 覆盖层 ≥ 256 个文件或日志 ≥ 32 MiB（`LifecycleConfig::overlay`）→ 后台全量重建，旧索引 + 覆盖层照常可查询；重建期间的变化排队，新世代就绪后转发 |
+| 结构变化 | `.csproj` / `.asmdef` / `.asmref`：不做增量，全量重建（进程收到时回复 `rebuild_required`） |
+| 打开项目 | 读出当前世代配套的日志（上次会话落盘的增量）；抽样比对按覆盖层的哈希，不一致的文件转发给常驻进程 |
+
+#38 的接线：`IndexHolder::view()` 返回 `L2View`（基础索引 + 覆盖层），路由的全部 L2 查询改走视图；文件在索引中的版本取 `L2View::file_hash`（覆盖层重绑过的文件是覆盖层里的哈希），所以保存并增量更新后缓冲区直接回到“干净”。`SemanticSource::request_update` 经 `files_changed(Changed)` 进入增量更新。
+
+验证：`cargo test -p rove-lang-cs --lib overlay`（合并规则：替换文件、删除不留悬空位置、新文件、后写优先、关系归属、局部键、日志截断与校验）；`cargo test -p rove-lang-cs --test incremental -- --nocapture`（真实常驻进程：生命周期“启动 → 通知变更 → 查询得到新结果 → 改签名后后台更新引用 → 新增 / 重命名 / 删除 → `.csproj` 全量重建 → 关闭”，协议层的被独占文件重试、空闲修剪与退出、全量索引消息、`--self-test`；需要先 `dotnet build tools/rove-indexer-cs -c Release`，否则跳过）；同一测试文件里的 `overlay_limit_triggers_background_rebuild`（假常驻进程：覆盖层达到阈值触发后台全量重建，重建期间旧索引 + 覆盖层可查询，不依赖索引进程）。合并后的查询复杂度：`cargo xtask bench --filter cs_overlay/`（段数 0 → 1024）。真实项目的一致性与延迟：`cargo run --release -p rove-lang-cs --example incr_check`（见 AGENTS.md §8.3）。

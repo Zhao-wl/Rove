@@ -191,3 +191,22 @@ CI 上不做绝对性能判定（托管机器波动大）；相对比较与预�
 - [docs/FEATURES.md](docs/FEATURES.md)：功能判定与优先级
 - [docs/issues/README.md](docs/issues/README.md)：issue 拆分骨架、批次与依赖
 - [docs/M0_LANG_SPIKE_REPORT.md](docs/M0_LANG_SPIKE_REPORT.md)、[docs/M0_UI_SPIKE_REPORT.md](docs/M0_UI_SPIKE_REPORT.md)：M0 技术验证结论与坑
+
+<!-- #35 追加：incr_check 用法 -->
+
+### 8.3 C# 增量索引的一致性与延迟（#35，`incr_check`）
+
+`rove-lang-cs` 的 example `incr_check` 在真实 Unity 项目的**副本**上检验增量索引（不改原项目）。**只在本地跑，不进 CI**；需要
+`ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE`（未设置时跳过）与 `dotnet build tools/rove-indexer-cs -c Release`。
+
+- 一致性：`--edits N`（默认 1000）次随机编辑（插入行、删除语句、改签名、新增 / 删除 / 重命名文件），每 `--checkpoint K` 次
+  （默认 100）对副本全量索引一次，逐文件比较“基础索引 + 覆盖层”与全量结果；不一致时自动二分重放，打印第一次出错的编辑。
+  **固定随机种子**：输出第一行打印 `seed`，用 `--seed <值>` 复现同一串编辑。
+- 延迟与内存：`--latency N` 做 N 次普通保存，给出单文件更新（索引进程重绑 / 往返 / 查询可见）的 p50、p99，冷启动耗时，
+  常驻进程预热后与空闲时的内存，以及全量索引的峰值内存。**注明机器负载**：本机同时开着 Unity 等程序时数字只能作参考。
+- 副本与报告在 `target/incr-check/`（`report-<项目>.json`）。大型项目一次检查点约等于一次全量索引（约 1–2 分钟、峰值数 GB 内存）。
+
+```powershell
+cargo run --release -p rove-lang-cs --example incr_check -- --project large --latency 50 --edits 0
+cargo run --release -p rove-lang-cs --example incr_check -- --project large --edits 1000 --checkpoint 100 --seed 42
+```
