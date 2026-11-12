@@ -100,6 +100,46 @@ fn bench_cs_index(c: &mut Criterion) {
             black_box(index.find_references(path, *line, *col))
         })
     });
+    // #38：经查询路由（L2 就绪、文件未修改），端到端预算按这两条判定。
+    let holder: std::sync::Arc<dyn rove_lang_cs::router::IndexHolder> =
+        std::sync::Arc::new(CsIndex::open(&path).expect("打开索引失败"));
+    let router = rove_lang_cs::router::CsRouter::new(
+        std::sync::Arc::new(rove_lang_cs::router::ManualSemantic::ready(holder)),
+        std::sync::Arc::new(rove_lang_cs::router::BufferStates::new()),
+    );
+    let points: Vec<_> = samples
+        .iter()
+        .filter_map(|(path, line, col)| {
+            Some(rove_lang_cs::query::QueryPoint {
+                resource: rove_base::Resource::Workspace(rove_base::WorkspacePath::new(path).ok()?),
+                position: rove_base::Position {
+                    line: rove_base::Line(u64::from(*line)),
+                    column: *col,
+                },
+                version: rove_base::Version(0),
+            })
+        })
+        .collect();
+    let cancel = rove_base::Cancellation::default();
+    for (name, kind) in [
+        (
+            "router_goto_definition",
+            rove_lang_cs::query::NavigationKind::Definition,
+        ),
+        (
+            "router_find_references",
+            rove_lang_cs::query::NavigationKind::References,
+        ),
+    ] {
+        group.bench_function(name, |b| {
+            let mut next = 0usize;
+            b.iter(|| {
+                let p = &points[next % points.len()];
+                next += 1;
+                black_box(router.navigate_detailed(kind, p, &cancel))
+            })
+        });
+    }
     group.bench_function("symbol_at", |b| {
         let mut next = 0usize;
         b.iter(|| {

@@ -17,6 +17,8 @@ windows-sys.workspace = true
 tree-sitter.workspace = true
 tree-sitter-c-sharp.workspace = true
 memchr.workspace = true
+# #38 查询路由：缓冲区快照（TextSource）与编辑记录。
+rove-buffer.workspace = true
 
 [dev-dependencies]
 memory-stats = "1"

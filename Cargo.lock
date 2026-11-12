@@ -4771,6 +4771,7 @@ dependencies = [
  "memmap2",
  "memory-stats",
  "rove-base",
+ "rove-buffer",
  "rove-config",
  "rove-syntax",
  "rove-test-support",
