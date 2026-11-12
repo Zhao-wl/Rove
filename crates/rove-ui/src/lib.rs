@@ -32,3 +32,5 @@ pub mod quick_access;
 pub mod save;
 // #40：C# 导航交互（转到定义 / 实现、悬停、Ctrl+点击、语义同名高亮）。
 pub mod nav;
+// #25：全局搜索视图（引擎在核心层 `rove-search`）。
+pub mod search;

@@ -84,6 +84,8 @@ pub fn strings() -> Result<StringTable> {
     crate::save::registry::register_strings(&mut t)?;
     // #40：C# 导航交互（空状态、近似提示、悬停卡片、命令标题）。
     crate::nav::registry::register_strings(&mut t)?;
+    // #25：搜索视图。
+    crate::search::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -116,6 +118,8 @@ pub fn contributions() -> Result<ContributionRegistry> {
     )?;
     // #36：C# 索引状态条目与索引详情面板。
     crate::index_status::register_contributions(&mut r)?;
+    // #25：搜索视图容器里的结果小节。
+    crate::search::registry::register_contributions(&mut r)?;
     Ok(r)
 }
 /// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。

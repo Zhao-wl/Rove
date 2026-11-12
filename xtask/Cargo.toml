@@ -35,6 +35,8 @@ rove-i18n.workspace = true
 gpui.workspace = true
 # #40 的 nav 基准在临时目录里生成 C# 项目与索引。
 tempfile = "3"
+# #25 全局搜索基准。
+rove-search.workspace = true
 
 [[bench]]
 name = "text_source"
@@ -102,4 +104,8 @@ harness = false
 
 [[bench]]
 name = "nav"
+harness = false
+
+[[bench]]
+name = "search"
 harness = false

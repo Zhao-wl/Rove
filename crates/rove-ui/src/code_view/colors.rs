@@ -166,6 +166,8 @@ pub fn theme_registry() -> ColorRegistry {
     crate::find::registry::register_colors(&mut registry).expect("find colors");
     // #40：悬停卡片与 `Ctrl+悬停` 链接的颜色，用户主题也能覆盖。
     crate::nav::registry::register_colors(&mut registry).expect("nav colors");
+    // #25：搜索视图。
+    crate::search::registry::register_colors(&mut registry).expect("search colors");
     registry
 }
 

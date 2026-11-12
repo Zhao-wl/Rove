@@ -100,6 +100,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "nav",
         requires: "",
     },
+    BenchTarget {
+        name: "search",
+        // 合成用例总会跑；大型 Unity 项目用例缺 ROVE_TEST_UNITY_LARGE 时在基准内部跳过。
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

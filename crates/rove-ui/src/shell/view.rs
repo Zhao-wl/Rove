@@ -749,8 +749,8 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
             };
         }
         "workbench.statusBar.clearFocus" => window.focus(&editor),
-        // `workbench.action.findInFiles` is VS Code's ctrl+shift+f; until the search feature
-        // implements it, it opens the search view like `workbench.view.search`.
+        // `workbench.action.findInFiles` is VS Code's ctrl+shift+f: it opens the search view like
+        // `workbench.view.search`; the host (#25) then moves focus into the query box and seeds it.
         "workbench.view.explorer" | "workbench.view.search" | "workbench.action.findInFiles" => {
             let container = if id.ends_with("explorer") {
                 EXPLORER
