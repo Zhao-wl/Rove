@@ -1,0 +1,22 @@
+[package]
+name = "rove-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rove-base.workspace = true
+rove-buffer.workspace = true
+rove-config.workspace = true
+rove-workspace.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
+ignore.workspace = true
+memchr.workspace = true
+memmap2.workspace = true
+encoding_rs.workspace = true
+
+[dev-dependencies]
+rove-test-support.workspace = true
+tempfile = "3"
