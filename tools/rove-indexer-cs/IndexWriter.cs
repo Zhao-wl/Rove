@@ -26,7 +26,7 @@ static class IndexWriter
     public static (long occurrences, long relations, long bytes, long symbols) Write(
         string outPath, byte[] configHash, FileResult[] files, SymbolTable symbols,
         IEnumerable<(SymbolKey from, SymbolKey to, RelKind kind)> rels,
-        IReadOnlyList<MetadataView> views, MetadataStats metadata)
+        Func<IReadOnlyList<MetadataView>> views, MetadataStats metadata)
     {
         if (!BitConverter.IsLittleEndian) throw new PlatformNotSupportedException("RVCSIDX is little-endian");
         string tempPath = outPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -46,7 +46,7 @@ static class IndexWriter
     static (long occurrences, long relations, long bytes, long symbols) WriteFile(
         string path, byte[] configHash, FileResult[] files, SymbolTable table,
         IEnumerable<(SymbolKey from, SymbolKey to, RelKind kind)> rels,
-        IReadOnlyList<MetadataView> views, MetadataStats metadata)
+        Func<IReadOnlyList<MetadataView>> views, MetadataStats metadata)
     {
         var stepWatch = System.Diagnostics.Stopwatch.StartNew();
         void Step(string name)
@@ -194,7 +194,11 @@ static class IndexWriter
                 (byte)(s.InSource ? 1 : 0), (ushort)Math.Min(defCounts[i], ushort.MaxValue));
         }
 
-        var (signatures, xmlDocs, viewBytes) = MetadataSections(views, symArr, counts, strings, FinalOf, metadata);
+        // 元数据视图在后台生成（见 Program.cs），到这里才需要。
+        var generatedViews = views();
+        Step("metadata views wait");
+        var (signatures, xmlDocs, viewBytes) = MetadataSections(generatedViews, symArr, counts, strings, FinalOf, metadata);
+        generatedViews = null!;
 
         var relArr = rels.Select(r => (from: FinalOf(r.from), to: FinalOf(r.to), kind: (uint)r.kind))
             .Where(r => r.from != null && r.to != null)

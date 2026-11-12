@@ -82,9 +82,11 @@ static class MetadataViews
         var all = references.Distinct().ToArray();
         var main = CSharpCompilation.Create("rove-metadata-views", references: all,
             options: ViewCompilation);
-        var docs = new XmlDocs();
+        var snapshot = requests.Snapshot().ToArray();
+        // 文档文件只保留被请求类型（及其成员、嵌套类型）的条目；BCL 的 netstandard.xml 有 16 MB，全读进来白占几百 MB。
+        var docs = new XmlDocs(snapshot.SelectMany(r => r.types).ToHashSet(StringComparer.Ordinal));
         var work = new List<(INamedTypeSymbol type, string identity, string? path, Func<string, string?> doc)>();
-        foreach (var (identity, assemblyName, reference, types) in requests.Snapshot())
+        foreach (var (identity, assemblyName, reference, types) in snapshot)
         {
             var assembly = Resolve(main, all, identity, reference);
             if (assembly == null)
@@ -464,8 +466,10 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
 }
 
 /// XML 文档文件：DLL 旁的同名 .xml；BCL 程序集另查本机 .NET SDK 的参考程序集包。只读本地文件，不联网，不解析 DTD。
-sealed class XmlDocs
+sealed class XmlDocs(HashSet<string> types)
 {
+    readonly HashSet<string>.AlternateLookup<ReadOnlySpan<char>> _types = types.GetAlternateLookup<ReadOnlySpan<char>>();
+
     readonly ConcurrentDictionary<string, Lazy<Dictionary<string, string>?>> _files = new(StringComparer.OrdinalIgnoreCase);
     readonly ConcurrentQueue<string> _missing = new();
     static readonly string? PacksDir = FindPacks();
@@ -494,6 +498,19 @@ sealed class XmlDocs
                     && map.TryGetValue(id, out var doc)) return doc;
             return null;
         };
+    }
+
+    /// 文档注释 ID（如 M:Ns.Outer.Inner.Method(System.Int32)）属于某个被请求的最外层类型：
+    /// 冒号之后、参数括号之前的每个以点分隔的前缀，任何一个是被请求的类型名即可。
+    bool Wanted(string id)
+    {
+        if (id.Length < 3 || id[1] != ':') return false;
+        var body = id.AsSpan(2);
+        int paren = body.IndexOf('(');
+        if (paren >= 0) body = body[..paren];
+        for (int i = 0; i <= body.Length; i++)
+            if ((i == body.Length || body[i] == '.') && _types.Contains(body[..i])) return true;
+        return false;
     }
 
     static bool IsFramework(string name) => name is "mscorlib" or "netstandard" or "System"
@@ -537,6 +554,11 @@ sealed class XmlDocs
             {
                 if (reader.NodeType == XmlNodeType.Element && reader.Name == "member" && reader.GetAttribute("name") is { } name)
                 {
+                    if (!Wanted(name))
+                    {
+                        reader.Skip();
+                        continue;
+                    }
                     var inner = reader.ReadInnerXml();
                     map.TryAdd(name, inner);
                 }

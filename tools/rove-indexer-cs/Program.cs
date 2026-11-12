@@ -18,6 +18,8 @@ static class Program
 {
     static readonly Stopwatch Total = Stopwatch.StartNew();
     static readonly Dictionary<string, double> Phases = new();
+    /// 元数据视图生成的墙钟时间。它与写索引并行，计入 write_index，这里单独记录。
+    static double metadataMs;
 
     const string Usage = "usage: rove-indexer-cs <project-dir> <out.idx> [--generators] [--report file] [--io-concurrency N] "
         + "[--max-active-files N] [--prefetch-mb N] [--bind-concurrency N] [--gc-every-files N] [--soft-memory-mb N] [--no-reconcile] [--diag asm] [--profile]";
@@ -111,25 +113,41 @@ static class Program
         foreach (var issue in Stats.GeneratorIssues.Distinct().Take(40)) Log($"generator: {issue}");
         if (options.DiagAssembly != null) return 0;
 
-        // 3. 元数据视图（#34）：流水线已释放各项目的编译，这里用缓存的 DLL 引用统一生成被引用到的外部类型。
-        var views = MetadataViews.Generate(ctx.Metadata,
-            ctx.MetadataRefs.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => kv.Value).OfType<MetadataReference>(),
-            ctx.Symbols, options.BindConcurrency);
-        Log($"metadata views: {views.Count} types from {ctx.Metadata.AssemblyCount} assemblies, "
-            + $"{views.Sum(v => (long)v.Text.Length) >> 10} K chars, warnings {MetadataViews.Warnings}");
-        Phase("metadata_views", sw);
-
-        // 4. 写索引。先把流水线留下的空闲堆还给系统，写入阶段的临时数组不再叠在上面。
+        // 3. 写索引。先把流水线留下的空闲堆还给系统，写入阶段的临时数组不再叠在上面。
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
+        // 元数据视图（#34）与写索引的前几步（符号编号、出现位置打包，多为单线程）并行：流水线已释放各项目的编译，
+        // 用缓存的 DLL 引用统一生成被引用到的外部类型。两边只读符号表；写入端在需要视图时才等待。
+        var viewsTask = Task.Run(() =>
+        {
+            var watch = Stopwatch.StartNew();
+            List<MetadataView> generated;
+            try
+            {
+                generated = MetadataViews.Generate(ctx.Metadata,
+                    ctx.MetadataRefs.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => kv.Value).OfType<MetadataReference>(),
+                    ctx.Symbols, options.BindConcurrency);
+            }
+            catch (Exception e)
+            {
+                // 视图是附加数据：生成整体失败时照常写出源码索引，外部符号只是没有落点。
+                MetadataViews.Warn($"metadata views failed: {e}");
+                generated = [];
+            }
+            Log($"metadata views: {generated.Count} types from {ctx.Metadata.AssemblyCount} assemblies, "
+                + $"{generated.Sum(v => (long)v.Text.Length) >> 10} K chars, warnings {MetadataViews.Warnings}, {watch.Elapsed.TotalSeconds:F1}s");
+            metadataMs = Math.Round(watch.Elapsed.TotalMilliseconds);
+            return (IReadOnlyList<MetadataView>)generated;
+        });
         if (options.Profile) Log($"write: gc {sw.Elapsed.TotalSeconds:F1}s");
         IndexWriter.Verbose = options.Profile;
         var files = ctx.Results.OfType<FileResult>().Concat(ctx.Generated).ToArray();
         Array.Sort(files, (a, b) => a.Path.AsSpan().SequenceCompareTo(b.Path));
         long namesTotal = Stats.Names;
         var metadata = new MetadataStats();
-        var stats = IndexWriter.Write(outPath, configHash, files, ctx.Symbols, ctx.Relations, views, metadata);
-        views = null!;
+        var stats = IndexWriter.Write(outPath, configHash, files, ctx.Symbols, ctx.Relations, () => viewsTask.Result, metadata);
         Phase("write_index", sw);
+        Phases["metadata_views_concurrent"] = metadataMs;
         sampler.Sample();
 
         var proc = Process.GetCurrentProcess();
