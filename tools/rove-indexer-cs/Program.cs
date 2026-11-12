@@ -111,14 +111,24 @@ static class Program
         foreach (var issue in Stats.GeneratorIssues.Distinct().Take(40)) Log($"generator: {issue}");
         if (options.DiagAssembly != null) return 0;
 
-        // 3. 写索引。先把流水线留下的空闲堆还给系统，写入阶段的临时数组不再叠在上面。
+        // 3. 元数据视图（#34）：流水线已释放各项目的编译，这里用缓存的 DLL 引用统一生成被引用到的外部类型。
+        var views = MetadataViews.Generate(ctx.Metadata,
+            ctx.MetadataRefs.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => kv.Value).OfType<MetadataReference>(),
+            ctx.Symbols, options.BindConcurrency);
+        Log($"metadata views: {views.Count} types from {ctx.Metadata.AssemblyCount} assemblies, "
+            + $"{views.Sum(v => (long)v.Text.Length) >> 10} K chars, warnings {MetadataViews.Warnings}");
+        Phase("metadata_views", sw);
+
+        // 4. 写索引。先把流水线留下的空闲堆还给系统，写入阶段的临时数组不再叠在上面。
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         if (options.Profile) Log($"write: gc {sw.Elapsed.TotalSeconds:F1}s");
         IndexWriter.Verbose = options.Profile;
         var files = ctx.Results.OfType<FileResult>().Concat(ctx.Generated).ToArray();
         Array.Sort(files, (a, b) => a.Path.AsSpan().SequenceCompareTo(b.Path));
         long namesTotal = Stats.Names;
-        var stats = IndexWriter.Write(outPath, configHash, files, ctx.Symbols, ctx.Relations);
+        var metadata = new MetadataStats();
+        var stats = IndexWriter.Write(outPath, configHash, files, ctx.Symbols, ctx.Relations, views, metadata);
+        views = null!;
         Phase("write_index", sw);
         sampler.Sample();
 
@@ -163,6 +173,7 @@ static class Program
             generated_trees = Stats.GeneratedTrees,
             generator_issues = Stats.GeneratorIssues.Distinct().Take(40).ToArray(),
             top_unresolved = Stats.Unresolved.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Take(40).ToDictionary(kv => kv.Key, kv => kv.Value),
+            metadata = metadata.Report(),
             unresolved_by_project = Stats.UnresolvedByProject.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Take(20).ToDictionary(kv => kv.Key, kv => kv.Value),
         };
         var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });

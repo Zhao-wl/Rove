@@ -12,6 +12,8 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
     Dictionary<SyntaxTree, (uint id, Utf8Coordinates coordinates)> treeFiles)
 {
     readonly ConcurrentDictionary<ISymbol, SymRec> _cache = new(ReferenceEqualityComparer.Instance);
+    /// 本项目里已登记过元数据视图的最外层外部类型。
+    readonly ConcurrentDictionary<INamedTypeSymbol, byte> _noted = new(ReferenceEqualityComparer.Instance);
     readonly string _assembly = comp.AssemblyName ?? "";
 
     public FileResult Bind(SyntaxTree tree, uint id, byte[] path, ulong hash)
@@ -103,6 +105,8 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
         long t = Stats.Now();
         var key = Key(s, out var parameterFallback);
         bool inSource = s.Locations.Any(l => l.IsInSource);
+        bool external = !inSource && s.Kind != SymbolKind.Namespace && s.ContainingAssembly is { } asm
+            && !ctx.ProjectAssemblies.Contains(asm.Name);
         bool collisionProne = key.Text is { } text && (text[0] == '?' || s is INamedTypeSymbol { IsAnonymousType: true }
             || s.ContainingType is { IsAnonymousType: true } or { IsTupleType: true });
         SymRec Create(SymbolKey k) => new()
@@ -111,11 +115,29 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
             ContainerKey = s.ContainingSymbol is { } c && c.Kind != SymbolKind.Namespace && c.Kind != SymbolKind.Assembly
                 && c.Kind != SymbolKind.NetModule ? ctx.Symbols.Canonical(Key(Symbols.Norm(c))) : null,
             ParameterFallback = parameterFallback,
+            External = external,
         };
         var rec = ctx.Symbols.GetOrAdd(key, Create, collisionProne, inSource);
         _cache.TryAdd(s, rec);
         Stats.Add(ref Stats.SymbolKey, t);
+        if (external) NoteExternal(s);
         return rec.Id;
+    }
+
+    /// 外部类型与成员：登记其最外层类型，写索引前统一生成元数据视图（#34）。
+    /// 类型链上的每一层也放进符号表，视图里的嵌套类型与成员才能沿容器找到所在的视图。
+    void NoteExternal(ISymbol s)
+    {
+        if (s.Kind is not (SymbolKind.NamedType or SymbolKind.Method or SymbolKind.Property or SymbolKind.Field or SymbolKind.Event)) return;
+        var type = (s as INamedTypeSymbol ?? s.ContainingType)?.OriginalDefinition;
+        if (type == null || type.TypeKind == TypeKind.Error) return;
+        for (var t = s is INamedTypeSymbol ? type.ContainingType : type; t != null; t = t.ContainingType) GetSym(t.OriginalDefinition);
+        var outer = type;
+        while (outer.ContainingType != null) outer = outer.ContainingType.OriginalDefinition;
+        if (!_noted.TryAdd(outer, 0)) return;
+        if (comp.GetMetadataReference(outer.ContainingAssembly) is not PortableExecutableReference { FilePath: not null } reference) return;
+        var name = outer.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() + "." + outer.MetadataName : outer.MetadataName;
+        ctx.Metadata.Note(outer.ContainingAssembly, reference, name);
     }
 
     SymbolKey Key(ISymbol s) => Key(s, out _);
