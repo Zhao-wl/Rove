@@ -191,5 +191,13 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
   （`getPlainTextToCopy`）、`cursorDeleteOperations.ts`（`cut`）与 `cursorTypeEditOperations.ts`（`PasteOperation`）。
 - `crates/rove-buffer/src/edit/rewrite.rs`：`src/vs/editor/contrib/indentation/browser/indentation.ts`
   （`getIndentationEditOperations`）。
+- `crates/rove-buffer/src/edit/word.rs` 中 `editor.wordSegmenterLocales` 的分词停靠逻辑移植自
+  `wordCharacterClassifier.ts`（`findPrevIntlWordBeforeOrAtOffset` / `findNextIntlWordAtOrAfterOffset`）。
+
+可选 feature `intl-segmenter`（默认关闭）依赖 Unicode Consortium 的 ICU4X
+[`icu_segmenter`](https://crates.io/crates/icu_segmenter) 2.4 及其编译进二进制的分词数据
+（`icu_segmenter_data`：中日文词典、东南亚文字 LSTM 模型），许可为
+[Unicode License v3](https://www.unicode.org/license.txt)（`Unicode-3.0`）。启用该 feature 发布时，
+需按 #75 的分发清单附上该许可全文。
 
 来源：<https://github.com/microsoft/vscode/tree/1.145.2>

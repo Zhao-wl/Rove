@@ -17,8 +17,12 @@
 //! | `deleteInsideWord` | [`delete_inside_word`] |
 //!
 //! 与 VS Code 的差异：VS Code 以 UTF-16 码元为下标，这里以 Unicode 字符为下标（代理对的两个
-//! 码元在 VS Code 里都归为普通字符，结果等价）；`editor.wordSegmenterLocales`（`Intl.Segmenter`
-//! 的词典分词）没有移植，等同于默认值 `[]`。
+//! 码元在 VS Code 里都归为普通字符，结果等价）。
+//!
+//! `editor.wordSegmenterLocales`（VS Code 用浏览器的 `Intl.Segmenter` 做词典分词，日文、中文、
+//! 泰文等没有空格的文字按词停靠）：由 cargo feature `intl-segmenter`（默认关闭）提供，实现用
+//! ICU4X 的 `icu_segmenter`（`new_auto`：中日文词典 + 东南亚文字 LSTM，数据编译进二进制，
+//! 约 +2.4 MB）。没有启用该 feature 时设置项被忽略，行为等同默认值 `[]`。
 //!
 //! 语言级 `wordPattern`（Markdown / XML 自定义了它）只影响“光标处的单词”（双击选词、同名高亮、
 //! 选中下一个匹配），由 [`word_at_with_pattern`] 接入 R12 的 `word_at`；移动与删除与 VS Code
@@ -46,9 +50,36 @@ pub enum WordCharClass {
 pub struct WordClassifier {
     ascii: [WordCharClass; 128],
     others: Vec<char>,
+    /// `editor.wordSegmenterLocales`；非空且启用了 `intl-segmenter` 时按词典分词。
+    locales: Vec<String>,
 }
 
 impl WordClassifier {
+    /// 带 `editor.wordSegmenterLocales` 的分类器（`WordCharacterClassifier` 的第二个参数）。
+    pub fn with_segmenter_locales(separators: &str, locales: &[String]) -> Self {
+        let mut classifier = Self::new(separators);
+        classifier.locales = locales.to_vec();
+        classifier
+    }
+
+    /// 是否会按词典分词（设置非空且启用了 `intl-segmenter`）。
+    pub fn segments_words(&self) -> bool {
+        cfg!(feature = "intl-segmenter") && !self.locales.is_empty()
+    }
+
+    /// 同样的分词区域设置、换一套分隔符（无障碍命令固定用默认分隔符）。
+    fn with_separators(&self, separators: &str) -> Self {
+        Self::with_segmenter_locales(separators, &self.locales)
+    }
+
+    /// 一行里“像词”的分词片段（字符下标的半开区间，升序）；不分词时为空。
+    fn intl_words(&self, line: &[char]) -> Vec<(usize, usize)> {
+        if !self.segments_words() || line.is_empty() {
+            return Vec::new();
+        }
+        intl_word_segments(line)
+    }
+
     pub fn new(separators: &str) -> Self {
         let mut ascii = [WordCharClass::Regular; 128];
         let mut others = Vec::new();
@@ -63,7 +94,11 @@ impl WordClassifier {
         others.dedup();
         ascii[b' ' as usize] = WordCharClass::Whitespace;
         ascii[b'\t' as usize] = WordCharClass::Whitespace;
-        Self { ascii, others }
+        Self {
+            ascii,
+            others,
+            locales: Vec::new(),
+        }
     }
 
     pub fn class(&self, ch: char) -> WordCharClass {
@@ -105,6 +140,51 @@ struct FoundWord {
     end: usize,
     kind: WordType,
     next: WordCharClass,
+}
+
+/// `Intl.Segmenter` 的 `isWordLike` 片段（ICU4X 实现）。
+#[cfg(feature = "intl-segmenter")]
+fn intl_word_segments(line: &[char]) -> Vec<(usize, usize)> {
+    use icu_segmenter::options::WordBreakInvariantOptions;
+    use icu_segmenter::WordSegmenter;
+    let text: String = line.iter().collect();
+    // 字节偏移 → 字符下标。
+    let mut char_at = vec![0usize; text.len() + 1];
+    let mut count = 0;
+    for (at, ch) in text.char_indices() {
+        for slot in &mut char_at[at..at + ch.len_utf8()] {
+            *slot = count;
+        }
+        count += 1;
+    }
+    char_at[text.len()] = count;
+    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let mut breaks = segmenter.segment_str(&text);
+    let mut words = Vec::new();
+    let mut previous = 0;
+    while let Some(at) = breaks.next() {
+        if at > previous && breaks.is_word_like() {
+            words.push((char_at[previous], char_at[at]));
+        }
+        previous = at;
+    }
+    words
+}
+
+#[cfg(not(feature = "intl-segmenter"))]
+fn intl_word_segments(_line: &[char]) -> Vec<(usize, usize)> {
+    Vec::new()
+}
+
+/// `findPrevIntlWordBeforeOrAtOffset`：起点不超过 `offset` 的最后一个片段。
+fn intl_before_or_at(words: &[(usize, usize)], offset: Option<usize>) -> Option<(usize, usize)> {
+    let offset = offset?;
+    words.iter().take_while(|w| w.0 <= offset).last().copied()
+}
+
+/// `findNextIntlWordAtOrAfterOffset`：起点不小于 `offset` 的第一个片段。
+fn intl_at_or_after(words: &[(usize, usize)], offset: usize) -> Option<(usize, usize)> {
+    words.iter().find(|w| w.0 >= offset).copied()
 }
 
 /// 行内位置：行号 + 字符下标（VS Code 的 `column - 1`）。
@@ -173,8 +253,13 @@ fn create_word(kind: WordType, next: WordCharClass, start: usize, end: usize) ->
 /// `_doFindPreviousWordOnLine`：`ch` 是光标的字符下标（VS Code 的 `position.column - 1`）。
 fn previous_word(line: &[char], cls: &WordClassifier, ch: usize) -> Option<FoundWord> {
     let mut kind = WordType::None;
+    let words = cls.intl_words(line);
+    let intl = intl_before_or_at(&words, ch.checked_sub(1));
     for index in (0..ch.min(line.len())).rev() {
         let class = cls.class(line[index]);
+        if let Some((start, end)) = intl.filter(|w| w.0 == index) {
+            return Some(create_word(WordType::Regular, class, start, end));
+        }
         match class {
             WordCharClass::Regular => {
                 if kind == WordType::Separator {
@@ -222,8 +307,13 @@ fn previous_word(line: &[char], cls: &WordClassifier, ch: usize) -> Option<Found
 
 /// `_findEndOfWord`。
 fn end_of_word(line: &[char], cls: &WordClassifier, kind: WordType, start: usize) -> usize {
+    let words = cls.intl_words(line);
+    let intl = intl_at_or_after(&words, start);
     for (index, &ch) in line.iter().enumerate().skip(start) {
         let class = cls.class(ch);
+        if intl.is_some_and(|w| w.1 == index) {
+            return index;
+        }
         if class == WordCharClass::Whitespace
             || (kind == WordType::Regular && class == WordCharClass::Separator)
             || (kind == WordType::Separator && class == WordCharClass::Regular)
@@ -237,8 +327,13 @@ fn end_of_word(line: &[char], cls: &WordClassifier, kind: WordType, start: usize
 /// `_doFindNextWordOnLine`：从字符下标 `ch` 开始向右找。
 fn next_word(line: &[char], cls: &WordClassifier, ch: usize) -> Option<FoundWord> {
     let mut kind = WordType::None;
+    let words = cls.intl_words(line);
+    let intl = intl_at_or_after(&words, ch);
     for (index, &c) in line.iter().enumerate().skip(ch) {
         let class = cls.class(c);
+        if let Some((start, end)) = intl.filter(|w| w.0 == index) {
+            return Some(create_word(WordType::Regular, class, start, end));
+        }
         match class {
             WordCharClass::Regular => {
                 if kind == WordType::Separator {
@@ -286,8 +381,13 @@ fn next_word(line: &[char], cls: &WordClassifier, ch: usize) -> Option<FoundWord
 
 /// `_findStartOfWord`。
 fn start_of_word(line: &[char], cls: &WordClassifier, kind: WordType, start: usize) -> usize {
+    let words = cls.intl_words(line);
+    let intl = intl_before_or_at(&words, Some(start));
     for index in (0..=start).rev() {
         let class = cls.class(line[index]);
+        if intl.is_some_and(|w| w.0 == index) {
+            return index;
+        }
         if class == WordCharClass::Whitespace
             || (kind == WordType::Regular && class == WordCharClass::Separator)
             || (kind == WordType::Separator && class == WordCharClass::Regular)
@@ -532,7 +632,7 @@ pub fn move_word(
 ) -> Result<Position> {
     let doc = Doc::new(text)?;
     let (pos, _) = doc.to_pos(position)?;
-    let accessibility = WordClassifier::default();
+    let accessibility = classifier.with_separators(DEFAULT_WORD_SEPARATORS);
     let target = match command {
         MoveWord::Left => move_word_left_pos(
             &doc,

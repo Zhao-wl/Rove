@@ -54,7 +54,10 @@ impl EditSession {
             selections: Selections::single(Selection::cursor(ByteOffset(0))),
             history: UndoHistory::default(),
             cursors: CursorHistory::default(),
-            classifier: WordClassifier::new(&options.word_separators),
+            classifier: WordClassifier::with_segmenter_locales(
+                &options.word_separators,
+                &options.word_segmenter_locales,
+            ),
             options,
             previous_kind: EditKind::Other,
         }
@@ -80,7 +83,10 @@ impl EditSession {
 
     /// 设置变化时更新（`editor.wordSeparators` 等）。
     pub fn set_options(&mut self, options: EditOptions) {
-        self.classifier = WordClassifier::new(&options.word_separators);
+        self.classifier = WordClassifier::with_segmenter_locales(
+            &options.word_separators,
+            &options.word_segmenter_locales,
+        );
         self.options = options;
     }
 

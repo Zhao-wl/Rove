@@ -792,15 +792,16 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 | `clipboard.rs` | 复制 / 剪切 / 粘贴的文本语义：`emptySelectionClipboard`、多选区分段、`multiCursorPaste` 的 spread/full；系统剪贴板读写在 R46 |
 | `rewrite.rs` | 缩进转换（只改前导空白）与换行符统一（一次事务、一次撤销） |
 | `session.rs` | `EditSession`：`edit`（任意事务，R47/R62）、`edit_each`（每个选区一处替换）、`type_text`、`delete_left/right`、`move_word`、`delete_word`、`undo/redo`（恢复编辑前 / 后的选区）、`cursor_undo/redo`、`copy/cut/paste`、`convert_indentation`、`change_eol`。时间由调用方传入 |
-| `settings.rs` | `editor.wordSeparators`、`emptySelectionClipboard`、`multiCursorMergeOverlapping`、`multiCursorLimit`、`multiCursorPaste`、`tabSize`、`indentSize` 的登记（已登记则跳过）与 `EditOptions::read` |
+| `settings.rs` | `editor.wordSeparators`、`wordSegmenterLocales`、`emptySelectionClipboard`、`multiCursorMergeOverlapping`、`multiCursorLimit`、`multiCursorPaste`、`tabSize`、`indentSize` 的登记（已登记则跳过）与 `EditOptions::read` |
 
 接线提示：
 
 - 语法：把 `AppliedEdit::coalesced(&snapshot)` 交给 #94 的 `DocumentHighlighter::analyze` 走增量路径；多区间事务也可逐个使用 `text_edits` / `input_edits`（顺序即应用顺序）。
 - 视图：`LineChanges` 的 `old`/`new` 行区间与 `line_delta` 直接用于按行失效（§16 的装饰协议）。
 - 撤销 / 重做返回的 `AppliedEdit` 与普通编辑一样需要通知语法与视图。
-- 与 VS Code 的差异：没有移植 `editor.wordSegmenterLocales`（`Intl.Segmenter` 词典分词，等同默认值 `[]`）；自动闭合对的“一起删除”判定属于 R52，`DeleteWordContext::auto_closing_pair` 只执行结果；撤销分组多了超时规则。
+- `editor.wordSegmenterLocales`（`Intl.Segmenter` 词典分词）由 `rove-buffer` 的 cargo feature `intl-segmenter` 提供（ICU4X `icu_segmenter`，默认关闭，开启后可执行文件约 +2.4 MB，只要中日文词典约 +2.0 MB）；未开启时设置被忽略、等同默认值 `[]`。
+- 与 VS Code 的差异：自动闭合对的“一起删除”判定属于 R52，`DeleteWordContext::auto_closing_pair` 只执行结果；撤销分组多了超时规则。
 
-验证：`cargo test -p rove-buffer`——`tests/edit_word_operations.rs`（VS Code `wordOperations` / `wordPartOperations` 用例逐例对拍，`wordSegmenterLocales: 'ja'` 两例除外）、
+验证：`cargo test -p rove-buffer`——`tests/edit_word_operations.rs`（VS Code `wordOperations` / `wordPartOperations` 用例逐例对拍；`wordSegmenterLocales: 'ja'` 两例需 `--features intl-segmenter`）、
 `tests/edit_word_pattern.rs`（Markdown / XML `wordPattern` 与 #12 用例对齐）、`tests/edit_core.rs`（入口“打开 → 编辑 → 撤销 → 变更通知与 InputEdit”、事务、撤销分组四种情况、选区、剪贴板、改写事务、混合换行符字节级比对）、
 `tests/edit_proptest.rs`（随机多区间事务 / 输入 / 删除 / 撤销后全部撤销逐字节回到初始文本、全部重做回到撤销前）。性能：`cargo xtask bench --filter edit/ --check-budgets`（预算 `edit_insert_char_100k_lines`，p99 < 100 µs）。

@@ -5,9 +5,10 @@
 //! 用例文本、初始位置与期望值保持原样；`|` 标记的期望停靠点经 `deserialize` / `serialize`
 //! 换算（VS Code 的列是 1 起的 UTF-16 列，这里是 0 起的 UTF-8 列，文本相同时等价）。
 //!
-//! 没有翻译的两例：`cursorWordLeft/Right - Recognize words`（`wordSegmenterLocales: 'ja'`
-//! 依赖浏览器 `Intl.Segmenter` 的日文词典分词，本移植不支持该设置，等同默认值 `[]`；
-//! 对应的 “Does not recognize words” 两例已翻译）。
+//! `cursorWordLeft/Right - Recognize words` 两例（`wordSegmenterLocales: 'ja'`）依赖词典分词，
+//! 只在启用 `intl-segmenter` feature 时运行：
+//! `cargo test -p rove-buffer --features intl-segmenter --test edit_word_operations`；
+//! 默认构建里标为 ignore（该 feature 默认关闭，体积代价见 PR #121）。
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,14 @@ use rove_buffer::edit::{
 use rove_buffer::{Eol, LineEndings, TextSource};
 
 fn session_with(text: &str, separators: Option<&str>) -> EditSession {
-    let mut options = EditOptions::default();
+    session_with_locales(text, separators, &[])
+}
+
+fn session_with_locales(text: &str, separators: Option<&str>, locales: &[&str]) -> EditSession {
+    let mut options = EditOptions {
+        word_segmenter_locales: locales.iter().map(|l| l.to_string()).collect(),
+        ..EditOptions::default()
+    };
     if let Some(separators) = separators {
         options.word_separators = separators.into();
     }
@@ -146,11 +154,23 @@ fn repeated(
     text: &str,
     separators: Option<&str>,
     initial: (u64, u64),
+    action: impl FnMut(&mut EditSession),
+    record: impl Fn(&EditSession) -> Position,
+    stop: impl Fn(&EditSession) -> bool,
+) -> Vec<Position> {
+    repeated_with_locales(text, separators, &[], initial, action, record, stop)
+}
+
+fn repeated_with_locales(
+    text: &str,
+    separators: Option<&str>,
+    locales: &[&str],
+    initial: (u64, u64),
     mut action: impl FnMut(&mut EditSession),
     record: impl Fn(&EditSession) -> Position,
     stop: impl Fn(&EditSession) -> bool,
 ) -> Vec<Position> {
-    let mut s = session_with(text, separators);
+    let mut s = session_with_locales(text, separators, locales);
     let start = vs(&s, initial.0, initial.1);
     set_position(&mut s, start);
     let mut stops = Vec::new();
@@ -298,6 +318,44 @@ fn cursor_word_left_issue_48046_word_selection_doesnt_work_as_usual() {
     check_moves(expected, (1, 21), MoveWord::Left, false, (1, 1));
 }
 
+fn check_moves_locales(
+    expected: &str,
+    locales: &[&str],
+    initial: (u64, u64),
+    command: MoveWord,
+    select: bool,
+    stop: (u64, u64),
+) {
+    let (text, _) = deserialize(expected);
+    let stops = repeated_with_locales(
+        &text,
+        None,
+        locales,
+        initial,
+        moves(command, select),
+        position,
+        at(stop.0, stop.1),
+    );
+    assert_eq!(serialize(&text, stops), expected);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "intl-segmenter"),
+    ignore = "需要 intl-segmenter feature（ICU 词典分词，默认关闭，见 PR #121）"
+)]
+fn cursor_word_left_recognize_words() {
+    let expected = "|/* |これ|は|テスト|です |/*";
+    check_moves_locales(
+        expected,
+        &["ja"],
+        (1000, 1000),
+        MoveWord::Left,
+        true,
+        (1, 1),
+    );
+}
+
 #[test]
 fn cursor_word_left_does_not_recognize_words() {
     let expected = "|/* |これはテストです |/*";
@@ -417,6 +475,16 @@ fn cursor_word_right_issue_832() {
 fn cursor_word_right_issue_41199() {
     let expected = "console|.log|(err|)|";
     check_moves(expected, (1, 1), MoveWord::Right, false, (1, 17));
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "intl-segmenter"),
+    ignore = "需要 intl-segmenter feature（ICU 词典分词，默认关闭，见 PR #121）"
+)]
+fn cursor_word_right_recognize_words() {
+    let expected = "/*| これ|は|テスト|です|/*|";
+    check_moves_locales(expected, &["ja"], (1, 1), MoveWord::Right, false, (1, 14));
 }
 
 #[test]
@@ -973,4 +1041,21 @@ fn undo_group_timeout_is_respected_by_word_tests_clock() {
     s.type_text("b", t + Duration::from_secs(5)).unwrap();
     s.undo().unwrap();
     assert_eq!(s.contents(), "a");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "intl-segmenter"),
+    ignore = "需要 intl-segmenter feature（ICU 词典分词，默认关闭，见 PR #121）"
+)]
+fn chinese_words_with_segmenter_locales() {
+    // 本移植的补充：中文注释按词停靠（同一份 ICU 中日文词典）。
+    check_moves_locales(
+        "// |中文|分词|测试|",
+        &["zh-CN"],
+        (1, 1),
+        MoveWord::StartRight,
+        false,
+        (1, 10),
+    );
 }

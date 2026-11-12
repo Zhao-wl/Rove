@@ -20,9 +20,10 @@ pub const MULTI_CURSOR_LIMIT: &str = "editor.multiCursorLimit";
 pub const MULTI_CURSOR_PASTE: &str = "editor.multiCursorPaste";
 pub const TAB_SIZE: &str = "editor.tabSize";
 pub const INDENT_SIZE: &str = "editor.indentSize";
+pub const WORD_SEGMENTER_LOCALES: &str = "editor.wordSegmenterLocales";
 
 /// 本模块登记的键与 VS Code 默认值（`docs/compat/SETTINGS.md`）。
-fn defaults() -> [(&'static str, Value, bool); 7] {
+fn defaults() -> [(&'static str, Value, bool); 8] {
     [
         (
             WORD_SEPARATORS,
@@ -35,6 +36,11 @@ fn defaults() -> [(&'static str, Value, bool); 7] {
         (MULTI_CURSOR_PASTE, Value::String("spread".into()), false),
         (TAB_SIZE, Value::Number(4.0), true),
         (INDENT_SIZE, Value::String("tabSize".into()), true),
+        (
+            WORD_SEGMENTER_LOCALES,
+            Value::Array(std::sync::Arc::from(Vec::<Value>::new())),
+            true,
+        ),
     ]
 }
 
@@ -60,6 +66,8 @@ pub fn register(registry: &mut SettingRegistry) -> Result<()> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditOptions {
     pub word_separators: String,
+    /// `editor.wordSegmenterLocales`（只有启用 `intl-segmenter` feature 时生效）。
+    pub word_segmenter_locales: Vec<String>,
     pub empty_selection_clipboard: bool,
     pub multi_cursor_merge_overlapping: bool,
     pub multi_cursor_limit: usize,
@@ -74,6 +82,7 @@ impl Default for EditOptions {
     fn default() -> Self {
         Self {
             word_separators: DEFAULT_WORD_SEPARATORS.into(),
+            word_segmenter_locales: Vec::new(),
             empty_selection_clipboard: true,
             multi_cursor_merge_overlapping: true,
             multi_cursor_limit: 10000,
@@ -103,6 +112,18 @@ impl EditOptions {
             word_separators: match value(WORD_SEPARATORS) {
                 Some(Value::String(s)) => s.to_string(),
                 _ => fallback.word_separators,
+            },
+            // VS Code 接受字符串或字符串数组。
+            word_segmenter_locales: match value(WORD_SEGMENTER_LOCALES) {
+                Some(Value::String(s)) if !s.is_empty() => vec![s.to_string()],
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Value::String(s) if !s.is_empty() => Some(s.to_string()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
             },
             empty_selection_clipboard: boolean(
                 EMPTY_SELECTION_CLIPBOARD,
