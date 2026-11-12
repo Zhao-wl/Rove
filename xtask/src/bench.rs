@@ -105,6 +105,11 @@ const TARGETS: &[BenchTarget] = &[
         // 合成用例总会跑；大型 Unity 项目用例缺 ROVE_TEST_UNITY_LARGE 时在基准内部跳过。
         requires: "",
     },
+    BenchTarget {
+        // #41：速览窗口（真实 GPUI 窗口；无法创建窗口时在基准内部跳过）。
+        name: "peek",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

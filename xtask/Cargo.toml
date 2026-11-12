@@ -109,3 +109,7 @@ harness = false
 [[bench]]
 name = "search"
 harness = false
+
+[[bench]]
+name = "peek"
+harness = false

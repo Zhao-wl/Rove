@@ -34,3 +34,5 @@ pub mod save;
 pub mod nav;
 // #25：全局搜索视图（引擎在核心层 `rove-search`）。
 pub mod search;
+// #41：速览窗口（速览定义、引用、实现；D3 默认方式）。
+pub mod peek;

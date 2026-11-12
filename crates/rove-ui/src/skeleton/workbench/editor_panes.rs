@@ -227,7 +227,11 @@ impl Workbench {
         let mut viewports = div()
             .flex()
             .size_full()
-            .children(self.code_viewport(group, false));
+            // #41：代码视图外框挂上速览（上下文键、命令、嵌入区域里的窗口）。
+            .children(
+                self.code_viewport(group, false)
+                    .map(|d| self.peek_viewport(group, false, d, cx)),
+            );
         if pane.current().is_some_and(|tab| tab.secondary.is_some()) {
             let vertical = settings.secondary_vertical;
             viewports = viewports.gap(px(1.0)).bg(self.ui_color(if vertical {
@@ -238,7 +242,10 @@ impl Workbench {
             if vertical {
                 viewports = viewports.flex_col();
             }
-            viewports = viewports.children(self.code_viewport(group, true));
+            viewports = viewports.children(
+                self.code_viewport(group, true)
+                    .map(|d| self.peek_viewport(group, true, d, cx)),
+            );
         }
         let text_ready = pane
             .current()

@@ -168,6 +168,8 @@ pub fn theme_registry() -> ColorRegistry {
     crate::nav::registry::register_colors(&mut registry).expect("nav colors");
     // #25：搜索视图。
     crate::search::registry::register_colors(&mut registry).expect("search colors");
+    // #41：速览窗口的 16 个 peekView* 键。
+    crate::peek::registry::register_colors(&mut registry).expect("peek colors");
     registry
 }
 

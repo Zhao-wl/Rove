@@ -227,6 +227,7 @@ cargo test --workspace
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；命令与字符串已登记，窗口装配（`ctrl+s` → `SaveController`、重载后刷新视图）随 #47 的可编辑代码视图接入 | #49 |
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
+| `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
@@ -1106,3 +1107,28 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（release））与 `tests/cancellation.rs`（独立二进制，取消到全部线程结束 < 50 ms）；`cargo test -p rove-ui search`（模型、登记、
 `skeleton/workbench/search_tests.rs` 真实 GPUI 窗口：`Ctrl+Shift+F` → 输入 → 回车 → 分组与首条位置、`f4` 打开并选中、`.md` 打开源码、
 `alt+c/w/r`、`delete`、空状态与再搜索一次）。性能：`cargo xtask bench --filter search/`（预算 `search_*`）。
+
+## 33. 速览窗口（#41）
+
+位置：`crates/rove-ui/src/peek/`（`lib.rs` 只追加 `pub mod peek;`）；窗口装配在 `skeleton/workbench/peek_host.rs`。不修改 #1 的契约；GPUI 类型只出现在 `widget.rs`、`zone.rs` 与 `registry.rs` 的 action。
+
+| 模块 | 内容 | GPUI |
+|---|---|---|
+| `model.rs` | `PeekResults`：一次排序分组得到“文件 → 计数 + 偏移”的索引（4.7 万条只排一次，不为每条结果建界面节点）；展开规则 `initially_expanded`（总数 ≤ 100 全部展开，否则只展开第一个文件）；结果间导航（跨文件循环）；标题与近似标记（精确无标记、多候选定义“近似 · N 个候选”、其他“近似”，`Marker::Custom` 由 #40 传入） | 否 |
+| `source.rs` | `PeekQueries`（#38 `CsRouter::navigate_detailed` / `hover_detailed`；冻结契约 `CsQueries` 经 `BatchQueries` 适配）、**能力开关** `Availability`（实现关系只在 L2 就绪时可用，`router_availability` 是唯一判定处）、后台流水线 `run`（查询 → 分组 → 读初始展开文件的片段 → 外部符号的悬停签名） | 否 |
+| `snippets.rs` | 结果行的单行片段：只为**展开的文件**读取，文本经 `Documents`（已打开的文档复用同一份快照） | 否 |
+| `results_tree.rs` | 结果树数据源（#18 `TreeSource`）：文件节点直接来自分组索引；结果行只在文件展开时生成，片段未读好时返回 `Pending`，宿主后台读完后 `set_children` | 否 |
+| `external.rs` | 外部符号片段的登记点 `ExternalSnippets`：保底实现只显示 `外部符号：<签名>`；#42 合并后调用 `register` 注册元数据视图的片段提供方，速览代码不需要改动 | 否 |
+| `registry.rs` | 12 条命令（VS Code ID）、界面字符串、16 个 `peekView*` 颜色键（粘性滚动两个键只登记，随 R54 接入）、上下文键名、`PeekSettings`（`editor.stablePeek`、`editor.peekWidgetDefaultFocus`）、一条附加默认键位、`PeekAction` | 仅 action |
+| `widget.rs` | `PeekWidget`：标题栏、左侧只读预览（一个完整的 `CodeView`：同一套整形缓存、语法着色与主题，背景与行号栏经主题适配映射到 `peekViewEditor*`）、右侧结果树（`ListView` + `TreeModel`，选择色映射到 `peekViewResult.*`）、底边与中缝拖动、窗口栈（嵌套速览） | 是 |
+| `zone.rs` | `zone_overlay`：在代码视图 prepaint 之后读取同一帧的嵌入区域位置，把元素布局并摆进去（滚动无一帧滞后，坐标与折叠共用代码视图的映射） | 是 |
+
+- **挂载**：窗口不是浮层，而是 #19 的“行下方嵌入区域”：宿主 `set_view_zone(插入符行, 18 行高)`，再用 `zone_overlay` 把窗口作为代码视图之后的兄弟元素加入同一个外框（`editor_panes.rs` 的 `code_viewport` 结果经 `peek_viewport` 包一层）；`peek::reveal_zone` 滚动使锚定行与整个窗口尽量可见。嵌套速览在上一层预览的嵌入区域里再挂一层。
+- **上下文键**：宿主外框发布 `referenceSearchVisible`（窗口打开时）与 `editorHas{Reference,Definition,Implementation}Provider`（C# 文档且有查询服务时）；窗口根发布 `referenceSearchVisible`；预览外框发布 `inReferenceSearchEditor`、`isInEmbeddedEditor`；`config.editor.stablePeek` 发布到全局上下文键（四条 `closeReferenceSearch` 键位共用一处判定，窗口内的“能否关闭”同样只有 `PeekSettings::can_close_by_escape` 一处）。
+- **键位**：全部来自 #14 生成的 VS Code 默认键位表（导航一节 14 行逐条一致，`peek_keybindings_match_the_navigation_table` 校验）。附加一条：`alt+f12` → `editor.action.peekDefinition`，when `editorHasDefinitionProvider && editorTextFocus && inReferenceSearchEditor`——VS Code 表里那一条带 `!inReferenceSearchEditor`，预览里按不出来，而 UX_SPEC §2.3 要求在预览里 `Alt+F12` 嵌套速览。`F12` 在窗口打开期间是 `goToNextReference`（与键位表、VS Code 一致），预览里的“继续跳转”经 `Alt+F12` 嵌套速览与 #40 的 `Ctrl+点击`。
+- **打开结果**：`Enter`（`revealReference`）、结果行双击、预览内容双击发 `PeekEvent::Open`，宿主关闭速览并经 #17 的 `OpenDocuments` 打开（`OpenSource::CodeNavigation`、带选区，所以 `.md` 也打开源码并定位）；`Ctrl+Enter`（`openReferenceToSide`）在旁边的组打开并保留速览。`editor.stablePeek` 为 true 时 `Esc` 与预览双击都不关闭。
+- **空结果与降级**：查询前先问 `Availability`，实现关系不可用时不开窗口、光标处提示“未找到实现”；没有查询服务或结果为空时关闭窗口，按 UX_SPEC §6.3 在光标处提示“未找到“X”的引用”，不精确的空结果追加“（语义索引构建中）”。窗口立即出现，300 ms 内没有结果时显示“正在加载…”。
+- **生命周期**：关闭（实体释放）时取消全部后台工作，结果数据、片段、预览文档与预览代码视图随之释放；代码视图换了文档时宿主关闭它上面的速览。
+- **查询路由**：每次打开速览时取 #40 装配的 `Workbench::cs_router()`（带 L1、同步打开中的缓冲区，未保存修改的位置经映射；#40 换掉路由后下一次速览自然是新的，打开期间的嵌套速览沿用打开时那个）。测试可用 `Workbench::set_peek_queries` 换成替身。外部调用方要在已有结果上直接打开速览时走 `Workbench::open_peek_with`（`PeekRequest::preset` 带结果、`marker` 带文案）。
+
+验证：`cargo test -p rove-ui peek`（数据层单元测试 + `skeleton/workbench/peek_tests.rs` 的 16 个真实 GPUI 窗口入口测试（只经键位驱动）与 1 个键位表核对：三个入口、分组与计数、100 / 101 展开规则、`↑↓` / `Enter` / `Ctrl+Enter` / `F4` / `Shift+F4` / `F12` / `Ctrl+K F2` / `Esc` / `Shift+Esc`、`editor.stablePeek`、`editor.peekWidgetDefaultFocus` 两个取值、嵌套速览逐层返回与上下文键、近似标记、外部符号保底与注册提供方、空结果与实现不可用的提示、`.md` 打开源码、加载提示、反复开关 100 次后结果与预览全部释放、经 #40 的正式路由速览时未保存修改的位置经映射、键位表逐条一致）。性能：`cargo xtask bench --filter peek/`（真实窗口：28,671 处引用打开到结果树首次绘制，预算 `peek_open_to_first_paint_28k`；4.7 万条全部展开后结果树每帧 CPU，预算 `peek_tree_scroll_frame_47k`；开关 100 次前后的工作集 / 私有字节打印在 stdout）。

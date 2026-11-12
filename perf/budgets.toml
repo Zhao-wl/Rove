@@ -383,3 +383,27 @@ owner = "#25"
 status = "recorded"
 bench = "search/full_synthetic"
 reason = "CI 也能跑的回归参考，不设门槛"
+
+# ---------------------------------------------------------------- 速览窗口（#41）
+
+[[budget]]
+id = "peek_open_to_first_paint_28k"
+metric = "速览：最重的符号（28,671 处引用、2,900 个文件）打开到结果树首次绘制（界面侧，含分组与读第一个文件的片段，不含 #38 的查询本身）"
+value = 100
+unit = "ms"
+owner = "#41"
+status = "enforced"
+bench = "peek/open_to_first_paint_28k"
+aggregate = "p99"
+reason = "issue #41 验收标准：< 100 ms（p99）。查询侧预算（引用 < 50 ms）属于 #38，见 find_references。开发机实测 p99 34.9 / 36.8 ms（两次运行）"
+
+[[budget]]
+id = "peek_tree_scroll_frame_47k"
+metric = "速览：4.7 万条结果全部展开后结果树每帧 CPU（每帧滚动 37 行，render 开始到 paint 结束）"
+value = 8.33
+unit = "ms"
+owner = "#41"
+status = "enforced"
+bench = "peek/tree_scroll_frame_47k"
+aggregate = "p99"
+reason = "issue #41 验收：4.7 万条结果下滚动结果树满足帧预算（120 fps 一帧 8.33 ms，口径同 #18 的 list_bench）。开发机实测 p99 6.2 / 4.2 ms"
