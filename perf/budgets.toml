@@ -181,3 +181,13 @@ owner = "#94"
 status = "pending"
 bench = "syntax/csharp_initial_1mb_unity"
 reason = "#94 把含预处理指令、插值/逐字字符串的 Unity 样本改为分区并行解析+查询并并行组装 token，RopeText 口径下从约 350 ms（单线程）降到 66–76 ms（8 核 16 线程开发机，分段见 ROVE_SYNTAX_TRACE）。剩余瓶颈是 tree-sitter C# 解析与查询本身的 CPU 量（单线程约 250 ms + 95 ms），超线程下每线程变慢约一倍；达标需要减少查询开销（直接遍历语法树）或换可扩展的分配器，见 #94 的 PR"
+
+[[budget]]
+id = "breadcrumb_cursor_move_5000_lines"
+metric = "5,000 行 C# 中移动光标后更新面包屑符号路径"
+value = 1
+unit = "ms"
+owner = "#26"
+status = "enforced"
+bench = "outline/breadcrumb_cursor_move_5000_lines"
+reason = "issue #26 验收标准：按位置二分查找符号路径并复用上一条路径，不遍历整棵树"

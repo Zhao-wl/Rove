@@ -59,6 +59,9 @@ use std::{
 mod editor_panes;
 #[cfg(test)]
 mod editor_tests;
+mod outline_host;
+#[cfg(test)]
+mod outline_tests;
 #[cfg(test)]
 mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -225,6 +228,10 @@ pub struct Workbench {
     /// #36：C# 索引的生命周期与状态栏条目。
     index: IndexStatusController,
     feedback_events: Option<rove_base::Subscription>,
+    /// #26：大纲小节、面包屑与转到符号的状态（见 `outline_host.rs`）。
+    outline: crate::outline::view::Outline,
+    /// 最近一次扫描得到的工作区（面包屑的文件选择器列出目录条目）。
+    workspace: Option<Arc<dyn Workspace>>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -340,6 +347,7 @@ impl Workbench {
         let theme_service = rove_theme::ThemeService::new(services.clone());
         let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;
+        let outline = Self::new_outline(theme.clone(), &services, cx);
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
@@ -376,6 +384,8 @@ impl Workbench {
             theme_events: None,
             index: IndexStatusController::default(),
             feedback_events: None,
+            outline,
+            workspace: None,
         };
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
@@ -434,6 +444,7 @@ impl Workbench {
                 Err(e) => eprintln!("settings: 编辑器设置无效，沿用旧值：{e}"),
             }
         }
+        self.outline_settings_changed(keys, cx);
         // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
@@ -521,6 +532,7 @@ impl Workbench {
             let _ = this.update(cx, |view, cx| {
                 let tree = result.and_then(|workspace| {
                     view.watch_workspace(&workspace, cx);
+                    view.workspace = Some(workspace.clone());
                     file_tree(workspace)
                 });
                 match tree {
@@ -769,8 +781,12 @@ impl Workbench {
             }
             code
         });
-        let events = cx.subscribe(&code, move |this, _, event: &CodeViewEvent, _| {
-            this.code_event(group, secondary, event)
+        let events = cx.subscribe(&code, move |this, _, event: &CodeViewEvent, cx| {
+            this.code_event(group, secondary, event);
+            // 面包屑与大纲“跟随光标”随光标更新（#26）。
+            if matches!(event, CodeViewEvent::SelectionChanged { .. }) {
+                cx.notify();
+            }
         });
         CodeSlot {
             code,
@@ -1303,12 +1319,13 @@ impl Workbench {
 }
 
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 5] = [
+const KNOWN_FACTORIES: [&str; 6] = [
     CONTAINER_FACTORY,
     STATUS_FACTORY,
     FILE_VIEW,
     PROBLEMS,
     crate::index_status::DETAILS_VIEW,
+    crate::outline::registry::OUTLINE_VIEW,
 ];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
@@ -1349,6 +1366,7 @@ impl ShellHost for Workbench {
             FILE_VIEW => Some(self.render_file_tree(cx)),
             PROBLEMS => Some(shell::view::render_problems_empty(self)),
             crate::index_status::DETAILS_VIEW => Some(self.render_index_details(cx)),
+            crate::outline::registry::OUTLINE_VIEW => Some(self.render_outline(cx)),
             _ => None,
         }
     }
@@ -1390,6 +1408,8 @@ impl Render for Workbench {
         self.sync_views(cx);
         // A tab that finished loading in the background reports Ready once it is shown here.
         self.editor.flush_ready();
+        // #26: outline, breadcrumbs and symbol requests follow the active editor.
+        self.sync_outline(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1429,10 +1449,12 @@ impl Render for Workbench {
             .status_bar
             .set(&shell.contributions, appearance::STATUS_FILE, status);
         let workbench = shell::view::render(self, window, cx);
+        let goto = self.goto_overlay(cx);
+        let context = editor_actions::context(&self.editor) + self.breadcrumbs_context();
         div()
             .size_full()
             .font_family("Segoe UI")
-            .key_context(editor_actions::context(&self.editor).as_str())
+            .key_context(context.as_str())
             .on_action(
                 cx.listener(|v, action: &editor_actions::EditorAction, _, cx| {
                     v.command(action.0, cx)
@@ -1461,7 +1483,13 @@ impl Render for Workbench {
             .on_action(cx.listener(|v, _: &crate::index_status::OpenLog, _, cx| {
                 v.index_command(crate::index_status::OPEN_LOG, cx)
             }))
+            .on_action(cx.listener(
+                |v, a: &crate::outline::registry::OutlineAction, window, cx| {
+                    v.outline_command(a.0, window, cx)
+                },
+            ))
             .child(workbench)
+            .children(goto)
     }
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.

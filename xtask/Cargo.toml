@@ -69,3 +69,7 @@ harness = false
 [[bench]]
 name = "huge_file"
 harness = false
+
+[[bench]]
+name = "outline"
+harness = false
