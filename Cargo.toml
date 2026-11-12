@@ -48,6 +48,8 @@ globset = "0.4"
 # #19 代码视图：按字素簇做命中测试与插入符移动（UAX #29）；#18 的列表过滤也用它。
 unicode-segmentation = "1.12"
 async-channel = "2.5"
+# #24 快速打开：候选很多时在常驻线程池上并行打分（已在依赖图里，gpui 的传递依赖）。
+rayon = "1"
 serde_json_lenient = "0.2"
 # #8 超大文件：只读内存映射。
 memmap2 = "0.9"

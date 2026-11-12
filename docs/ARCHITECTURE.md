@@ -801,9 +801,16 @@ Markdown 局部更新与回退、可见区域优先、按文档基线、设置�
 | `registry` | 命令 `workbench.action.quickOpen` / `showCommands` / `gotoLine`、界面字符串、`QuickAccessAction`、`search.quickOpen.*` 与 `workbench.quickOpen.*` 的读取、命令面板不列出的内部命令 | 仅 action |
 
 - **候选与排序**：label = 文件名，description = 相对目录，path = 相对路径（分隔符 `\`，与 VS Code 在 Windows 上一致）。
-  `Target` 在建索引时预先算好 UTF-16 与小写形式，按键时不再分配。查询是上一次查询的延长（且没有引号）时，只在上一次的
-  匹配集合里重新打分；候选集变化（`FileIndex::generation`）时作废。只保留最好的 512 条，用二分插入而不是 `sort`
-  （VS Code 的比较规则不保证严格全序，`sort` 可能 panic）。
+  排序规则全部来自 `rove-fuzzy`；为了让每次按键在十几万个候选上也守住 16 ms，打分的数据布局与 VS Code 的 JS 实现不同，
+  但结果必须逐位相同（`rove-fuzzy` 的测试逐项对照）：
+  - 纯 ASCII 的路径（绝大多数）依次追加在一整块连续的字节里（`FileIndex::arena`），字符集合的 64 位掩码放在紧凑的数组里
+    （`Hot`，每个候选 32 字节）：查询里出现的字符，候选里必须都有，否则几纳秒内否决；其余候选（非 ASCII 文件名）用预先算好
+    UTF-16 与小写形式的 `Target`，走同一套泛型打分代码（`Text` trait：`Wide` / `Ascii`）。
+  - 打分只产生 `Summary`（分数与匹配区间的首尾，不分配）；比较器只用得到分数、首尾、label/description/路径长度，
+    字符串只在整数部分全部相同时才取（`compare_keys`）。排名确定后才给最终的前 512 名生成完整的高亮区间。
+  - 查询是上一次查询的延长（且没有引号）时，只在上一次的匹配集合里重新打分；候选集变化（`FileIndex::generation`）时作废。
+  - 候选超过 1.2 万个时在 rayon 线程池里分块并行，各块共享“第 512 名的分数下限”（原子变量），最后归并各块的前 512 名。
+  - 只保留最好的 512 条，用二分插入而不是 `sort`（VS Code 的比较规则不保证严格全序，`sort` 可能 panic）。
 - **历史**：窗口内最近打开的文件（最近的在前，最多 100 个，不持久化）。空查询只列历史；有查询时历史中匹配的排在前面，
   `search.quickOpen.history.filterSortOrder` 为 `default` 时按相关度、`recency` 时按最近打开；文件结果不重复历史里的文件；
   `search.quickOpen.includeHistory = false` 时没有历史分组。

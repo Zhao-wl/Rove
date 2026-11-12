@@ -1,5 +1,6 @@
 //! 快速打开核心逻辑的单元测试（#24）：前缀与后缀解析、转到行、命令面板排序、文件索引的增量更新、
 //! 按键间剪枝与完整扫描等价、历史加权。fuzzyScorer 本身的一致性测试在 `rove-fuzzy`。
+#![allow(clippy::single_range_in_vec_init)]
 use super::{
     commands::{palette_picks, CommandEntry, CommandHistory, PaletteLabels},
     files::{FileIndex, FileLabels, HistorySort, Search, SearchOptions, MAX_RESULTS},
@@ -387,6 +388,33 @@ fn incremental_pruning_gives_the_same_results_as_a_full_scan() {
     let b = Search::default().run(&idx, "player", &[], SearchOptions::default());
     assert_eq!(names(&idx, &a.files), names(&idx, &b.files));
     assert_eq!(a.files.len(), MAX_RESULTS.min(a.files.len()));
+}
+
+#[test]
+fn parallel_scoring_gives_the_same_results_as_a_single_thread() {
+    let paths = synthetic_paths(6000);
+    let idx = index(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+    for query in ["c", "pl", "enemy spawner", "Scripts/UI", "\"Menu\"", "zzz"] {
+        let mut one = Search::default();
+        one.set_threads(Some(1));
+        let mut many = Search::default();
+        many.set_threads(Some(5));
+        let a = one.run(&idx, query, &[], SearchOptions::default());
+        let b = many.run(&idx, query, &[], SearchOptions::default());
+        assert_eq!(
+            names(&idx, &a.files),
+            names(&idx, &b.files),
+            "查询 {query:?}"
+        );
+        // 下一次按键的剪枝集合也一致
+        let a = one.run(&idx, &format!("{query}e"), &[], SearchOptions::default());
+        let b = many.run(&idx, &format!("{query}e"), &[], SearchOptions::default());
+        assert_eq!(
+            names(&idx, &a.files),
+            names(&idx, &b.files),
+            "查询 {query:?}e"
+        );
+    }
 }
 
 #[test]

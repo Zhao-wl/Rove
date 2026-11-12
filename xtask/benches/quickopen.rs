@@ -125,6 +125,7 @@ const TYPED: &[&str] = &[
 fn percentiles(index: &FileIndex, name: &str) {
     let labels = labels();
     let mut samples = Vec::new();
+    let mut by_text: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
     for _ in 0..20 {
         for query in TYPED {
             let mut search = Search::default();
@@ -133,10 +134,24 @@ fn percentiles(index: &FileIndex, name: &str) {
                 typed.push(ch);
                 let start = Instant::now();
                 keystroke(&mut search, index, &typed, &labels);
-                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                samples.push(ms);
+                let best = by_text.entry(typed.clone()).or_insert(f64::MAX);
+                *best = best.min(ms);
             }
         }
     }
+    let mut slowest: Vec<_> = by_text.into_iter().collect();
+    slowest.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let slowest: Vec<String> = slowest
+        .iter()
+        .take(6)
+        .map(|(q, ms)| format!("{q:?} {ms:.1}"))
+        .collect();
+    eprintln!(
+        "quickopen/{name} 最慢的按键（各取最好一次）：{}",
+        slowest.join("，")
+    );
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let at = |p: f64| samples[((samples.len() as f64 * p) as usize).min(samples.len() - 1)];
     eprintln!(
@@ -147,6 +162,36 @@ fn percentiles(index: &FileIndex, name: &str) {
         at(0.99),
         samples[samples.len() - 1],
     );
+}
+
+/// 第一个字符的一次按键，拆成“搜索”与“转成行”两段，并对比单线程与自动线程数（诊断用，打印到 stderr）。
+fn breakdown(index: &FileIndex, name: &str) {
+    let labels = labels();
+    for threads in [Some(1), Some(2), Some(4), Some(8), Some(12), None] {
+        for query in ["a"] {
+            let mut best = (f64::MAX, f64::MAX);
+            for _ in 0..7 {
+                let mut search = Search::default();
+                search.set_threads(threads);
+                let first = &query[..1];
+                let start = Instant::now();
+                let results = search.run(index, first, &[], SearchOptions::default());
+                let find = start.elapsed().as_secs_f64() * 1000.0;
+                let start = Instant::now();
+                black_box(results.picks(index, &labels));
+                let rows = start.elapsed().as_secs_f64() * 1000.0;
+                if find + rows < best.0 + best.1 {
+                    best = (find, rows);
+                }
+            }
+            eprintln!(
+                "quickopen/{name} 线程 {threads:?} 查询 {:?}：搜索 {:.2} ms + 转成行 {:.2} ms",
+                &query[..1],
+                best.0,
+                best.1
+            );
+        }
+    }
 }
 
 fn bench_set(c: &mut Criterion, index: &FileIndex, suffix: &str) {
@@ -178,10 +223,12 @@ fn bench_set(c: &mut Criterion, index: &FileIndex, suffix: &str) {
 fn benchmark(c: &mut Criterion) {
     let synthetic = synthetic_index(25_000);
     percentiles(&synthetic, "synthetic_25k");
+    breakdown(&synthetic, "synthetic_25k");
     bench_set(c, &synthetic, "synthetic_25k");
     match large_index() {
         Some(index) => {
             percentiles(&index, "large");
+            breakdown(&index, "large");
             bench_set(c, &index, "large");
         }
         None => eprintln!("quickopen/large：已跳过（未设置 ROVE_TEST_UNITY_LARGE 或路径不存在）"),

@@ -8,6 +8,7 @@
 //!
 //! 测试按 Windows 的语义写：`URI.file(p).fsPath` 是补前导 `/` 后把 `/` 换成 `\`；`basename` 与
 //! `dirname` 按 `\` 取；`posix.normalize` / `win32.normalize` 只需要换分隔符。
+#![allow(clippy::unnecessary_sort_by, clippy::single_range_in_vec_init)]
 use crate::{
     compare_items_by_fuzzy_score, piece_to_query, prepare_query, score_fuzzy as score_fuzzy_impl,
     score_fuzzy2, score_item_fuzzy, FuzzyScorerCache, ItemAccessor, ItemScore, Match, Score,
@@ -1738,4 +1739,384 @@ fn workspace_symbol_search_with_special_characters() {
         "Should match \"#\" symbol when query is \"#\""
     );
     assert!(!matches.is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rove 自己的补充：只算分数的热路径必须与完整打分给出相同的分数。
+
+#[test]
+fn score_only_path_agrees_with_the_full_scorer() {
+    use crate::{prepare_query, score_target, score_target_value, Target};
+    let sep = crate::SEP;
+    let paths = [
+        "Assets/Scripts/Player/PlayerController.cs",
+        "Assets/Scripts/UI/MainMenu.cs",
+        "Assets/Plugins/ThirdParty/Json.NET/Newtonsoft.Json.dll.meta",
+        "README.md",
+        "src/main.rs",
+        "docs/游戏/角色控制.md",
+        "a/b/c/d/e/f/g/h/i/j/k/l/m/n.txt",
+        "ASDFasdfasdf",
+    ];
+    let targets: Vec<Target> = paths
+        .iter()
+        .map(|p| {
+            let native = p.replace('/', &sep.to_string());
+            let (dir, name) = match native.rfind(sep) {
+                Some(i) => (&native[..i], &native[i + 1..]),
+                None => ("", &native[..]),
+            };
+            Target::new(name, (!dir.is_empty()).then_some(dir), Some(&native))
+        })
+        .collect();
+    let queries = [
+        "p",
+        "pc",
+        "player",
+        "playerc",
+        "ui menu",
+        "\"menu\"",
+        "main.rs",
+        "scripts/ui",
+        r"scripts\ui",
+        "角色",
+        "json net",
+        "asdf",
+        "xyz",
+        "a b c",
+        "readme.md",
+        r"Assets\Scripts\UI\MainMenu.cs",
+        "*",
+        "mm#",
+    ];
+    for q in queries {
+        let query = prepare_query(q);
+        for t in &targets {
+            for allow in [true, false] {
+                assert_eq!(
+                    score_target_value(t, &query, allow),
+                    score_target(t, &query, allow).score,
+                    "查询 {q:?} 目标 {:?} allow={allow}",
+                    t.path()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn summary_path_agrees_with_the_full_scorer_and_comparator() {
+    use crate::{
+        compare_items, compare_scored, prepare_query, score_target, score_target_summary, Scored,
+        Target,
+    };
+    let sep = crate::SEP;
+    let paths = [
+        "Assets/Scripts/Player/PlayerController.cs",
+        "Assets/Scripts/UI/MainMenu.cs",
+        "Assets/Plugins/ThirdParty/Json.NET/Newtonsoft.Json.dll.meta",
+        "README.md",
+        "src/main.rs",
+        "docs/游戏/角色控制.md",
+        "a/b/c/d/e/f/g/h/i/j/k/l/m/n.txt",
+        "ASDFasdfasdf",
+        "Assets/Scripts/UI/Menu.cs",
+        "Assets/Menu/Menu.cs",
+        "x/y/menu.cs",
+    ];
+    let targets: Vec<Target> = paths
+        .iter()
+        .map(|p| {
+            let native = p.replace('/', &sep.to_string());
+            let (dir, name) = match native.rfind(sep) {
+                Some(i) => (&native[..i], &native[i + 1..]),
+                None => ("", &native[..]),
+            };
+            Target::new(name, (!dir.is_empty()).then_some(dir), Some(&native))
+        })
+        .collect();
+    let queries = [
+        "p",
+        "m",
+        "pc",
+        "player",
+        "playerc",
+        "ui menu",
+        "\"menu\"",
+        "menu",
+        "main.rs",
+        "scripts/ui",
+        r"scripts\ui",
+        "角色",
+        "json net",
+        "asdf",
+        "xyz",
+        "a b c",
+        "readme.md",
+        r"Assets\Scripts\UI\MainMenu.cs",
+        "*",
+        "mm#",
+    ];
+    let span = |m: &Option<Vec<crate::Match>>| {
+        m.as_ref()
+            .filter(|v| !v.is_empty())
+            .map(|v| (v[0].start, v[v.len() - 1].end))
+    };
+    for q in queries {
+        let query = prepare_query(q);
+        let scored: Vec<_> = targets
+            .iter()
+            .map(|t| {
+                (
+                    score_target_summary(t, &query, true),
+                    score_target(t, &query, true),
+                )
+            })
+            .collect();
+        for (t, (summary, full)) in targets.iter().zip(&scored) {
+            assert_eq!(summary.score, full.score, "{q:?} {:?}", t.path());
+            assert_eq!(
+                summary.label,
+                span(&full.label_match),
+                "label {q:?} {:?}",
+                t.path()
+            );
+            assert_eq!(
+                summary.description,
+                span(&full.description_match),
+                "description {q:?} {:?}",
+                t.path()
+            );
+        }
+        for (ta, (sa, fa)) in targets.iter().zip(&scored) {
+            for (tb, (sb, fb)) in targets.iter().zip(&scored) {
+                let slow = compare_scored(
+                    &Scored {
+                        score: fa,
+                        label: ta.label(),
+                        description: ta.description(),
+                        path: ta.path(),
+                    },
+                    &Scored {
+                        score: fb,
+                        label: tb.label(),
+                        description: tb.description(),
+                        path: tb.path(),
+                    },
+                    &query,
+                );
+                let fast = compare_items(&ta.cmp_item(sa), &tb.cmp_item(sb), &query);
+                assert_eq!(fast, slow, "{q:?}: {:?} vs {:?}", ta.path(), tb.path());
+            }
+        }
+    }
+}
+
+#[test]
+fn ascii_entry_point_agrees_with_the_target_path() {
+    use crate::{ascii_masks, prepare_query, score_ascii_summary, score_target_summary, Target};
+    let sep = crate::SEP;
+    let paths = [
+        "Assets/Scripts/Player/PlayerController.cs",
+        "Assets/Scripts/UI/MainMenu.cs",
+        "Assets/Plugins/ThirdParty/Json.NET/Newtonsoft.Json.dll.meta",
+        "README.md",
+        "src/main.rs",
+        "a/b/c/d/e/f/g/h/i/j/k/l/m/n.txt",
+        "ASDFasdfasdf",
+        "Assets/Scripts/UI/Menu.cs",
+        "Assets/Menu/Menu.cs",
+        "x/y/menu.cs",
+    ];
+    let queries = [
+        "p",
+        "m",
+        "pc",
+        "player",
+        "playerc",
+        "ui menu",
+        "\"menu\"",
+        "menu",
+        "main.rs",
+        "scripts/ui",
+        r"scripts\ui",
+        "json net",
+        "asdf",
+        "xyz",
+        "a b c",
+        "readme.md",
+        r"Assets\Scripts\UI\MainMenu.cs",
+        "mm#",
+    ];
+    for q in queries {
+        let query = prepare_query(q);
+        assert!(query.is_ascii());
+        for p in paths {
+            let native = p.replace('/', &sep.to_string());
+            let (label_start, label, description) = match native.rfind(sep) {
+                Some(i) => (i + 1, &native[i + 1..], Some(&native[..i])),
+                None => (0, &native[..], None),
+            };
+            let target = Target::new(label, description, Some(&native));
+            let masks = ascii_masks(native.as_bytes(), label_start);
+            for allow in [true, false] {
+                assert_eq!(
+                    score_ascii_summary(native.as_bytes(), label_start, masks, &query, allow),
+                    score_target_summary(&target, &query, allow),
+                    "{q:?} {p:?} allow={allow}"
+                );
+            }
+        }
+    }
+    assert!(!prepare_query("角色").is_ascii());
+}
+
+/// 参考实现：VS Code `doScoreFuzzy` 的稠密矩阵写法（逐格计算），用来核对稀疏行填充的优化。
+fn dense_reference(
+    target: &str,
+    query: &str,
+    allow_non_contiguous_matches: bool,
+) -> (i32, Vec<usize>) {
+    let target: Vec<u16> = target.encode_utf16().collect();
+    let target_lower: Vec<u16> = target
+        .iter()
+        .map(|&c| if (65..=90).contains(&c) { c + 32 } else { c })
+        .collect();
+    let query: Vec<u16> = query.encode_utf16().collect();
+    let query_lower: Vec<u16> = query
+        .iter()
+        .map(|&c| if (65..=90).contains(&c) { c + 32 } else { c })
+        .collect();
+    let (tl, ql) = (target.len(), query.len());
+    if tl == 0 || ql == 0 || tl < ql {
+        return (0, vec![]);
+    }
+    let equal = |a: u16, b: u16| a == b || ((a == 47 || a == 92) && (b == 47 || b == 92));
+    let sep_bonus = |c: u16| match c {
+        47 | 92 => 5,
+        95 | 45 | 46 | 32 | 39 | 34 | 58 => 4,
+        _ => 0,
+    };
+    let char_score = |qi: usize, ti: usize, seq: u32| -> i32 {
+        if !equal(query_lower[qi], target_lower[ti]) {
+            return 0;
+        }
+        let mut score = 1;
+        if seq > 0 {
+            let n = seq as i32;
+            score += n.min(3) * 6 + (n - 3).max(0) * 3;
+        }
+        if query[qi] == target[ti] {
+            score += 1;
+        }
+        if ti == 0 {
+            score += 8;
+        } else {
+            let b = sep_bonus(target[ti - 1]);
+            if b != 0 {
+                score += b;
+            } else if (65..=90).contains(&target[ti]) && seq == 0 {
+                score += 2;
+            }
+        }
+        score
+    };
+    let mut scores = vec![0i32; ql * tl];
+    let mut matches = vec![0u32; ql * tl];
+    for qi in 0..ql {
+        for ti in 0..tl {
+            let cur = qi * tl + ti;
+            let left = if ti > 0 { scores[cur - 1] } else { 0 };
+            let diag = if qi > 0 && ti > 0 {
+                scores[cur - tl - 1]
+            } else {
+                0
+            };
+            let seq = if qi > 0 && ti > 0 {
+                matches[cur - tl - 1]
+            } else {
+                0
+            };
+            let score = if diag == 0 && qi > 0 {
+                0
+            } else {
+                char_score(qi, ti, seq)
+            };
+            let valid = score != 0 && diag + score >= left;
+            let contiguous_ok = allow_non_contiguous_matches
+                || qi > 0
+                || (ti + ql <= tl && (0..ql).all(|k| target_lower[ti + k] == query_lower[k]));
+            if valid && contiguous_ok {
+                matches[cur] = seq + 1;
+                scores[cur] = diag + score;
+            } else {
+                matches[cur] = 0;
+                scores[cur] = left;
+            }
+        }
+    }
+    let mut positions = vec![];
+    let (mut qi, mut ti) = (ql as isize - 1, tl as isize - 1);
+    while qi >= 0 && ti >= 0 {
+        let cur = qi as usize * tl + ti as usize;
+        if matches[cur] == 0 {
+            ti -= 1;
+        } else {
+            positions.push(ti as usize);
+            qi -= 1;
+            ti -= 1;
+        }
+    }
+    positions.reverse();
+    (scores[ql * tl - 1], positions)
+}
+
+#[test]
+fn sparse_matrix_agrees_with_the_dense_reference() {
+    let alphabet: Vec<char> = r"abcdeABCDE_-./\ 12".chars().collect();
+    let mut x: u64 = 0x9E3779B97F4A7C15;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for round in 0..20_000 {
+        let tl = 1 + next() as usize % 40;
+        let target: String = (0..tl)
+            .map(|_| alphabet[next() as usize % alphabet.len()])
+            .collect();
+        // 一半是目标的子序列（保证有匹配），一半是随机字符
+        let query: String = if round % 2 == 0 {
+            let mut q = String::new();
+            for c in target.chars() {
+                if next() % 3 == 0 {
+                    q.push(if next() % 4 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    });
+                }
+            }
+            q
+        } else {
+            let n = 1 + next() as usize % 5;
+            (0..n)
+                .map(|_| alphabet[next() as usize % alphabet.len()])
+                .collect()
+        };
+        if query.is_empty() {
+            continue;
+        }
+        let lower = query.to_lowercase();
+        for allow in [true, false] {
+            let got = crate::score_fuzzy(&target, &query, &lower, allow);
+            let want = dense_reference(&target, &query, allow);
+            assert_eq!(
+                (got.score, got.positions.clone()),
+                want,
+                "target {target:?} query {query:?} allow {allow}"
+            );
+        }
+    }
 }
