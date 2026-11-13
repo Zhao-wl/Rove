@@ -900,6 +900,72 @@ fn peek_closes_when_the_editor_switches_document(cx: &mut TestAppContext) {
     assert!(peek(&view, cx).is_none());
 }
 
+/// #143：A → B，B 打开失败时不能把预览停在 A 上（正文是 A、叠加的却是 B 的命中区间，双击还会
+/// 打开 A），而且再次选中 B 要重新尝试打开，不能被 `shown` 的缓存挡住。
+#[gpui::test]
+fn peek_preview_recovers_when_the_next_file_fails_to_open(cx: &mut TestAppContext) {
+    let workspace = |p: &str| Resource::Workspace(WorkspacePath::new(p).unwrap());
+    let f = Fixture::new("{}");
+    let (view, cx, _) = f.open(
+        Fake {
+            references: move_references(),
+            ..Default::default()
+        },
+        cx,
+    );
+    caret(&view, pos(3, 22), cx);
+    press("shift-f12", cx);
+    let w = widget(&view, cx);
+    // A：预览是 Player.cs。
+    assert_eq!(w.read_with(cx, |w, _| w.current()), Some(2));
+    assert_eq!(
+        w.read_with(cx, |w, _| w.preview_resource()),
+        Some(workspace("Assets/Player.cs"))
+    );
+    // B：选中之前把 Enemy.cs 删掉，打开必然失败。
+    std::fs::remove_file(f.folder.path().join("Assets/Enemy.cs")).unwrap();
+    press("up up up", cx);
+    assert_eq!(w.read_with(cx, |w, _| w.current()), Some(0));
+    // 预览里不再是 A 的正文，而是错误占位；也没有预览文档。
+    assert_eq!(w.read_with(cx, |w, _| w.preview_resource()), None);
+    let text = w
+        .read_with(cx, |w, cx| w.preview_text(cx))
+        .unwrap_or_default();
+    assert!(
+        text.contains("无法打开") && text.contains("Enemy.cs"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("class Player"),
+        "预览仍是上一个文件的正文：{text}"
+    );
+    // 双击预览不会打开 A：窗口还在（真打开了会以 `side = false` 关掉整个速览）。
+    w.update(cx, |w, cx| w.double_click_preview(cx));
+    cx.run_until_parked();
+    refresh(cx);
+    assert!(peek(&view, cx).is_some(), "双击失败的预览不打开任何文件");
+    // 文件回来后再次选中 B：重新尝试打开，预览换成 B。
+    f.file("Assets/Enemy.cs", ENEMY);
+    press("down", cx);
+    assert_eq!(
+        w.read_with(cx, |w, _| w.preview_resource()),
+        Some(workspace("Assets/Player.cs")),
+        "先回到 A"
+    );
+    press("up", cx);
+    assert_eq!(w.read_with(cx, |w, _| w.current()), Some(0));
+    assert_eq!(
+        w.read_with(cx, |w, _| w.preview_resource()),
+        Some(workspace("Assets/Enemy.cs")),
+        "再次选中 B 会重新打开"
+    );
+    let selection = w.read_with(cx, |w, cx| w.preview().read(cx).selection());
+    assert_eq!(
+        (selection.start(), selection.end()),
+        (pos(4, 10), pos(4, 14))
+    );
+}
+
 #[test]
 fn peek_keybindings_match_the_navigation_table() {
     // 导航一节里这些命令的每一行（键 + when）都必须原样出现在生效的默认键位表里。

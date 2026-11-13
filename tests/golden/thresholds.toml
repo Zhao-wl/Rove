@@ -1,0 +1,29 @@
+# 着色黄金测试的阈值（#11）。
+#
+# 运行器：`cargo run -p rove-syntax --example golden_colors`
+# 判定测试：`cargo test -p rove-syntax --test golden_colors`
+# 口径、差异成因与每条阈值的来历：`docs/GOLDEN_COLORS.md`
+#
+# 规则（与 `perf/budgets.toml` 相同）：**调低任何一个阈值都必须在 PR 里说明理由**。
+# 低于 0.98（issue #11 的目标）的阈值必须同时填 `reason`，否则测试直接失败——
+# 为了让一致率达标而把阈值改小，等于把问题藏起来。
+#
+# 加一种语言只需要在 `[languages]` 下加一行：
+#   <Rove 语言 ID> = { fixtures = ["<colorize-fixtures 下的文件名>", ...], threshold = 0.98 }
+# 省略 `threshold` 表示只统计、不判定（占位语言）。
+
+# 受阈值约束的主题（VS Code 当前默认主题及其 include 链）。
+enforced_themes = ["2026-dark", "2026-light", "dark_modern", "light_modern", "dark_plus", "light_plus"]
+
+# 只统计、不设阈值的主题；数字进报告。
+reported_themes = ["dark_vs", "light_vs", "hc_black", "hc_light"]
+
+[languages]
+csharp = { fixtures = ["test.cs"], threshold = 0.98 }
+json = { fixtures = ["test.json", "tsconfig_off.json"], threshold = 0.98 }
+xml = { fixtures = ["test.xml", "test-7115.xml"], threshold = 0.97, reason = "实测 97.97%。test-7115.xml 是 VS Code issue 7115 的复现用例：tree-sitter-xml 的 Name 模式要求首字符是 ASCII 字母，`Поле=\"...\"` 解析成 ERROR（19 个字符）。其余 fixture 100%。" }
+yaml = { fixtures = ["test.yaml", "issue-1550.yaml", "issue-224862.yaml", "issue-4008.yaml", "issue-6303.yaml"], threshold = 0.77, reason = "实测 77.55%（Dark/Light 2026）/ 90.11%（其余）。三个问题用例本身是写坏的 YAML：VS Code 用 invalid.illegal.* 标红，tree-sitter 则产生 ERROR 节点、连块结构（meta.block.sequence）都给不出来，两种纠错方式不可能一致。结构完好的 fixture 都在 98% 以上。" }
+markdown = { fixtures = ["test.md", "issue-279576.md", "md-math.md", "test-33886.md"], threshold = 0.77, reason = "实测 77.31%。差异的 79% 落在 VS Code 注入、而 Rove 不内置的语言上（HTML、LaTeX、TypeScript/JavaScript/CSS——都不在章程的语言清单里）；扣掉这部分后是 94.20%。test.md 单独 88.22%。" }
+# 占位语言：Rove 还没有 Lua 语法，这一行演示「加一种语言只需加一行配置」。
+# R64 接入 tree-sitter-lua 后，把 `threshold = 0.90` 补上即可开始判定。
+lua = { fixtures = ["test.lua"] }

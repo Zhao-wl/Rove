@@ -54,6 +54,19 @@ fn boundary(text: &str, ratio: f64) -> u64 {
     at as u64
 }
 
+/// 任何一步之后都不允许有端点落在 `\r\n` 中间：那样的偏移会让下一次普通输入被判为越界。
+fn selection_endpoints_are_legal(session: &EditSession, text: &str) -> bool {
+    let bytes = text.as_bytes();
+    session.selections().all().iter().all(|s| {
+        [s.anchor.0, s.active.0].iter().all(|&at| {
+            let at = at as usize;
+            at <= bytes.len()
+                && text.is_char_boundary(at)
+                && !(at > 0 && bytes[at - 1] == b'\r' && bytes.get(at) == Some(&b'\n'))
+        })
+    })
+}
+
 fn full_text(text: &dyn TextSource) -> String {
     let mut out = String::new();
     text.visit_chunks(
@@ -147,6 +160,9 @@ proptest! {
             let current = session.contents();
             prop_assert_eq!(replay.as_bytes(), current.as_bytes());
             prop_assert_eq!(full_text(&*session.snapshot()), session.contents());
+            // 选区端点必须始终合法（#46）：字符边界上、且不在 `\r\n` 中间，否则下一次普通
+            // 输入会被 `EditBuffer::apply` 判为越界。这里不真的再输入一次，以免干扰撤销分组。
+            prop_assert!(selection_endpoints_are_legal(&session, &current));
         }
 
         let edited = session.contents();

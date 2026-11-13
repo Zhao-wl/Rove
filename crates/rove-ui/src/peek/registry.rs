@@ -118,6 +118,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("peek.unavailable.implementations", "未找到实现"),
     ("peek.loading", "正在加载…"),
     ("peek.external", "外部符号：{signature}"),
+    ("peek.openFailed", "无法打开“{file}”"),
     ("peek.fileCount", "{count}"),
     ("peek.lineNumber", "{line}"),
     ("peek.close", "关闭"),

@@ -210,6 +210,15 @@ impl Snapshot {
             .map(|(_, kind)| kind.clone())
     }
 
+    /// True when the path is known but with the other kind (a file and a same-named directory
+    /// swapped places). `add` keys on the identity key alone, so such an entry has to be removed
+    /// first; an unknown path is an ordinary creation and returns false.
+    pub(crate) fn kind_differs(&self, path: &WorkspacePath, kind: &EntryKind) -> bool {
+        self.kind(path).is_some_and(|known| {
+            matches!(known, EntryKind::Directory) != matches!(kind, EntryKind::Directory)
+        })
+    }
+
     /// Input for `Workspace::files`: paged flat file list.
     pub(crate) fn files_page(&self, range: std::ops::Range<usize>) -> Result<Entries> {
         page(&self.files, range, self.complete)
@@ -310,6 +319,19 @@ mod tests {
         );
         // Adding the real directory later is a no-op, not a duplicate.
         assert!(!snapshot.add(path("Assets/Scripts"), EntryKind::Directory));
+    }
+
+    #[test]
+    fn a_kind_change_is_visible_because_add_alone_would_ignore_it() {
+        let mut snapshot = Snapshot::new();
+        snapshot.add(path("Assets"), EntryKind::File);
+        assert!(snapshot.kind_differs(&path("Assets"), &EntryKind::Directory));
+        assert!(!snapshot.kind_differs(&path("Assets"), &EntryKind::File));
+        // An unknown path is an ordinary creation, not a swap.
+        assert!(!snapshot.kind_differs(&path("Missing"), &EntryKind::Directory));
+        // `add` keys on the identity key alone, which is why callers must remove first.
+        assert!(!snapshot.add(path("Assets"), EntryKind::Directory));
+        assert!(snapshot.kind_differs(&path("Assets"), &EntryKind::Directory));
     }
 
     #[test]

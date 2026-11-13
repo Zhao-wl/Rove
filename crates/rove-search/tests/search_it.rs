@@ -357,6 +357,82 @@ fn multiline_regex() {
     assert_eq!(files[0].lines[0].ranges, vec![6..8]);
 }
 
+/// 零宽命中保留为空区间（#145）：`^` 在 3 行文件里给出 3 条结果，与文件内查找的约定一致。
+#[test]
+fn zero_width_regex_matches_are_kept_as_empty_ranges() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "a.cs", "one\n    two\nthree\n");
+    let q = SearchQuery {
+        is_regex: true,
+        ..SearchQuery::new("^")
+    };
+    let (files, summary) = run(root, &q, &config(&[]));
+    assert_eq!(files.len(), 1);
+    let lines: Vec<u64> = files[0].lines.iter().map(|l| l.line).collect();
+    assert_eq!(lines, vec![0, 1, 2]);
+    assert_eq!(summary.matches, 3);
+    for line in &files[0].lines {
+        assert_eq!(line.ranges, vec![0..0]);
+        // 行首的零宽命中落在预览起点上，不能被当作“在预览之前”丢掉。
+        assert_eq!(line.preview_ranges().collect::<Vec<_>>(), vec![0..0]);
+    }
+    // 行尾的零宽命中在行内容末尾，缩进照常不进预览。
+    let q = SearchQuery {
+        is_regex: true,
+        ..SearchQuery::new("$")
+    };
+    let (files, _) = run(root, &q, &config(&[]));
+    let ends: Vec<(u64, Vec<std::ops::Range<u32>>)> = files[0]
+        .lines
+        .iter()
+        .map(|l| (l.line, l.ranges.clone()))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![(0, vec![3..3]), (1, vec![7..7]), (2, vec![5..5])]
+    );
+    assert_eq!(&*files[0].lines[1].preview, "two");
+    assert_eq!(
+        files[0].lines[1].preview_ranges().collect::<Vec<_>>(),
+        vec![3..3]
+    );
+}
+
+/// 独立的 `\r` 也是换行（#145）：报告的行列与编辑器 `TextSource::position` 一致。
+#[test]
+fn lone_cr_is_a_line_break_like_the_editor() {
+    use rove_base::{ByteOffset, Position};
+    use rove_buffer::{RopeText, TextSource};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let content = "foo\rneedle\r\nbar\r  needle\nneedle\n";
+    write(root, "cr.txt", content);
+    let (files, summary) = run(root, &SearchQuery::new("needle"), &config(&[]));
+    assert_eq!(summary.matches, 3);
+    let got: Vec<(u64, u32, &str)> = files[0]
+        .lines
+        .iter()
+        .map(|l| (l.line, l.ranges[0].start, &*l.preview))
+        .collect();
+    assert_eq!(
+        got,
+        vec![(1, 0, "needle"), (3, 2, "needle"), (4, 0, "needle")]
+    );
+    // 逐条与编辑器的行列换算对照。
+    let text = RopeText::from_text(content);
+    for ((line, column, _), (offset, _)) in got.iter().zip(content.match_indices("needle")) {
+        assert_eq!(
+            text.position(ByteOffset(offset as u64)).unwrap(),
+            Position {
+                line: rove_base::Line(*line),
+                column: rove_base::Utf8Column(*column as u64),
+            }
+        );
+    }
+}
+
 /// 大型 Unity 项目上的首批与全量耗时（热缓存）。未设置 `ROVE_TEST_UNITY_LARGE` 时跳过。
 #[test]
 fn unity_large_common_identifier_timing() {

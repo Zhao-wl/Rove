@@ -111,7 +111,9 @@ fn markdown_token_snapshot() {
     assert_eq!(
         snapshot(result.snapshot.as_ref(), 4),
         concat!(
-            "0 0..1 punctuation.definition.heading.markdown\n",
+            // 标题整行都在 markup.heading 里（与 VS Code 的 TextMate 语法一致，#11）。
+            "0 0..1 markup.heading.markdown heading.1.markdown punctuation.definition.heading.markdown\n",
+            "0 1..2 markup.heading.markdown heading.1.markdown\n",
             "0 2..8 markup.heading.markdown heading.1.markdown entity.name.section.markdown\n",
             "2 10..12 markup.bold.markdown punctuation.definition.bold.markdown\n",
             "2 12..16 markup.bold.markdown\n",
@@ -149,7 +151,11 @@ fn markdown_injects_supported_languages_and_keeps_unknown_plain() {
         &format!("{mark}unknown\npublic class A {{}}\n{mark}\n"),
         0,
     );
-    assert!(result.snapshot.tokens(Line(1)).unwrap().is_empty());
+    // 语言未知时不注入任何语法：只剩围栏代码块本身的 scope（VS Code 在没有对应语法时也是这样）。
+    let line = result.snapshot.tokens(Line(1)).unwrap();
+    assert!(line
+        .iter()
+        .all(|t| *t.scopes == [Arc::from("markup.fenced_code.block.markdown")]));
 }
 
 #[test]
@@ -396,7 +402,11 @@ fn settings_override_file_associations_and_highlighting_limits() {
     assert!(!result.snapshot.tokens(Line(1)).unwrap().is_empty());
     let result = parse(&syntax, "json", &format!("true\n{}", " ".repeat(59)), 2);
     assert!(result.snapshot.tokens(Line(0)).unwrap().is_empty());
-    assert!(result.snapshot.tokens(Line(1)).unwrap().is_empty());
+    // 语言未知时不注入任何语法：只剩围栏代码块本身的 scope（VS Code 在没有对应语法时也是这样）。
+    let line = result.snapshot.tokens(Line(1)).unwrap();
+    assert!(line
+        .iter()
+        .all(|t| *t.scopes == [Arc::from("markup.fenced_code.block.markdown")]));
 }
 
 #[test]
