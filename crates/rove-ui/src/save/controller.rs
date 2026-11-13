@@ -14,8 +14,10 @@
 //! | 外部修改且本地没有修改 | 无 | 静默重新加载 |
 //!
 //! 反馈键带文档 ID：同一文档同一原因只有一条，再次触发时反馈层更新次数而不是再弹一条。
-//! 通知与模态框里的后续按钮在**最近一次未完成的保存请求**上叠加选项（#140）：另存为失败后，
-//! “重试 / 覆盖 / 改用 UTF-8 / 仍然保存（替换为 ?）”仍然作用于另存为的目标，通知说的也是目标文件。
+//! 失败反馈里**那次请求的后续按钮**（“重试 / 覆盖 / 改用 UTF-8 / 仍然保存（替换为 ?）”）在
+//! **最近一次未完成的保存请求**上叠加选项（#140）：另存为失败后它们仍然作用于另存为的目标，
+//! 通知说的也是目标文件。关闭确认模态框的“保存”不在此列——它是一条新的“保存本文档”命令，
+//! 永远是原地保存（未命名文档照旧请求选路径），和 `ctrl+s` 一致。
 //! 宿主负责：命令分发、“另存为”对话框、把 [`Effect`] 反映到视图（文本、标签的脏标记 / “已删除”），
 //! 以及在后台读盘（[`SaveController::due`] → 读盘 → [`SaveController::apply_disk`]）。
 
@@ -75,9 +77,11 @@ type HotExit = Box<dyn Fn(&TextFile) -> bool>;
 /// 窗口拥有的保存控制器（只在 UI 线程使用）。
 pub struct SaveController {
     files: BTreeMap<DocumentId, TextFile>,
-    /// 每个文档最近一次**未完成**的保存请求（#140）：反馈里的后续按钮在它上面叠加本次选项，
-    /// 这样另存为失败后的“重试 / 覆盖 / 改用 UTF-8 / 替换为 ?”仍然写向另存为的目标路径。
-    /// 保存成功、取消、还原、关闭（不保存）或 [`Self::detach`] 时清除。
+    /// 每个文档最近一次**未完成**的保存请求（#140）：失败反馈里那次请求的后续按钮在它上面
+    /// 叠加本次选项，这样另存为失败后的“重试 / 覆盖 / 改用 UTF-8 / 替换为 ?”仍然写向另存为的
+    /// 目标路径。保存成功、取消、反馈被关掉（[`Self::on_dismissed`]）、还原、关闭（保存 /
+    /// 不保存）、[`Self::attach`] 或 [`Self::detach`] 时清除；生命周期不超过它所属的那份
+    /// [`TextFile`]。
     pending: BTreeMap<DocumentId, SaveRequest>,
     own: SelfWrites,
     coalescer: ChangeCoalescer,
@@ -115,6 +119,8 @@ impl SaveController {
     }
 
     pub fn attach(&mut self, document: DocumentId, file: TextFile) {
+        // 同一个 ID 换一份文档时，上一份遗留的未完成请求不能被新文档继承（#140）。
+        self.pending.remove(&document);
         self.files.insert(document, file);
     }
 
@@ -306,7 +312,7 @@ impl SaveController {
         let save = |this: &mut Self, request: SaveRequest, feedback: &mut FeedbackHub| {
             this.save(document, &request, options, feedback, now)
         };
-        // 后续按钮都在最近一次未完成的请求上叠加本次选项：另存为的目标路径不能丢（#140）。
+        // 那次请求的后续按钮都在最近一次未完成的请求上叠加本次选项：另存为的目标路径不能丢（#140）。
         let base = self.follow_up(document);
         match (prefix, action) {
             (_, ACTION_SAVE_AS) => vec![Effect::PickSaveAsPath(document)],
@@ -352,8 +358,11 @@ impl SaveController {
                 },
                 feedback,
             ),
+            // 关闭确认的“保存”是一条新的“保存本文档”命令，不是某次另存为的后续：模态框说的是
+            // 当前文档，就得写回当前文档（未命名文档照旧请求选路径）。
             (KEY_CLOSE, ACTION_SAVE) => {
-                let mut effects = save(self, base, feedback);
+                self.pending.remove(&document);
+                let mut effects = save(self, SaveRequest::default(), feedback);
                 if effects.iter().any(|e| matches!(e, Effect::Saved { .. })) {
                     effects.push(Effect::Close(document));
                 }
@@ -369,6 +378,21 @@ impl SaveController {
                 Vec::new()
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// 保存的反馈被关掉了（用户点了通知 / 模态框自带的关闭按钮，宿主把
+    /// `FeedbackEvent::Dismissed` 转给这里）：那次保存就此作罢，记住的请求一并忘掉，
+    /// 免得它跨越到下一次保存（#140）。外部修改提示条与关闭确认不带保存请求，忽略。
+    pub fn on_dismissed(&mut self, feedback_key: &str) {
+        let Some((prefix, document)) = parse_key(feedback_key) else {
+            return;
+        };
+        if matches!(
+            prefix,
+            KEY_BUSY | KEY_READ_ONLY | KEY_CONFLICT | KEY_FAILED | KEY_UNENCODABLE
+        ) {
+            self.pending.remove(&document);
         }
     }
 

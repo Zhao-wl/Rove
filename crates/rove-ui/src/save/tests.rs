@@ -481,6 +481,130 @@ fn in_place_follow_up_still_writes_to_the_original_path() {
     assert!(!missing.exists());
 }
 
+/// 另存为失败后关闭文档：模态框问的是当前文档，“保存”就写回当前文档，不写向记住的目标（#140）。
+#[test]
+fn close_modal_save_after_a_failed_save_as_writes_back_to_the_original_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = TestSettings::new(&[]);
+    // 通知被关掉与没被关掉（toast 自动隐藏、用户不管它）两种情况都一样。
+    for dismissed in [false, true] {
+        let path = dir.path().join(format!("Player-{dismissed}.cs"));
+        std::fs::write(&path, "class Player {}").unwrap();
+        let mut c = controller();
+        let mut feedback = FeedbackHub::default();
+        open(&mut c, &path, &settings);
+        type_end(&mut c, "// a");
+
+        // 另存为写不进去（目标文件夹不存在），用户不点通知上的任何按钮。
+        let target = dir.path().join("none").join("Copy.cs");
+        assert!(c
+            .save_as(
+                DOC,
+                target.clone(),
+                &SaveOptions::default(),
+                &mut feedback,
+                Instant::now()
+            )
+            .is_empty());
+        let n = feedback.notifications()[0].clone();
+        assert!(n.key.starts_with(KEY_FAILED));
+        if dismissed {
+            c.on_dismissed(&n.key);
+        }
+
+        assert_eq!(c.request_close(DOC, &mut feedback), CloseCheck::Pending);
+        let modal = feedback.modal().expect("模态框").clone();
+        // 模态框说的是当前文档。
+        assert_eq!(modal.message.args[0].1.as_ref(), n_name(&path));
+        feedback.act(&modal.key, ACTION_SAVE).unwrap();
+        let effects = act(&mut c, &modal.key, ACTION_SAVE, &settings, &mut feedback);
+        assert!(
+            matches!(&effects[..], [Effect::Saved { path: p, .. }, Effect::Close(DOC)] if p == &path),
+            "{dismissed}: {effects:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"class Player {}// a");
+        assert_eq!(c.file(DOC).unwrap().path(), Some(path.as_path()));
+        assert!(!target.exists());
+    }
+}
+
+/// 反馈被关掉后，记住的请求随之作废：后续动作按普通的原地保存处理（#140）。
+#[test]
+fn dismissing_the_feedback_forgets_the_remembered_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Player.cs");
+    std::fs::write(&path, "class Player {}").unwrap();
+    let settings = TestSettings::new(&[]);
+    let mut c = controller();
+    let mut feedback = FeedbackHub::default();
+    open(&mut c, &path, &settings);
+    type_end(&mut c, "// a");
+
+    let target = dir.path().join("none").join("Copy.cs");
+    assert!(c
+        .save_as(
+            DOC,
+            target.clone(),
+            &SaveOptions::default(),
+            &mut feedback,
+            Instant::now()
+        )
+        .is_empty());
+    let n = feedback.notifications()[0].clone();
+    c.on_dismissed(&n.key);
+
+    let effects = act(&mut c, &n.key, ACTION_RETRY, &settings, &mut feedback);
+    assert!(
+        matches!(&effects[..], [Effect::Saved { path: p, .. }] if p == &path),
+        "{effects:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"class Player {}// a");
+    assert!(!target.exists());
+}
+
+/// 同一个文档 ID 换一份文档时，上一份遗留的未完成请求不会被新文档继承（#140）。
+#[test]
+fn reattaching_a_document_forgets_the_remembered_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("Player.cs");
+    let second = dir.path().join("Enemy.cs");
+    std::fs::write(&first, "class Player {}").unwrap();
+    std::fs::write(&second, "class Enemy {}").unwrap();
+    let settings = TestSettings::new(&[]);
+    let mut c = controller();
+    let mut feedback = FeedbackHub::default();
+    open(&mut c, &first, &settings);
+    type_end(&mut c, "// a");
+
+    let target = dir.path().join("none").join("Copy.cs");
+    assert!(c
+        .save_as(
+            DOC,
+            target.clone(),
+            &SaveOptions::default(),
+            &mut feedback,
+            Instant::now()
+        )
+        .is_empty());
+    let n = feedback.notifications()[0].clone();
+
+    // 宿主没有先 detach，直接用同一个 ID 换上了另一份文档。
+    open(&mut c, &second, &settings);
+    type_end(&mut c, "// b");
+    let effects = act(&mut c, &n.key, ACTION_RETRY, &settings, &mut feedback);
+    assert!(
+        matches!(&effects[..], [Effect::Saved { path: p, .. }] if p == &second),
+        "{effects:?}"
+    );
+    assert_eq!(std::fs::read(&second).unwrap(), b"class Enemy {}// b");
+    assert_eq!(std::fs::read(&first).unwrap(), b"class Player {}");
+    assert!(!target.exists());
+}
+
+fn n_name(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().into_owned()
+}
+
 #[test]
 fn close_dirty_document_asks_save_dont_save_cancel() {
     let dir = tempfile::tempdir().unwrap();
