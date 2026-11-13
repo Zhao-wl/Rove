@@ -13,7 +13,13 @@
 (flow_mapping (_ key: (flow_node (plain_scalar (string_scalar) @meta.flow.map.key.yaml @string.unquoted.plain.in.yaml @entity.name.tag.yaml))))
 (block_mapping_pair key: (flow_node [(double_quote_scalar) (single_quote_scalar)] @entity.name.tag.yaml))
 (flow_mapping (_ key: (flow_node [(double_quote_scalar) (single_quote_scalar)] @entity.name.tag.yaml)))
+; 块序列整体带 meta.block.sequence.yaml：有的主题（Dark/Light 2026）给 meta.block 定了前景色，
+; 少了这一层，序列里没有被更内层规则命中的字符就会用成编辑器前景色。
+(block_sequence) @meta.block.sequence.yaml
 (comment) @comment.line.number-sign.yaml
+; 锚点与别名整体是 keyword.control.flow.*，`&`/`*` 与名字再往里一层（与 VS Code 一致）。
+(anchor) @keyword.control.flow.anchor.yaml
+(alias) @keyword.control.flow.alias.yaml
 (anchor_name) @variable.other.anchor.yaml
 (alias_name) @variable.other.alias.yaml
 "&" @punctuation.definition.anchor.yaml

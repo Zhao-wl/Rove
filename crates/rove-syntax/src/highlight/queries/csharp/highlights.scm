@@ -75,6 +75,7 @@
 "remove" @storage.type.accessor.remove.cs
 
 (using_directive "using" @keyword.other.directive.using.cs)
+(using_directive [(identifier) (qualified_name)] @entity.name.type.namespace.cs)
 (using_statement "using" @keyword.control.context.using.cs)
 "lock" @keyword.control.context.lock.cs
 (implicit_type) @storage.type.var.cs
@@ -107,6 +108,35 @@
 (enum_member_declaration name: (identifier) @entity.name.variable.enum-member.cs)
 (type_parameter name: (identifier) @entity.name.type.type-parameter.cs)
 (attribute name: (_) @entity.other.attribute-name.cs)
+; 类型引用：写在 type 字段上的标识符与泛型名（变量声明、参数、返回值、new、强制转换……）。
+(_ type: (identifier) @entity.name.type.cs)
+(_ type: (generic_name (identifier) @entity.name.type.cs))
+(base_list (identifier) @entity.name.type.cs)
+(base_list (generic_name (identifier) @entity.name.type.cs))
+(type_argument_list (identifier) @entity.name.type.cs)
+; 表达式里的普通标识符：VS Code 的 C# 语法统一给 variable.other.readwrite.cs。
+; 这里按位置列出而不是一网打尽，免得给声明名、类型名也套上变量 scope。
+(binary_expression left: (identifier) @variable.other.readwrite.cs)
+(binary_expression right: (identifier) @variable.other.readwrite.cs)
+(prefix_unary_expression (identifier) @variable.other.readwrite.cs)
+(postfix_unary_expression (identifier) @variable.other.readwrite.cs)
+(parenthesized_expression (identifier) @variable.other.readwrite.cs)
+(assignment_expression left: (identifier) @variable.other.readwrite.cs)
+(assignment_expression right: (identifier) @variable.other.readwrite.cs)
+(argument (identifier) @variable.other.readwrite.cs)
+(return_statement (identifier) @variable.other.readwrite.cs)
+(interpolation (identifier) @variable.other.readwrite.cs)
+(element_access_expression expression: (identifier) @variable.other.readwrite.cs)
+(foreach_statement right: (identifier) @variable.other.readwrite.cs)
+(foreach_statement left: (identifier) @entity.name.variable.local.cs)
+(conditional_expression (identifier) @variable.other.readwrite.cs)
+; 成员访问：`System.Console.WriteLine` 的前两段是对象与属性，最后一段按调用处理。
+(member_access_expression expression: (identifier) @variable.other.object.cs)
+(member_access_expression name: (identifier) @variable.other.object.property.cs)
+; 调用：放在成员访问之后，作为更靠内的一层覆盖掉上面的属性 scope。
+(invocation_expression function: (identifier) @entity.name.function.cs)
+(invocation_expression function: (generic_name (identifier) @entity.name.function.cs))
+(invocation_expression function: (member_access_expression name: (identifier) @entity.name.function.cs))
 "{" @punctuation.curlybrace.open.cs
 "}" @punctuation.curlybrace.close.cs
 "(" @punctuation.parenthesis.open.cs
@@ -118,6 +148,7 @@
 "." @punctuation.accessor.cs
 "=" @keyword.operator.assignment.cs
 ["+" "-" "*" "/" "%"] @keyword.operator.arithmetic.cs
-["==" "!=" "<" ">" "<=" ">="] @keyword.operator.comparison.cs
+; 比较运算符限定在二元表达式里：`<`/`>` 也是泛型实参列表的括号，那里不是运算符。
+(binary_expression ["==" "!=" "<" ">" "<=" ">="] @keyword.operator.comparison.cs)
 ["&&" "||" "!"] @keyword.operator.logical.cs
 "=>" @keyword.operator.arrow.cs

@@ -1295,3 +1295,25 @@ WebView2 的回调只往通道里送 `BackendEvent`，由窗口的前台任务�
 `showPreviewSecuritySelector`（放行走提示条）、预览内 `Ctrl+F`（P1，WebView2 Find API 留给后续）、预览中的大纲联动（#26 的大纲
 目前只跟随文本编辑器）。
 
+## 39. 着色黄金测试（#11）
+
+位置：数据在 `tests/golden/`（VS Code `vscode-colorize-tests` 的 `colorize-fixtures/` 与
+`colorize-results/`，原样复制）与 `tests/golden/thresholds.toml`（阈值，本仓库自己的文件）；
+比对器是 `rove-syntax` 的 example `golden_colors`（`config.rs` 读阈值、`data.rs` 读数据并对齐到
+字节区间、`check.rs` 跑链路与逐字符比对、`report.rs` 出报告），判定测试
+`crates/rove-syntax/tests/golden_colors.rs` 用 `#[path]` 引入同一份模块。
+
+链路：fixture → `rove_buffer::RopeText` → #9 `TreeSitterSyntax::analyze` 的 scope →
+#10 `ResolvedTheme::token_style` 的前景色 → 与 `colorize-results` 的期望颜色逐字符比较。
+**比颜色不比 scope**；六个受阈值约束的主题 + 四个只统计的主题。报告写 `out/golden/`（已 gitignore）。
+口径、当前一致率、每一类差异的原因与为对齐所做的查询改动见 [GOLDEN_COLORS.md](GOLDEN_COLORS.md)。
+
+本 issue 为了向 VS Code 的 scope 层级看齐，改了 `crates/rove-syntax/src/highlight/queries/` 下的
+C# / YAML / XML / Markdown 查询，并在 `highlight/grammar.rs` 里加了两处：围栏代码块注入时补
+`meta.embedded.block.<语言>` 外层 scope；独占一行的 C# 注释把捕获补齐到行首空白。
+`contracts.rs` 的冻结契约与 #10 的匹配算法都没有改动。本 issue 没有对应的 `SKELETON(...)` 标记
+（`syntax` 与 `theme` 两处分别由 #9、#10 负责）。
+
+验证：`cargo test -p rove-syntax --test golden_colors`（并入 `cargo test --workspace`）；
+本地排查用 `cargo run -p rove-syntax --example golden_colors`（见 AGENTS §8.6）。
+

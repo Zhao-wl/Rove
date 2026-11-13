@@ -239,3 +239,15 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 Rust 依赖（只记直接依赖，许可以上游 crate 为准）：`pulldown-cmark` 0.13（MIT）、`ammonia` 4（MIT OR Apache-2.0）、
 `webview2-com` 0.38（MIT）、`windows` 0.61 与 `raw-window-handle` 0.6（MIT OR Apache-2.0）。WebView2 运行时是
 Windows 的系统组件，不随 Rove 分发，也不由 Rove 下载。
+
+## VS Code 着色测试数据（#11）
+
+`tests/golden/colorize-fixtures/` 与 `tests/golden/colorize-results/` 原样取自 Microsoft VS Code
+**1.145.2**（MIT 许可）的 `extensions/vscode-colorize-tests/test/`：前者是各语言的测试源文件，
+后者是每个 token 在十个内置主题下的期望颜色。Rove 用它们做着色黄金测试（逐字符比对最终颜色），
+**只在测试里使用，不进二进制**。按文件名取用与 Rove 语言清单相关的部分，文件内容不做加工；
+清单、哈希与升级步骤见该目录的 `README.md`。
+
+来源：<https://github.com/microsoft/vscode/tree/1.145.2/extensions/vscode-colorize-tests>
+原始许可证：<https://github.com/microsoft/vscode/blob/1.145.2/LICENSE.txt>
+（MIT，Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。

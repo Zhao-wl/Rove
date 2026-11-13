@@ -165,6 +165,24 @@ impl Grammar {
         }
     }
 
+    /// VS Code 给围栏代码块内容加的外层 scope（`meta.embedded.block.<语言>`）。主题里的
+    /// `meta.embedded` 规则靠它生效：代码块里没有被更内层规则命中的字符用的是这条规则的颜色，
+    /// 而不是编辑器前景色。围栏标记与语言名不在其内。
+    fn embedded_block_scope(self) -> &'static Arc<[Arc<str>]> {
+        static SCOPES: LazyLock<[Arc<[Arc<str>]>; 6]> = LazyLock::new(|| {
+            [
+                "meta.embedded.block.csharp",
+                "meta.embedded.block.json",
+                "meta.embedded.block.yaml",
+                "meta.embedded.block.xml",
+                "meta.embedded.block.markdown",
+                "meta.embedded.block.markdown",
+            ]
+            .map(|scope| Arc::from([Arc::from(scope)]))
+        });
+        &SCOPES[self as usize]
+    }
+
     fn language(self) -> Language {
         match self {
             Self::Csharp => tree_sitter_c_sharp::LANGUAGE,
@@ -296,6 +314,24 @@ fn parse(
     result.ok_or(Error::NotReady)
 }
 
+/// 独占一行的注释，起点补齐到行首的空白处。
+///
+/// VS Code 的 C# 语法用 `(^\s+)?(?=//)` 把注释行的前导空白也算进注释
+/// （`punctuation.whitespace.comment.leading.cs`），而 tree-sitter 的 `comment` 节点从 `//`
+/// 开始。缩进与注释同色在小地图、注释带背景的主题下看得出区别，这里与 VS Code 对齐。
+/// 行内注释（前面还有代码）不受影响：扫到非空白就原样返回。
+fn leading_whitespace(source: &Source, start: usize) -> usize {
+    let mut at = start;
+    while at > 0 {
+        match source.byte(at - 1) {
+            Some(b' ' | b'\t') => at -= 1,
+            Some(b'\n' | b'\r') => return at,
+            _ => return start,
+        }
+    }
+    at
+}
+
 struct Highlighter<'a, 'b> {
     source: &'a Source,
     work: &'a Work<'b>,
@@ -333,6 +369,15 @@ impl Highlighter<'_, '_> {
                     highlights.capture_scope(m.pattern_index, c.index, self.source, &span)
                 else {
                     continue;
+                };
+                let span = if grammar == Grammar::Csharp
+                    && scopes
+                        .first()
+                        .is_some_and(|s| s.starts_with("comment.line"))
+                {
+                    leading_whitespace(self.source, span.start)..span.end
+                } else {
+                    span
                 };
                 let priority = (depth, pattern, index);
                 if included.is_empty() {
@@ -388,20 +433,32 @@ impl Highlighter<'_, '_> {
         let mut parsers: Vec<(Grammar, Parser)> = Vec::new();
         while let Some(m) = matches.next() {
             self.work.check()?;
-            let (grammar, node) = match m.captures {
-                [inline] => (Grammar::MarkdownInline, inline.node),
+            let (grammar, node, embedded) = match m.captures {
+                [inline] => (Grammar::MarkdownInline, inline.node, false),
                 [language, body] => {
                     let id = self.source.text(language.node.byte_range());
                     let Some(grammar) = Grammar::for_fence(&id) else {
                         continue;
                     };
-                    (grammar, body.node)
+                    (grammar, body.node, true)
                 }
                 _ => unreachable!("unexpected Markdown injection pattern"),
             };
             let ranges = content_ranges(node, parent);
             if ranges.is_empty() {
                 continue;
+            }
+            if embedded {
+                let scopes = grammar.embedded_block_scope();
+                for r in &ranges {
+                    output.push(Capture {
+                        start: r.start_byte,
+                        end: r.end_byte,
+                        // 外层 scope：同一范围内排在注入语法自己的捕获之前。
+                        priority: (depth, 0, 0),
+                        scopes,
+                    });
+                }
             }
             let index = parsers
                 .iter()
