@@ -903,13 +903,13 @@ impl Workbench {
                     }));
                 }
             }
-            CodeViewEvent::SelectionChanged { selection, .. } => {
-                if self.md_key("markdown.preview.markEditorSelection", false) {
-                    self.markdown_post(json!({
-                        "version": 1, "type": "selection", "documentId": document.0,
-                        "line": selection.active.line.0,
-                    }));
-                }
+            CodeViewEvent::SelectionChanged { selection, .. }
+                if self.md_key("markdown.preview.markEditorSelection", false) =>
+            {
+                self.markdown_post(json!({
+                    "version": 1, "type": "selection", "documentId": document.0,
+                    "line": selection.active.line.0,
+                }));
             }
             _ => {}
         }
