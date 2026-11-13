@@ -2,12 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rove_base::{ByteOffset, Cancellation, DocumentId, Events, Task, Value};
 use rove_buffer::edit::{EditOptions, Selection, Selections};
-use rove_buffer::save::{ChangeCoalescer, DiskStamp, SaveOptions, TextFile, WriteOptions};
+use rove_buffer::save::{
+    ChangeCoalescer, DiskStamp, FailPoint, SaveOptions, TextFile, WriteOptions,
+};
 use rove_buffer::{Encoding, Eol, LineEndings};
 use rove_config::{DefaultSettings, Scope, SettingRegistry, Settings};
 
@@ -263,6 +266,219 @@ fn unencodable_modal_offers_three_choices() {
             }
         }
     }
+}
+
+fn set_readonly(path: &Path, readonly: bool) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+fn act(
+    c: &mut SaveController,
+    key: &str,
+    action: &str,
+    settings: &dyn Settings,
+    feedback: &mut FeedbackHub,
+) -> Vec<Effect> {
+    c.on_action(
+        key,
+        action,
+        &SaveOptions::default(),
+        settings,
+        feedback,
+        Instant::now(),
+    )
+}
+
+/// #140：另存为遇到无法编码的字符时，模态框的两个按钮都写到**另存为的目标**，原文件逐字节不变。
+#[test]
+fn unencodable_buttons_after_save_as_write_to_the_new_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("gbk.cs");
+    let gbk = rove_buffer::save::encode(
+        &rove_buffer::RopeText::from_text("// 中文注释\r\n"),
+        &Encoding::Gbk,
+        false,
+        rove_buffer::save::Unencodable::Reject,
+    )
+    .unwrap();
+    let settings = TestSettings::new(&[]);
+    for (action, tail, encoding) in [
+        (ACTION_USE_UTF8, "😀".as_bytes().to_vec(), Encoding::Utf8),
+        (ACTION_REPLACE, b"?".to_vec(), Encoding::Gbk),
+    ] {
+        std::fs::write(&source, &gbk).unwrap();
+        let target = dir.path().join(format!("copy-{action}.cs"));
+        let mut c = controller();
+        let mut feedback = FeedbackHub::default();
+        open(&mut c, &source, &settings);
+        type_end(&mut c, "😀");
+        assert!(c
+            .save_as(
+                DOC,
+                target.clone(),
+                &SaveOptions::default(),
+                &mut feedback,
+                Instant::now()
+            )
+            .is_empty());
+        let modal = feedback.modal().expect("模态框").clone();
+        feedback.act(&modal.key, action).unwrap();
+        let effects = act(&mut c, &modal.key, action, &settings, &mut feedback);
+        assert!(
+            matches!(&effects[..], [Effect::Saved { path, .. }] if path == &target),
+            "{action}: {effects:?}"
+        );
+        assert!(std::fs::read(&target).unwrap().ends_with(&tail), "{action}");
+        assert_eq!(c.file(DOC).unwrap().encoding(), &encoding, "{action}");
+        assert_eq!(c.file(DOC).unwrap().path(), Some(target.as_path()));
+        // 原文件逐字节不变。
+        assert_eq!(std::fs::read(&source).unwrap(), gbk, "{action}");
+    }
+}
+
+/// #140：另存为的目标只读时，“覆盖”清除的是**目标**的只读属性；原文件的内容和只读属性不变。
+#[test]
+fn overwrite_after_save_as_clears_read_only_on_the_new_path_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("Player.cs");
+    std::fs::write(&source, "class Player {}").unwrap();
+    let settings = TestSettings::new(&[]);
+    let mut c = controller();
+    let mut feedback = FeedbackHub::default();
+    open(&mut c, &source, &settings);
+    set_readonly(&source, true);
+    type_end(&mut c, "// a");
+
+    let target = dir.path().join("Copy.cs");
+    std::fs::write(&target, "old").unwrap();
+    set_readonly(&target, true);
+    assert!(c
+        .save_as(
+            DOC,
+            target.clone(),
+            &SaveOptions::default(),
+            &mut feedback,
+            Instant::now()
+        )
+        .is_empty());
+    let n = feedback.notifications()[0].clone();
+    assert!(n.key.starts_with(KEY_READ_ONLY));
+    // 通知说的是另存为的目标，不是原文件。
+    assert_eq!(n.message.args[0].1.as_ref(), "Copy.cs");
+    assert_eq!(action_ids(&n.actions), [ACTION_OVERWRITE, ACTION_SAVE_AS]);
+
+    let effects = act(&mut c, &n.key, ACTION_OVERWRITE, &settings, &mut feedback);
+    assert!(
+        matches!(&effects[..], [Effect::Saved { path, .. }] if path == &target),
+        "{effects:?}"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"class Player {}// a");
+    assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
+    // 原文件：内容和只读属性都没被动过。
+    assert_eq!(std::fs::read(&source).unwrap(), b"class Player {}");
+    assert!(std::fs::metadata(&source).unwrap().permissions().readonly());
+    set_readonly(&source, false);
+}
+
+/// #140：另存为写不进去时，“重试”重试的是**另存为的目标**（占用与其他写入失败共用这条分支）。
+#[test]
+fn retry_after_save_as_retries_the_new_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("Player.cs");
+    std::fs::write(&source, "class Player {}").unwrap();
+    let settings = TestSettings::new(&[]);
+    // 第一次写入失败（目标被别的程序拿住的等价物），“重试”时恢复正常。
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut c = SaveController::new(WriteOptions {
+        busy_retry_delay: Duration::from_millis(10),
+        fail_point: Some(FailPoint(Arc::new(move |_| {
+            if flag.swap(false, Ordering::SeqCst) {
+                Err(std::io::Error::other("注入的写入失败"))
+            } else {
+                Ok(())
+            }
+        }))),
+        ..WriteOptions::default()
+    });
+    let mut feedback = FeedbackHub::default();
+    open(&mut c, &source, &settings);
+    type_end(&mut c, "// a");
+
+    let target = dir.path().join("Copy.cs");
+    assert!(c
+        .save_as(
+            DOC,
+            target.clone(),
+            &SaveOptions::default(),
+            &mut feedback,
+            Instant::now()
+        )
+        .is_empty());
+    let n = feedback.notifications()[0].clone();
+    assert!(n.key.starts_with(KEY_FAILED));
+    assert_eq!(n.message.args[0].1.as_ref(), "Copy.cs");
+    assert_eq!(action_ids(&n.actions), [ACTION_RETRY, ACTION_SAVE_AS]);
+    assert!(!target.exists());
+
+    // “另存为”仍然只是请求重新选路径。
+    assert!(matches!(
+        act(&mut c, &n.key, ACTION_SAVE_AS, &settings, &mut feedback)[..],
+        [Effect::PickSaveAsPath(DOC)]
+    ));
+    let effects = act(&mut c, &n.key, ACTION_RETRY, &settings, &mut feedback);
+    assert!(
+        matches!(&effects[..], [Effect::Saved { path, .. }] if path == &target),
+        "{effects:?}"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"class Player {}// a");
+    assert_eq!(std::fs::read(&source).unwrap(), b"class Player {}");
+    assert!(!c.is_dirty(DOC));
+}
+
+/// #140：原地保存的后续按钮不受影响；保存成功后记住的请求被清除。
+#[test]
+fn in_place_follow_up_still_writes_to_the_original_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Player.cs");
+    std::fs::write(&path, "class Player {}").unwrap();
+    let settings = TestSettings::new(&[]);
+    let mut c = controller();
+    let mut feedback = FeedbackHub::default();
+    open(&mut c, &path, &settings);
+    set_readonly(&path, true);
+    type_end(&mut c, "// a");
+    assert!(save(&mut c, &mut feedback).is_empty());
+    let n = feedback.notifications()[0].clone();
+    assert_eq!(n.message.args[0].1.as_ref(), "Player.cs");
+    let effects = act(&mut c, &n.key, ACTION_OVERWRITE, &settings, &mut feedback);
+    assert!(
+        matches!(&effects[..], [Effect::Saved { path: p, .. }] if p == &path),
+        "{effects:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"class Player {}// a");
+
+    // 记住的另存为请求不会劫持普通的保存命令：另存为失败后按 ctrl+s 仍然写回当前文件。
+    type_end(&mut c, "!");
+    let missing = dir.path().join("none").join("Copy.cs");
+    assert!(c
+        .save_as(
+            DOC,
+            missing.clone(),
+            &SaveOptions::default(),
+            &mut feedback,
+            Instant::now()
+        )
+        .is_empty());
+    let effects = save(&mut c, &mut feedback);
+    assert!(
+        matches!(&effects[..], [Effect::Saved { path: p, .. }] if p == &path),
+        "{effects:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"class Player {}// a!");
+    assert!(!missing.exists());
 }
 
 #[test]
