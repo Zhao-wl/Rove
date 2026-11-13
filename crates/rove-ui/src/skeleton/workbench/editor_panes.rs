@@ -258,12 +258,16 @@ impl Workbench {
             body = body.child(viewports);
         }
         match pane.current() {
-            None => body = body.child(self.centered(self.label("editors.watermark", &[]))),
+            // #28：水印的快捷键由 #14 的键位服务解析（含用户在共用 keybindings.json 中的覆盖）。
+            None => body = body.child(self.watermark(cx)),
             Some(tab) => match &tab.content {
                 Content::Loading => {}
                 Content::Failed(error) => body = body.child(self.error_page(group, tab, error, cx)),
                 Content::Ready(_) => {
-                    if crate::editors::settings::is_markdown_preview(&tab.kind) {
+                    if crate::editors::settings::is_welcome(&tab.kind) {
+                        // #28：欢迎页。
+                        body = body.child(self.render_welcome(group, tab.id, cx));
+                    } else if crate::editors::settings::is_markdown_preview(&tab.kind) {
                         // #29：Markdown 预览（WebView2）。
                         body = body.child(self.markdown_viewport(group, tab.id, cx));
                     } else if let EditorKind::Placeholder { label, .. } = &tab.kind {
@@ -376,8 +380,10 @@ impl Workbench {
             "tab.inactiveForeground"
         };
         // #42：元数据视图的标签标题是 `Transform [元数据]`，悬停显示 DLL 完整路径。
+        // #28：欢迎页的标签标题是「欢迎使用」。
         let name = self
-            .metadata_tab_title(&tab.resource)
+            .welcome_tab_title(&tab.resource)
+            .or_else(|| self.metadata_tab_title(&tab.resource))
             .unwrap_or_else(|| settings.tab_label(&tab.resource));
         let tooltip = self.metadata_tab_tooltip(&tab.resource);
         let drag = TabDrag {
@@ -553,6 +559,26 @@ impl Workbench {
         }
         header = header.children(button);
         header.into_any_element()
+    }
+
+    /// #28：打开了文件夹、还没有打开任何文件时的快捷键水印。
+    fn watermark(&self, cx: &App) -> Div {
+        let label = |key: &str| self.label(key, &[]);
+        let keys = |command: &str| crate::keys::key_label(command, cx);
+        let lines = crate::welcome::view::watermark_lines(&label, &keys);
+        let mut body = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .text_color(self.ui_color("tab.inactiveForeground"));
+        for line in lines {
+            body = body.child(line);
+        }
+        body
     }
 
     fn centered(&self, text: String) -> Div {

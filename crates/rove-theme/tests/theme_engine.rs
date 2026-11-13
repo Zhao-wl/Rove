@@ -494,3 +494,33 @@ fn snapshot_is_shareable_and_default_settings_work() {
     assert_eq!(theme.current().id(), DEFAULT_THEME);
     let _ = NoEvents;
 }
+
+/// #28：颜色主题的实时预览只换内存中的快照，不写设置；按设置重新构建即可还原。
+#[test]
+fn preview_swaps_the_snapshot_in_memory_and_reload_restores_it() {
+    let (settings, theme) = service_with(Some("Dark 2026"));
+    assert_eq!(theme.current().id(), "Dark 2026");
+    let before = theme.revision();
+    let seen: Arc<Mutex<Vec<Version>>> = Arc::default();
+    let sink = seen.clone();
+    let _subscription = theme
+        .changes()
+        .subscribe(Arc::new(move |v| sink.lock().unwrap().push(v)));
+
+    theme.preview("Light 2026").unwrap();
+    assert_eq!(theme.current().id(), "Light 2026");
+    assert!(theme.revision() > before, "预览也发布修订号");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    // 设置没有被改动：用户值仍然是原来的主题。
+    assert_eq!(
+        settings.values.lock().unwrap()["workbench.colorTheme"],
+        s("Dark 2026")
+    );
+    // 还原 = 按设置重新构建。
+    theme.reload().unwrap();
+    assert_eq!(theme.current().id(), "Dark 2026");
+
+    // 目录里没有的主题不改变当前快照。
+    assert!(matches!(theme.preview("Monokai"), Err(Error::NotFound)));
+    assert_eq!(theme.current().id(), "Dark 2026");
+}

@@ -90,7 +90,13 @@ pub struct FileDocuments {
     cache: Arc<Mutex<FileCache>>,
     next: Arc<AtomicU64>,
     size: crate::editors::settings::SizePolicy,
-    virtual_source: Option<Arc<dyn VirtualSource>>,
+    /// 虚拟文档的内容来源，按登记顺序依次询问（#42 元数据视图、#28 欢迎页）。
+    virtual_sources: Vec<Arc<dyn VirtualSource>>,
+}
+
+/// 依次询问各个来源，第一个认领这个资源名的胜出。
+fn load_virtual(sources: &[Arc<dyn VirtualSource>], name: &str) -> Option<Result<VirtualContent>> {
+    sources.iter().find_map(|s| s.load(name))
 }
 impl FileDocuments {
     pub fn new(root: PathBuf, settings: Arc<dyn Settings>) -> Self {
@@ -100,25 +106,25 @@ impl FileDocuments {
             cache: Default::default(),
             next: Arc::new(AtomicU64::new(1)),
             size: Default::default(),
-            virtual_source: None,
+            virtual_sources: Vec::new(),
         }
     }
 
-    /// 接上虚拟文档的内容来源（#42 的元数据视图）。
+    /// 追加一个虚拟文档的内容来源（#42 的元数据视图、#28 的欢迎页）。先登记的先被询问。
     pub fn with_virtual_source(mut self, source: Arc<dyn VirtualSource>) -> Self {
-        self.virtual_source = Some(source);
+        self.virtual_sources.push(source);
         self
     }
 
     /// 虚拟文档重新取内容：文档身份不变，文本是新的快照（版本更新）。没有打开的文档返回 `None`。
     pub fn reload_virtual(&self, resource: &Resource) -> Result<Option<Arc<Document>>> {
-        let (Resource::Virtual(name), Some(source)) = (resource, &self.virtual_source) else {
+        let Resource::Virtual(name) = resource else {
             return Ok(None);
         };
         let Some(old) = self.cache.lock().unwrap().find(resource) else {
             return Ok(None);
         };
-        let Some(content) = source.load(name) else {
+        let Some(content) = load_virtual(&self.virtual_sources, name) else {
             return Ok(None);
         };
         let doc = Arc::new(virtual_document(old.id, resource, content?));
@@ -162,7 +168,7 @@ impl Documents for FileDocuments {
         let cache = self.cache.clone();
         let next = self.next.clone();
         let policy = self.size;
-        let virtual_source = self.virtual_source.clone();
+        let virtual_sources = self.virtual_sources.clone();
         Box::pin(async move {
             cancel.check()?;
             if let Some(doc) = cache.lock().unwrap().find(&resource) {
@@ -172,10 +178,8 @@ impl Documents for FileDocuments {
                 Resource::Workspace(p) => root.join(p.as_str()),
                 Resource::File(p) => p.clone(),
                 Resource::Virtual(name) => {
-                    let Some(source) = virtual_source else {
-                        return Err(Error::Unsupported);
-                    };
-                    let content = source.load(name).ok_or(Error::Unsupported)??;
+                    let content =
+                        load_virtual(&virtual_sources, name).ok_or(Error::Unsupported)??;
                     let id = DocumentId(next.fetch_add(1, Ordering::Relaxed));
                     let doc = Arc::new(virtual_document(id, &resource, content));
                     cache

@@ -98,6 +98,10 @@ mod markdown_tests;
 pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
 mod syntax_tests;
+// #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）的装配。
+mod welcome_host;
+#[cfg(test)]
+mod welcome_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
@@ -222,6 +226,10 @@ pub struct Workbench {
     editing: edit_host::Editing,
     /// #29：窗口唯一的 Markdown 预览实例与状态（见 `markdown_host.rs`）。
     markdown: markdown_host::MarkdownPreview,
+    /// #28：欢迎页、最近打开与首选项入口（见 `welcome_host.rs`）。
+    welcome: welcome_host::Welcome,
+    /// #28：本窗口有没有打开文件夹。空窗口显示欢迎页，资源管理器显示空状态（UX_SPEC §6.3）。
+    has_folder: bool,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -233,6 +241,15 @@ impl Workbench {
             LayoutStore::for_workspace(&root)
         };
         Self::with_store(root, started, store, cx)
+    }
+    /// #28：没有打开文件夹的空窗口（`rove.exe` 不带参数）。显示欢迎页，资源管理器显示空状态。
+    pub fn empty(started: Instant, cx: &mut Context<Self>) -> Self {
+        let store = if cfg!(test) {
+            LayoutStore::disabled()
+        } else {
+            LayoutStore::for_workspace(std::path::Path::new(""))
+        };
+        Self::with_store(PathBuf::new(), started, store, cx)
     }
     pub fn with_store(
         root: PathBuf,
@@ -331,6 +348,9 @@ impl Workbench {
                 .detach();
         };
         let find_history = store.find_history_path();
+        // #28：空窗口（没有打开文件夹）。
+        let has_folder = !root.as_os_str().is_empty();
+        let store_for_welcome = store.clone();
         let shell = Shell::new(
             &root,
             appearance::contributions().unwrap(),
@@ -355,8 +375,11 @@ impl Workbench {
         );
         let search = Self::new_search(root.clone(), services.clone(), theme.clone(), cx);
         // #42：元数据视图是一份普通的虚拟文档，由文档加载器按资源名生成。
+        // #28：欢迎页是一份空的虚拟文档；它的来源排在 #42 的元数据视图前面（资源名不重叠）。
         let metadata = metadata_host::MetadataHost::new(
-            FileDocuments::new(root.clone(), services.clone()).with_size_policy(size),
+            FileDocuments::new(root.clone(), services.clone())
+                .with_size_policy(size)
+                .with_virtual_source(Arc::new(welcome_host::WelcomeSource)),
             nav.views.clone(),
         );
         let explorer = Self::new_explorer(theme.clone(), &services, cx);
@@ -412,6 +435,8 @@ impl Workbench {
             metadata,
             editing: edit_host::Editing::new(files),
             markdown: Default::default(),
+            welcome: welcome_host::Welcome::new(&store_for_welcome),
+            has_folder,
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -423,6 +448,10 @@ impl Workbench {
         }
         // #29：Markdown 预览的命令。
         for (id, _, _) in crate::markdown::registry::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
+        // #28：欢迎页、打开文件 / 文件夹 / 最近、设置、键位与颜色主题。
+        for (id, _, _) in crate::welcome::registry::COMMANDS {
             view.shell.mark_implemented(*id);
         }
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
@@ -452,7 +481,12 @@ impl Workbench {
         // #42：速览预览里的外部符号片段取自元数据视图。
         view.register_metadata_snippets();
         view.sync_views(cx);
-        view.scan(root, cx);
+        if view.has_folder {
+            view.scan(root, cx);
+        } else {
+            // 空窗口：资源管理器保持“尚未打开文件夹。”空状态，侧边栏小节标题用登记过的文案。
+            view.shell.title = view.label("welcome.noFolderTitle", &[]);
+        }
         view
     }
     /// #104 热加载：设置服务（文件监听线程）发布的变更合并后回到 UI 线程处理。
@@ -1298,7 +1332,8 @@ impl Workbench {
             return self.label("workbench.scanFailed", &[]);
         }
         let current = self.editor.active().current();
-        if current.is_some_and(Tab::show_progress) || self.workspace.is_none() {
+        if current.is_some_and(Tab::show_progress) || (self.has_folder && self.workspace.is_none())
+        {
             return self.label("common.loading", &[]);
         }
         if let Some(tab) = current.filter(|tab| matches!(tab.content, Content::Failed(_))) {
@@ -1650,6 +1685,11 @@ impl ShellHost for Workbench {
         self.focus.clone()
     }
     fn run_external_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // #28：欢迎页与首选项入口（齿轮菜单、命令面板）。
+        if Self::is_welcome_command(id) {
+            self.welcome_command(id, window, cx);
+            return;
+        }
         // #24：快速打开、命令面板、转到行。
         if crate::quick_access::registry::COMMANDS
             .iter()
@@ -1698,6 +1738,8 @@ impl Render for Workbench {
         self.sync_peeks(cx);
         // #29：Markdown 预览实例（按需创建、拥有者、渲染、空闲回收、焦点）。
         self.sync_markdown(window, cx);
+        // #28：主题实时预览跟随选中项、共用文件提示条、浮层关闭后的焦点。
+        self.sync_welcome(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1740,9 +1782,11 @@ impl Render for Workbench {
         let goto = self.goto_overlay(cx);
         let quick = self.quick_overlay(cx);
         let hover = self.nav_overlay(cx);
+        // #28：颜色主题 / 打开最近的快速选择。
+        let welcome = self.welcome_overlay(cx);
         // #29：弹出层打开时隐藏 WebView2（#6 报告的相交隐藏）。
         self.sync_markdown_overlays(
-            goto.is_some() || quick.is_some() || hover.is_some(),
+            goto.is_some() || quick.is_some() || hover.is_some() || welcome.is_some(),
             window,
             cx,
         );
@@ -1821,17 +1865,30 @@ impl Render for Workbench {
                     v.markdown_command(a.0, cx)
                 }),
             )
+            // #28：欢迎页与首选项入口的命令。
+            .on_action(cx.listener(
+                |v, a: &crate::welcome::registry::WelcomeAction, window, cx| {
+                    v.welcome_command(a.0, window, cx)
+                },
+            ))
             .child(workbench)
             .children(goto)
             .children(quick)
             .children(hover)
+            .children(welcome)
     }
 }
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
 ///
 /// `settings` 是应用唯一的设置服务实例（`crate::app_settings::open`），窗口设置、工作台、主题、
 /// 代码视图、打开服务与工作区扫描都用它。
-pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
+pub fn launch(
+    startup: crate::welcome::startup::Startup,
+    settings: Arc<dyn Settings>,
+    started: Instant,
+) {
+    // #28：第一个文件夹是本窗口的工作区；没有文件夹就是空窗口（欢迎页 + 资源管理器空状态）。
+    let root = startup.folder.clone().unwrap_or_default();
     // #29：Markdown 预览按 #6 报告的 Hwnd 方式嵌入 WebView2（不创建任何实例，只选渲染路径）。
     crate::markdown::prepare_hwnd_hosting();
     Application::new().run(move |cx: &mut App| {
@@ -1887,11 +1944,24 @@ pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
                 },
                 |window, cx| {
                     cx.new(|cx| {
-                        let mut view = Workbench::with_settings(root, started, store, settings, cx)
-                            .expect("valid editor settings");
+                        let mut view = Workbench::with_settings(
+                            root.clone(),
+                            started,
+                            store,
+                            settings.clone(),
+                            cx,
+                        )
+                        .expect("valid editor settings");
                         Shell::attach_window(&mut view, window, cx);
                         // #47：窗口关闭按钮先确认未保存的文档（替换上一行登记的回调，并做它原来的事）。
                         edit_host::attach_close_confirmation(&mut view, window, cx);
+                        // #28：启动时的欢迎页（`workbench.startupEditor`；空窗口总是显示），
+                        // 再按启动参数打开文件；本次打开的文件夹记进最近列表。
+                        view.open_startup_editor(cx);
+                        if startup.folder.is_some() {
+                            view.note_recent(root, crate::welcome::recent::RecentKind::Folder);
+                        }
+                        view.open_startup_targets(&startup.files, cx);
                         view
                     })
                 },
@@ -1903,6 +1973,27 @@ pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
                 cx.activate(true);
             })
             .unwrap();
+        // #28：一个窗口一个文件夹（FEATURES §6）：多余的文件夹参数各开一个窗口。
+        for folder in &startup.extra_folders {
+            let store = LayoutStore::for_workspace(folder);
+            let settings = settings.clone();
+            let folder = folder.clone();
+            let opened = cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut view =
+                        Workbench::with_settings(folder.clone(), started, store, settings, cx)
+                            .expect("valid editor settings");
+                    Shell::attach_window(&mut view, window, cx);
+                    edit_host::attach_close_confirmation(&mut view, window, cx);
+                    view.open_startup_editor(cx);
+                    view.note_recent(folder, crate::welcome::recent::RecentKind::Folder);
+                    view
+                })
+            });
+            if let Err(e) = opened {
+                eprintln!("welcome: 无法打开新窗口：{e}");
+            }
+        }
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();

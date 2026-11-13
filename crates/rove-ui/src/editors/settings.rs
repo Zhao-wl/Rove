@@ -6,6 +6,9 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 pub(crate) const SOURCE: &str = "default";
 pub(crate) const MARKDOWN: &str = "vscode.markdown.preview.editor";
+/// #28：欢迎页的编辑器类型与它的虚拟资源名。
+pub(crate) const WELCOME: &str = crate::welcome::registry::EDITOR_TYPE;
+pub(crate) const WELCOME_RESOURCE: &str = crate::welcome::registry::RESOURCE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EditorKind {
@@ -61,6 +64,14 @@ impl EditorTypes {
                 label: "editors.markdown",
             },
         )?;
+        // #28：欢迎页。资源是虚拟的，不受 `workbench.editorAssociations` 影响。
+        types.register(
+            WELCOME,
+            EditorKind::Placeholder {
+                id: WELCOME.into(),
+                label: "welcome.tabTitle",
+            },
+        )?;
         let mut rules = Vec::new();
         if let Value::Object(patterns) = associations {
             for (pattern, id) in patterns.iter().rev() {
@@ -108,6 +119,10 @@ impl EditorTypes {
     }
 
     fn resolve_any(&self, resource: &Resource, options: &OpenOptions) -> Result<EditorKind> {
+        // #28：欢迎页只有一种打开方式，用户的关联设置改不了它。
+        if is_welcome_resource(resource) {
+            return self.types.get(WELCOME).cloned().ok_or(Error::Unsupported);
+        }
         if options.location.is_some()
             || options.selection.is_some()
             || matches!(options.presentation, Presentation::Source)
@@ -144,6 +159,16 @@ impl EditorTypes {
             Ok(associated.next().cloned().unwrap_or(EditorKind::Text))
         }
     }
+}
+
+/// #28：这是不是欢迎页的虚拟资源。
+pub(crate) fn is_welcome_resource(resource: &Resource) -> bool {
+    matches!(resource, Resource::Virtual(name) if name.as_ref() == WELCOME_RESOURCE)
+}
+
+/// #28：这是不是欢迎页编辑器。
+pub(crate) fn is_welcome(kind: &EditorKind) -> bool {
+    matches!(kind, EditorKind::Placeholder { id, .. } if id.as_ref() == WELCOME)
 }
 
 /// #29：是不是 Markdown 预览编辑器。
