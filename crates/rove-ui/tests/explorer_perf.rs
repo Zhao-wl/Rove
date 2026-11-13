@@ -114,7 +114,7 @@ fn unity(project: UnityProject, label: &str) {
         }
     }
     let mut biggest: Vec<_> = counts.into_iter().collect();
-    biggest.sort_by(|a, b| b.1.cmp(&a.1));
+    biggest.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (dir, count) in biggest.into_iter().take(3) {
         // 逐级展开到该目录（祖先的展开不计入），再计时最后一级。
         let Some(plan) = rove_base::WorkspacePath::new(&dir)
