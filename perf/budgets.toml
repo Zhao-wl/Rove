@@ -377,10 +377,10 @@ id = "quickopen_first_key_large"
 metric = "快速打开：大型 Unity 项目上输入第一个字符（最坏一次按键）"
 value = 16
 unit = "ms"
-owner = "#24"
-status = "pending"
+owner = "#125"
+status = "enforced"
 bench = "quickopen/first_key_large"
-reason = "issue #24 验收要求 ROVE_TEST_UNITY_LARGE 上每次按键 p99 < 16 ms。本机的大型项目有约 15.6 万个文件（issue 写的是约 2.1 万个 .cs 外加其他文件），安静时第一个字符约 14 ms、p99 约 40 ms，目录名类查询（如 Script）与多段查询（如 enemy spa）最慢约 22 ms，还没达标；候选在 2.5 万个量级时 p99 < 16 ms。进一步需要为 description 里的匹配做上界剪枝或增量/异步刷新，见 #24 的 PR"
+reason = "issue #24 验收要求 ROVE_TEST_UNITY_LARGE 上每次按键 < 16 ms，#125 把打分改成动态调度并削掉逐候选的固定开销后这一条达标：本机大型项目约 15.9 万个候选，优化前 16.7 ms、优化后 9.6–11.7 ms。逐字键入整组查询 p50 由 14.2 ms 降到 9.6–12.1 ms、p99 由 38.8 ms 降到 22.5–26.3 ms（同一台机器前后交替各跑两轮取最好的一轮）。本机同时开着 Unity 等程序，机器负载较高，数字只作优化前后的相对比较；整组查询的 p99 仍高于 16 ms，需要在空闲机器上复测并视情况继续（见 #125）"
 
 # ---------------------------------------------------------------- C# 导航交互（#40）
 

@@ -164,18 +164,19 @@ fn percentiles(index: &FileIndex, name: &str) {
     );
 }
 
-/// 第一个字符的一次按键，拆成“搜索”与“转成行”两段，并对比单线程与自动线程数（诊断用，打印到 stderr）。
+/// 不剪枝的一次按键（整条查询从头打分），拆成“搜索”与“转成行”两段，并对比单线程与自动线程数
+/// （诊断用，打印到 stderr）。除了最坏的第一次按键 `a`，还量上面 `percentiles` 里最慢的两类查询：
+/// 目录名（`Script`）与多段（`enemy spa`）——并行效率要看它们，它们的匹配集中在少数几段候选里。
 fn breakdown(index: &FileIndex, name: &str) {
     let labels = labels();
-    for threads in [Some(1), Some(2), Some(4), Some(8), Some(12), None] {
-        for query in ["a"] {
+    for query in ["a", "Script", "enemy spa"] {
+        for threads in [Some(1), Some(2), Some(4), Some(8), Some(12), None] {
             let mut best = (f64::MAX, f64::MAX);
             for _ in 0..7 {
                 let mut search = Search::default();
                 search.set_threads(threads);
-                let first = &query[..1];
                 let start = Instant::now();
-                let results = search.run(index, first, &[], SearchOptions::default());
+                let results = search.run(index, query, &[], SearchOptions::default());
                 let find = start.elapsed().as_secs_f64() * 1000.0;
                 let start = Instant::now();
                 black_box(results.picks(index, &labels));
@@ -185,10 +186,8 @@ fn breakdown(index: &FileIndex, name: &str) {
                 }
             }
             eprintln!(
-                "quickopen/{name} 线程 {threads:?} 查询 {:?}：搜索 {:.2} ms + 转成行 {:.2} ms",
-                &query[..1],
-                best.0,
-                best.1
+                "quickopen/{name} 线程 {threads:?} 查询 {query:?}：搜索 {:.2} ms + 转成行 {:.2} ms",
+                best.0, best.1
             );
         }
     }
