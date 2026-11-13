@@ -13,17 +13,9 @@ pub fn strings() -> Result<StringTable> {
         ),
         ("app.failed", "无法启动 Rove，请查看日志。"),
         ("workbench.explorer", "资源管理器"),
-        ("workbench.empty", "从左侧选择一个文件"),
-        (
-            "workbench.failed",
-            "无法打开：{path}。请重试或选择其他文件。",
-        ),
         ("workbench.scanFailed", "无法扫描文件夹，请检查路径和权限。"),
-        ("workbench.status", "{name}  |  {lines} 行  |  {encoding}"),
-        ("encoding.utf8", "UTF-8"),
         ("tree.open", "▾ {name}"),
         ("tree.closed", "▸ {name}"),
-        ("workbench.statusTitle", "文件状态"),
         ("editors.splitLeft", "←"),
         ("editors.splitUp", "↑"),
         ("editors.splitDown", "↓"),
@@ -87,6 +79,8 @@ pub fn strings() -> Result<StringTable> {
     crate::welcome::registry::register_strings(&mut t)?;
     // #22：超大文件提示条、状态栏标记、行索引进度、转到行等待与超长行截断标记。
     crate::large_file::registry::register_strings(&mut t)?;
+    // #27：状态栏右侧的文件状态条目与它们的选择器。
+    crate::status_items::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -100,23 +94,12 @@ pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
     tr!(t, &m).expect("registered skeleton string")
 }
 /// 工作台自带的视图容器、小节、面板与状态栏条目由 #16 的 `shell::catalog` 登记。
-/// SKELETON(status): fixed filename/line-count/encoding status; replaced by #27.
 pub fn contributions() -> Result<ContributionRegistry> {
     let mut r = ContributionRegistry::default();
     crate::shell::catalog::register_contributions(&mut r)?;
     crate::outline::registry::register_contributions(&mut r)?;
-    r.register(
-        STATUS_FILE,
-        Contribution {
-            title: Message::key("workbench.statusTitle"),
-            placement: Placement::StatusLeft,
-            order: 0,
-            icon: None,
-            command: None,
-            when: None,
-            factory_key: crate::shell::catalog::STATUS_FACTORY.into(),
-        },
-    )?;
+    // #27：状态栏右侧的六个文件状态条目。
+    crate::status_items::registry::register_contributions(&mut r)?;
     // #36：C# 索引状态条目与索引详情面板。
     crate::index_status::register_contributions(&mut r)?;
     // #25：搜索视图容器里的结果小节。
@@ -127,5 +110,3 @@ pub fn contributions() -> Result<ContributionRegistry> {
     crate::large_file::registry::register_contributions(&mut r)?;
     Ok(r)
 }
-/// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。
-pub const STATUS_FILE: &str = "rove.status.file";

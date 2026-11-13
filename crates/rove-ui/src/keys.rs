@@ -104,6 +104,8 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::markdown::registry::register_commands(&mut registry)?;
     // #28：欢迎页、打开文件 / 文件夹 / 最近、设置、键位与颜色主题。
     crate::welcome::registry::register_commands(&mut registry)?;
+    // #27：状态栏条目的选择器命令（更改缩进 / 编码 / 语言模式）。
+    crate::status_items::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -153,6 +155,8 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::markdown::registry::action_for(id))
         // #28：欢迎页与首选项入口。
         .or_else(|| crate::welcome::registry::action_for(id))
+        // #27：状态栏条目的选择器（窗口在 `status_host` 里处理）。
+        .or_else(|| crate::status_items::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

@@ -6,7 +6,7 @@ use super::*;
 use crate::index_status::{
     DETAILS_VIEW, FAILURE_KEY_PREFIX, OPEN_LOG, REBUILD, SHOW_DETAILS, STATUS_ITEM,
 };
-use crate::shell::feedback::Severity;
+use crate::shell::{feedback::Severity, status::StatusEntry};
 use gpui::{TestAppContext, VisualTestContext};
 use rove_lang_cs::lifecycle::{
     log::IndexLog, process::BuildRequest, testing::FixtureIndex, BuildFailure, Failure,

@@ -17,7 +17,6 @@ use crate::{
         catalog::{CONTAINER_FACTORY, FILE_VIEW, PROBLEMS, STATUS_FACTORY},
         feedback::Reason,
         layout::LayoutStore,
-        status::StatusEntry,
         Shell, ShellHost,
     },
 };
@@ -94,6 +93,10 @@ mod readonly_tests;
 mod search_host;
 #[cfg(test)]
 mod search_tests;
+// #27：状态栏右侧的文件状态条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）。
+mod status_host;
+#[cfg(test)]
+mod status_tests;
 // #29：Markdown 预览（WebView2 实例、渲染、命令、滚动同步）的装配与入口测试。
 mod markdown_host;
 #[cfg(test)]
@@ -239,6 +242,8 @@ pub struct Workbench {
     has_folder: bool,
     /// #22：超大文件提示条 / 状态栏 / 索引进度 / 转到行等待 / 超长行临时标签（见 `large_file_host.rs`）。
     large_files: large_file_host::LargeFiles,
+    /// #27：状态栏右侧条目的快照、选择器与会话内覆盖（见 `status_host.rs`）。
+    status: status_host::StatusItems,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -451,6 +456,7 @@ impl Workbench {
             welcome: welcome_host::Welcome::new(&store_for_welcome),
             has_folder,
             large_files,
+            status: Default::default(),
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -471,6 +477,12 @@ impl Workbench {
         // #22：查看完整的超长行。
         view.shell
             .mark_implemented(crate::large_file::long_line::OPEN_LONG_LINE);
+        // #27：状态栏条目的选择器命令（更改缩进 / 编码 / 语言模式、更改行尾序列）。
+        for (id, _, _) in crate::status_items::registry::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
+        view.shell
+            .mark_implemented(crate::status_items::registry::CHANGE_EOL);
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
             assert!(
@@ -837,8 +849,9 @@ impl Workbench {
             self.type_command(&invocation.args, cx);
             return;
         }
-        if id == crate::save::registry::CHANGE_EOL {
-            self.change_eol_command(&invocation.args, cx);
+        // #27：状态栏条目的选择器命令；`changeEOL` 带参数时直接统一行尾（#49），不带参数时弹选择器。
+        if crate::status_items::registry::is_status_command(id) {
+            self.status_command(id, &invocation.args, cx);
             return;
         }
         if id == "workbench.action.closeActiveEditor" && self.close_active_checked(cx) {
@@ -1348,46 +1361,10 @@ impl Workbench {
         }
     }
 
-    /// 状态栏左侧最显眼的文字：临时消息优先，否则是骨架的文件状态条目（测试用）。
+    /// 状态栏左侧的临时消息（#16 的反馈层；测试用）。没有消息时是空串。
     #[cfg(test)]
     fn status(&self) -> String {
-        shell::view::status_message_text(self).unwrap_or_else(|| self.file_status())
-    }
-    // SKELETON(status): fixed filename/line-count/encoding content; replaced by #27.
-    fn file_status(&self) -> String {
-        if self.scan_failed {
-            return self.label("workbench.scanFailed", &[]);
-        }
-        let current = self.editor.active().current();
-        if current.is_some_and(Tab::show_progress) || (self.has_folder && self.workspace.is_none())
-        {
-            return self.label("common.loading", &[]);
-        }
-        if let Some(tab) = current.filter(|tab| matches!(tab.content, Content::Failed(_))) {
-            let path = match &tab.resource {
-                Resource::Workspace(p) => p.as_str().to_string(),
-                Resource::File(p) => p.display().to_string(),
-                Resource::Virtual(p) => p.to_string(),
-            };
-            return self.label("workbench.failed", &[("path", path)]);
-        }
-        if let Some(o) = current.and_then(Tab::opened) {
-            let name = match &o.document.resource {
-                Resource::Workspace(p) => p.as_str().to_string(),
-                Resource::File(p) => p.display().to_string(),
-                Resource::Virtual(p) => p.to_string(),
-            };
-            self.label(
-                "workbench.status",
-                &[
-                    ("name", name),
-                    ("lines", o.document.text.lines().known.to_string()),
-                    ("encoding", self.label("encoding.utf8", &[])),
-                ],
-            )
-        } else {
-            self.label("workbench.empty", &[])
-        }
+        shell::view::status_message_text(self).unwrap_or_default()
     }
     fn render_file_tree(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         if self.scan_failed {
@@ -1738,6 +1715,11 @@ impl ShellHost for Workbench {
             self.quick_access_command(id, window, cx);
             return;
         }
+        // #27：状态栏条目的点击（选择器在下一帧打开，见 `status_host.rs`）。
+        if crate::status_items::registry::is_status_command(id) {
+            self.status_command(id, &Value::Null, cx);
+            return;
+        }
         self.command(id, cx);
     }
     fn zoom_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -1812,14 +1794,8 @@ impl Render for Workbench {
         }
         // #22：超大文件提示条、状态栏标记、索引进度、滚动估计与流式查找。
         self.sync_large_files(cx);
-        let status = StatusEntry {
-            text: self.file_status(),
-            ..Default::default()
-        };
-        let shell = &mut self.shell;
-        let _ = shell
-            .status_bar
-            .set(&shell.contributions, appearance::STATUS_FILE, status);
+        // #27：状态栏右侧的文件状态条目（只在状态变化时重算，见 `status_host.rs`）。
+        self.sync_status(window, cx);
         let workbench = shell::view::render(self, window, cx);
         let goto = self.goto_overlay(cx);
         let quick = self.quick_overlay(cx);
@@ -1902,6 +1878,12 @@ impl Render for Workbench {
                 },
             ))
             // #29：Markdown 预览命令。
+            // #27：状态栏条目的选择器命令（键位与命令面板分发来的 action）。
+            .on_action(cx.listener(
+                |v, a: &crate::status_items::registry::StatusAction, _, cx| {
+                    v.status_command(a.0, &Value::Null, cx)
+                },
+            ))
             .on_action(
                 cx.listener(|v, a: &crate::markdown::registry::MarkdownAction, _, cx| {
                     v.markdown_command(a.0, cx)
@@ -2087,7 +2069,14 @@ mod tests {
             assert!(token.iter().any(|t| t.range.start().0 == 0
                 && t.range.end().0 == 6
                 && t.scopes.last().map(|s| s.as_ref()) == Some("storage.modifier.public.cs")));
-            assert!(v.status().contains("UTF-8"));
+            // #27：状态栏右侧的编码条目（骨架的“文件名 | 行数 | 编码”已被它替换）。
+            assert_eq!(
+                v.shell
+                    .status_bar
+                    .get(crate::status_items::registry::ENCODING)
+                    .map(|e| e.text.as_str()),
+                Some("UTF-8")
+            );
         });
         // 代码视图已绘制首行：正文已整形，关键字区间按主题着色。
         let code = view.read_with(cx, |v, _| v.code_view().clone());
@@ -2155,7 +2144,13 @@ mod tests {
         cx.simulate_click(point(px(128.0), px(152.0)), Modifiers::default());
         cx.run_until_parked();
         view.read_with(cx, |v, _| {
-            assert!(v.status().contains("b.cs"));
+            assert_eq!(
+                v.editor.active().current().map(|tab| match &tab.resource {
+                    Resource::Workspace(p) => p.as_str().to_owned(),
+                    other => format!("{other:?}"),
+                }),
+                Some("src/b.cs".to_owned())
+            );
         });
         code.read_with(cx, |c, _| {
             assert_eq!(c.scroll_position().top, 0.0);
@@ -2188,13 +2183,12 @@ mod tests {
             cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
         cx.run_until_parked();
         cx.update(|window, cx| window.focus(&view.read(cx).focus));
-        let empty = |v: &Workbench| v.label("workbench.empty", &[]);
-        // Default ctrl+p removed by the user file: nothing happens.
+        // Default ctrl+p removed by the user file: nothing happens (no status message).
         cx.simulate_keystrokes("ctrl-p");
-        view.read_with(cx, |v, _| assert_eq!(v.status(), empty(v)));
+        view.read_with(cx, |v, _| assert_eq!(v.status(), ""));
         // Unknown command in the file is ignored without an error.
         cx.simulate_keystrokes("f5");
-        view.read_with(cx, |v, _| assert_eq!(v.status(), empty(v)));
+        view.read_with(cx, |v, _| assert_eq!(v.status(), ""));
         // A workbench key (#16) rebound by the user: the old key no longer toggles the side bar.
         cx.simulate_keystrokes("ctrl-b");
         view.read_with(cx, |v, _| assert!(v.shell.layout.sidebar_visible));

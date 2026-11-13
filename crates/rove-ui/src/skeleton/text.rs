@@ -92,6 +92,9 @@ pub struct FileDocuments {
     size: crate::editors::settings::SizePolicy,
     /// 虚拟文档的内容来源，按登记顺序依次询问（#42 元数据视图、#28 欢迎页）。
     virtual_sources: Vec<Arc<dyn VirtualSource>>,
+    /// #27：编码是否由自动识别得出。冻结的 `DocumentMetadata` 没有这个字段（见
+    /// `rove_buffer::LoadedText` 的说明），状态栏的「自动识别」悬停提示只能从这里取。
+    guessed: Arc<Mutex<BTreeMap<DocumentId, bool>>>,
 }
 
 /// 依次询问各个来源，第一个认领这个资源名的胜出。
@@ -107,8 +110,72 @@ impl FileDocuments {
             next: Arc::new(AtomicU64::new(1)),
             size: Default::default(),
             virtual_sources: Vec::new(),
+            guessed: Default::default(),
         }
     }
+
+    /// #27：`document` 的编码是不是自动识别出来的。
+    pub fn encoding_guessed(&self, document: DocumentId) -> bool {
+        self.guessed
+            .lock()
+            .unwrap()
+            .get(&document)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// #27：「通过编码重新打开」。用 `encoding`（VS Code 的编码 ID）重读同一个文件，
+    /// **文档身份不变**（标签、滚动位置与选区由 `EditorService::reload_document` 保持），
+    /// 返回新的快照。虚拟文档与不认识的编码返回 `Unsupported`。
+    pub fn reopen_with_encoding(
+        &self,
+        document: &Arc<Document>,
+        encoding: &str,
+    ) -> Result<Arc<Document>> {
+        if rove_buffer::settings::encoding_from_id(encoding).is_none() {
+            return Err(Error::Unsupported);
+        }
+        let resource = document.resource.clone();
+        let path = match &resource {
+            Resource::Workspace(p) => self.root.join(p.as_str()),
+            Resource::File(p) => p.clone(),
+            Resource::Virtual(_) => return Err(Error::Unsupported),
+        };
+        let path = std::fs::canonicalize(path)?;
+        let language = document.metadata.language.clone();
+        let mut options = LoadOptions::new(&language, &*self.settings);
+        options.explicit_encoding = Some(encoding);
+        // 用户明确选了编码：即使解不出合法文本也按 lossy 显示（VS Code 的「通过编码重新打开」
+        // 就是用来看乱码、再换一个编码的），不要报「二进制或不支持的编码」。
+        options.force_open = true;
+        let policy = rove_buffer::SizePolicy {
+            huge_bytes: self.size.huge_bytes,
+            optimize: self.size.optimize,
+        };
+        let mut loaded = open_file(&path, &options, policy)?;
+        let mut read_only: Vec<ReadOnlyReason> = loaded.metadata.read_only.to_vec();
+        read_only.extend(read_only_rules(
+            &self.root,
+            &resource,
+            &path,
+            &*self.settings,
+        ));
+        loaded.metadata.read_only = read_only.into();
+        let reopened = Arc::new(Document {
+            id: document.id,
+            resource,
+            metadata: loaded.metadata,
+            text: loaded.text.source(),
+        });
+        self.guessed
+            .lock()
+            .unwrap()
+            .insert(document.id, loaded.detection.guessed);
+        let mut index = self.cache.lock().unwrap();
+        index.documents.insert(path, Arc::downgrade(&reopened));
+        Ok(reopened)
+    }
+
 
     /// 追加一个虚拟文档的内容来源（#42 的元数据视图、#28 的欢迎页）。先登记的先被询问。
     pub fn with_virtual_source(mut self, source: Arc<dyn VirtualSource>) -> Self {
@@ -169,6 +236,7 @@ impl Documents for FileDocuments {
         let next = self.next.clone();
         let policy = self.size;
         let virtual_sources = self.virtual_sources.clone();
+        let guessed = self.guessed.clone();
         Box::pin(async move {
             cancel.check()?;
             if let Some(doc) = cache.lock().unwrap().find(&resource) {
@@ -225,6 +293,7 @@ impl Documents for FileDocuments {
             // #15 的只读规则（files.readonlyInclude/Exclude/FromPermissions 与
             // rove.files.extraReadonlyInclude）；#20 负责表现。
             let mut loaded = loaded;
+            let detection_guessed = loaded.detection.guessed;
             let mut read_only: Vec<ReadOnlyReason> = loaded.metadata.read_only.to_vec();
             read_only.extend(read_only_rules(&root, &resource, &path, &*settings));
             loaded.metadata.read_only = read_only.into();
@@ -234,6 +303,8 @@ impl Documents for FileDocuments {
                 metadata: loaded.metadata,
                 text: loaded.text.source(),
             });
+            // #27：状态栏的「自动识别」悬停提示（元信息里没有这个字段）。
+            guessed.lock().unwrap().insert(doc.id, detection_guessed);
             cancel.check()?;
             let mut index = cache.lock().unwrap();
             index.documents.insert(path.clone(), Arc::downgrade(&doc));
