@@ -64,6 +64,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 ammonia = "4"
 webview2-com = "0.38"
 windows = "0.61"
+# 预览资源在构建时压缩后嵌入、请求时解压（已在依赖图里）。
+flate2 = "1"
 
 [profile.release]
 lto = "thin"

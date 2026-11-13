@@ -17,12 +17,12 @@ macro_rules! asset {
         (
             $path,
             $mime,
-            include_bytes!(concat!("../../assets/markdown/", $path)) as &[u8],
+            include_bytes!(concat!(env!("OUT_DIR"), "/markdown/", $path, ".deflate")) as &[u8],
         )
     };
 }
 
-/// (相对 `https://rove.local/` 的路径, MIME 类型, 内容)
+/// (相对 `https://rove.local/` 的路径, MIME 类型, DEFLATE 压缩后的内容；见 `build.rs`)
 pub const ASSETS: &[(&str, &str, &[u8])] = &[
     asset!("bridge.js", "text/javascript"),
     asset!("rove.css", "text/css"),
@@ -88,12 +88,13 @@ pub const ASSETS: &[(&str, &str, &[u8])] = &[
 /// 预览页的地址（WebView2 只允许导航到这里）。
 pub const INDEX_URL: &str = "https://rove.local/index.html";
 
-/// 按路径取打包资源（`index.html` 由 [`index_html`] 生成，不在表里）。
-pub fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
-    ASSETS
-        .iter()
-        .find(|(p, _, _)| *p == path)
-        .map(|(_, mime, bytes)| (*mime, *bytes))
+/// 按路径取打包资源并解压（`index.html` 由 [`index_html`] 生成，不在表里）。每次请求解压一次、
+/// 不缓存：Mermaid 约 3.5 MB，解压十几毫秒，只在文档用到时加载。
+pub fn asset(path: &str) -> Option<(&'static str, Vec<u8>)> {
+    let (_, mime, bytes) = ASSETS.iter().find(|(p, _, _)| *p == path)?;
+    let mut out = Vec::with_capacity(bytes.len() * 3);
+    std::io::Read::read_to_end(&mut flate2::read::DeflateDecoder::new(*bytes), &mut out).ok()?;
+    Some((*mime, out))
 }
 
 /// 预览页：CSP 只放行带本次随机 nonce 的打包脚本（文档里的脚本即使漏过净化也不会执行）；
@@ -143,11 +144,14 @@ pub fn css_variables() -> &'static BTreeSet<String> {
     static NAMES: OnceLock<BTreeSet<String>> = OnceLock::new();
     NAMES.get_or_init(|| {
         let mut names = BTreeSet::new();
-        for (path, _, bytes) in ASSETS {
+        for (path, _, _) in ASSETS {
             if !path.ends_with(".css") {
                 continue;
             }
-            let text = String::from_utf8_lossy(bytes);
+            let Some((_, bytes)) = asset(path) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&bytes);
             let mut rest = text.as_ref();
             while let Some(at) = rest.find("--vscode-") {
                 let tail = &rest[at..];
@@ -242,8 +246,14 @@ mod tests {
 
     #[test]
     fn every_asset_is_bundled_and_the_page_references_only_bundled_scripts() {
-        for (path, mime, bytes) in ASSETS {
-            assert!(!bytes.is_empty(), "{path}");
+        for (path, mime, _) in ASSETS {
+            let (_, bytes) = asset(path).unwrap();
+            let original = std::fs::read(format!(
+                "{}/assets/markdown/{path}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
+            assert_eq!(bytes, original, "{path}");
             assert!(!mime.is_empty());
         }
         let page = index_html("abc");
@@ -256,7 +266,7 @@ mod tests {
         assert!(page.contains("connect-src 'none'"));
         // katex.min.css 引用的 woff2 字体都已打包（ttf/woff 回退永远不会被请求）。
         let (_, css) = asset("vendor/katex/katex.min.css").unwrap();
-        let css = String::from_utf8_lossy(css);
+        let css = String::from_utf8_lossy(&css);
         for font in css.split("url(fonts/").skip(1) {
             let name = font.split(')').next().unwrap();
             if name.ends_with(".woff2") {

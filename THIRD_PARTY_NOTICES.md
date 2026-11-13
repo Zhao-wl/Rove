@@ -223,8 +223,8 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 
 ## Markdown 预览的打包资源（#29）
 
-以下文件位于 `crates/rove-ui/assets/markdown/vendor/`，编译时嵌入 `rove.exe`（`include_bytes!`），
-运行时经 WebView2 的资源请求事件从内存返回，**不联网、不读安装目录**。原始许可证全文保存在同目录的
+以下文件位于 `crates/rove-ui/assets/markdown/vendor/`，由 `crates/rove-ui/build.rs` 在构建时 DEFLATE 压缩后嵌入 `rove.exe`，
+运行时在内存里解压、经 WebView2 的资源请求事件返回，**不联网、不读安装目录**。原始许可证全文保存在同目录的
 `LICENSES/` 下（不嵌入二进制）。合计约 4.29 MB（含 Rove 自写的 `bridge.js`、`rove.css`、`blocked-image.svg`）。
 
 | 文件 | 来源 | 版本 | 许可 | SHA-256（前 16 位） |

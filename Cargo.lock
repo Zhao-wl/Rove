@@ -5155,6 +5155,7 @@ dependencies = [
  "ammonia",
  "async-channel 2.5.0",
  "fancy-regex",
+ "flate2",
  "futures-lite 2.6.1",
  "globset",
  "gpui",

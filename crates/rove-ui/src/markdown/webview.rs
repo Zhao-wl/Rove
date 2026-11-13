@@ -770,7 +770,7 @@ unsafe fn configure(
                     );
                 }
                 return match page::asset(path) {
-                    Some((mime, bytes)) => respond(&resource_env, &args, 200, mime, bytes),
+                    Some((mime, bytes)) => respond(&resource_env, &args, 200, mime, &bytes),
                     None => respond(&resource_env, &args, 404, "text/plain", b"not found"),
                 };
             }

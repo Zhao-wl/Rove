@@ -45,10 +45,7 @@ pub fn strings() -> Result<StringTable> {
             "editors.watermark",
             "快速打开 Ctrl+P　　命令面板 Ctrl+Shift+P",
         ),
-        (
-            "editors.markdown",
-            "Markdown 预览",
-        ),
+        ("editors.markdown", "Markdown 预览"),
         ("editors.fileMissing", "无法打开编辑器：找不到文件。"),
         ("editors.fileDenied", "无法打开编辑器：没有读取权限。"),
         (
