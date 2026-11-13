@@ -73,6 +73,10 @@ mod nav_cases_tests;
 mod nav_host;
 #[cfg(test)]
 mod nav_tests;
+// #42：元数据视图（外部符号的只读视图）的装配与入口测试。
+mod metadata_host;
+#[cfg(test)]
+mod metadata_tests;
 // #41：速览窗口的装配与入口测试。
 mod peek_host;
 #[cfg(test)]
@@ -163,7 +167,8 @@ fn read_only_for(
     document: &Document,
 ) -> Arc<[ReadOnlyReason]> {
     let base = code_view::presented_read_only(&document.metadata.read_only);
-    let huge = base.contains(&ReadOnlyReason::HugeFile);
+    // 超大文件与元数据视图（#42）的只读不能在会话中解除。
+    let huge = base.contains(&ReadOnlyReason::HugeFile) || base.contains(&ReadOnlyReason::Metadata);
     match overrides.get(&document.id) {
         Some(false) if !huge => Arc::from([]),
         Some(true) if base.is_empty() => Arc::from([ReadOnlyReason::Session]),
@@ -237,6 +242,8 @@ pub struct Workbench {
     search: Entity<crate::search::view::SearchView>,
     /// #41：各代码视图上的速览窗口、查询服务与外部符号片段登记点（见 `peek_host.rs`）。
     peek: peek_host::Peeks,
+    /// #42：元数据视图的文档加载器与重新载入入口（见 `metadata_host.rs`）。
+    metadata: metadata_host::MetadataHost,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -369,10 +376,15 @@ impl Workbench {
             theme_service.current().kind(),
         );
         let search = Self::new_search(root.clone(), services.clone(), theme.clone(), cx);
+        // #42：元数据视图是一份普通的虚拟文档，由文档加载器按资源名生成。
+        let metadata = metadata_host::MetadataHost::new(
+            FileDocuments::new(root.clone(), services.clone()).with_size_policy(size),
+            nav.views.clone(),
+        );
         let mut view = Self {
             tree: None,
             editor: EditorService::new(
-                Arc::new(FileDocuments::new(root.clone(), services.clone()).with_size_policy(size)),
+                metadata.files.clone(),
                 // #94: one baseline per open document, configured by the shared settings.
                 Arc::new(SyntaxDocuments::new(
                     TreeSitterSyntax::default().with_settings(services.clone()),
@@ -414,6 +426,7 @@ impl Workbench {
             nav,
             search,
             peek: Default::default(),
+            metadata,
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -447,6 +460,8 @@ impl Workbench {
         view.watch_feedback(cx);
         // #41：`config.editor.stablePeek` 上下文键。
         view.peek_settings_changed(cx);
+        // #42：速览预览里的外部符号片段取自元数据视图。
+        view.register_metadata_snippets();
         view.sync_views(cx);
         view.scan(root, cx);
         view
@@ -487,6 +502,8 @@ impl Workbench {
         self.nav_settings_changed(keys, cx);
         // #25：search.* 变化。
         self.search_settings_changed(keys, cx);
+        // #42：rove.metadataView.showDocs 变化：打开着的元数据视图立即重新渲染。
+        self.metadata_settings_changed(keys, cx);
         // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
@@ -984,7 +1001,8 @@ impl Workbench {
         if document
             .metadata
             .read_only
-            .contains(&ReadOnlyReason::HugeFile)
+            .iter()
+            .any(|r| matches!(r, ReadOnlyReason::HugeFile | ReadOnlyReason::Metadata))
         {
             return;
         }
@@ -1030,7 +1048,11 @@ impl Workbench {
             .first()
             .map(|r| self.label(code_view::read_only_reason_key(r), &[]))
             .unwrap_or_default();
-        let key = if reasons.contains(&ReadOnlyReason::HugeFile) {
+        // 超大文件与元数据视图（#42）的只读不能在会话中取消，提示里不提切换。
+        let key = if reasons
+            .iter()
+            .any(|r| matches!(r, ReadOnlyReason::HugeFile | ReadOnlyReason::Metadata))
+        {
             "codeView.readonly.cannotEdit"
         } else {
             "codeView.readonly.cannotEditToggle"

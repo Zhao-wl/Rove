@@ -80,6 +80,8 @@ pub struct PeekRequest {
     pub kind: NavKind,
     /// 查询点所在的资源与位置（速览窗口嵌在这一行下方）。
     pub origin: (Resource, Position),
+    /// 标题里的符号名（查询点处的单词，可能为空）。
+    pub symbol: Arc<str>,
     pub targets: Arc<[Target]>,
     /// 近似时的标题标记（字符串 key 与参数）；精确为 `None`。
     pub annotation: Option<(&'static str, Vec<(&'static str, String)>)>,

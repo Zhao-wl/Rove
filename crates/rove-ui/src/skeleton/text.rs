@@ -37,16 +37,34 @@ fn read_only_rules(
     config.readonly.evaluate(&relative, permission)
 }
 
+/// 虚拟文档（没有磁盘文件的文档，如 #42 的元数据视图）的内容来源。`name` 是 `Resource::Virtual` 的整串；
+/// 不认识这个方案时返回 `None`（打开按 `Unsupported` 失败）。
+pub trait VirtualSource: Send + Sync {
+    fn load(&self, name: &str) -> Option<Result<VirtualContent>>;
+}
+
+/// 虚拟文档的内容。
+pub struct VirtualContent {
+    pub text: String,
+    pub language: Arc<str>,
+    pub read_only: Vec<ReadOnlyReason>,
+}
+
 /// Live documents are owned by tabs and callers. The cache only indexes their weak identities.
 #[derive(Default)]
 struct FileCache {
     documents: BTreeMap<PathBuf, Weak<Document>>,
+    /// 虚拟文档按资源名缓存（弱引用，由标签持有）。
+    virtuals: BTreeMap<Arc<str>, Weak<Document>>,
     aliases: BTreeMap<Resource, PathBuf>,
     inflight: BTreeMap<PathBuf, Weak<Mutex<()>>>,
 }
 
 impl FileCache {
     fn find(&self, resource: &Resource) -> Option<Arc<Document>> {
+        if let Resource::Virtual(name) = resource {
+            return self.virtuals.get(name).and_then(Weak::upgrade);
+        }
         self.aliases
             .get(resource)
             .or(match resource {
@@ -59,6 +77,7 @@ impl FileCache {
 
     fn prune(&mut self) {
         self.documents.retain(|_, doc| doc.strong_count() > 0);
+        self.virtuals.retain(|_, doc| doc.strong_count() > 0);
         self.aliases
             .retain(|_, path| self.documents.contains_key(path));
         self.inflight.retain(|_, gate| gate.strong_count() > 0);
@@ -71,6 +90,7 @@ pub struct FileDocuments {
     cache: Arc<Mutex<FileCache>>,
     next: Arc<AtomicU64>,
     size: crate::editors::settings::SizePolicy,
+    virtual_source: Option<Arc<dyn VirtualSource>>,
 }
 impl FileDocuments {
     pub fn new(root: PathBuf, settings: Arc<dyn Settings>) -> Self {
@@ -80,7 +100,34 @@ impl FileDocuments {
             cache: Default::default(),
             next: Arc::new(AtomicU64::new(1)),
             size: Default::default(),
+            virtual_source: None,
         }
+    }
+
+    /// 接上虚拟文档的内容来源（#42 的元数据视图）。
+    pub fn with_virtual_source(mut self, source: Arc<dyn VirtualSource>) -> Self {
+        self.virtual_source = Some(source);
+        self
+    }
+
+    /// 虚拟文档重新取内容：文档身份不变，文本是新的快照（版本更新）。没有打开的文档返回 `None`。
+    pub fn reload_virtual(&self, resource: &Resource) -> Result<Option<Arc<Document>>> {
+        let (Resource::Virtual(name), Some(source)) = (resource, &self.virtual_source) else {
+            return Ok(None);
+        };
+        let Some(old) = self.cache.lock().unwrap().find(resource) else {
+            return Ok(None);
+        };
+        let Some(content) = source.load(name) else {
+            return Ok(None);
+        };
+        let doc = Arc::new(virtual_document(old.id, resource, content?));
+        self.cache
+            .lock()
+            .unwrap()
+            .virtuals
+            .insert(name.clone(), Arc::downgrade(&doc));
+        Ok(Some(doc))
     }
 
     pub fn with_size_policy(mut self, size: crate::editors::settings::SizePolicy) -> Self {
@@ -98,6 +145,7 @@ impl Documents for FileDocuments {
         let cache = self.cache.clone();
         let next = self.next.clone();
         let policy = self.size;
+        let virtual_source = self.virtual_source.clone();
         Box::pin(async move {
             cancel.check()?;
             if let Some(doc) = cache.lock().unwrap().find(&resource) {
@@ -106,7 +154,20 @@ impl Documents for FileDocuments {
             let path = match &resource {
                 Resource::Workspace(p) => root.join(p.as_str()),
                 Resource::File(p) => p.clone(),
-                _ => return Err(Error::Unsupported),
+                Resource::Virtual(name) => {
+                    let Some(source) = virtual_source else {
+                        return Err(Error::Unsupported);
+                    };
+                    let content = source.load(name).ok_or(Error::Unsupported)??;
+                    let id = DocumentId(next.fetch_add(1, Ordering::Relaxed));
+                    let doc = Arc::new(virtual_document(id, &resource, content));
+                    cache
+                        .lock()
+                        .unwrap()
+                        .virtuals
+                        .insert(name.clone(), Arc::downgrade(&doc));
+                    return Ok(doc);
+                }
             };
             let path = std::fs::canonicalize(path)?;
             // Serialize only reads of the same canonical file; never hold the index lock for I/O.
@@ -158,5 +219,22 @@ impl Documents for FileDocuments {
             index.aliases.insert(resource, path);
             Ok(doc)
         })
+    }
+}
+
+/// 虚拟文档：UTF-8、LF，普通大小，只读原因由来源给出。
+fn virtual_document(id: DocumentId, resource: &Resource, content: VirtualContent) -> Document {
+    Document {
+        id,
+        resource: resource.clone(),
+        metadata: rove_buffer::DocumentMetadata {
+            language: content.language,
+            encoding: rove_buffer::Encoding::Utf8,
+            bom: false,
+            line_endings: rove_buffer::LineEndings::Uniform(rove_buffer::Eol::Lf),
+            read_only: content.read_only.into(),
+            size: rove_buffer::SizeClass::Normal,
+        },
+        text: Arc::new(rove_buffer::RopeText::from_text(&content.text)),
     }
 }

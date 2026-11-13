@@ -36,3 +36,5 @@ pub mod nav;
 pub mod search;
 // #41：速览窗口（速览定义、引用、实现；D3 默认方式）。
 pub mod peek;
+// #42：元数据视图界面（外部符号的只读视图；内容与位置的核心逻辑在 rove_lang_cs::metadata_view）。
+pub mod metadata;

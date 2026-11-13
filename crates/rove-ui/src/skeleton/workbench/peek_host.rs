@@ -209,7 +209,7 @@ impl Workbench {
         self.show_peek(group, false, &document, request, window, cx);
     }
 
-    fn show_peek(
+    pub(super) fn show_peek(
         &mut self,
         group: EditorGroupId,
         secondary: bool,

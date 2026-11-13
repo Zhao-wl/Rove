@@ -24,3 +24,6 @@ pub mod router;
 
 // #35 增量索引：覆盖层日志的读取、“基础索引 + 覆盖层”的合并查询视图。
 pub mod overlay;
+
+// #42 元数据视图：文档标识、内容、showDocs 与行号换算。
+pub mod metadata_view;
