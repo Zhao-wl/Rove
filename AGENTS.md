@@ -160,6 +160,7 @@ cargo run --release -p rove-lang-cs --example nav_check -- --lint             # 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo xtask check-deps
 pwsh -NoProfile -File .github/scripts/check-core-crates.ps1
 pwsh -NoProfile -File .github/scripts/check-eol.ps1
 dotnet build tools/rove-indexer-cs -c Release
@@ -175,6 +176,7 @@ dotnet build tools/rove-indexer-cs -c Release
 | `cargo clippy --workspace --all-targets -- -D warnings` | 有警告；`-D warnings` 下警告即错误 |
 | `cargo test --workspace` | 测试失败；需要 Unity 项目的测试必须自行跳过 |
 | 核心层禁 `gpui`（`.github/scripts/check-core-crates.ps1`） | 核心层 crate 引入了 `gpui`（新 crate 漏登记只警告，不失败，但也会被检查） |
+| 依赖图禁 HTTP / TLS 栈（`cargo xtask check-deps`，#74） | 依赖图里出现了 `reqwest` / `hyper` / `rustls` / `ring` / `tokio` 等；确实去不掉的项写进 `xtask/src/deps.rs` 的 `ALLOWED` 白名单并注明理由 |
 | 行尾检查（`.github/scripts/check-eol.ps1`） | 提交的文件行尾与 `.gitattributes` 不一致（默认 LF，`.ps1` 为 CRLF） |
 | `dotnet build tools/rove-indexer-cs -c Release` | 索引进程编不过 |
 | 体积守护（`size` 任务：`cargo xtask check-size`） | `rove.exe` 超过 `perf/budgets.toml` 的 `[size].budget_bytes`；每个 PR 都会报告体积与相对 6.2 MB 基线的变化 |

@@ -3,13 +3,15 @@
 //! 子命令：
 //! - `gen-testdata`：生成 M0 口径的测试数据（`small.txt` / `uniq.txt` / `big1g.txt`）；
 //! - `bench`：跑 criterion 基准，输出机器可读结果，可选与基线比较、校验预算；
-//! - `check-size`：报告 `rove.exe` 体积与基线差值，超预算时非零退出。
+//! - `check-size`：报告 `rove.exe` 体积与基线差值，超预算时非零退出；
+//! - `check-deps`：依赖图里禁止出现 HTTP / TLS 栈（#74）。
 //!
 //! 基准只使用 #1（`docs/ARCHITECTURE.md`）定义的公开接口，不绕开接口测量，
 //! 也不在接口上开测量后门。
 
 mod bench;
 mod budgets;
+mod deps;
 mod gen_testdata;
 mod results;
 mod size;
@@ -45,6 +47,12 @@ const USAGE: &str = "\
       需要先 cargo build --release -p rove-app；拿不到标记时默认跳过并返回 0，
       加 --require 则视为失败。「可交互」时间留给 #16。
 
+  check-deps [--package CRATE]
+      依赖图里禁止出现 reqwest / hyper / rustls / ring / tokio 等 HTTP / TLS 栈（#74）。
+      默认检查 workspace 全体成员的 normal,build 与 normal,build,dev 两个范围，
+      出现被禁的包时以非零码退出。确实去不掉的项加进 xtask/src/deps.rs 的 ALLOWED
+      并写明来源与理由，不要直接从 DENIED 里删包名。
+
   --help  显示本说明。";
 
 fn main() -> ExitCode {
@@ -69,10 +77,14 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         "bench" => bench::run(rest),
         "startup" => startup::run(rest),
         "check-size" => size::run(rest),
+        "check-deps" => deps::run(rest),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(0)
         }
-        other => Err(format!("未知命令 `{other}`，可用：gen-testdata / bench / check-size").into()),
+        other => Err(format!(
+            "未知命令 `{other}`，可用：gen-testdata / bench / startup / check-size / check-deps"
+        )
+        .into()),
     }
 }
