@@ -14,6 +14,10 @@
 //! | 外部修改且本地没有修改 | 无 | 静默重新加载 |
 //!
 //! 反馈键带文档 ID：同一文档同一原因只有一条，再次触发时反馈层更新次数而不是再弹一条。
+//! 失败反馈里**那次请求的后续按钮**（“重试 / 覆盖 / 改用 UTF-8 / 仍然保存（替换为 ?）”）在
+//! **最近一次未完成的保存请求**上叠加选项（#140）：另存为失败后它们仍然作用于另存为的目标，
+//! 通知说的也是目标文件。关闭确认模态框的“保存”不在此列——它是一条新的“保存本文档”命令，
+//! 永远是原地保存（未命名文档照旧请求选路径），和 `ctrl+s` 一致。
 //! 宿主负责：命令分发、“另存为”对话框、把 [`Effect`] 反映到视图（文本、标签的脏标记 / “已删除”），
 //! 以及在后台读盘（[`SaveController::due`] → 读盘 → [`SaveController::apply_disk`]）。
 
@@ -73,6 +77,12 @@ type HotExit = Box<dyn Fn(&TextFile) -> bool>;
 /// 窗口拥有的保存控制器（只在 UI 线程使用）。
 pub struct SaveController {
     files: BTreeMap<DocumentId, TextFile>,
+    /// 每个文档最近一次**未完成**的保存请求（#140）：失败反馈里那次请求的后续按钮在它上面
+    /// 叠加本次选项，这样另存为失败后的“重试 / 覆盖 / 改用 UTF-8 / 替换为 ?”仍然写向另存为的
+    /// 目标路径。保存成功、取消、反馈被关掉（[`Self::on_dismissed`]）、还原、关闭（保存 /
+    /// 不保存）、[`Self::attach`] 或 [`Self::detach`] 时清除；生命周期不超过它所属的那份
+    /// [`TextFile`]。
+    pending: BTreeMap<DocumentId, SaveRequest>,
     own: SelfWrites,
     coalescer: ChangeCoalescer,
     write: WriteOptions,
@@ -89,6 +99,7 @@ impl SaveController {
     pub fn new(write: WriteOptions) -> Self {
         Self {
             files: BTreeMap::new(),
+            pending: BTreeMap::new(),
             own: SelfWrites::default(),
             coalescer: ChangeCoalescer::default(),
             write,
@@ -108,10 +119,13 @@ impl SaveController {
     }
 
     pub fn attach(&mut self, document: DocumentId, file: TextFile) {
+        // 同一个 ID 换一份文档时，上一份遗留的未完成请求不能被新文档继承（#140）。
+        self.pending.remove(&document);
         self.files.insert(document, file);
     }
 
     pub fn detach(&mut self, document: DocumentId) -> Option<TextFile> {
+        self.pending.remove(&document);
         self.files.remove(&document)
     }
 
@@ -166,12 +180,15 @@ impl SaveController {
         now: Instant,
     ) -> std::result::Result<SaveJob, Vec<Effect>> {
         let write = self.write.clone();
+        // 记下这次请求：失败时的后续按钮要在它上面叠加选项（#140）。
+        self.pending.insert(document, request.clone());
         let Some(file) = self.files.get_mut(&document) else {
+            self.pending.remove(&document);
             return Err(Vec::new());
         };
         match file.begin_save(request, options, None, &write, now) {
             Ok(job) => Ok(job),
-            Err(outcome) => Err(self.report(document, request, outcome, feedback, now)),
+            Err(outcome) => Err(self.report(document, outcome, feedback, now)),
         }
     }
 
@@ -187,7 +204,7 @@ impl SaveController {
             return Vec::new();
         };
         let outcome = file.complete_save(result);
-        self.report(document, &SaveRequest::default(), outcome, feedback, now)
+        self.report(document, outcome, feedback, now)
     }
 
     /// 另存为（对话框给出了路径；未命名文档的首次保存也走这里）。
@@ -239,6 +256,7 @@ impl SaveController {
     ) -> Result<Vec<Effect>> {
         let file = self.files.get_mut(&document).ok_or(Error::NotFound)?;
         let change = file.revert(settings, now)?;
+        self.pending.remove(&document);
         Self::dismiss_document(feedback, document);
         Ok(Self::disk_effects(document, change))
     }
@@ -294,16 +312,16 @@ impl SaveController {
         let save = |this: &mut Self, request: SaveRequest, feedback: &mut FeedbackHub| {
             this.save(document, &request, options, feedback, now)
         };
+        // 那次请求的后续按钮都在最近一次未完成的请求上叠加本次选项：另存为的目标路径不能丢（#140）。
+        let base = self.follow_up(document);
         match (prefix, action) {
             (_, ACTION_SAVE_AS) => vec![Effect::PickSaveAsPath(document)],
-            (KEY_BUSY, ACTION_RETRY) | (KEY_FAILED, ACTION_RETRY) => {
-                save(self, SaveRequest::default(), feedback)
-            }
+            (KEY_BUSY, ACTION_RETRY) | (KEY_FAILED, ACTION_RETRY) => save(self, base, feedback),
             (KEY_READ_ONLY, ACTION_OVERWRITE) => save(
                 self,
                 SaveRequest {
                     clear_read_only: true,
-                    ..SaveRequest::default()
+                    ..base
                 },
                 feedback,
             ),
@@ -311,7 +329,7 @@ impl SaveController {
                 self,
                 SaveRequest {
                     overwrite_conflict: true,
-                    ..SaveRequest::default()
+                    ..base
                 },
                 feedback,
             ),
@@ -328,7 +346,7 @@ impl SaveController {
                 self,
                 SaveRequest {
                     encoding: Some((Encoding::Utf8, false)),
-                    ..SaveRequest::default()
+                    ..base
                 },
                 feedback,
             ),
@@ -336,21 +354,51 @@ impl SaveController {
                 self,
                 SaveRequest {
                     unencodable: UnencodableChoice::Replace,
-                    ..SaveRequest::default()
+                    ..base
                 },
                 feedback,
             ),
+            // 关闭确认的“保存”是一条新的“保存本文档”命令，不是某次另存为的后续：模态框说的是
+            // 当前文档，就得写回当前文档（未命名文档照旧请求选路径）。
             (KEY_CLOSE, ACTION_SAVE) => {
+                self.pending.remove(&document);
                 let mut effects = save(self, SaveRequest::default(), feedback);
                 if effects.iter().any(|e| matches!(e, Effect::Saved { .. })) {
                     effects.push(Effect::Close(document));
                 }
                 effects
             }
-            (KEY_CLOSE, ACTION_DONT_SAVE) => vec![Effect::Close(document)],
-            // 取消：什么都不做（文档保持原样、仍未保存）。
+            (KEY_CLOSE, ACTION_DONT_SAVE) => {
+                self.pending.remove(&document);
+                vec![Effect::Close(document)]
+            }
+            // 模态框的“取消”：放弃这次保存（文档保持原样、仍未保存），连同记住的请求一起忘掉。
+            (KEY_UNENCODABLE, ACTION_CANCEL) => {
+                self.pending.remove(&document);
+                Vec::new()
+            }
             _ => Vec::new(),
         }
+    }
+
+    /// 保存的反馈被关掉了（用户点了通知 / 模态框自带的关闭按钮，宿主把
+    /// `FeedbackEvent::Dismissed` 转给这里）：那次保存就此作罢，记住的请求一并忘掉，
+    /// 免得它跨越到下一次保存（#140）。外部修改提示条与关闭确认不带保存请求，忽略。
+    pub fn on_dismissed(&mut self, feedback_key: &str) {
+        let Some((prefix, document)) = parse_key(feedback_key) else {
+            return;
+        };
+        if matches!(
+            prefix,
+            KEY_BUSY | KEY_READ_ONLY | KEY_CONFLICT | KEY_FAILED | KEY_UNENCODABLE
+        ) {
+            self.pending.remove(&document);
+        }
+    }
+
+    /// 后续按钮的基础请求：最近一次未完成的保存请求（没有时是默认的原地保存）。
+    fn follow_up(&self, document: DocumentId) -> SaveRequest {
+        self.pending.get(&document).cloned().unwrap_or_default()
     }
 
     /// 文件监听报告了 `path` 的变化（创建、修改、删除、重命名的两端）：只记下打开中的文档。
@@ -455,25 +503,32 @@ impl SaveController {
         }
     }
 
-    /// 把保存结果映射为反馈与宿主动作。
+    /// 把保存结果映射为反馈与宿主动作。通知说的是**这次写入的目标**（另存为时是新路径）。
     fn report(
         &mut self,
         document: DocumentId,
-        request: &SaveRequest,
         outcome: SaveOutcome,
         feedback: &mut FeedbackHub,
         now: Instant,
     ) -> Vec<Effect> {
-        let _ = request;
+        let request = self.follow_up(document);
+        // 写成了、没得写、还没有路径：这次请求结束了，后续按钮不该再沿用它（#140）。
+        if matches!(
+            &outcome,
+            SaveOutcome::Saved { .. } | SaveOutcome::NotDirty | SaveOutcome::NeedsPath
+        ) {
+            self.pending.remove(&document);
+        }
         let Some(file) = self.files.get(&document) else {
             return Vec::new();
         };
+        let name = target_name(file, &request);
         let notify =
             |feedback: &mut FeedbackHub, prefix: &str, text: &str, buttons: &[(&str, &str)]| {
                 let _ = feedback.report(
                     key(prefix, document),
                     Reason::Global(Severity::Error),
-                    named(text, file),
+                    message_for(text, &name),
                     actions(buttons),
                 );
             };
@@ -630,19 +685,34 @@ fn actions(buttons: &[(&str, &str)]) -> Arc<[FeedbackAction]> {
 /// 文档在界面上的名字：文件名或 `Untitled-1`。
 pub fn display_name(file: &TextFile) -> String {
     match (file.path(), file.untitled_name()) {
-        (Some(path), _) => path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string()),
+        (Some(path), _) => file_name(path),
         (None, Some(name)) => name.to_string(),
         (None, None) => String::new(),
     }
 }
 
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// 保存反馈里的名字：另存为说的是目标路径，否则是文档当前的名字（#140）。
+fn target_name(file: &TextFile, request: &SaveRequest) -> String {
+    match &request.save_as {
+        Some(path) => file_name(path),
+        None => display_name(file),
+    }
+}
+
 fn named(text_key: &str, file: &TextFile) -> Message {
+    message_for(text_key, &display_name(file))
+}
+
+fn message_for(text_key: &str, name: &str) -> Message {
     Message {
         key: text_key.into(),
-        args: Arc::from([(Arc::from("name"), Arc::from(display_name(file)))]),
+        args: Arc::from([(Arc::from("name"), Arc::from(name))]),
     }
 }
 
