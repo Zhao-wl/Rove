@@ -170,6 +170,133 @@ impl UndoHistory {
     pub fn close(&mut self) {
         self.open = false;
     }
+
+    /// #50：撤销栈的可持久化快照，最多保留最近 `limit` 个撤销单元与 `limit` 个重做单元
+    /// （超限时丢掉最旧的，不报错）。
+    pub fn snapshot(&self, limit: usize) -> UndoSnapshot {
+        let tail = |groups: &[UndoGroup]| {
+            groups[groups.len().saturating_sub(limit)..]
+                .iter()
+                .map(UndoUnit::from_group)
+                .collect()
+        };
+        UndoSnapshot {
+            undo: tail(&self.undo),
+            redo: tail(&self.redo),
+            truncated: self.undo.len() > limit || self.redo.len() > limit,
+        }
+    }
+
+    /// #50：按快照重建撤销栈。单元身份沿用快照里的值，下一个新单元的身份比其中最大的大 1，
+    /// 所以恢复后的脏标记判定与崩溃前一致。栈顶单元不再接受合并。
+    pub fn restore(&mut self, snapshot: UndoSnapshot) {
+        let to_group = |unit: UndoUnit| UndoGroup {
+            id: unit.id,
+            steps: unit.steps.into_iter().map(UndoStep::into_step).collect(),
+            selections_before: unit.selections_before,
+            selections_after: unit.selections_after,
+            // 恢复后的单元不参与合并，时间戳只需要是过去的某个时刻。
+            last_edit: Instant::now(),
+        };
+        self.undo = snapshot.undo.into_iter().map(to_group).collect();
+        self.redo = snapshot.redo.into_iter().map(to_group).collect();
+        self.last_id = self
+            .undo
+            .iter()
+            .chain(&self.redo)
+            .map(|group| group.id)
+            .max()
+            .unwrap_or(0);
+        self.open = false;
+    }
+}
+
+/// 撤销 / 重做栈的可持久化快照（#50 热退出：`files.restoreUndoStack`）。
+///
+/// 只含事务与选区，不含文本快照；恢复时按事务回放，所以与备份里的缓冲内容是同一套坐标。
+#[derive(Clone, Debug, Default)]
+pub struct UndoSnapshot {
+    /// 从旧到新；最后一个是栈顶（当前文本对应的单元）。
+    pub undo: Vec<UndoUnit>,
+    pub redo: Vec<UndoUnit>,
+    /// 取快照时按上限丢掉过最旧的单元。
+    pub truncated: bool,
+}
+
+impl UndoSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.undo.is_empty() && self.redo.is_empty()
+    }
+
+    /// 栈顶单元的身份（脏标记用；空栈为 0）。
+    pub fn marker(&self) -> u64 {
+        self.undo.last().map_or(0, |unit| unit.id)
+    }
+
+    /// 在这份快照上撤销 / 重做能不能回到 `marker` 这个保存点。
+    ///
+    /// 截断掉最旧的单元之后“撤到底”得到的是空栈（标记 0），不再是原来的保存点——#50 据此
+    /// 判断恢复出来的文档必须一直显示为“已修改”。
+    pub fn reaches(&self, marker: u64) -> bool {
+        if self
+            .undo
+            .iter()
+            .chain(&self.redo)
+            .any(|unit| unit.id == marker)
+        {
+            return true;
+        }
+        marker == 0 && !self.truncated
+    }
+}
+
+/// 快照中的一个撤销单元。
+#[derive(Clone, Debug)]
+pub struct UndoUnit {
+    pub id: u64,
+    pub steps: Vec<UndoStep>,
+    pub selections_before: Selections,
+    pub selections_after: Selections,
+}
+
+impl UndoUnit {
+    fn from_group(group: &UndoGroup) -> Self {
+        Self {
+            id: group.id,
+            steps: group.steps.iter().map(UndoStep::from_step).collect(),
+            selections_before: group.selections_before.clone(),
+            selections_after: group.selections_after.clone(),
+        }
+    }
+}
+
+/// 快照中的一次事务（正向 + 反向 + 前后的换行符状态）。
+#[derive(Clone, Debug)]
+pub struct UndoStep {
+    pub forward: Transaction,
+    pub inverse: Transaction,
+    pub line_endings_before: LineEndings,
+    pub line_endings_after: LineEndings,
+}
+
+impl UndoStep {
+    fn from_step(step: &Step) -> Self {
+        Self {
+            forward: step.forward.clone(),
+            inverse: step.inverse.clone(),
+            line_endings_before: step.line_endings_before.clone(),
+            line_endings_after: step.line_endings_after.clone(),
+        }
+    }
+
+    fn into_step(self) -> Step {
+        Step {
+            forward: self.forward,
+            inverse: self.inverse,
+            line_endings_before: self.line_endings_before,
+            line_endings_after: self.line_endings_after,
+        }
+    }
 }
 
 /// 光标撤销 / 重做栈：只记录选区。

@@ -25,7 +25,7 @@ pub mod transaction;
 pub mod word;
 
 pub use clipboard::{ClipboardData, MultiCursorPaste};
-pub use history::{EditKind, UNDO_GROUP_TIMEOUT};
+pub use history::{EditKind, UndoSnapshot, UndoStep, UndoUnit, UNDO_GROUP_TIMEOUT};
 pub use selection::{CursorPlacement, Selection, Selections};
 pub use session::{CursorEdit, EditSession};
 pub use settings::EditOptions;
