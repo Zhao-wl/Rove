@@ -38,3 +38,5 @@ pub mod search;
 pub mod peek;
 // #42：元数据视图界面（外部符号的只读视图；内容与位置的核心逻辑在 rove_lang_cs::metadata_view）。
 pub mod metadata;
+// #23：资源管理器（文件树、紧凑文件夹、定位当前文件、过滤、文件装饰）。
+pub mod explorer;

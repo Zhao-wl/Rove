@@ -94,12 +94,14 @@ fn files_exclude_rescans_the_workspace(cx: &mut TestAppContext) {
     std::fs::create_dir(fx.folder.path().join("skip")).unwrap();
     std::fs::write(fx.folder.path().join("skip/b.cs"), "class B {}").unwrap();
     let (view, cx) = fx.open(cx);
-    view.read_with(cx, |v, _| assert_eq!(v.tree.as_ref().unwrap().count(), 2));
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.explorer.read(cx).rows(cx).len(), 2)
+    });
     let scans = view.read_with(cx, |v, _| v.scans);
     fx.change(r#"{ "files.exclude": { "**/skip": true } }"#, cx);
-    view.read_with(cx, |v, _| {
+    view.read_with(cx, |v, cx| {
         assert_eq!(v.scans, scans + 1);
-        assert_eq!(v.tree.as_ref().unwrap().count(), 1);
+        assert_eq!(v.explorer.read(cx).rows(cx).len(), 1);
     });
     // 与工作区无关的设置不重新扫描。
     fx.change(
