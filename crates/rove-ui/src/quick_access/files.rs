@@ -8,7 +8,8 @@
 //!   绝大多数候选在掩码这一步就被否决；非 ASCII 的候选用预先算好 UTF-16 与小写形式的 [`Target`]；
 //! - 打分只产生摘要（分数与匹配区间的首尾，不分配）；排名确定后才给前 [`MAX_RESULTS`] 个生成高亮区间；
 //! - 查询是上一次查询的延长时，只在上一次的匹配集合里重新打分（前缀剪枝，见 [`Search`]）；
-//! - 候选多时在线程池里分块并行打分，最后归并各块的前 N 名（VS Code 同样最多显示 512 条文件结果）。
+//! - 候选多时在线程池里并行打分：候选切成小块，谁先空下来谁取下一块（见 [`block`]），最后归并各线程的前 N 名
+//!   （VS Code 同样最多显示 512 条文件结果）。
 use super::Picks;
 use crate::{list_widget::quick_input::RowDecor, lists::ItemId, lists::Row};
 use rove_base::WorkspacePath;
@@ -437,24 +438,31 @@ impl Search {
         let candidates = self.candidates(index, &query);
         let total = candidates.map_or(index.len(), <[u32]>::len);
         let threads = self.threads.unwrap_or_else(|| threads_for(total));
-        let chunks = split(candidates, index.len(), threads);
-        // 各块共享“第 MAX_RESULTS 名的分数下限”：任何一块的前 N 名满了，别的块里低于它的候选就不用考虑了
-        // （否则每块都要从头填满自己的前 N 名，插入与比较的总量是单线程的几倍）。
+        // 各线程共享“第 MAX_RESULTS 名的分数下限”：任何一个线程的前 N 名满了，别处低于它的候选就不用考虑了
+        // （否则每个线程都要从头填满自己的前 N 名，插入与比较的总量是单线程的几倍）。
         let floor = AtomicI32::new(0);
-        let work = |chunk: Chunk| score_chunk(chunk, index, &query, &in_history, &floor);
-        let parts: Vec<Partial> = if chunks.len() <= 1 {
-            chunks.into_iter().map(work).collect()
+        let cursor = Cursor::new(
+            total,
+            if threads <= 1 {
+                total
+            } else {
+                block(total, threads)
+            },
+        );
+        let work = || score_blocks(&cursor, candidates, index, &query, &in_history, &floor);
+        let parts: Vec<Partial> = if threads <= 1 {
+            vec![work()]
         } else {
             // 常驻线程池：每次按键新开线程的固定开销（Windows 上以毫秒计）比打分本身还大。
             use rayon::prelude::*;
-            chunks.into_par_iter().map(work).collect()
+            (0..threads).into_par_iter().map(|_| work()).collect()
         };
-        let mut matched: Vec<u32> = Vec::with_capacity(parts.iter().map(|p| p.matched.len()).sum());
-        let mut tops = Vec::with_capacity(parts.len());
-        for part in parts {
-            matched.extend(part.matched);
-            tops.push(part.top);
-        }
+        let matched = join_matched(&parts);
+        let tops: Vec<Vec<SummaryHit>> = parts
+            .into_iter()
+            .map(|p| p.top)
+            .filter(|t| !t.is_empty())
+            .collect();
         results.files = merge_tops(tops, index, &query)
             .into_iter()
             .map(|hit| Hit {
@@ -502,16 +510,13 @@ fn compare_hits(index: &FileIndex, a: &Hit, b: &Hit, query: &PreparedQuery) -> O
     )
 }
 
-/// 一块候选：上一次匹配集合的一段，或索引下标的一个区间。
-#[derive(Clone)]
-enum Chunk<'a> {
-    List(&'a [u32]),
-    Range(Range<u32>),
-}
-
-/// 一块的结果：所有匹配的下标（供下一次按键剪枝）与这一块里最好的 [`MAX_RESULTS`] 个。
+/// 一个线程的结果：它处理过的那些块里匹配到的下标（供下一次按键剪枝）与它见过的最好的 [`MAX_RESULTS`] 个。
+#[derive(Default)]
 struct Partial {
+    /// 按处理顺序追加；`segments` 记下每块占的区间，归并时还原成候选原来的顺序。
     matched: Vec<u32>,
+    /// `(块号, matched 里的起点, 终点)`，块号在同一个线程内递增。
+    segments: Vec<(u32, u32, u32)>,
     top: Vec<SummaryHit>,
 }
 
@@ -538,43 +543,163 @@ fn threads_for(total: usize) -> usize {
         .max(1)
 }
 
-fn split<'a>(candidates: Option<&'a [u32]>, all: usize, parts: usize) -> Vec<Chunk<'a>> {
-    let total = candidates.map_or(all, <[u32]>::len);
-    let size = total.div_ceil(parts.max(1)).max(1);
-    (0..total.div_ceil(size))
-        .map(|i| {
-            let (start, end) = (i * size, ((i + 1) * size).min(total));
-            match candidates {
-                Some(list) => Chunk::List(&list[start..end]),
-                None => Chunk::Range(start as u32..end as u32),
-            }
-        })
-        .collect()
+/// 动态调度的块大小：每个线程平均拿到十来块。
+///
+/// 候选是按工作区扫描顺序排列的，同一个目录下的文件挨在一起：像 `Script` 这样的目录名查询，匹配几乎
+/// 全挤在少数几段里。按线程数静态等分时，拿到这几段的线程要做掉绝大部分插入与比较，别的线程早早空转——
+/// 这就是 8 线程只有约 3 倍加速的主因。改成“先到先取下一块”后，热点段被拆开分给先空下来的线程；
+/// 本机还同时开着别的程序，某个线程被操作系统挪走时也不会把一整段拖住。
+fn block(total: usize, threads: usize) -> usize {
+    (total / (threads * 12)).clamp(512, 4096)
 }
 
-fn score_chunk(
-    chunk: Chunk,
+/// 分发待打分的块：块号单调递增，谁先空下来谁取下一块。
+struct Cursor {
+    next: std::sync::atomic::AtomicUsize,
+    total: usize,
+    block: usize,
+}
+
+impl Cursor {
+    fn new(total: usize, block: usize) -> Self {
+        Self {
+            next: std::sync::atomic::AtomicUsize::new(0),
+            total,
+            block: block.max(1),
+        }
+    }
+
+    /// 下一块（块号，候选区间）；没有了返回 `None`。
+    fn take(&self) -> Option<(u32, Range<usize>)> {
+        let n = self.next.fetch_add(1, AtomicOrdering::Relaxed);
+        let start = n.checked_mul(self.block)?;
+        (start < self.total).then(|| (n as u32, start..(start + self.block).min(self.total)))
+    }
+}
+
+/// 把各线程的分段按块号还原成候选原来的顺序：剪枝集合与单线程时逐位相同。
+fn join_matched(parts: &[Partial]) -> Vec<u32> {
+    let mut segments: Vec<(u32, &[u32])> = Vec::new();
+    for part in parts {
+        for &(block, start, end) in &part.segments {
+            segments.push((block, &part.matched[start as usize..end as usize]));
+        }
+    }
+    segments.sort_unstable_by_key(|(block, _)| *block);
+    let mut matched = Vec::with_capacity(parts.iter().map(|p| p.matched.len()).sum());
+    for (_, segment) in segments {
+        matched.extend_from_slice(segment);
+    }
+    matched
+}
+
+/// 一个线程的主循环：不断取下一块打分，直到取完。
+fn score_blocks(
+    cursor: &Cursor,
+    candidates: Option<&[u32]>,
     index: &FileIndex,
     query: &PreparedQuery,
     in_history: &std::collections::HashSet<u32>,
     floor: &AtomicI32,
 ) -> Partial {
-    let mut matched: Vec<u32> = Vec::new();
-    let mut top: Vec<SummaryHit> = Vec::with_capacity(MAX_RESULTS + 1);
+    let mut part = Partial {
+        top: Vec::with_capacity(MAX_RESULTS + 1),
+        ..Partial::default()
+    };
+    let mut shared = Floor::new(floor);
+    while let Some((id, range)) = cursor.take() {
+        let start = part.matched.len() as u32;
+        score_block(
+            &mut part,
+            &mut shared,
+            range,
+            candidates,
+            index,
+            query,
+            in_history,
+        );
+        let end = part.matched.len() as u32;
+        if end > start {
+            part.segments.push((id, start, end));
+        }
+    }
+    part
+}
+
+/// “第 [`MAX_RESULTS`] 名的分数下限”的线程本地副本。
+///
+/// 下限每个候选都要读、每次插入都可能要写。直接读写那个原子变量时，十几个线程会把它所在的缓存行
+/// 来回弹，每次读都变成一次缺失——目录名这类“匹配很多”的查询在那里被卡到只有 2 倍加速。
+/// 下限只会升高，而且**用一个偏低的值只是多做些无用功、不改变结果**（低于真正下限的候选照样会在
+/// 归并时落选），所以读可以隔几百个候选才同步一次，写只在本线程的第 N 名真的变好时才发。
+struct Floor<'a> {
+    shared: &'a AtomicI32,
+    value: i32,
+    /// 还能用缓存值多少个候选。
+    fresh: u32,
+    /// 本线程已经发布过的值。
+    published: i32,
+}
+
+impl<'a> Floor<'a> {
+    /// 隔这么多个候选再去读一次共享下限。
+    const REFRESH: u32 = 256;
+
+    fn new(shared: &'a AtomicI32) -> Self {
+        Self {
+            shared,
+            value: shared.load(AtomicOrdering::Relaxed),
+            fresh: Self::REFRESH,
+            published: 0,
+        }
+    }
+
+    #[inline]
+    fn get(&mut self) -> i32 {
+        if self.fresh == 0 {
+            self.value = self.value.max(self.shared.load(AtomicOrdering::Relaxed));
+            self.fresh = Self::REFRESH;
+        }
+        self.fresh -= 1;
+        self.value
+    }
+
+    #[inline]
+    fn publish(&mut self, worst: i32) {
+        if worst > self.published {
+            self.published = worst;
+            self.shared.fetch_max(worst, AtomicOrdering::Relaxed);
+            self.value = self.value.max(worst);
+        }
+    }
+}
+
+fn score_block(
+    part: &mut Partial,
+    floor: &mut Floor,
+    range: Range<usize>,
+    candidates: Option<&[u32]>,
+    index: &FileIndex,
+    query: &PreparedQuery,
+    in_history: &std::collections::HashSet<u32>,
+) {
+    let Partial { matched, top, .. } = part;
     let ascii_query = query.is_ascii();
     let mut score_one = |entry: u32| {
+        let known_floor = floor.get();
         // 前 N 名已经全是 label 级的结果时，只在 description 里匹配的候选排不进去，不必再为它们跑矩阵。
-        let useless = floor.load(AtomicOrdering::Relaxed) >= LABEL_SCORE_THRESHOLD;
+        let useless = known_floor >= LABEL_SCORE_THRESHOLD;
         let summary = index.summary(entry, query, ascii_query, useless);
         if summary.score == 0 {
             return;
         }
         matched.push(entry);
-        if in_history.contains(&entry) {
+        // 排序的第一关键字就是分数：低于已知的第 MAX_RESULTS 名的直接丢弃。
+        // 这一步要排在查历史之前：绝大多数候选都在这里被挡掉，不该为它们做哈希查找。
+        if summary.score < known_floor {
             return;
         }
-        // 排序的第一关键字就是分数：低于已知的第 MAX_RESULTS 名的直接丢弃。
-        if summary.score < floor.load(AtomicOrdering::Relaxed) {
+        if in_history.contains(&entry) {
             return;
         }
         let (label_len, description_len, path_len) = index.cmp_lens(entry);
@@ -585,18 +710,17 @@ fn score_chunk(
             description_len,
             path_len,
         };
-        insert_top(&mut top, hit, index, query);
+        insert_top(top, hit, index, query);
         if top.len() >= MAX_RESULTS {
             if let Some(worst) = top.last() {
-                floor.fetch_max(worst.summary.score, AtomicOrdering::Relaxed);
+                floor.publish(worst.summary.score);
             }
         }
     };
-    match chunk {
-        Chunk::List(list) => list.iter().for_each(|e| score_one(*e)),
-        Chunk::Range(range) => range.for_each(score_one),
+    match candidates {
+        Some(list) => list[range].iter().for_each(|e| score_one(*e)),
+        None => (range.start as u32..range.end as u32).for_each(score_one),
     }
-    Partial { matched, top }
 }
 
 fn cmp_key(hit: &SummaryHit) -> CmpKey {
