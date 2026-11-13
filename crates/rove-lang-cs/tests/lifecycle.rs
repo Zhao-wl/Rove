@@ -3,6 +3,7 @@
 //! 运行：`cargo test -p rove-lang-cs --test lifecycle`。
 use rove_base::Cancellation;
 use rove_lang_cs::lifecycle::{
+    inputs,
     layout::ProjectCache,
     log::IndexLog,
     meta::ProjectMeta,
@@ -143,6 +144,41 @@ fn built(p: &Project, builder: &Arc<FakeIndexer>) {
     let first = p.start(builder);
     assert!(ready(&first.wait_until(WAIT, ready)));
     drop(first);
+}
+
+#[test]
+fn multilingual_file_names_allow_initial_build_and_config_rebuild() {
+    let p = project(1);
+    fs::rename(p.root.join("Game.csproj"), p.root.join("游戏.CsPrOj")).unwrap();
+    fs::create_dir_all(p.root.join("Packages")).unwrap();
+    for name in ["测试文", "Assets/测试a", "Packages/测试a"] {
+        fs::write(p.root.join(name), "").unwrap();
+    }
+    fs::write(p.root.join("Assets/脚本.Cs"), "class Script {}").unwrap();
+    fs::write(p.root.join("Assets/程序集.AsMdEf"), r#"{"name":"Game"}"#).unwrap();
+    let reference = "Packages/程序集.AsMrEf";
+    fs::write(p.root.join(reference), r#"{"reference":"Game"}"#).unwrap();
+
+    let builder = Arc::new(FakeIndexer::default());
+    let lifecycle = p.start(&builder);
+    let first = lifecycle.wait_until(WAIT, ready);
+    assert!(ready(&first), "{first:?}");
+    assert!(lifecycle.snapshot().unwrap().trusted);
+
+    let scanned = inputs::scan(&p.root, &Cancellation::default()).unwrap();
+    assert_eq!(scanned.projects, 1);
+    assert_eq!(scanned.sources, 2);
+    assert_eq!(scanned.assembly_definitions, 2);
+
+    fs::write(p.root.join(reference), r#"{"reference":"Other"}"#).unwrap();
+    lifecycle.files_changed(&[SourceChange::Changed(reference.into())]);
+    let rebuilt = lifecycle.wait_until(WAIT, |status| {
+        ready(status) && status.info.generation != first.info.generation
+    });
+    assert!(ready(&rebuilt), "{rebuilt:?}");
+    assert_ne!(rebuilt.info.generation, first.info.generation);
+    assert_eq!(builder.builds.load(Ordering::SeqCst), 2);
+    assert!(lifecycle.snapshot().unwrap().trusted);
 }
 
 #[test]
