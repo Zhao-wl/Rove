@@ -226,6 +226,10 @@ impl LayoutStore {
                 .join("find-history.json")
         })
     }
+    /// #28：最近打开的文件夹与文件（全局状态，不写进工作区目录）。
+    pub fn recent_path(&self) -> Option<PathBuf> {
+        self.base.as_ref().map(|b| b.join("recent.json"))
+    }
     pub fn global_path(&self) -> Option<PathBuf> {
         self.base.as_ref().map(|b| b.join("globalState.json"))
     }

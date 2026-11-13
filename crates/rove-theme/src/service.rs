@@ -439,6 +439,30 @@ impl ThemeService {
         result
     }
 
+    /// 只在内存中换一个主题（#28 的颜色主题实时预览）：**不写设置文件**。
+    ///
+    /// 与 [`reload`](Self::reload) 共用代次闸门，所以预览期间收到的设置变更仍会按顺序生效。
+    /// `id` 不在目录里时返回 `NotFound` 并保留当前快照。还原预览用
+    /// [`reload`](Self::reload)：它按设置重新构建，等于回到用户真正选择的主题。
+    pub fn preview(&self, id: &str) -> Result<Version> {
+        let ticket = self.reload_requested.fetch_add(1, Ordering::AcqRel) + 1;
+        let entry = self.catalog.get(id).ok_or(Error::NotFound)?.clone();
+        let mut diags = Vec::new();
+        let (_, custom) = Self::read_settings(&*self.settings, &mut diags);
+        let theme = load_theme(&entry, &custom, self.registry.clone())?;
+        let version = {
+            let mut applied = self.reload_applied.lock().expect("reload generation");
+            if *applied > ticket {
+                return Err(Error::Stale);
+            }
+            *applied = ticket;
+            *self.current.write().expect("theme lock") = Arc::new(theme);
+            Version(self.revision.fetch_add(1, Ordering::AcqRel) + 1)
+        };
+        self.hub.emit(version);
+        Ok(version)
+    }
+
     /// 当前快照；可以跨线程持有，不受之后的重新加载影响。
     pub fn current(&self) -> Arc<ResolvedTheme> {
         self.current.read().expect("theme lock").clone()

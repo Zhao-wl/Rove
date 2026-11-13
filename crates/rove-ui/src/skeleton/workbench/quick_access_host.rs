@@ -278,7 +278,7 @@ impl Workbench {
         // 工作区还在扫描（或文件列表还在建）：先可用，列表底部显示“正在加载文件列表…”
         let loading = match &self.quick.index {
             Some(index) => !index.complete,
-            None => !self.scan_failed,
+            None => !self.scan_failed && self.has_folder,
         };
         let picks = match &self.quick.index {
             Some(index) => {

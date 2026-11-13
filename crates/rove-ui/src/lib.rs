@@ -42,3 +42,5 @@ pub mod metadata;
 pub mod explorer;
 // #29：Markdown 预览（WebView2，按需创建；渲染、净化、预览实例与命令）。
 pub mod markdown;
+// #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）。
+pub mod welcome;

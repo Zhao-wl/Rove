@@ -143,6 +143,8 @@ pub fn default_contributions() -> ContributionRegistry {
 pub fn default_menus() -> MenuRegistry {
     let mut r = MenuRegistry::default();
     register_menus(&mut r).expect("工作台菜单登记");
+    // #28：齿轮菜单的设置、键盘快捷方式、颜色主题（命令面板由工作台登记）。
+    crate::welcome::registry::register_menus(&mut r).expect("欢迎页菜单登记");
     r
 }
 
