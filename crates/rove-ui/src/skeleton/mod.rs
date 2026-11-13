@@ -3,4 +3,4 @@ pub mod appearance;
 pub(crate) mod events;
 pub(crate) mod text;
 mod workbench;
-pub use workbench::{launch, Workbench};
+pub use workbench::{launch, MarkdownSnapshot, Workbench};

@@ -17,6 +17,9 @@ pub(crate) struct EditorTypes {
     types: Registry<EditorKind>,
     rules: Vec<(GlobMatcher, bool, Arc<str>)>,
     markdown: GlobMatcher,
+    /// #29：本机没有 WebView2 运行时（或创建失败）时为假：关联到预览的文件改为以源码打开，
+    /// 显式要求预览返回 `Unsupported`（UX_SPEC §6.4）。
+    preview_available: bool,
 }
 
 fn compile(pattern: &str) -> Option<(GlobMatcher, bool)> {
@@ -70,6 +73,7 @@ impl EditorTypes {
             types,
             rules,
             markdown: compile("*.md").expect("valid built-in glob").0,
+            preview_available: true,
         })
     }
 
@@ -83,7 +87,27 @@ impl EditorTypes {
         )
     }
 
+    /// #29：Markdown 预览是否可用（见 `preview_available`）。
+    pub(crate) fn set_preview_available(&mut self, available: bool) {
+        self.preview_available = available;
+    }
+
+    pub(crate) fn preview_available(&self) -> bool {
+        self.preview_available
+    }
+
     pub(crate) fn resolve(&self, resource: &Resource, options: &OpenOptions) -> Result<EditorKind> {
+        let kind = self.resolve_any(resource, options)?;
+        if !self.preview_available && is_markdown_preview(&kind) {
+            return match options.presentation {
+                Presentation::Preview => Err(Error::Unsupported),
+                _ => Ok(EditorKind::Text),
+            };
+        }
+        Ok(kind)
+    }
+
+    fn resolve_any(&self, resource: &Resource, options: &OpenOptions) -> Result<EditorKind> {
         if options.location.is_some()
             || options.selection.is_some()
             || matches!(options.presentation, Presentation::Source)
@@ -119,6 +143,19 @@ impl EditorTypes {
         } else {
             Ok(associated.next().cloned().unwrap_or(EditorKind::Text))
         }
+    }
+}
+
+/// #29：是不是 Markdown 预览编辑器。
+pub(crate) fn is_markdown_preview(kind: &EditorKind) -> bool {
+    matches!(kind, EditorKind::Placeholder { id, .. } if id.as_ref() == MARKDOWN)
+}
+
+/// #29：Markdown 预览的编辑器类型。
+pub(crate) fn markdown_preview() -> EditorKind {
+    EditorKind::Placeholder {
+        id: MARKDOWN.into(),
+        label: "editors.markdown",
     }
 }
 

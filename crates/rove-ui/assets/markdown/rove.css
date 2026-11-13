@@ -1,0 +1,169 @@
+/* Rove 自己的预览样式（#29）：VS Code 网页视图的基础样式（颜色来自宿主推送的 --vscode-* 变量）、
+   提示块（markdownAlert.*）、任务列表、front matter、Mermaid、被阻止的远程图片。 */
+
+html, body {
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+	margin: 0;
+}
+
+body {
+	padding-bottom: 1em;
+	overflow-wrap: break-word;
+}
+
+a, a code {
+	color: var(--vscode-textLink-foreground);
+	text-decoration: none;
+}
+
+a:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
+}
+
+a:focus, input:focus, summary:focus, [tabindex]:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+code {
+	color: var(--vscode-textPreformat-foreground);
+	background-color: var(--vscode-textPreformat-background);
+	padding: 1px 3px;
+	border-radius: 4px;
+	font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+pre {
+	background-color: var(--vscode-textCodeBlock-background);
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	background: transparent;
+	padding: 0;
+	white-space: pre;
+	tab-size: 4;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left: 5px solid var(--vscode-textBlockQuote-border);
+	background: var(--vscode-textBlockQuote-background);
+}
+
+table {
+	border-collapse: collapse;
+	margin-bottom: 0.7em;
+}
+
+th, td {
+	border: 1px solid var(--vscode-editorGroup-border, rgba(127, 127, 127, 0.35));
+	padding: 5px 10px;
+}
+
+th {
+	text-align: left;
+}
+
+hr {
+	border: 0;
+	height: 1px;
+	background-color: var(--vscode-editorGroup-border, rgba(127, 127, 127, 0.35));
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+kbd {
+	color: var(--vscode-keybindingLabel-foreground);
+	background-color: var(--vscode-keybindingLabel-background);
+	border: 1px solid var(--vscode-keybindingLabel-border);
+	border-bottom-color: var(--vscode-keybindingLabel-bottomBorder);
+	border-radius: 3px;
+	padding: 1px 3px;
+	vertical-align: middle;
+}
+
+::selection {
+	background-color: var(--vscode-editor-selectionBackground);
+}
+
+/* 任务列表 */
+li:has(> .task-list-item-checkbox) {
+	list-style-type: none;
+}
+
+.task-list-item-checkbox {
+	margin: 0 0.35em 0.25em -1.4em;
+	vertical-align: middle;
+}
+
+/* 提示块（GitHub 风格 `> [!NOTE]`），颜色是登记过的 markdownAlert.* 键。 */
+.markdown-alert {
+	padding: 0 1em;
+	margin-bottom: 16px;
+	color: inherit;
+	border-left: 0.25em solid var(--rove-alert-color);
+}
+
+.markdown-alert-title {
+	display: flex;
+	font-weight: 600;
+	align-items: center;
+	line-height: 1;
+	padding-top: 0.5em;
+	color: var(--rove-alert-color);
+}
+
+.markdown-alert-note { --rove-alert-color: var(--vscode-markdownAlert-note-foreground); }
+.markdown-alert-tip { --rove-alert-color: var(--vscode-markdownAlert-tip-foreground); }
+.markdown-alert-important { --rove-alert-color: var(--vscode-markdownAlert-important-foreground); }
+.markdown-alert-warning { --rove-alert-color: var(--vscode-markdownAlert-warning-foreground); }
+.markdown-alert-caution { --rove-alert-color: var(--vscode-markdownAlert-caution-foreground); }
+
+/* front matter 表格 */
+table.front-matter {
+	font-size: 0.9em;
+}
+
+/* Mermaid：渲染前保留源码的等宽显示，渲染后居中。 */
+pre.mermaid {
+	background: transparent;
+	text-align: center;
+	white-space: pre;
+}
+
+/* 数学公式 */
+.rove-math-display {
+	display: block;
+	overflow-x: auto;
+	overflow-y: hidden;
+	text-align: center;
+}
+
+/* 脚注 */
+.footnote-definition {
+	font-size: 0.9em;
+	margin-top: 0.5em;
+}
+
+.footnote-definition-label {
+	margin-right: 0.5em;
+}
+
+/* 被阻止的远程图片 */
+img[src="https://rove.local/blocked-image.svg"] {
+	width: 32px;
+	height: 32px;
+	opacity: 0.6;
+}

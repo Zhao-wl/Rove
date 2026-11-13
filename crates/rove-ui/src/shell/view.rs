@@ -478,6 +478,10 @@ impl Shell {
     pub fn notification_focus(&self) -> &FocusHandle {
         &self.notification_focus
     }
+    /// #29：菜单栏或齿轮菜单是否展开（Markdown 预览与弹出层相交时隐藏 WebView2）。
+    pub fn menu_open(&self) -> bool {
+        self.open_menu.is_some()
+    }
     pub fn status_index(&self) -> usize {
         self.status_index
     }

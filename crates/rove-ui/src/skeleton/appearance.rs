@@ -45,10 +45,7 @@ pub fn strings() -> Result<StringTable> {
             "editors.watermark",
             "快速打开 Ctrl+P　　命令面板 Ctrl+Shift+P",
         ),
-        (
-            "editors.markdown",
-            "Markdown 预览尚未实现；带位置打开可查看源码。",
-        ),
+        ("editors.markdown", "Markdown 预览"),
         ("editors.fileMissing", "无法打开编辑器：找不到文件。"),
         ("editors.fileDenied", "无法打开编辑器：没有读取权限。"),
         (
@@ -92,6 +89,8 @@ pub fn strings() -> Result<StringTable> {
     crate::metadata::registry::register_strings(&mut t)?;
     // #23：资源管理器的空状态、读取失败提示与命令标题。
     crate::explorer::registry::register_strings(&mut t)?;
+    // #29：Markdown 预览。
+    crate::markdown::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -126,6 +125,8 @@ pub fn contributions() -> Result<ContributionRegistry> {
     crate::index_status::register_contributions(&mut r)?;
     // #25：搜索视图容器里的结果小节。
     crate::search::registry::register_contributions(&mut r)?;
+    // #29：编辑器标题栏的“显示源码 / 显示预览”按钮。
+    crate::markdown::registry::register_contributions(&mut r)?;
     Ok(r)
 }
 /// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。

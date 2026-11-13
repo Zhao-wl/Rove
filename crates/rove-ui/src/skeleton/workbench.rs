@@ -91,6 +91,11 @@ mod readonly_tests;
 mod search_host;
 #[cfg(test)]
 mod search_tests;
+// #29：Markdown 预览（WebView2 实例、渲染、命令、滚动同步）的装配与入口测试。
+mod markdown_host;
+#[cfg(test)]
+mod markdown_tests;
+pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
 mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -215,6 +220,8 @@ pub struct Workbench {
     metadata: metadata_host::MetadataHost,
     /// #47：可保存文件、保存控制器、外部修改与关闭确认（见 `edit_host.rs`）。
     editing: edit_host::Editing,
+    /// #29：窗口唯一的 Markdown 预览实例与状态（见 `markdown_host.rs`）。
+    markdown: markdown_host::MarkdownPreview,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -404,6 +411,7 @@ impl Workbench {
             peek: Default::default(),
             metadata,
             editing: edit_host::Editing::new(files),
+            markdown: Default::default(),
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -411,6 +419,10 @@ impl Workbench {
         }
         // #41：速览窗口的命令。
         for (id, _, _) in crate::peek::registry::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
+        // #29：Markdown 预览的命令。
+        for (id, _, _) in crate::markdown::registry::COMMANDS {
             view.shell.mark_implemented(*id);
         }
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
@@ -468,12 +480,15 @@ impl Workbench {
     fn settings_changed(&mut self, keys: &BTreeSet<Arc<str>>, cx: &mut Context<Self>) {
         // 工作台按键现读设置，只需放弃被外部改动的本窗口临时值。
         self.shell.settings_changed(keys);
-        if keys.iter().any(|k| k.starts_with("workbench.editor.")) {
+        // `workbench.editor.*` 与 `workbench.editorAssociations`（#29）。
+        if keys.iter().any(|k| k.starts_with("workbench.editor")) {
             match EditorSettings::read(&*self.settings) {
                 Ok(settings) => self.editor.settings = settings,
                 Err(e) => eprintln!("settings: 编辑器设置无效，沿用旧值：{e}"),
             }
         }
+        // #29：markdown.* 变化重新渲染；编辑器设置重建后恢复“预览是否可用”。
+        self.markdown_settings_changed(keys);
         self.outline_settings_changed(keys, cx);
         // #40：editor.gotoLocation.* / editor.hover.* / editor.occurrencesHighlight* 变化。
         self.nav_settings_changed(keys, cx);
@@ -553,6 +568,8 @@ impl Workbench {
         self.search_theme_changed(cx);
         // #41：速览窗口的配色。
         self.peek_theme_changed(cx);
+        // #29：Markdown 预览只推主题变量，不重建实例。
+        self.markdown_theme_changed();
         cx.notify();
     }
     fn find_hosts(&self) -> Vec<Entity<crate::find::host::FindHost>> {
@@ -776,6 +793,11 @@ impl Workbench {
         if id == "workbench.action.closeActiveEditor" && self.close_active_checked(cx) {
             return;
         }
+        // #29：Markdown 预览命令。
+        if Self::is_markdown_command(id) {
+            self.markdown_command(id, cx);
+            return;
+        }
         if self.commands.is_registered(id) && editor_actions::execute(&mut self.editor, id) {
             self.note_switch(previous, start);
             cx.notify();
@@ -900,6 +922,8 @@ impl Workbench {
     ) {
         // #40：悬停、Ctrl+悬停 / 点击、语义同名高亮跟随指针、光标与文本。
         self.nav_code_event(group, secondary, event, cx);
+        // #29：编辑器滚动 / 选区 → Markdown 预览。
+        self.markdown_code_event(group, secondary, event);
         match event {
             CodeViewEvent::EditBlocked { position, reasons } => {
                 return self.edit_blocked(group, secondary, *position, reasons, cx);
@@ -1557,7 +1581,7 @@ impl Workbench {
 }
 
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 7] = [
+const KNOWN_FACTORIES: [&str; 8] = [
     CONTAINER_FACTORY,
     STATUS_FACTORY,
     FILE_VIEW,
@@ -1565,6 +1589,8 @@ const KNOWN_FACTORIES: [&str; 7] = [
     crate::index_status::DETAILS_VIEW,
     crate::outline::registry::OUTLINE_VIEW,
     search_host::SEARCH_FACTORY,
+    // #29：编辑器标题栏的“显示源码 / 显示预览”按钮。
+    crate::markdown::registry::TITLE_FACTORY,
 ];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
@@ -1670,6 +1696,8 @@ impl Render for Workbench {
         self.sync_explorer(window, cx);
         // #41：代码视图换了文档时关闭它上面的速览。
         self.sync_peeks(cx);
+        // #29：Markdown 预览实例（按需创建、拥有者、渲染、空闲回收、焦点）。
+        self.sync_markdown(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1712,6 +1740,12 @@ impl Render for Workbench {
         let goto = self.goto_overlay(cx);
         let quick = self.quick_overlay(cx);
         let hover = self.nav_overlay(cx);
+        // #29：弹出层打开时隐藏 WebView2（#6 报告的相交隐藏）。
+        self.sync_markdown_overlays(
+            goto.is_some() || quick.is_some() || hover.is_some(),
+            window,
+            cx,
+        );
         let context = editor_actions::context(&self.editor)
             + self.breadcrumbs_context()
             + &self.nav_context();
@@ -1781,6 +1815,12 @@ impl Render for Workbench {
                     v.explorer_command(a, window, cx)
                 },
             ))
+            // #29：Markdown 预览命令。
+            .on_action(
+                cx.listener(|v, a: &crate::markdown::registry::MarkdownAction, _, cx| {
+                    v.markdown_command(a.0, cx)
+                }),
+            )
             .child(workbench)
             .children(goto)
             .children(quick)
@@ -1792,6 +1832,8 @@ impl Render for Workbench {
 /// `settings` 是应用唯一的设置服务实例（`crate::app_settings::open`），窗口设置、工作台、主题、
 /// 代码视图、打开服务与工作区扫描都用它。
 pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
+    // #29：Markdown 预览按 #6 报告的 Hwnd 方式嵌入 WebView2（不创建任何实例，只选渲染路径）。
+    crate::markdown::prepare_hwnd_hosting();
     Application::new().run(move |cx: &mut App| {
         if let Err(e) = cx
             .text_system()

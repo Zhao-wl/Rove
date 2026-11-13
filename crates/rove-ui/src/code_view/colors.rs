@@ -172,6 +172,8 @@ pub fn theme_registry() -> ColorRegistry {
     crate::search::registry::register_colors(&mut registry).expect("search colors");
     // #41：速览窗口的 16 个 peekView* 键。
     crate::peek::registry::register_colors(&mut registry).expect("peek colors");
+    // #29：Markdown 预览样式里的颜色变量（含 markdownAlert.*）。
+    crate::markdown::registry::register_colors(&mut registry).expect("markdown colors");
     registry
 }
 
