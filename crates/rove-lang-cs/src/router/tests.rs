@@ -1,6 +1,7 @@
 //! 路由的单元测试：构造的索引（真实读取端打开）+ 真实的 RopeText 缓冲区。
 use super::testing::{
-    find_word, sample_index, SampleSymbols, HERO_CS, HERO_PATH, PLAYER_CS, PLAYER_PATH,
+    find_word, sample_index, SampleSymbols, HERO_CS, HERO_PATH, KIND_METHOD, KIND_TYPE, PLAYER_CS,
+    PLAYER_PATH,
 };
 use super::*;
 use rove_base::{ByteOffset, ByteRange, TextEdit};
@@ -568,6 +569,79 @@ fn hover_signature_and_docs() {
         .unwrap();
     assert_eq!(&*h.value.unwrap().signature, "int speed");
     assert_eq!(h.precision, Precision::Syntax);
+}
+
+/// 外部成员的元数据视图正文：`Run` 上方是 `///` 文档注释（#34 的生产索引形态）。
+const RUNNER_VIEW: &str = "#region 程序集 Game.Core, Version=1.0.0.0
+// Game.Core.dll
+#endregion
+
+namespace Game.Core
+{
+    public class Runner
+    {
+        /// <summary>Runs the thing.</summary>
+        /// <returns>nothing</returns>
+        public void Run(System.Func<int, int> f);
+    }
+}
+";
+
+const RUN_SIGNATURE: &str = "public void Run(System.Func<int, int> f);";
+
+/// #142：生产索引的段 12 是空的，外部成员的文档只存在元数据视图正文里，悬停要回退过去取。
+#[test]
+fn hover_documentation_falls_back_to_metadata_view() {
+    let f = fixture_with(|t| {
+        // 段 12 清空：与索引进程写出的真实索引一致。
+        t.docs.clear();
+        let hero = t
+            .files
+            .iter()
+            .position(|(path, _)| path == HERO_PATH)
+            .unwrap() as u32;
+        let runner = t.symbol("Game.Core|T:Game.Core.Runner", "Runner", KIND_TYPE, None);
+        let run = t.symbol(
+            "Game.Core|M:Game.Core.Runner.Run(System.Func{System.Int32,System.Int32})",
+            "Run",
+            KIND_METHOD,
+            Some(runner),
+        );
+        let (line, col) = find_word(HERO_CS, "Run", 0);
+        t.reference(run, hero, line, col);
+        let (ty_line, ty_col) = find_word(RUNNER_VIEW, "Runner", 0);
+        let (run_line, run_col) = find_word(RUNNER_VIEW, "Run", 0);
+        t.views.push(testing::TestView {
+            type_symbol: runner,
+            text: RUNNER_VIEW.into(),
+            members: vec![(runner, ty_line, ty_col, 6), (run, run_line, run_col, 3)],
+        });
+        t.signatures.push((run, RUN_SIGNATURE.into()));
+    });
+    let c = Cancellation::default();
+    let hover = f
+        .router
+        .hover_detailed(&point(HERO_PATH, word(HERO_CS, "Run", 0)), &c)
+        .unwrap()
+        .value
+        .unwrap();
+    assert!(
+        hover
+            .documentation
+            .contains("<summary>Runs the thing.</summary>"),
+        "{:?}",
+        hover.documentation
+    );
+    assert_eq!(&*hover.signature, RUN_SIGNATURE);
+    // 源码成员不受影响：索引里没有文档时仍是空文档 + 显示名。
+    let hover = f
+        .router
+        .hover_detailed(&point(HERO_PATH, word(HERO_CS, "Player", 0)), &c)
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(&*hover.documentation, "");
+    assert_eq!(&*hover.signature, "Player");
 }
 
 #[test]

@@ -30,7 +30,7 @@ use crate::overlay::{read_journal_from, KeyCache, L2View, Overlay, Segment};
 use rove_base::{Cancellation, Events, Subscription};
 use rove_config::{Key, Scope, Settings};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -176,12 +176,53 @@ impl IndexSnapshot {
 
 type Listener = Arc<dyn Fn(IndexStatus) + Send + Sync>;
 
+/// 过期文件集合：每个文件记下标记时的构建轮次（`epoch`，每次全量构建开始时 +1）。
+///
+/// 构建期间到达的变化索引器可能已经来不及读（它可能读的是旧内容），所以 `adopt` 只能清掉
+/// 构建开始之前标记的文件，构建期间新标记的保留到增量更新写入覆盖层、或下一次全量重建。
+#[derive(Default)]
+struct StaleFiles {
+    epoch: u64,
+    files: BTreeMap<String, u64>,
+}
+
+impl StaleFiles {
+    fn contains(&self, rel_path: &str) -> bool {
+        self.files.contains_key(rel_path)
+    }
+    fn paths(&self) -> Vec<String> {
+        self.files.keys().cloned().collect()
+    }
+    fn len(&self) -> usize {
+        self.files.len()
+    }
+    /// 标记为过期（记在当前轮次下），返回集合大小。
+    fn mark<I: IntoIterator<Item = String>>(&mut self, paths: I) -> usize {
+        let epoch = self.epoch;
+        self.files.extend(paths.into_iter().map(|p| (p, epoch)));
+        self.files.len()
+    }
+    fn unmark(&mut self, rel_path: &str) {
+        self.files.remove(rel_path);
+    }
+    /// 一次全量构建开始：开启新一轮，返回这一轮的编号。
+    fn begin_build(&mut self) -> u64 {
+        self.epoch += 1;
+        self.epoch
+    }
+    /// 这一轮构建发布完成：丢掉构建开始前标记的（新索引已经包含），留下构建期间新标记的。
+    fn adopted(&mut self, epoch: u64) -> usize {
+        self.files.retain(|_, marked| *marked >= epoch);
+        self.files.len()
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     status: Mutex<IndexStatus>,
     changed: Condvar,
     snapshot: Mutex<Option<Arc<IndexSnapshot>>>,
-    stale: Mutex<BTreeSet<String>>,
+    stale: Mutex<StaleFiles>,
     listeners: Arc<Mutex<(u64, BTreeMap<u64, Listener>)>>,
     prefetch_cancel: Mutex<Option<Cancellation>>,
 }
@@ -303,7 +344,7 @@ impl IndexLifecycle {
         lock(&self.shared.stale).contains(rel_path)
     }
     pub fn stale_files(&self) -> Vec<String> {
-        lock(&self.shared.stale).iter().cloned().collect()
+        lock(&self.shared.stale).paths()
     }
     /// `rove.index.rebuild` / 失败通知的“重试”。
     pub fn rebuild(&self) {
@@ -317,6 +358,8 @@ impl IndexLifecycle {
     /// 覆盖层写入后清除过期标记；没有常驻进程（组件缺失、测试替身）时停留在“过期”，等下一次全量重建。
     /// 项目结构文件（`.csproj` / `.asmdef` / `.asmref`）变化不做增量，直接全量重建。重命名按“删除旧路径 +
     /// 新建新路径”处理。
+    ///
+    /// 首次全量构建期间（还没有快照）的变化同样记下来：构建发布后它们仍然是过期的，再按上面的流程转发。
     pub fn files_changed(&self, changes: &[SourceChange]) {
         let mut reopen = false;
         let mut config = false;
@@ -347,12 +390,11 @@ impl IndexLifecycle {
         if state == IndexState::NoCSharp && (created_source || config) {
             reopen = true;
         }
-        if !marked.is_empty() && self.snapshot().is_some() {
-            let count = {
-                let mut stale = lock(&self.shared.stale);
-                stale.extend(marked.iter().cloned());
-                stale.len()
-            };
+        // 还没有快照、但正在打开或构建时也要记下来：索引器可能已经读过旧内容，这一批变化
+        // 在 `adopt` 之后保持过期，并转发给常驻进程做增量更新（没有常驻进程时停留在“过期”）。
+        let indexing = matches!(state, IndexState::Checking | IndexState::Building { .. });
+        if !marked.is_empty() && (indexing || self.snapshot().is_some()) {
+            let count = lock(&self.shared.stale).mark(marked.iter().cloned());
             self.shared.update(|s| s.info.stale_files = count);
             if !config {
                 let _ = self.tx.send(Command::Sources(marked));
@@ -496,12 +538,9 @@ impl Worker {
         if !snapshot.trusted {
             return;
         }
-        // 重建期间排队的变化：adopt 清掉了过期标记，这里重新标上，直到覆盖层写入
+        // 构建期间排队的变化：重新按当前这一轮标上，直到覆盖层写入
         {
-            let mut stale = lock(&self.shared.stale);
-            stale.extend(paths.iter().cloned());
-            let count = stale.len();
-            drop(stale);
+            let count = lock(&self.shared.stale).mark(paths.iter().cloned());
             self.shared.update(|s| s.info.stale_files = count);
         }
         if self.resident.is_none() && !self.start_resident(&snapshot) {
@@ -673,7 +712,7 @@ impl Worker {
             let count = {
                 let mut stale = lock(&self.shared.stale);
                 for f in done {
-                    stale.remove(f);
+                    stale.unmark(f);
                 }
                 stale.len()
             };
@@ -923,11 +962,7 @@ impl Worker {
             outcome.matched
         ));
         if !outcome.mismatched.is_empty() {
-            let count = {
-                let mut stale = lock(&self.shared.stale);
-                stale.extend(outcome.mismatched.iter().cloned());
-                stale.len()
-            };
+            let count = lock(&self.shared.stale).mark(outcome.mismatched.iter().cloned());
             self.shared.update(|s| s.info.stale_files = count);
         }
         if let Err(invalid) = outcome.verdict(&self.config.sample) {
@@ -1076,6 +1111,8 @@ impl Worker {
             let generation = cache.next_generation();
             let output = cache.l2_path(generation);
             let started = Instant::now();
+            // 这一轮开始之前标记的过期由新索引覆盖；构建期间到达的变化记在这一轮下，adopt 保留。
+            let epoch = lock(&self.shared.stale).begin_build();
             self.set_state(IndexState::Building {
                 progress: Progress::default(),
                 eta: None,
@@ -1107,7 +1144,7 @@ impl Worker {
                 &log,
                 &self.cancel,
             );
-            let result = result.and_then(|()| self.adopt(generation, &output, started));
+            let result = result.and_then(|()| self.adopt(generation, &output, started, epoch));
             match result {
                 Ok(()) => return,
                 Err(BuildFailure::Cancelled) => return,
@@ -1163,11 +1200,15 @@ impl Worker {
     }
 
     /// 打开新世代、写构建记录、原子替换快照、清理旧世代。
+    ///
+    /// `epoch` 是这一轮构建的编号：构建期间到达的变化（索引器可能读的是旧内容）保持过期，
+    /// 随后由常驻进程增量更新，或等下一次全量重建。
     fn adopt(
         &mut self,
         generation: u64,
         output: &Path,
         started: Instant,
+        epoch: u64,
     ) -> Result<(), BuildFailure> {
         let index =
             CsIndex::open(output).map_err(|e| BuildFailure::InvalidOutput(e.to_string()))?;
@@ -1198,13 +1239,18 @@ impl Worker {
             record.files, record.symbols, record.duration_ms
         ));
         self.publish(generation, output.to_owned(), index, true, Some(&record));
-        lock(&self.shared.stale).clear();
+        let stale = lock(&self.shared.stale).adopted(epoch);
+        if stale > 0 {
+            self.log(&format!(
+                "{stale} files changed during the build: still stale"
+            ));
+        }
         if let Some(cache) = self.cache.clone() {
             self.clean_l2(&cache, Some(generation));
         }
         self.shared.update(|s| {
             s.info.component_issue = None;
-            s.info.stale_files = 0;
+            s.info.stale_files = stale;
             // 刚写完的文件就在系统缓存里。
             s.info.prefetch = PrefetchState::Skipped;
             s.state = IndexState::Ready;
