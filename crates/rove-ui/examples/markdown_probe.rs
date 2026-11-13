@@ -61,7 +61,9 @@ $$\int_0^1 x^2\,dx = \frac{1}{3}$$
 
 ![本地图片](images/dot.png)
 
-![远程图片](https://example.com/remote.png)
+![远程图片](__ROVE_TEST_ORIGIN__/remote.png)
+
+<video controls src="__ROVE_TEST_ORIGIN__/remote.mp4"></video>
 
 ```csharp
 public class Player { void Update() { } }
@@ -161,7 +163,24 @@ fn main() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("images")).unwrap();
     std::fs::write(root.join("images/dot.png"), PNG).unwrap();
-    std::fs::write(root.join("Sample.md"), SAMPLE).unwrap();
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let contacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let listener_contacts = contacts.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            listener_contacts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            drop(stream);
+        }
+    });
+    let sample = SAMPLE.replace("__ROVE_TEST_ORIGIN__", &origin);
+    std::fs::write(root.join("Sample.md"), &sample).unwrap();
+    std::fs::write(
+        root.join("local.css"),
+        format!(r#"@import url("{origin}/import.css");"#),
+    )
+    .unwrap();
     let long: String = (0..2400)
         .map(|i| format!("## 第 {i} 节\n\n段落 {i}：{}\n\n", "文字".repeat(i % 7 + 1)))
         .collect();
@@ -171,7 +190,8 @@ fn main() {
     let idle = 5;
     let settings_json = move |theme: &str| {
         format!(
-            r#"{{ "rove.index.enabled": false, "rove.markdown.webviewIdleTimeout": {idle}, "workbench.colorTheme": "{theme}" }}"#
+            r#"{{ "rove.index.enabled": false, "rove.markdown.allowRemoteResources": true, "markdown.styles": ["{origin}/style.css", "local.css"], "rove.markdown.webviewIdleTimeout": {idle}, "workbench.colorTheme": "{theme}", "markdown.preview.breaks": {breaks} }}"#,
+            breaks = theme == "Light 2026",
         )
     };
     std::fs::write(user.join("settings.json"), settings_json("Dark 2026")).unwrap();
@@ -237,6 +257,8 @@ fn main() {
         let report = report.clone();
         let service = service.clone();
         let root = root.clone();
+        let contacts = contacts.clone();
+        let sample = sample.clone();
         cx.spawn(async move |cx| {
             let executor = cx.background_executor().clone();
             let sleep = move |ms: u64| executor.timer(Duration::from_millis(ms));
@@ -300,6 +322,20 @@ fn main() {
             println!("MARKDOWN_PROBE_SHOT_SAMPLE");
             sleep(6000).await;
             phase("preview_steady_6s", json!({}));
+
+            // 旧放行配置仍启用；改预览选项触发重新渲染，再切换至另一个预览。
+            std::fs::write(user_settings(&root), settings_json("Light 2026")).unwrap();
+            service.reload();
+            sleep(1000).await;
+            let snap = snapshot(cx);
+            phase("offline_rerender", json!({ "rendered": snap.rendered, "stats": snap.stats, "remote_blocked": snap.remote }));
+            std::fs::write(user_settings(&root), settings_json("Dark 2026")).unwrap();
+            service.reload();
+            std::fs::write(root.join("Other.md"), &sample).unwrap();
+            open(cx, "Other.md", false);
+            sleep(1000).await;
+            let snap = snapshot(cx);
+            phase("offline_switch", json!({ "rendered": snap.rendered, "stats": snap.stats, "remote_blocked": snap.remote }));
 
             // 长文档并排：源码 → 预览、预览 → 源码。
             open(cx, "Long.md", true);
@@ -379,6 +415,7 @@ fn main() {
             let r = report.lock().unwrap();
             let out = json!({
                 "phases": r.phases,
+                "remote_resource_connections": contacts.load(std::sync::atomic::Ordering::Relaxed),
                 "network_connections_of_webview_processes": r.network.iter().collect::<Vec<_>>(),
                 "webview_processes_left": left.len(),
             });
@@ -387,6 +424,19 @@ fn main() {
             std::fs::write(dir.join("report.json"), serde_json::to_string_pretty(&out).unwrap()).unwrap();
             println!("MARKDOWN_PROBE_NETWORK {}", r.network.len());
             println!("MARKDOWN_PROBE_DONE {}", dir.join("report.json").display());
+            for name in ["first_open", "offline_rerender", "offline_switch"] {
+                let phase = r.phases.iter().find(|p| p["phase"] == name).unwrap();
+                let extra = &phase["extra"];
+                let stats = &extra["stats"];
+                assert_eq!(extra["rendered"], true, "{name}: {extra}");
+                assert_eq!(extra["remote_blocked"], 2, "{name}: {extra}");
+                assert_eq!(stats["imagesLoaded"], 1, "{name}: {stats}");
+                assert_eq!(stats["mermaid"], 1, "{name}: {stats}");
+                assert_eq!(stats["mermaidErrors"], 0, "{name}: {stats}");
+                assert_eq!(stats["math"], 2, "{name}: {stats}");
+                assert_eq!(stats["mathErrors"], 0, "{name}: {stats}");
+            }
+            assert_eq!(out["remote_resource_connections"], 0, "{out}");
             drop(r);
             let _ = std::fs::remove_dir_all(&root);
             cx.update(|cx| cx.quit()).ok();

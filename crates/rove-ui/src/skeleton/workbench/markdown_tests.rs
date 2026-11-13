@@ -1,7 +1,7 @@
 //! #29 入口集成测试（真实 GPUI 测试窗口 + 测试后端；GPUI 测试窗口没有 HWND，真实 WebView2 由
 //! `examples/markdown_probe.rs` 验收）：打开 `.md` → 预览模式（实例按需创建、渲染请求带 data-line）→
 //! `ctrl+shift+v` 切到源码 → 再切回预览；`ctrl+k v` 并排；标题栏按钮；用户的 `workbench.editorAssociations`；
-//! 搜索结果打开源码；没有运行时；远程资源提示条与放行；主题切换不重建；弹出层隐藏；空闲回收；双击定位；
+//! 搜索结果打开源码；没有运行时；远程资源始终拦截；主题切换不重建；弹出层隐藏；空闲回收；双击定位；
 //! 双向滚动同步。
 use super::*;
 use crate::editors::settings::is_markdown_preview;
@@ -297,28 +297,46 @@ fn missing_runtime_falls_back_to_source_once(cx: &mut TestAppContext) {
     });
 }
 
-/// 放行远程资源后重新渲染，提示条消失；主题切换只推变量，不重建实例；弹出层打开时隐藏实例。
+/// 旧版设置为 true 时，资源仍只来自本地，提示条没有放行动作。
 #[gpui::test]
-fn remote_allow_theme_and_overlay(cx: &mut TestAppContext) {
+fn legacy_remote_setting_keeps_preview_offline(cx: &mut TestAppContext) {
+    let fx = Fixture::new(
+        r#"{ "rove.markdown.allowRemoteResources": true,
+             "markdown.styles": ["https://example.com/remote.css", "local.css"] }"#,
+    );
+    std::fs::write(
+        fx.folder.path().join("README.md"),
+        format!(
+            "{DOC}\n![本地](local.png)\n\n<video src=\"https://example.com/video.mp4\"></video>\n"
+        ),
+    )
+    .unwrap();
+    let (view, cx) = fx.open(cx);
+    open(&view, "README.md", explorer(), cx);
+    let all = renders(&view, cx);
+    let render = all.last().unwrap();
+    let html = render["html"].as_str().unwrap();
+    assert!(!html.contains("example.com"));
+    assert!(html.contains("rove-file.local"));
+    assert!(html.contains("blocked-image.svg"));
+    assert!(html.contains("mermaid"));
+    assert!(html.contains("rove-math"));
+    let styles = render["styles"].as_array().unwrap();
+    assert_eq!(styles.len(), 1);
+    assert!(styles[0].as_str().unwrap().ends_with("/local.css"));
+    view.read_with(cx, |v, _| {
+        let bars = v.shell.feedback.all_editor_bars();
+        assert_eq!(bars.len(), 1);
+        assert!(bars[0].actions.is_empty());
+    });
+}
+
+/// 主题切换只推变量；弹出层打开时隐藏实例。
+#[gpui::test]
+fn theme_and_overlay_keep_preview_instance(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);
     open(&view, "README.md", explorer(), cx);
-    let key = view.read_with(cx, |v, _| v.shell.feedback.all_editor_bars()[0].key.clone());
-    let before = renders(&view, cx).len();
-    view.update(cx, |v, cx| {
-        v.markdown_feedback(&key, crate::markdown::registry::ACTION_ALLOW_REMOTE, cx)
-    });
-    settle(cx);
-    let all = renders(&view, cx);
-    assert_eq!(all.len(), before + 1);
-    assert!(all.last().unwrap()["html"]
-        .as_str()
-        .unwrap()
-        .contains("https://example.com/a.png"));
-    view.read_with(cx, |v, _| {
-        assert!(v.shell.feedback.all_editor_bars().is_empty());
-        assert!(v.markdown.fake.borrow().allow_remote);
-    });
     // 主题切换：推 theme 消息，不重建。
     fx.change(r#"{ "workbench.colorTheme": "Light 2026" }"#, cx);
     settle(cx);

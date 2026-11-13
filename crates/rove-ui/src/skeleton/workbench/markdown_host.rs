@@ -39,7 +39,6 @@ pub(super) struct RenderKey {
     pub(super) document: DocumentId,
     version: Version,
     options: u64,
-    allow_remote: bool,
 }
 
 /// 预览状态的只读快照（测试与 `markdown_probe` 用）。
@@ -77,7 +76,6 @@ pub(super) struct MarkdownPreview {
     rendered: Option<u64>,
     stats: Option<Json>,
     lines: HashMap<TabId, f64>,
-    allowed: BTreeSet<DocumentId>,
     remote: BTreeMap<DocumentId, usize>,
     runtime_missing: bool,
     notified: bool,
@@ -144,7 +142,6 @@ impl Default for MarkdownPreview {
             rendered: None,
             stats: None,
             lines: HashMap::new(),
-            allowed: BTreeSet::new(),
             remote: BTreeMap::new(),
             runtime_missing: false,
             notified: false,
@@ -406,17 +403,6 @@ impl Workbench {
 
     pub(super) fn markdown_feedback(&mut self, key: &str, action: &str, cx: &mut Context<Self>) {
         match action {
-            md::ACTION_ALLOW_REMOTE => {
-                if let Some(id) = key
-                    .strip_prefix(md::REMOTE_BAR)
-                    .and_then(|rest| rest.strip_prefix(':'))
-                    .and_then(|id| id.parse().ok())
-                {
-                    self.markdown.allowed.insert(DocumentId(id));
-                    let _ = FeedbackService::dismiss(&mut self.shell.feedback, key);
-                    self.markdown.requested = None;
-                }
-            }
             md::ACTION_DOWNLOAD_PAGE => cx.open_url(md::WEBVIEW2_DOWNLOAD_PAGE),
             md::ACTION_OPEN_LINK => {
                 if let Some(url) = self.markdown.external.take() {
@@ -484,7 +470,6 @@ impl Workbench {
                 "table" => FrontMatter::Table,
                 _ => FrontMatter::CodeBlock,
             },
-            allow_remote: self.md_key("rove.markdown.allowRemoteResources", false),
             alerts: render::AlertTitles {
                 note: alert("markdown.alert.note"),
                 tip: alert("markdown.alert.tip"),
@@ -531,14 +516,12 @@ impl Workbench {
             return;
         };
         let document = opened.document.clone();
-        let mut options = self.render_options();
-        options.allow_remote |= self.markdown.allowed.contains(&document.id);
+        let options = self.render_options();
         let key = RenderKey {
             tab,
             document: document.id,
             version: document.text.version(),
             options: self.markdown.options_generation,
-            allow_remote: options.allow_remote,
         };
         if self.markdown.requested == Some(key) {
             return;
@@ -570,7 +553,6 @@ impl Workbench {
             for item in items.iter() {
                 let Value::String(style) = item else { continue };
                 match render::classify(style, Some(&self.root)) {
-                    Target::Remote if options.allow_remote => styles.push(style.to_string()),
                     Target::Local(path, _) => {
                         if let Some((drive, url)) = render::file_url(&path) {
                             drives.insert(drive);
@@ -585,10 +567,6 @@ impl Workbench {
         let macros = to_json(&macros);
         let mark = self.md_key("markdown.preview.markEditorSelection", false);
         let text = document.text.clone();
-        self.markdown
-            .backend
-            .borrow_mut()
-            .set_allow_remote(options.allow_remote);
         let task = cx.background_executor().spawn(async move {
             let mut source = String::new();
             if let Ok(range) = rove_base::Span::new(
@@ -610,7 +588,7 @@ impl Workbench {
                 all.extend(drives);
                 view.markdown.backend.borrow_mut().map_drives(&all);
                 view.markdown.remote.insert(id, rendered.remote);
-                view.markdown_remote_bar(id, rendered.remote, key.allow_remote, cx);
+                view.markdown_remote_bar(id, rendered.remote, cx);
                 let mut message = json!({
                     "version": 1,
                     "type": "render",
@@ -634,16 +612,10 @@ impl Workbench {
         .detach();
     }
 
-    /// 预览上方的第 3 级提示条：已阻止 N 个远程资源，可为当前文档放行。
-    fn markdown_remote_bar(
-        &mut self,
-        document: DocumentId,
-        remote: usize,
-        allowed: bool,
-        cx: &mut Context<Self>,
-    ) {
+    /// 预览上方的第 3 级提示条：已阻止 N 个远程资源。
+    fn markdown_remote_bar(&mut self, document: DocumentId, remote: usize, cx: &mut Context<Self>) {
         let key = format!("{}:{}", md::REMOTE_BAR, document.0);
-        if remote == 0 || allowed {
+        if remote == 0 {
             let _ = FeedbackService::dismiss(&mut self.shell.feedback, &key);
             return;
         }
@@ -659,10 +631,7 @@ impl Workbench {
                 reason: md::REMOTE_BAR.into(),
             },
             message,
-            Arc::from([FeedbackAction {
-                id: md::ACTION_ALLOW_REMOTE.into(),
-                label: Message::key("markdown.allowRemote"),
-            }]),
+            Arc::from([]),
             cx,
         );
     }

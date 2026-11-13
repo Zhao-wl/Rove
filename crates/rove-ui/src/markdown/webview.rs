@@ -4,7 +4,7 @@
 //! 相对原型补上了报告 §5.1 列出的缺口：
 //! - 运行时联网：环境参数关闭后台网络、组件更新、SmartScreen 等；设置里关闭信誉检查、自动填充；
 //!   页面的所有资源请求经 `WebResourceRequested`：打包资源从内存返回，本地文件走盘符映射，
-//!   远程请求在没有放行时返回 403；顶层/子框架导航、新窗口、下载、权限请求、外部协议一律拒绝；
+//!   远程请求返回 403；顶层/子框架导航、新窗口、下载、权限请求、外部协议一律拒绝；
 //! - 回收由宿主的定时任务驱动（不依赖渲染帧），`Close()` 不在输入回调里调用；
 //! - 隐藏时 `TrySuspend()`，重新显示时 `Resume()`；
 //! - COM 回调里不持有 `RefCell` 借用去调 COM（先复制出接口再调用），避免重入 panic；
@@ -23,7 +23,11 @@ use windows::{
     core::{Interface, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::{HWND, RECT, RPC_E_CHANGED_MODE},
-        System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+        Storage::FileSystem::GetDriveTypeW,
+        System::{
+            Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+            WindowsProgramming::{DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE},
+        },
         UI::{
             Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_MENU, VK_SHIFT},
             Shell::SHCreateMemStream,
@@ -58,7 +62,6 @@ struct Inner {
     scale: f64,
     zoom: f64,
     focused: bool,
-    allow_remote: bool,
     /// 已建立映射的盘符（资源请求按它放行）与需要映射的盘符（实例创建前也会记下）。
     drives: BTreeSet<char>,
     wanted: BTreeSet<char>,
@@ -403,10 +406,6 @@ impl Backend for WebView2Backend {
         apply_drives(&self.inner);
     }
 
-    fn set_allow_remote(&mut self, allow: bool) {
-        self.inner.borrow_mut().allow_remote = allow;
-    }
-
     fn set_background(&mut self, rgba: (u8, u8, u8, u8)) {
         let color = COREWEBVIEW2_COLOR {
             R: rgba.0,
@@ -522,12 +521,11 @@ fn create_controller(
 /// 为需要的盘符建立 `https://<盘符>.rove-file.local/` → `<盘符>:\` 映射（DENY_CORS：页面脚本不能读取）。
 fn apply_drives(inner: &Rc<RefCell<Inner>>) {
     let (webview, missing) = {
-        let mut state = inner.borrow_mut();
+        let state = inner.borrow();
         let Some(webview) = state.webview.clone() else {
             return;
         };
         let missing: Vec<char> = state.wanted.difference(&state.drives).copied().collect();
-        state.drives.extend(missing.iter().copied());
         (webview, missing)
     };
     let Ok(webview) = webview.cast::<ICoreWebView2_3>() else {
@@ -536,12 +534,23 @@ fn apply_drives(inner: &Rc<RefCell<Inner>>) {
     for drive in missing {
         let host = HSTRING::from(format!("{drive}{}", super::render::FILE_HOST_SUFFIX));
         let folder = HSTRING::from(format!("{}:\\", drive.to_ascii_uppercase()));
-        unsafe {
-            let _ = webview.SetVirtualHostNameToFolderMapping(
+        // A mapped network drive also looks like a drive letter to the renderer.
+        let kind = unsafe { GetDriveTypeW(PCWSTR(folder.as_ptr())) };
+        if !matches!(
+            kind,
+            DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_CDROM | DRIVE_RAMDISK
+        ) {
+            continue;
+        }
+        let mapped = unsafe {
+            webview.SetVirtualHostNameToFolderMapping(
                 &host,
                 &folder,
                 COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
-            );
+            )
+        };
+        if mapped.is_ok() {
+            inner.borrow_mut().drives.insert(drive);
         }
     }
 }
@@ -736,7 +745,7 @@ unsafe fn configure(
         &mut token,
     )?;
 
-    // 资源：打包资源从内存返回；本地文件主机交给盘符映射；其余（远程）没有放行时返回 403。
+    // 资源：打包资源从内存返回；本地文件主机交给盘符映射；远程请求返回 403。
     web.AddWebResourceRequestedFilter(&HSTRING::from("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)?;
     let weak = Rc::downgrade(inner);
     let resource_env = env.clone();
@@ -746,21 +755,13 @@ unsafe fn configure(
             let Some(args) = args else { return Ok(()) };
             let request = args.Request()?;
             let uri = uri_of(|p| request.Uri(p));
-            let (nonce, allow_remote, drives) = match weak.upgrade() {
-                Some(inner) => {
-                    let state = inner.borrow();
-                    (
-                        state.nonce.clone(),
-                        state.allow_remote,
-                        state.drives.clone(),
-                    )
-                }
-                None => return Ok(()),
+            let Some(inner) = weak.upgrade() else {
+                return respond(&resource_env, &args, 403, "text/plain", b"blocked");
             };
             if let Some(path) = uri.strip_prefix(super::render::ASSET_ORIGIN) {
                 let path = path.split(['?', '#']).next().unwrap_or_default();
                 if path == "index.html" {
-                    let html = page::index_html(&nonce);
+                    let html = page::index_html(&inner.borrow().nonce);
                     return respond(
                         &resource_env,
                         &args,
@@ -775,7 +776,7 @@ unsafe fn configure(
                 };
             }
             if let Some(drive) = is_file_host(&uri) {
-                if drives.contains(&drive) {
+                if inner.borrow().drives.contains(&drive) {
                     return Ok(());
                 }
                 return respond(&resource_env, &args, 403, "text/plain", b"blocked");
@@ -785,9 +786,6 @@ unsafe fn configure(
                 || lower.starts_with("blob:")
                 || lower.starts_with("about:")
             {
-                return Ok(());
-            }
-            if allow_remote && (lower.starts_with("https://") || lower.starts_with("http://")) {
                 return Ok(());
             }
             send(&resource_events, BackendEvent::RemoteBlocked(uri));
