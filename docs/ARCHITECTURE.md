@@ -1611,3 +1611,53 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 `files.trimTrailingWhitespaceInRegexAndStrings`（默认值 `true` 下行为相同，为 `false` 时本命令仍然会去掉字符串 /
 正则里的行尾空白；保存时的入口不受影响）；② 光标在单行上时 `sortLines*` 排序整个文件，但**末尾那个空行不参与**
 （VS Code 会把它排到最前面，留下一个开头的空行）。
+## 45. 注释切换、自动缩进、自动闭合与回车规则（#53）
+
+位置：`crates/rove-ui/src/code_view/autoedit/`（纯算法，不含 GPUI 类型），接线在同目录的
+`edit.rs` / `view.rs` / `options.rs` / `commands.rs`（`code_view/mod.rs` 只追加 `pub mod autoedit;`）。
+只消费 #1 的冻结契约、#12 的语言配置与 #46 的 `EditSession`；不修改契约，也没有本 issue 的
+`SKELETON(...)` 标记。
+
+| 模块 | 内容 | 对应的 VS Code 源文件 |
+|---|---|---|
+| `autoedit/mod.rs` | `Change`（行 + UTF-8 字节列的抽象改动）、`AutoEdit`、`leading_whitespace` / `first_non_whitespace` / `is_quote` | `base/common/strings.ts` |
+| `autoedit/indent.rs` | `AutoIndent`（`none`/`keep`/`brackets`/`advanced`/`full`）、`IndentConverter`（`shift_indent` / `unshift_indent` / `normalize`）、`IndentRules` 与 `indent_metadata` 的四个掩码、`inherit_indent_for_line`、`good_indent_for_line`、`enter_indent`、`indent_action_for_type` | `languages/autoIndent.ts`、`supports/indentRules.ts`、`commands/shiftCommand.ts`、`model/textModel.ts` 的 `normalizeIndentation` |
+| `autoedit/on_enter.rs` | `on_enter`（`onEnterRules` 的三个条件 + 括号的 `indentOutdent` / `indent`）、`enter_action`（`appendText` 默认值与 `removeText`）、`enter`（回车的实际改动与光标） | `supports/onEnter.ts`、`enterAction.ts`、`cursorTypeOperations.ts` 的 `_enter` |
+| `autoedit/autoclose.rs` | `AutoClosing` / `AutoClosingEdit` / `AutoSurround` 取值、`find_open_pair`（最长 `open` 优先）、`should_auto_close`（`autoCloseBefore`、`notIn`、引号不跟在单词字符后）、`should_overtype`、`should_delete_pair`、`should_surround`、`AutoClosedTracker` | `cursorTypeOperations.ts`、`cursorDeleteOperations.ts` |
+| `autoedit/comments.rs` | `toggle_line_comment`（Toggle / ForceAdd / ForceRemove、`_analyzeLines`、`_normalizeInsertionPoint`）、`toggle_block_comment` | `contrib/comment/browser/lineCommentCommand.ts`、`blockCommentCommand.ts` |
+
+**“这对括号是编辑器补的”**：`AutoClosedTracker` 记下自动插入的闭合符位置，只有它参与
+`editor.autoClosingOvertype` 的越过与 `editor.autoClosingDelete` 的成对删除；任何编辑
+（`CodeView::apply_text`）都清空它，光标移动（`selection_changed`）只保留仍然紧挨着插入点的那一个。
+手工输入的 `)` 因此不会被越过。
+
+**一次按键一个撤销单元**：自动行为与触发它的输入 / 回车合成**一个事务**（`Transaction::new`
++ `EditSession::edit`，或单区间时的 `edit_each`），所以 `Ctrl+Z` 一次回到按键之前；
+`editor.trimAutoWhitespace` 要清掉的“自动缩进空白行”也并进同一个事务。
+
+**命令**（`code_view::commands::COMMANDS` 追加，键位来自 #14 的 VS Code 默认表）：
+`editor.action.commentLine`（`ctrl+oem_2`）、`addCommentLine`（`ctrl+k ctrl+c`）、
+`removeCommentLine`（`ctrl+k ctrl+u`）、`blockComment`（`shift+alt+a`）。
+**设置项**（`code_view::options::SETTINGS` 追加）：`editor.indentSize`、`editor.comments.insertSpace` /
+`ignoreEmptyLines`、`editor.autoIndent`、`autoIndentOnPaste` / `autoIndentOnPasteWithinString`、
+`editor.autoClosingBrackets` / `Quotes` / `Comments` / `Delete` / `Overtype`、`editor.autoSurround`。
+缩进单位取 `EditorOptions::indent_converter()`（`insertSpaces` / `tabSize` / `indentSize`，
+检测属于 #27，本模块只消费结果）。
+
+**按键路径**：`CodeView::type_text` 先试 `auto_type`（包围 → 越过 → 自动闭合 → `decreaseIndentPattern`
+重新对齐），不命中才普通输入。正则匹配只看光标所在的几行，语法 token 只在真的有一对可闭合时才查
+（`SyntaxLayer::scope_at`），普通字符在按键路径上没有额外开销。超大文件（`SizeClass::Huge`）与只读
+文档上全部自动行为关闭（`CodeView::auto_edit_allowed`）。
+
+**与 VS Code 的差异（数据）**：随仓库的八份语言配置里只有 JSON / JSONC / YAML 定义了
+`indentationRules`（都没有 `indentNextLinePattern` / `unIndentedLinePattern`），`onEnterRules` 只有
+C#（`///` 与 `//` 续写）与 JSON（`//` 续写）；`/* */` 里补 ` * ` 的规则 VS Code 放在 JS/TS 的配置里，
+引擎支持但这八份数据里没有，用 `javascriptOnEnterRules` 的夹具逐例验证。
+
+验证：`cargo test -p rove-ui code_view::autoedit`（53 个单元测试，其中 `onEnter.test.ts` 的
+`uses brackets` 16 例、`uses regExpRules` 24 例逐例移植，`javascriptIndentationRules` 的四条正则
+驱动 `getInheritIndentForLine` / `getGoodIndentForLine` / `getIndentActionForType` 的推导）、
+`cargo test -p rove-ui --test code_view_autoedit`（24 例入口集成测试：五种语言的注释切换、公共缩进、
+回车的五种 `autoIndent` 取值、`indentOutdent`、`///` 续写、自动闭合 / 越过 / 成对删除 / 包围、
+只读与超大文件）。性能：`cargo xtask bench --filter typing/`（按键到上屏，预算 `keystroke_to_paint`）。
+

@@ -387,6 +387,10 @@ pub struct CodeView {
     pub(crate) match_session: Option<super::multicursor::MatchSession>,
     /// #52：查找条可见时它的当前选项（`Ctrl+D` 是否区分大小写取这里）。
     pub(crate) find_match_options: Option<crate::find::engine::FindOptions>,
+    /// #53：编辑器自己补上的闭合符（只有它们参与 overtype 与成对删除）。
+    pub(crate) auto_closed: super::autoedit::autoclose::AutoClosedTracker,
+    /// #53：`editor.trimAutoWhitespace` 记下的“只剩自动缩进空白”的行，光标离开时清掉。
+    pub(crate) auto_whitespace_line: Option<u64>,
 }
 
 impl Focusable for CodeView {
@@ -611,6 +615,8 @@ impl CodeView {
             column_select: None,
             match_session: None,
             find_match_options: None,
+            auto_closed: super::autoedit::autoclose::AutoClosedTracker::default(),
+            auto_whitespace_line: None,
         };
         view.apply_feature_options();
         view
@@ -1102,6 +1108,10 @@ impl CodeView {
     pub(crate) fn selection_changed(&mut self, source: SelectionSource, cx: &mut Context<Self>) {
         // #47：光标撤销栈与撤销分组以会话为准。
         self.push_selection_to_session();
+        // #53：光标离开后，自动补上的闭合符不再参与越过与成对删除。
+        let caret = self.cursor.selection.active;
+        self.auto_closed
+            .retain_at(caret.line.0, caret.column.0 as usize);
         self.update_highlights(cx);
         self.caret_visible = true;
         self.blink_epoch.set(self.blink_epoch.get() + 1);
@@ -2643,7 +2653,7 @@ impl CodeView {
         }
     }
 
-    fn language_config(
+    pub(crate) fn language_config(
         &self,
     ) -> Option<&'static rove_syntax::language_config::CompiledLanguageConfiguration> {
         let language = self.language.as_deref()?;
