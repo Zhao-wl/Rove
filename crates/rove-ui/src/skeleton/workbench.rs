@@ -65,12 +65,15 @@ mod explorer_host;
 mod explorer_tests;
 #[cfg(test)]
 mod find_tests;
+// #48：替换入口的集成测试。
 mod outline_host;
 #[cfg(test)]
 mod outline_tests;
 mod quick_access_host;
 #[cfg(test)]
 mod quick_access_tests;
+#[cfg(test)]
+mod replace_tests;
 // #40：C# 导航交互（转到定义 / 实现、悬停、Ctrl+点击、语义同名高亮）。
 #[cfg(test)]
 mod nav_cases_tests;

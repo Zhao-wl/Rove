@@ -216,6 +216,40 @@ impl Searcher {
         }
     }
 
+    /// 一处匹配（块内字节区间 `range`，必须来自 [`Searcher::scan`]）的捕获组文本：组 0 是整个
+    /// 匹配，1 号起只有正则查询才有，`None` 表示该组没有参与。按与 [`Searcher::scan`] 完全相同的
+    /// 口径重跑一次正则（逐行匹配的查询在本行上跑，跨行查询在整块上跑），重跑的起点与终点对不上
+    /// 时只给出组 0，不猜测。#48 的正则替换用它展开 `$1`…`$9`，不另写一套匹配。
+    pub fn capture_texts<'t>(
+        &self,
+        hay: &'t Haystack,
+        range: Range<usize>,
+    ) -> Vec<Option<&'t str>> {
+        let whole = vec![hay.text.get(range.clone())];
+        let Kind::Js { re, multiline } = &self.kind else {
+            return whole;
+        };
+        let (text, base) = if *multiline {
+            (hay.text.as_str(), 0)
+        } else {
+            let line = hay.line_index_at(range.start);
+            (hay.line_text(line), hay.line_starts[line])
+        };
+        let (Some(from), Some(to)) = (
+            range.start.checked_sub(base),
+            range.end.checked_sub(base).filter(|to| *to <= text.len()),
+        ) else {
+            return whole;
+        };
+        match re.capture_ranges(text, from) {
+            Ok(Some(groups)) if groups.first().copied().flatten() == Some((from, to)) => groups
+                .into_iter()
+                .map(|g| g.map(|(s, e)| &text[s..e]))
+                .collect(),
+            _ => whole,
+        }
+    }
+
     /// VS Code `isValidMatch`：全词时匹配两端必须落在单词边界上。
     fn is_word_bounded(&self, text: &str, start: usize, end: usize) -> bool {
         let regular = |c: char| c != ' ' && c != '\t' && !self.separators.contains(c);
