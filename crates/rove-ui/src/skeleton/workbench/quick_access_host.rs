@@ -27,6 +27,9 @@ use rove_buffer::Document;
 /// 最近打开的文件最多记多少个。
 const HISTORY_LIMIT: usize = 100;
 
+/// 关闭快速输入框的命令（#18 登记，实际键位由 #14 的键位表决定，默认 Esc）。
+const QUICK_HIDE: &str = "quickInput.hide";
+
 /// 窗口里快速打开的状态。
 #[derive(Default)]
 pub(super) struct QuickAccess {
@@ -49,6 +52,10 @@ pub(super) struct QuickAccess {
     pub(super) last_input: String,
     /// 关闭后把焦点还给编辑器 / 运行选中的命令（需要窗口，留到下一帧处理）。
     pub(super) focus_editor: bool,
+    /// #22：正在等待行索引的“转到行”——(输入框文本, 上一次显示的进度)。
+    /// 回车后快速输入框会自己关掉，等待期间由 [`Workbench::sync_goto_wait`] 把它重新打开，
+    /// 这样提示与进度一直可见、Esc 随时可以取消（UX_SPEC §6.2）。
+    pub(super) goto_wait: Option<(String, u8)>,
     pub(super) run: Option<Arc<str>>,
     pub(super) seen_focus: bool,
     pub(super) placeholder: &'static str,
@@ -139,6 +146,8 @@ impl Workbench {
         let changed = cx.subscribe(&view, |this, _, event: &QuickInputTextChanged, cx| {
             if this.quick.id == Some(event.id) {
                 this.quick.last_input = event.text.to_string();
+                // #22：换一个目标行就取消正在进行的等待。
+                this.cancel_goto_wait_if_retargeted(&event.text);
                 this.quick_refresh(&event.text, cx);
             }
         });
@@ -147,6 +156,8 @@ impl Workbench {
             if this.quick.id == Some(*id) {
                 this.quick.id = None;
             }
+            // #22：Esc、关闭快速输入框都取消“转到行”的等待（§6.2）。
+            this.cancel_pending_goto();
             this.quick.focus_editor = true;
             cx.notify();
         });
@@ -174,6 +185,16 @@ impl Workbench {
     }
 
     fn show_quick_access(&mut self, initial: String, window: &mut Window, cx: &mut Context<Self>) {
+        // #22：浮层被“转到行的等待”占着时，为别的用途打开它就结束这次等待
+        // （`sync_goto_wait` 用同一段文本重开自己那一次，不受影响）。
+        if self
+            .quick
+            .goto_wait
+            .as_ref()
+            .is_none_or(|(text, _)| *text != initial)
+        {
+            self.cancel_pending_goto();
+        }
         let view = self.ensure_quick_view(cx);
         self.quick.document = self.focused_text().map(|(_, d, _)| d.id);
         self.quick.search.reset();
@@ -255,7 +276,7 @@ impl Workbench {
         match parse::parse(text) {
             Mode::Files { query, .. } => self.quick_files(query),
             Mode::Commands(filter) => self.quick_commands(filter, cx),
-            Mode::Line(rest) => self.quick_line(rest),
+            Mode::Line(rest) => self.quick_line(rest, cx),
             Mode::Symbols(rest) => self.quick_symbols(rest),
             Mode::WorkspaceSymbols(_) => {
                 let key = crate::keys::key_label(reg::QUICK_OPEN, cx)
@@ -356,8 +377,12 @@ impl Workbench {
     }
 
     /// 转到行/列：活动文本编辑器的文档。
-    fn quick_line(&mut self, rest: &str) -> Output {
+    fn quick_line(&mut self, rest: &str, cx: &App) -> Output {
         let placeholder = "quickAccess.line.placeholder";
+        // #22：正在等待行索引时，输入框里显示的就是等待提示、进度与取消办法（§3.2、§6.2）。
+        if let Some((line, percent)) = self.pending_goto() {
+            return self.goto_wait_output(line, percent, placeholder, cx);
+        }
         let Some((_, document, cursor)) = self.focused_text() else {
             return Output {
                 picks: Picks::default(),
@@ -382,7 +407,17 @@ impl Workbench {
                 };
                 let mut label = self.label(key, &args);
                 if !count.complete && line > known {
-                    label = format!("{label} {}", self.label("quickAccess.line.indexing", &[]));
+                    // #22：等待提示带进度；等待中时 Esc / 关闭快速输入框即取消。
+                    let percent = crate::large_file::progress::IndexProgress::of(&count)
+                        .percent()
+                        .to_string();
+                    label = format!(
+                        "{label} {}",
+                        self.label(
+                            crate::large_file::goto::WAIT_HINT_KEY,
+                            &[("percent", percent)]
+                        )
+                    );
                 }
                 let mut picks = Picks::default();
                 picks.push(
@@ -536,7 +571,10 @@ impl Workbench {
             }
             Mode::WorkspaceSymbols(_) => {}
         }
-        self.quick.focus_editor = true;
+        // #22：转到行进入等待时输入框下一帧还要重新打开，焦点不回编辑器。
+        if self.quick.goto_wait.is_none() {
+            self.quick.focus_editor = true;
+        }
         cx.notify();
     }
 
@@ -579,6 +617,14 @@ impl Workbench {
         let LineState::Go { line, column } = line_state(rest, &document.text.lines()) else {
             return;
         };
+        // #22：目标行尚未索引时进入等待（输入框里提示“正在建立行索引，完成后跳转”，Esc 取消），
+        // 索引到达后由 `large_file_host` 自动跳转。
+        if !self.goto_line_or_wait(&document, line, cx) {
+            // 回车已经把输入框关掉了：记下输入文本，下一帧由 `sync_goto_wait` 重新打开。
+            self.quick.goto_wait = Some((format!(":{}", rest.trim()), 0));
+            cx.notify();
+            return;
+        }
         let line0 = Line(line - 1);
         let column = column.map_or(Utf8Column(0), |c| line_column(&document, line0, c));
         let Some(resource) = self
@@ -606,6 +652,89 @@ impl Workbench {
             eprintln!("gotoLine: {e}");
         }
         cx.notify();
+    }
+
+    // ------------------------------------------------------------------ #22 转到行的等待
+
+    /// 等待行索引时输入框里的内容：目标行 + 进度 + “按 Esc 取消等待”。
+    fn goto_wait_output(
+        &self,
+        line: u64,
+        percent: u8,
+        placeholder: &'static str,
+        cx: &App,
+    ) -> Output {
+        use crate::large_file::goto;
+        let target = self.label("quickAccess.line.gotoLine", &[("line", line.to_string())]);
+        let waiting = self.label(goto::WAIT_HINT_KEY, &[("percent", percent.to_string())]);
+        // 取消的键位取自键位登记（默认 Esc），不写死。
+        let key = crate::keys::key_label(QUICK_HIDE, cx).unwrap_or_else(|| "Escape".to_string());
+        let detail = self.label(goto::CANCEL_HINT_KEY, &[("key", key)]);
+        let mut picks = Picks::default();
+        picks.push(
+            crate::lists::Row {
+                id: crate::lists::ItemId("goto".into()),
+                label: format!("{target} {waiting}").into(),
+                detail: Some(detail.into()),
+                depth: 0,
+                expandable: false,
+                expanded: false,
+                disabled: false,
+            },
+            Default::default(),
+        );
+        Output {
+            picks,
+            placeholder,
+            empty: None,
+            loading: false,
+        }
+    }
+
+    /// 输入换成了别的目标行（或不再是“转到行”模式）：取消等待（`ARCHITECTURE` §39）。
+    fn cancel_goto_wait_if_retargeted(&mut self, text: &str) {
+        let Some((line, _)) = self.pending_goto() else {
+            return;
+        };
+        let same = match parse::parse(text) {
+            Mode::Line(rest) => self.focused_text().is_some_and(|(_, document, _)| {
+                matches!(
+                    line_state(rest, &document.text.lines()),
+                    LineState::Go { line: target, .. } if target == line
+                )
+            }),
+            _ => false,
+        };
+        if !same {
+            self.cancel_pending_goto();
+        }
+    }
+
+    /// 每帧调用：等待期间让快速输入框一直开着（提示 + 进度 + Esc 取消），等待结束后关掉。
+    fn sync_goto_wait(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((line, percent)) = self.pending_goto() else {
+            // 等待结束（跳转完成、取消或超时）：收起为等待而开着的输入框。
+            if self.quick.goto_wait.take().is_some() && self.quick.id.is_some() {
+                if let Some(view) = self.quick.view.clone() {
+                    view.update(cx, |q, cx| q.run_command(QUICK_HIDE, window, cx));
+                }
+            }
+            return;
+        };
+        let previous = self.quick.goto_wait.take();
+        let text = previous
+            .as_ref()
+            .map_or_else(|| format!(":{line}"), |(text, _)| text.clone());
+        let shown = previous.map(|(_, percent)| percent);
+        self.quick.goto_wait = Some((text.clone(), percent));
+        if !self.quick_active(cx) {
+            // 回车把输入框关掉了：重新打开，等待在界面上一直可见、随时可以取消。
+            self.quick.focus_editor = false;
+            self.show_quick_access(text, window, cx);
+        } else if shown != Some(percent) {
+            // 索引推进：只刷新进度文案。
+            self.quick_refresh(&text, cx);
+        }
     }
 
     // ------------------------------------------------------------------ 历史
@@ -650,13 +779,16 @@ impl Workbench {
             } else if self.quick.seen_focus
                 && QuickOpenSettings::read(&*self.settings).close_on_focus_lost
             {
-                view.update(cx, |q, cx| q.run_command("quickInput.hide", window, cx));
+                view.update(cx, |q, cx| q.run_command(QUICK_HIDE, window, cx));
             }
         }
 
         if std::mem::take(&mut self.quick.focus_editor) {
             self.quick_focus_editor(window, cx);
         }
+        // #22：等待行索引期间输入框一直开着（提示 + 进度 + Esc 取消）。放在还焦点之后，
+        // 免得刚打开的输入框被同一帧的“关闭后还焦点”抢走焦点。
+        self.sync_goto_wait(window, cx);
         if let Some(command) = self.quick.run.take() {
             self.quick_focus_editor(window, cx);
             let action = crate::keys::action_for(&command).unwrap_or_else(|| {

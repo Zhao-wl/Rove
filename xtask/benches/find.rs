@@ -59,7 +59,7 @@ fn replace_source() -> String {
 fn typed(model: &mut FindModel, text: &RopeText, search: &str) -> usize {
     model.set_search(search);
     let job = model.start_search().expect("查询有效");
-    let out = job.run(text, &mut |_| {});
+    let out = job.run(text, &mut |_, _| {});
     model.finish(job.generation, out);
     model.matches().len()
 }
@@ -128,7 +128,7 @@ fn benchmark(c: &mut Criterion) {
         None,
         usize::MAX,
         &cancel,
-        &mut |_| {},
+        &mut |_, _| {},
     )
     .unwrap()
     .matches;

@@ -34,10 +34,15 @@ pub(super) struct MetadataHost {
 }
 
 impl MetadataHost {
-    pub(super) fn new(files: FileDocuments, views: Arc<MetadataViews>) -> Self {
-        let loader = Arc::new(MetadataLoader::new(views));
+    /// 装配时把别的虚拟文档来源串在元数据加载器前面（#22 的超长行临时标签）。
+    /// `source` 必须最终把 `rove-metadata:` 转交给 `loader`。
+    pub(super) fn with_loader(
+        files: FileDocuments,
+        loader: Arc<MetadataLoader>,
+        source: Arc<dyn crate::skeleton::text::VirtualSource>,
+    ) -> Self {
         Self {
-            files: Arc::new(files.with_virtual_source(loader.clone())),
+            files: Arc::new(files.with_virtual_source(source)),
             loader,
             generation: None,
         }

@@ -85,6 +85,8 @@ pub fn strings() -> Result<StringTable> {
     crate::markdown::registry::register_strings(&mut t)?;
     // #28：欢迎页、最近打开、水印与首选项入口。
     crate::welcome::registry::register_strings(&mut t)?;
+    // #22：超大文件提示条、状态栏标记、行索引进度、转到行等待与超长行截断标记。
+    crate::large_file::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -121,6 +123,8 @@ pub fn contributions() -> Result<ContributionRegistry> {
     crate::search::registry::register_contributions(&mut r)?;
     // #29：编辑器标题栏的“显示源码 / 显示预览”按钮。
     crate::markdown::registry::register_contributions(&mut r)?;
+    // #22：文件大小标记与行索引进度（状态栏右侧）。
+    crate::large_file::registry::register_contributions(&mut r)?;
     Ok(r)
 }
 /// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。

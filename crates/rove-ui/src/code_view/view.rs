@@ -116,6 +116,11 @@ pub enum CodeViewEvent {
     /// #47：本视图里的一次编辑（或撤销 / 重做）已经写进会话；宿主据此同步同一文档的其他视图、
     /// 语法增量解析、`BufferStates` 与标签脏标记。
     Edited(super::edit::EditNotice),
+    /// #22：点击了行内覆盖物（超长行的截断标记）。`text` 是覆盖物的文字，宿主据此分辨是谁的。
+    OverlayClicked {
+        line: u64,
+        text: Arc<str>,
+    },
 }
 
 /// 按文档级别（UX_SPEC §3.1）关闭的功能（#20 提供查询，#22 组装状态栏悬停文案）。
@@ -327,6 +332,8 @@ pub struct CodeView {
     pub(crate) font: FontState,
     pub(crate) layout: FrameLayout,
     pub(crate) render_limit_override: Option<Option<usize>>,
+    /// #22：行索引未建完时滚动条使用的总行数估计（未索引部分按平均行长外推）。
+    scroll_line_estimate: Option<u64>,
     pub(crate) content_width: f64,
     pub(crate) visible: Range<u64>,
     last_top: f64,
@@ -544,6 +551,7 @@ impl CodeView {
             font,
             layout: FrameLayout::default(),
             render_limit_override: None,
+            scroll_line_estimate: None,
             content_width: 0.0,
             visible: 0..0,
             last_top: 0.0,
@@ -888,6 +896,55 @@ impl CodeView {
         self.lines.peek(&line).map(|e| e.display.truncated)
     }
 
+    /// 滚动条使用的总行数估计（#22）：行索引未建完时，未索引的部分按已索引部分的平均行长
+    /// 线性外推，滚动范围不随索引推进忽大忽小。`None` 恢复按已知行数。
+    ///
+    /// 只影响内容高度（滚动条、滚到底的位置），不改变任何一行的行号，也不改变视口顶端的行，
+    /// 所以估计值变化时看到的内容不动。估计值小于已知行数时按已知行数。
+    pub fn set_scroll_line_estimate(&mut self, estimate: Option<u64>, cx: &mut Context<Self>) {
+        if self.scroll_line_estimate != estimate {
+            self.scroll_line_estimate = estimate;
+            cx.notify();
+        }
+    }
+
+    pub fn scroll_line_estimate(&self) -> Option<u64> {
+        self.scroll_line_estimate
+    }
+
+    /// 点落在某行的行内覆盖物上时返回 (行号, 覆盖物文字)（#22 的截断标记可点击）。
+    pub fn overlay_at_point(&mut self, point: Point<Pixels>) -> Option<(u64, Arc<str>)> {
+        let m = self.metrics()?;
+        let origin = self.layout.text.origin;
+        let y = (point.y - origin.y).to_f64();
+        let coord = self.current_top() + y / m.line_height;
+        let line = self.doc_line(line_at_coord(coord, &m, &self.zones));
+        let x = (point.x - origin.x).to_f64() + self.scroll.x;
+        let (entry, shaped) = self.line_geometry(line)?;
+        let xs = self.xs_for(&entry, shaped.as_deref());
+        let merged = entry.merged.clone()?;
+        for overlay in &merged.overlays {
+            let start = entry.display.x_for_source(&xs, overlay.column) as f64;
+            let width = self
+                .shapes
+                .peek(&self.overlay_key(&overlay.text))
+                .map_or(0.0, |s| f32::from(s.layout.width) as f64);
+            if x >= start && x <= start + width {
+                return Some((line, overlay.text.clone()));
+            }
+        }
+        None
+    }
+
+    /// 点击落在行内覆盖物上时发事件并返回真（插入符不动）。
+    pub(crate) fn overlay_clicked(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        let Some((line, text)) = self.overlay_at_point(point) else {
+            return false;
+        };
+        cx.emit(CodeViewEvent::OverlayClicked { line, text });
+        true
+    }
+
     // ------------------------------------------------------------------ 选区
 
     pub fn selection(&self) -> Selection {
@@ -1023,7 +1080,12 @@ impl CodeView {
 
     pub(crate) fn metrics(&self) -> Option<Metrics> {
         let mut m = self.layout.metrics.clone()?;
-        m.line_count = self.line_count();
+        // #22：索引未建完时按估计行数算内容高度（估计值永远不小于已知行数）。估计值是**文档行**，
+        // 要和已知行数一起经折叠映射换成屏幕行，否则收起的折叠会被重新算进内容高度（#20）。
+        let doc_lines = self
+            .doc_line_count()
+            .max(self.scroll_line_estimate.unwrap_or(0));
+        m.line_count = self.folding.map().view_count(doc_lines).max(1);
         m.line_height = self.font.line_height as f64;
         Some(m)
     }

@@ -44,3 +44,5 @@ pub mod explorer;
 pub mod markdown;
 // #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）。
 pub mod welcome;
+// #22：超大文件与超长行的界面（提示条、状态栏、行索引进度、转到行等待、流式查找、截断标记）。
+pub mod large_file;

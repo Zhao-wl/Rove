@@ -232,6 +232,7 @@ cargo test --workspace
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
 | `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
+| `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
 
 数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -475,7 +476,9 @@ codicons 字体在 `launch` 中注册。
 `CodeViewEvent::SelectionChanged`；滚动定位 `reveal_line` / `reveal_position`（`Reveal::{Nearest, Center,
 CenterIfOutside, Top}`）；视口事件 `CodeViewEvent::ViewportChanged`；行内覆盖物 `decorations::Overlay` 与
 行下方嵌入区域 `set_view_zone` / `view_zone_bounds`；渲染上限挂钩 `set_line_render_limit`（#22 接入
-`editor.stopRenderingLineAfter` 的界面表现）；命中测试 `position_for_point` / `point_for_position`；
+`editor.stopRenderingLineAfter` 的界面表现）与 `is_line_truncated`；滚动条总行数估计 `set_scroll_line_estimate`
+（#22：行索引未建完时按平均行长外推，只影响内容高度、不改行号）；行内覆盖物的点击 `overlay_at_point` 与
+`CodeViewEvent::OverlayClicked`（#22 的截断标记可点击）；命中测试 `position_for_point` / `point_for_position`；
 命令 `execute(<VS Code 命令 ID>)`。
 
 登记：装配时调用 `code_view::register(settings, colors, commands, strings)`；已被他人登记的键跳过而不报
@@ -906,6 +909,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 **给 #22 的扩展点**：`engine::search_all` 已按块回报 `Progress{found, scanned_bytes, total_bytes}`，`SearchOutput::partial` 标明行索引未建完只扫了已知行；`FindModel` 的 `SearchState::Searching{found, progress}` 与 `CountLabel::Searching` 已能显示“已找到 N 处 · 已搜索 37%”（文本不到 8 MiB 时不显示进度）。#22 只需换流式入口，状态机与界面不用改（超大文件是只读文档，替换行本来就不显示）。
 
 #48 对 #21 / #12 的改动只是**追加**：`Searcher::capture_texts`（按与 `scan` 相同的口径重跑正则取捕获组，对不上就只给组 0）与 `CompiledRegex::capture_ranges`；查找模型、匹配算法与既有签名都没有动。
+- #22（超大文件，**已接入**）：`engine::search_all` 的进度回调改成 `FnMut(Progress, &[Match])`，第二个参数是这一块**新找到的**匹配；`FindModel::publish_partial` 把它们接到匹配列表上（一次搜索内第一次发布时丢掉上一次搜索遗留的匹配），所以结果逐步出现、不等扫完就能跳转，取消后已找到的结果仍在。`CountLabel::Searching` 显示“已找到 N 处 · 已搜索 37%”（文本不到 8 MiB 时不显示进度）。`FindHost::set_document_size` / `replace_allowed()` 按 #8 的分级决定要不要提供替换：**超大文件为假，#48 必须遵守**。`SearchOutput::partial` 标明只扫了已知行，行索引推进时工作台调 `FindHost::reindexed` 重新搜索。
 
 验证：`cargo test -p rove-ui find`（引擎、模型、替换串与保留大小写、登记的单元测试）、`cargo test -p rove-ui find_tests`（`skeleton/workbench/find_tests.rs`，真实 GPUI 窗口、只通过键位驱动：`ctrl+f` 种子、输入即查找与光标跟随、`enter` / `f3` / `ctrl+f3`、循环开关、四个开关与跨文件保持、非法正则、在选区内查找与 `autoFindInSelection`、历史、计数）与 `cargo test -p rove-ui replace_tests`（`ctrl+h` 展开与保持、替换一处并前进、全部替换与一次撤销 / 重做、CRLF 与混合换行符逐字节还原、正则捕获组、保留大小写、在选区内替换不越界、只读文档没有替换入口、5000 处替换一次撤销）。性能：`cargo xtask bench --filter find/`（10 万行输入一个字符到计数更新，预算 `find_input_char_100k_lines`；`replace_all_*_5000_in_100k_lines` 是 10 万行里替换 5000 处的区间表与事务耗时）与 `cargo xtask bench --filter scroll/find_visible`（查找条打开时的帧预算，对照 `scroll/frame_cpu_cache_hit`）。
 
@@ -1367,3 +1371,78 @@ C# / YAML / XML / Markdown 查询，并在 `highlight/grammar.rs` 里加了两�
 主题预览 → `Esc` 还原 → `Enter` 写入、水印跟随用户 `keybindings.json`、齿轮菜单四项）；
 `cargo test -p rove-theme preview`（预览不写设置、`reload` 还原、未知主题保留当前快照）。
 
+
+## 41. 超大文件与超长行的界面（#22）
+
+位置：`crates/rove-ui/src/large_file/`（模型，不依赖 GPUI）与 `crates/rove-ui/src/skeleton/workbench/large_file_host.rs`
+（窗口装配）。只消费已有能力，不修改 #1 的契约：#8 的分级 / 内存映射 / 分块行索引 / 增量索引、#19 的 f64 滚动模型与
+行内覆盖物、#20 的“当前关闭了哪些功能”、#21 的查找引擎与状态机、#16 的五级反馈与状态栏容器、#17 的打开文档服务。
+`lib.rs` 只追加 `pub mod large_file;`。
+
+| 文件 | 内容 | GPUI |
+|---|---|---|
+| `notice.rs` | 体积格式化（`1.2 GB`）、提示条数据（只有超大文件有；去重键 `rove.largeFile.huge`）、状态栏文案 key、`ReducedFeature` → 字符串 key | 否 |
+| `progress.rs` | `IndexProgress`：`percent()`（建完前封顶 99%）与 `estimated_lines()`——**同一个映射函数**，已索引部分按真实行数、未索引部分按已索引部分的平均行长线性外推 | 否 |
+| `goto.rs` | 转到行的等待：`resolve_now`（已索引 / 索引已建完越界 / 需要等待）、`wait_for_line`（后台轮询，可取消）、`PendingGoto` | 否 |
+| `long_line.rs` | `rove.editor.openLongLine` 的 ID、截断标记与临时标签的文案 key、`line_chars`（按块数 UTF-8 首字节，不把 50 MB 的行读进内存）、`CharCounts`（按快照版本缓存）、`wrap_fixed` / `wrapped_line`（固定宽度断行） | 否 |
+| `source.rs` | `LongLineSource`：超长行临时标签的虚拟文档内容来源，可串在 #42 的元数据加载器前面 | 否 |
+| `registry.rs` | 界面字符串、状态栏条目贡献、颜色键（只用已有的 `descriptionForeground`） | 否 |
+| `mod.rs` | `status_entry` / `index_status_entry`（状态栏内容）、`allows_replace`、`TruncationMarks`（#19 的 `DecorationProvider`） | 否 |
+
+**提示条与状态栏（§3.2）**：打开超大文件时经 #16 的 `Reason::FileContext` 报一条**编辑器顶部提示条**
+（§6.1 第 3 级，可关闭、带“不再提示”），**全程不弹通知**；大文件级别不报提示条，只在状态栏标记。
+状态栏两条条目在右侧：`rove.status.fileSize`（`超大文件 · 只读` / `大文件`，悬停列出被关闭的功能）与
+`rove.status.lineIndex`（`行索引 N%`，建完后条目消失，`Reason::Background` 的口径——永不弹通知）。
+悬停内容的两个数据源分工：**这一级生效了吗**看 #20 的 `CodeView::disabled_features()`
+（`editor.largeFileOptimizations` 为 false 时视图报空集合，这里也不列功能）；**关掉了哪些功能**用 #8 的
+`disabled_features(SizeClass)`（`UX_SPEC` §3.1 的整张表），字符串由本模块登记。
+
+> 临时承载：按 issue，大小标记应当是 #27「只读标记」条目的一个状态。#27 尚未合并，本 issue 先用自己的条目
+> （`rove.status.fileSize`）把数据显示出来；**#27 合并时把 `large_file::status_entry` 的输出并进只读标记条目，
+> 并删掉 `large_file::registry::SIZE_STATUS`**。`rove.status.lineIndex` 属于 #22，#27 不接管。
+
+**滚动（§3.2）**：代码视图新增 `set_scroll_line_estimate(Option<u64>)`，只参与 `metrics().line_count`
+（内容高度、滚动条滑块、滚到底的位置），**不改变任何一行的行号、也不改变视口顶端的行**，所以估计值随索引
+推进变化时看到的内容不动。估计值永远不小于已知行数，滚动范围只扩不缩；索引建完时外推项归零、估计值等于真实
+行数，不存在“完成时一次性切换”。未索引区域的行读不出来时 #19 不会无限重排（`prepare_slice` 的既有保护）。
+两条与 #20 折叠相关的规矩：工作台**只在索引未建完时下发估计值**（建完后估计值等于文档总行数，继续下发就等于
+把折叠隐藏的行算回内容高度）；`metrics()` 里估计值与已知行数都是**文档行**，一起经折叠映射（`FoldMap::view_count`）
+换成屏幕行，所以收起折叠后滚动范围、滑块与拖动定位仍然按屏幕行算。回归测试：
+`tests/code_view_features.rs::folding_shrinks_the_scroll_range_even_with_a_line_estimate`。
+
+**转到行的等待（§3.2、§6.2）**：#24 的快速输入框把目标行交给 `Workbench::goto_line_or_wait`。已索引返回真
+（照常打开）；未索引时登记一个 `PendingGoto` 并在后台执行器上轮询行索引（`goto::POLL_INTERVAL`，16 ms），
+索引到达后自动按位置打开。等待**在界面上一直可见、随时可以取消**（§6.2）：回车时快速输入框会自己关掉，
+所以 `quick_access_host` 的每帧装配 `sync_goto_wait` 在等待期间把它重新打开（`quick.goto_wait` 记住输入文本与
+上一次显示的进度），列表里只有一条“转到第 N 行 + `goto::WAIT_HINT_KEY`（含百分比）”，描述是
+`goto::CANCEL_HINT_KEY`（“按 Esc 取消等待”，键位取自 #14 对 `quickInput.hide` 的登记，不写死）；索引推进时
+只刷新这一条的文案，跳转完成后关掉浮层并把焦点还给编辑器。`Workbench::cancel_pending_goto` 取消等待，
+三条路径都会调用：Esc / `quickInput.hide`（浮层关闭事件 `QuickInputViewEvent::Closed`）、失焦关闭
+（`workbench.quickOpen.closeOnFocusLost`）、在输入框里换一个目标行（`cancel_goto_wait_if_retargeted`）。
+用轮询而不是 #8 的 `wait_for_lines`：代码视图拿到的是 `Arc<dyn TextSource>`，没有向下转型的接口，
+轮询对任何文本源都成立。
+
+**流式查找（§3.2）**：见 §27 的“给 #22 / #48 的扩展点”。要点：进度回调带上这一块新找到的匹配，
+`FindModel::publish_partial` 逐步接上；装饰层仍然只为可见行生成（#19 按行调用提供方），不会一次性铺满全部匹配；
+`FindHost::replace_allowed()` 在超大文件上为假，**#48 接入替换时必须遵守**；行索引推进时工作台调
+`FindHost::reindexed()` 重新搜索新索引出来的行（`SearchOutput::partial` 标明只扫了已知行）。
+
+**超长行（§3.3）**：渲染上限沿用 `editor.stopRenderingLineAfter`（VS Code 隐藏设置，默认 10000），截断本身由
+#19 的 `DisplayLine` 完成。`TruncationMarks` 是挂在代码视图上的装饰层（优先级 `priority::FIND_MATCH + 1`），
+为被截断的行产出一条 `Overlay`：文字“…（已截断，共 N 个字符）”，颜色 `descriptionForeground`（**不新造颜色键**）。
+N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照版本缓存，50 MB 的单行只扫一次。
+点击标记（`CodeViewEvent::OverlayClicked`，#19 新增的命中测试）或执行 `rove.editor.openLongLine`（Rove 专有命令，
+无默认键位，标题已由 #14 的 `rove_commands::builtin` 登记）在只读临时标签里打开这一行：资源名
+`rove-long-line:<文档 id>/<行号>`，**同一行重复打开复用同一个标签**（照搬 VS Code 对临时编辑器的做法），
+在临时标签里再执行一次不会套娃；内容在准备时就固定，关闭源文件不影响它。
+整个文件只有一行的压缩 JSON 走同一条路径。
+
+> **临时实现**：#57（软换行）合并前，临时标签按固定宽度（`FALLBACK_WRAP_COLUMNS = 120` 个字符）**插入真的换行符**
+> 来断行，所以从临时标签复制出来的文本会带换行。#57 合并后改成对这个标签开启软换行、去掉 `wrap_fixed`。
+
+验证：`cargo test -p rove-ui large_file`（各子模块单元测试 + `skeleton/workbench/large_file_tests.rs` 的入口集成测试：
+超大文件打开 → 提示条与状态栏（没有任何通知）→ “不再提示”→ 索引进度与滚动估计 → 转到行的等待（浮层里的
+提示与进度）与取消 →
+流式查找且没有替换 → 超长行截断标记与只读临时标签 → `editor.stopRenderingLineAfter` 改值 → 末尾追加后滚动位置保持）。
+入口测试把 `rove.largeFile.threshold` 调到 4 KB，用小文件走**同一条**超大文件路径；1 GB / 单行 50 MB 的真实数据
+由 `cargo xtask gen-testdata` + `cargo xtask bench --filter "scroll/|huge/|find/"` 在本机复跑（见 PR 的对比数据）。
