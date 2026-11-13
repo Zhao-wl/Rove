@@ -140,7 +140,26 @@ Rove 的行为与「VS Code 没有装对应语法扩展」时一致：这段文�
 | C# 比较运算符限定在二元表达式里 | `<`/`>` 也是泛型实参列表的括号，那里不是运算符 |
 | C# 独占一行的注释，捕获向行首空白扩展 | VS Code 的 `(^\s+)?(?=//)`；缩进与注释同色在小地图和带背景的主题下看得出来 |
 
-## 5. 加一种语言
+## 5. 高亮查询变化对性能的影响
+
+§4.5 给 C# 加了二十多条查询规则（类型引用、表达式里的标识符、成员访问与调用），所以量过前后。
+`cargo bench -p xtask --bench syntax`，1 MB Unity 特征 C# 首次全量高亮：
+
+| 测量 | 改前 | 改后 |
+|---|---|---|
+| criterion，两次独立运行 | 96.7 ms | 162.4 ms |
+| criterion，紧挨着的一组 A/B（只换 C# 查询） | 123.3 ms | 102.9 ms |
+| `ROVE_SYNTAX_TRACE=1` 背靠背各跑 7 次（中位数） | 69 ms（parse+query 62 ms） | 70 ms（parse+query 61 ms） |
+
+**机器负载较高**（本机同时开着 Unity 等程序）：同一份代码在不同时间段相差 97–162 ms，噪声比
+要测的差异还大，两组 criterion 结果互相矛盾。负载相同的背靠背测量看不出差别，所以结论是
+**在本机噪声范围内没有观察到回归**；空闲机器上的复测记为人工事项。
+
+受预算约束的那一项没有问题：`csharp_incremental_5000_lines`（`perf/budgets.toml`，预算 2 ms）
+实测 0.17–0.31 ms。`csharp_initial_1mb_unity` 的 50 ms 预算在 main 上就还是 `pending`（见
+`budgets.toml` 里 #94 的说明），本次没有改变它的状态。
+
+## 6. 加一种语言
 
 在 `tests/golden/thresholds.toml` 的 `[languages]` 下加一行：
 
