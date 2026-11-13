@@ -120,6 +120,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "sticky",
         requires: "",
     },
+    BenchTarget {
+        // #58：软换行的换行点重算与视觉行映射（纯 CPU，不开窗口）。
+        name: "wrap",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

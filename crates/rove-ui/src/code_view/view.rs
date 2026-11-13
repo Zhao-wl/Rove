@@ -22,6 +22,9 @@ use super::selection::{
     self, extend_by_unit, line_unit, pos, Cursor, Granularity, Move, Selection,
 };
 use super::sticky::{StickyLine, StickyModel, StickyScroll, StickySources};
+use super::wrap::{
+    self, LineWrap, VisualMap, WordWrap, WrapOptions, WrapPending, WrappingStrategy,
+};
 use gpui::{
     px, App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font,
     FontFallbacks, FontFeatures, FontId, FontStyle, FontWeight, GlyphId, Hsla, IntoElement,
@@ -135,6 +138,8 @@ pub enum Feature {
     BackgroundHighlighting,
     SyntaxHighlighting,
     Folding,
+    /// 软换行（仅超大文件，#58）。
+    WordWrap,
 }
 
 impl Feature {
@@ -147,6 +152,7 @@ impl Feature {
             Feature::BackgroundHighlighting => "codeView.feature.backgroundHighlighting",
             Feature::SyntaxHighlighting => "codeView.feature.syntaxHighlighting",
             Feature::Folding => "codeView.feature.folding",
+            Feature::WordWrap => "codeView.feature.wordWrap",
         }
     }
 }
@@ -210,6 +216,9 @@ pub(crate) struct LineEntry {
     /// 本行字素簇边界 x 的备忘（只缓存正式整形的结果）：(字体代次, x 表)。x 表必须按本行自己的
     /// stops 计算——整形缓存按显示文本共享，Tab 开头的 `foo` 与四个空格开头的 `foo` 显示相同但边界不同。
     pub xs: RefCell<Option<(u64, Rc<[f32]>)>>,
+    /// #58：本行的换行点备忘（换行代次 + 是否用上了真实字形宽度）。与 `xs` 同一个时机失效：
+    /// 字体代次、视口宽度与换行设置都进 `CodeView::wrap_key`，不存在两套各自失效的缓存。
+    pub wrap: RefCell<Option<(u64, Rc<LineWrap>)>>,
 }
 
 #[derive(Clone)]
@@ -308,6 +317,98 @@ struct Animation {
     start: Instant,
 }
 
+/// #58：软换行状态。映射本身在 [`VisualMap`] 里（折叠 + 换行合在一处），这里只放视图侧的
+/// 代次、分帧队列与会话开关。
+pub(crate) struct WrapState {
+    /// 权威映射：缓冲行 ↔ 视觉行。
+    pub map: VisualMap,
+    /// 当前的换行列上限（0 表示没开）。
+    pub columns: u32,
+    /// 当前的换行宽度（像素，`advanced` 用）。
+    pub width: f64,
+    /// 换行缓存代次：视口宽度 / 字体 / 字号 / DPI / 换行设置任一变化就 +1。
+    pub generation: u64,
+    /// 生效中的换行参数（列上限 + 设置 + 字体代次）；与新值不同就整体重算。
+    applied: Option<(u32, WrapOptions, u64)>,
+    /// `editor.action.toggleWordWrap` 的会话覆盖（**不写回设置**）。
+    pub session: Option<bool>,
+    /// 还没重算的行（分帧消化）。
+    pub pending: WrapPending,
+    /// 视觉行数变了的行；超过上限就退化为“全部变了”（`None`）。
+    changed: Option<Vec<u64>>,
+    /// 映射改过、还没 `commit`。
+    dirty: bool,
+    /// 上一次整体重算的开始时间与行数（诊断 / 基准用）。
+    pass: Option<(Instant, u64)>,
+    /// 上一次整体重算的耗时与行数。
+    pub last_pass: Option<(Duration, u64)>,
+    /// 上一帧画出来的视觉行：(缓冲行, 段号)。续行（段号 > 0）的行号栏留空。
+    pub rows: Vec<(u64, u32)>,
+    /// 重算期间把视口钉在这条缓冲行上：(缓冲行, 行内像素偏移, 我们设过的 `scroll.top`)。
+    /// 用户自己滚动（`top` 与记录的不同）就放弃。
+    anchor: Option<(u64, f64, f64)>,
+}
+
+/// `changed` 里最多记多少行，超过就只说“全部变了”。
+const WRAP_CHANGED_MAX: usize = 4096;
+
+/// 分帧重算换行点时，两次查表之间处理多少行（时间预算在外层判断）。
+const WRAP_SLICE_LINES: u64 = 512;
+
+/// 光标移动用的分段快照（见 [`CodeView::wrap_segments`]）。
+pub(crate) struct WrapSegments {
+    first: u64,
+    lines: Vec<Rc<LineWrap>>,
+}
+
+impl WrapSegments {
+    fn get(&self, line: u64) -> Option<&LineWrap> {
+        self.lines
+            .get(line.checked_sub(self.first)? as usize)
+            .map(|w| &**w)
+    }
+}
+
+impl super::selection::LineSegments for WrapSegments {
+    fn breaks(&self, line: u64) -> Vec<u32> {
+        self.get(line).map_or(Vec::new(), |w| w.breaks().to_vec())
+    }
+    fn indent_columns(&self, line: u64) -> u32 {
+        self.get(line).map_or(0, |w| w.indent_columns(1))
+    }
+}
+
+impl Default for WrapState {
+    fn default() -> Self {
+        Self {
+            map: VisualMap::default(),
+            columns: 0,
+            width: 0.0,
+            generation: 1,
+            applied: None,
+            session: None,
+            pending: WrapPending::default(),
+            changed: Some(Vec::new()),
+            dirty: false,
+            pass: None,
+            last_pass: None,
+            rows: Vec::new(),
+            anchor: None,
+        }
+    }
+}
+
+impl WrapState {
+    fn note_changed(&mut self, line: u64) {
+        match &mut self.changed {
+            Some(v) if v.len() < WRAP_CHANGED_MAX => v.push(line),
+            Some(_) => self.changed = None,
+            None => {}
+        }
+        self.dirty = true;
+    }
+}
+
 /// 代码视图。只读：选区、复制、滚动、缩放；编辑交互由 R46 在此基础上扩展。
 pub struct CodeView {
     pub(crate) focus: FocusHandle,
@@ -344,6 +445,8 @@ pub struct CodeView {
     pub(crate) level: SizeClass,
     /// 当前滚动坐标所基于的映射（折叠变化时据此保持视口首行稳定）。
     applied_map: FoldMap,
+    /// #58：软换行。
+    pub(crate) wrap: WrapState,
     pub(crate) read_only: Arc<[ReadOnlyReason]>,
     pub(crate) hover_gutter: bool,
     pub(crate) cursor: Cursor,
@@ -595,6 +698,7 @@ impl CodeView {
             occurrence_epoch: Rc::new(Cell::new(0)),
             level: SizeClass::Normal,
             applied_map: FoldMap::default(),
+            wrap: WrapState::default(),
             read_only: Arc::from([]),
             hover_gutter: false,
             cursor: Cursor::default(),
@@ -685,7 +789,12 @@ impl CodeView {
             self.sticky.clear();
             self.sticky_indent.clear();
             self.symbols = None;
+            // 换文档：`alt+z` 的会话覆盖跟着这个视图的文档走，重置回设置。
+            self.wrap.session = None;
         }
+        // #58：换了文本就得重算全部换行点（分帧进行）。
+        self.wrap.applied = None;
+        self.wrap.map.disable_wrap();
         self.sync_fold_map();
         self.recompute_folds(cx);
         self.update_highlights(cx);
@@ -717,19 +826,399 @@ impl CodeView {
         self.text.as_ref().map_or(1, |t| t.lines().known.max(1))
     }
 
-    /// 屏幕行数（折叠隐藏的行不算）。
+    /// 视觉行数（折叠隐藏的行不算；软换行开启时续行各算一行）。
     pub(crate) fn line_count(&self) -> u64 {
-        self.folding.map().view_count(self.doc_line_count()).max(1)
+        self.wrap.map.visual_count().max(1)
     }
 
-    /// 文档行 → 屏幕行（隐藏行映射到折叠首行）。
+    /// 文档行 → 它的首条视觉行（隐藏行映射到折叠首行）。
     pub(crate) fn view_line(&self, doc: u64) -> u64 {
-        self.folding.map().to_view(doc)
+        self.wrap.map.first_visual(doc)
     }
 
-    /// 屏幕行 → 文档行。
+    /// 视觉行 → 文档行。
     pub(crate) fn doc_line(&self, view: u64) -> u64 {
-        self.folding.map().to_doc(view)
+        self.wrap.map.doc_line(view)
+    }
+
+    // ------------------------------------------------------------------ 软换行（#58）
+
+    /// 缓冲行 ↔ 视觉行的权威映射（折叠 + 软换行合在一处）。缩略图（#56）、粘性滚动（#55）、
+    /// 速览（#41）与参考线（#57）都用它换算，不要另算一套。
+    pub fn visual_map(&self) -> &VisualMap {
+        &self.wrap.map
+    }
+
+    /// 某个位置落在第几条视觉行（文档坐标，含折叠与换行）。
+    pub fn visual_line_of(&mut self, p: Position) -> u64 {
+        let first = self.view_line(p.line.0);
+        if self.wrap.columns == 0 {
+            return first;
+        }
+        let Some((entry, _)) = self.line_geometry(p.line.0) else {
+            return first;
+        };
+        let seg = self.segment_of(p.line.0, &entry, p.column.0 as u32);
+        first + seg.min(self.wrap.map.span(p.line.0).saturating_sub(1)) as u64
+    }
+
+    /// 生效中的软换行模式：超大文件强制关闭（`UX_SPEC` §3.1），其次是 `alt+z` 的会话覆盖，
+    /// 最后才是 `editor.wordWrap`。
+    pub fn word_wrap(&self) -> WordWrap {
+        if self.effective_level() == SizeClass::Huge {
+            return WordWrap::Off;
+        }
+        match self.wrap.session {
+            Some(true) => WordWrap::On,
+            Some(false) => WordWrap::Off,
+            None => self.options.wrap.mode,
+        }
+    }
+
+    pub fn word_wrap_enabled(&self) -> bool {
+        self.word_wrap() != WordWrap::Off
+    }
+
+    /// `editor.action.toggleWordWrap` 的会话覆盖；`None` 表示跟随设置。
+    pub fn word_wrap_override(&self) -> Option<bool> {
+        self.wrap.session
+    }
+
+    /// 生效中的换行设置（模式已按 [`word_wrap`](Self::word_wrap) 调整）。
+    pub(crate) fn wrap_options(&self) -> WrapOptions {
+        WrapOptions {
+            mode: self.word_wrap(),
+            ..self.options.wrap.clone()
+        }
+    }
+
+    /// `editor.action.toggleWordWrap`：只切换当前编辑器会话，**不写回 `settings.json`**
+    /// （照搬 VS Code；与“切换主题要写回”正好相反）。切换后视口停在同一条缓冲行上。
+    pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
+        if self.effective_level() == SizeClass::Huge {
+            return;
+        }
+        let on = !self.word_wrap_enabled();
+        // 与设置本身一致时清掉覆盖，这样之后改设置还能生效。
+        self.wrap.session = (on != (self.options.wrap.mode != WordWrap::Off)).then_some(on);
+        self.wrap.applied = None;
+        // `sync_wrap` 自己会记下锚点，重算期间视口一直停在同一条缓冲行上。
+        self.sync_wrap(self.wrap_width_hint());
+        cx.notify();
+    }
+
+    /// 上一帧的文本区宽度（切换换行时还没有新布局，先用它）。
+    fn wrap_width_hint(&self) -> f64 {
+        self.layout
+            .metrics
+            .as_ref()
+            .map_or(0.0, |m| m.viewport_width)
+    }
+
+    /// 视口顶边当前对着哪条缓冲行、偏多少像素（换行重排前后据此把视口钉在同一行上）。
+    fn anchor_line(&self) -> Option<(u64, f64)> {
+        let m = self.metrics()?;
+        let (first, y) = self.scroll.first_visible(&m, &self.zones);
+        Some((self.doc_line(first), y))
+    }
+
+    fn restore_anchor(&mut self, anchor: Option<(u64, f64)>) {
+        let Some((doc, y)) = anchor else { return };
+        let Some(mut m) = self.metrics() else { return };
+        m.line_count = self.line_count();
+        let top = m.line_top(self.view_line(doc), &self.zones) - y / m.line_height;
+        self.animation = None;
+        self.scroll = ScrollPosition {
+            top,
+            x: if self.word_wrap_enabled() {
+                0.0
+            } else {
+                self.scroll.x
+            },
+        }
+        .clamped(&m, &self.zones);
+    }
+
+    /// 布局时调用：按文本区宽度与当前设置确定换行参数，必要时把全部行排进重算队列。
+    /// **宽度变化时保留旧的视觉行数**，这一帧照旧绘制，新的换行点分帧算出来
+    /// （见 [`wrap_slice`](Self::wrap_slice)）。
+    pub(crate) fn sync_wrap(&mut self, text_width: f64) {
+        let doc_lines = self.doc_line_count();
+        self.wrap.map.set_doc_lines(doc_lines);
+        let o = self.wrap_options();
+        let cell = (self.font.cell_width as f64).max(1.0);
+        match o.columns(text_width, cell) {
+            None => {
+                if self.wrap.map.is_wrapping() {
+                    // 关掉软换行：视口回到原来那条缓冲行上。
+                    let anchor = self.anchor_line();
+                    self.wrap.map.disable_wrap();
+                    self.wrap.pending.clear();
+                    self.wrap.generation += 1;
+                    self.wrap.changed = None;
+                    self.wrap.anchor = None;
+                    self.restore_anchor(anchor);
+                }
+                self.wrap.applied = None;
+                self.wrap.columns = 0;
+                self.wrap.width = 0.0;
+            }
+            Some(columns) => {
+                let key = (columns, o, self.font.generation);
+                if self.wrap.applied.as_ref() != Some(&key) {
+                    // 旧映射下视口对着哪条缓冲行：重算期间一直钉在它上面。
+                    let anchor = self.anchor_line();
+                    self.wrap.applied = Some(key);
+                    self.wrap.generation += 1;
+                    self.wrap.columns = columns;
+                    self.wrap.width = columns as f64 * cell;
+                    self.wrap.map.enable_wrap(doc_lines);
+                    self.wrap.pending.clear();
+                    self.wrap.pending.mark(0..doc_lines);
+                    self.wrap.pass = Some((Instant::now(), doc_lines));
+                    self.wrap.changed = None;
+                    // 软换行下没有横向滚动。
+                    self.scroll.x = 0.0;
+                    self.restore_anchor(anchor);
+                    self.wrap.anchor = anchor.map(|(d, y)| (d, y, self.scroll.top));
+                }
+            }
+        }
+    }
+
+    /// 分帧重算过程中每算完一片就把视口重新钉回原来那条缓冲行（上方的行越算越多，
+    /// 视觉行号会一直变）。用户自己滚过就不再干预。
+    fn reanchor(&mut self) {
+        let Some((doc, y, top)) = self.wrap.anchor else {
+            return;
+        };
+        if (self.scroll.top - top).abs() > 1e-9 {
+            self.wrap.anchor = None;
+            return;
+        }
+        self.restore_anchor(Some((doc, y)));
+        self.wrap.anchor = (!self.wrap.pending.is_empty()).then_some((doc, y, self.scroll.top));
+    }
+
+    /// 换行点缓存的键：换行代次 + 这一行有没有正式整形结果（`advanced` 按真实字形宽度切分，
+    /// 整形结果到达后要重算）。
+    fn wrap_key(&self, shaped: bool) -> u64 {
+        let advanced = self.options.wrap.strategy == WrappingStrategy::Advanced;
+        self.wrap.generation * 2 + u64::from(shaped && advanced)
+    }
+
+    /// 某缓冲行的换行点（续行起点，源行 UTF-8 字节列）。软换行关闭时为空。
+    pub fn line_breaks(&mut self, line: u64) -> Vec<u32> {
+        self.line_wrap(line).breaks().to_vec()
+    }
+
+    /// 某缓冲行的换行点；行还没读进来时按“不换行”处理（文本到位后自然重算）。
+    pub(crate) fn line_wrap(&mut self, line: u64) -> Rc<LineWrap> {
+        if self.wrap.columns == 0 {
+            return Rc::new(LineWrap::default());
+        }
+        match self.lines.peek(&line).cloned() {
+            Some(entry) => self.wrap_of(line, &entry),
+            None => Rc::new(LineWrap::default()),
+        }
+    }
+
+    /// 算（或取缓存的）某行换行点，并把视觉行数写回映射。
+    pub(crate) fn wrap_of(&mut self, line: u64, entry: &Rc<LineEntry>) -> Rc<LineWrap> {
+        if self.wrap.columns == 0 {
+            return Rc::new(LineWrap::default());
+        }
+        let shaped = self.shapes.peek(&self.shape_key(entry)).cloned();
+        let key = self.wrap_key(shaped.is_some());
+        if let Some((k, w)) = &*entry.wrap.borrow() {
+            if *k == key {
+                return w.clone();
+            }
+        }
+        let o = self.wrap_options();
+        let w = Rc::new(match (o.strategy, &shaped) {
+            (WrappingStrategy::Advanced, Some(s)) => {
+                let xs = self.xs_for(entry, Some(s));
+                wrap::wrap_line(
+                    &entry.source,
+                    &entry.display,
+                    wrap::Metric::Pixels {
+                        xs: &xs,
+                        limit: self.wrap.width as f32,
+                        cell: self.font.cell_width,
+                    },
+                    &o,
+                )
+            }
+            _ => wrap::wrap_line(
+                &entry.source,
+                &entry.display,
+                wrap::Metric::Columns {
+                    limit: self.wrap.columns,
+                },
+                &o,
+            ),
+        });
+        *entry.wrap.borrow_mut() = Some((key, w.clone()));
+        if self.wrap.map.set_count(line, w.count()) {
+            self.wrap.note_changed(line);
+        }
+        self.wrap.pending.done(line);
+        w
+    }
+
+    /// 分帧重算换行点：在预算内处理排队的行（离屏行按等宽近似，显示出来时再按真实字形修正）。
+    /// 返回是否还有剩余。
+    pub(crate) fn wrap_slice(&mut self, deadline: Instant) -> bool {
+        if self.wrap.columns == 0 || self.wrap.pending.is_empty() {
+            self.finish_wrap_pass();
+            return false;
+        }
+        let Some(text) = self.text.clone() else {
+            return false;
+        };
+        let o = self.wrap_options();
+        let limit = self.render_limit();
+        let known = text.lines().known;
+        let metric = wrap::Metric::Columns {
+            limit: self.wrap.columns,
+        };
+        while !self.wrap.pending.is_empty() {
+            for line in self.wrap.pending.take(WRAP_SLICE_LINES) {
+                if line >= known {
+                    continue;
+                }
+                let Some(src) = read_line(&*text, line) else {
+                    continue;
+                };
+                // 短行的快速路径：没有 Tab 时可见列数不会超过字节数，整行放得下就不换行，
+                // 连显示形式都不必构建（绝大多数代码行走这一条）。
+                let count = if src.len() <= self.wrap.columns as usize && !src.contains('\t') {
+                    1
+                } else {
+                    let d = DisplayLine::build(&src, o.tab_size, limit);
+                    wrap::wrap_line(&src, &d, metric, &o).count()
+                };
+                if self.wrap.map.set_count(line, count) {
+                    self.wrap.note_changed(line);
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        self.commit_wrap();
+        self.reanchor();
+        let rest = !self.wrap.pending.is_empty();
+        if !rest {
+            self.finish_wrap_pass();
+        }
+        rest
+    }
+
+    fn finish_wrap_pass(&mut self) {
+        if let Some((started, lines)) = self.wrap.pass.take() {
+            self.wrap.last_pass = Some((started.elapsed(), lines));
+        }
+    }
+
+    /// 一批 [`set_count`](VisualMap::set_count) 之后重建隐藏行的前缀和。
+    pub(crate) fn commit_wrap(&mut self) {
+        if !self.wrap.dirty {
+            return;
+        }
+        self.wrap.dirty = false;
+        self.wrap.map.commit();
+    }
+
+    /// 取走“哪些行的视觉行数变了”；`None` 表示变化太多，按全部变了处理。
+    /// 下游（缩略图 #56、粘性滚动 #55、速览 #41）据此只重算受影响的部分。
+    pub fn take_wrap_changes(&mut self) -> Option<Vec<u64>> {
+        let out = self.wrap.changed.replace(Vec::new());
+        self.wrap.changed = Some(Vec::new());
+        out
+    }
+
+    /// 上一次整体重算换行点的耗时与行数（视口宽度变化的最坏情况，基准用）。
+    pub fn wrap_recompute_stats(&self) -> Option<(Duration, u64)> {
+        self.wrap.last_pass
+    }
+
+    /// 上一帧画出来的视觉行：(缓冲行, 段号)。段号 > 0 的是续行（行号栏留空）。
+    /// 粘性滚动（#55）、缩略图（#56）等需要知道“屏幕上第 N 行是文档里的什么”的地方用它。
+    pub fn visual_rows(&self) -> &[(u64, u32)] {
+        &self.wrap.rows
+    }
+
+    /// 还有多少行的换行点没算（分帧进行中）。
+    pub fn wrap_pending_lines(&self) -> u64 {
+        self.wrap.pending.remaining()
+    }
+
+    /// #58：编辑后按行号平移视觉行数（没被改写的行不必重算）。
+    pub(crate) fn remap_wrap(&mut self, changes: &rove_buffer::edit::LineChanges) {
+        if !self.wrap.map.is_wrapping() {
+            return;
+        }
+        let lines = self.doc_line_count();
+        self.wrap
+            .map
+            .remap(lines, |old| super::edit::old_to_new(changes, old));
+    }
+
+    /// #58：把被改写的行排进重算队列。
+    pub(crate) fn mark_wrap_dirty(&mut self, ranges: &[Range<u64>]) {
+        if self.wrap.columns == 0 {
+            return;
+        }
+        let lines = self.doc_line_count();
+        for r in ranges {
+            self.wrap.pending.mark(r.start.min(lines)..r.end.min(lines));
+        }
+    }
+
+    /// 光标移动用的分段快照：预取 `center` 附近 `radius` 行的换行点。
+    /// 已经在行缓存里的行用绘制时那一份结果（`advanced` 也一致），其余行按等宽近似现算。
+    pub(crate) fn wrap_segments(&mut self, center: u64, radius: u64) -> WrapSegments {
+        let first = center.saturating_sub(radius);
+        let last = (center + radius).min(self.doc_line_count().saturating_sub(1));
+        let mut lines = Vec::new();
+        if self.wrap.columns > 0 {
+            for line in first..=last {
+                lines.push(self.wrap_for_movement(line));
+            }
+        }
+        WrapSegments { first, lines }
+    }
+
+    fn wrap_for_movement(&mut self, line: u64) -> Rc<LineWrap> {
+        if let Some(entry) = self.lines.peek(&line).cloned() {
+            return self.wrap_of(line, &entry);
+        }
+        let none = || Rc::new(LineWrap::default());
+        let Some(text) = self.text.clone() else {
+            return none();
+        };
+        if line >= text.lines().known {
+            return none();
+        }
+        let Some(src) = read_line(&*text, line) else {
+            return none();
+        };
+        let o = self.wrap_options();
+        let d = DisplayLine::build(&src, o.tab_size, self.render_limit());
+        let w = Rc::new(wrap::wrap_line(
+            &src,
+            &d,
+            wrap::Metric::Columns {
+                limit: self.wrap.columns,
+            },
+            &o,
+        ));
+        if self.wrap.map.set_count(line, w.count()) {
+            self.wrap.note_changed(line);
+        }
+        w
     }
 
     // ------------------------------------------------------------------ 设置、主题、字体
@@ -768,6 +1257,8 @@ impl CodeView {
         if layout_changed {
             self.lines.clear();
             self.content_width = 0.0;
+            // #58：Tab 宽度 / 渲染上限变了，换行点也要整体重算。
+            self.wrap.applied = None;
         }
         self.apply_feature_options();
         if sticky_changed {
@@ -931,8 +1422,8 @@ impl CodeView {
         if h <= 0.0 || self.folding.map().is_hidden(after) {
             return None;
         }
-        let after = self.view_line(after);
-        // 嵌入区域紧接在 `after` 行之后。
+        // 嵌入区域紧接在 `after` 行的最后一条视觉行之后（软换行时续行也算）。
+        let after = self.wrap.map.visual_range(after).end.saturating_sub(1);
         let y =
             ((m.line_top(after, &self.zones) + 1.0 - self.current_top()) * m.line_height) as f32;
         let text = self.layout.text;
@@ -952,6 +1443,8 @@ impl CodeView {
         if self.render_limit_override != limit {
             self.render_limit_override = limit;
             self.lines.clear();
+            // #58：截断点变了，换行点整体重算。
+            self.wrap.applied = None;
             cx.notify();
         }
     }
@@ -1280,28 +1773,71 @@ impl CodeView {
         }
     }
 
-    /// 某位置在文本坐标系中的 x 范围（像素，相对文本起点）。
+    /// 某位置在文本坐标系中的 x 范围（像素，相对文本起点）。软换行时减去所在段的起点、
+    /// 加上续行缩进，得到它在自己那条视觉行里的 x。
     fn caret_x_range(&mut self, p: Position) -> Option<(f64, f64)> {
         let (entry, shaped) = self.line_geometry(p.line.0)?;
         let xs = self.xs_for(&entry, shaped.as_deref());
         let x = entry.display.x_for_source(&xs, p.column.0 as u32) as f64;
-        Some((x, x))
+        let seg = self.segment_of(p.line.0, &entry, p.column.0 as u32);
+        let shift = self
+            .segment_geometry(p.line.0, &entry, &xs, seg)
+            .map_or(0.0, |(shift, _)| shift);
+        Some((x + shift, x + shift))
+    }
+
+    /// 某列落在这一行的第几段（不换行时恒为 0）。
+    pub(crate) fn segment_of(&mut self, line: u64, entry: &Rc<LineEntry>, column: u32) -> u32 {
+        if self.wrap.columns == 0 {
+            return 0;
+        }
+        self.wrap_of(line, entry).segment_of(column)
     }
 
     // ------------------------------------------------------------------ 坐标换算（命中测试）
 
     /// 窗口坐标 → 文档位置（行 + UTF-8 列），以上一帧布局为准。点在文本区之外时按最近位置钳制。
+    /// 软换行时先按视觉行定位到 (缓冲行, 段)，再在段内按 x 命中。
     pub fn position_for_point(&mut self, point: Point<Pixels>) -> Option<Position> {
         let m = self.metrics()?;
         let text = self.layout.text;
         let y = (point.y - text.origin.y).to_f64();
         let coord = self.current_top() + y / m.line_height;
-        let line = self.doc_line(line_at_coord(coord, &m, &self.zones));
+        let (line, seg) = self.wrap.map.to_doc(line_at_coord(coord, &m, &self.zones));
         let x = (point.x - text.origin.x).to_f64() + self.scroll.x;
         let (entry, shaped) = self.line_geometry(line)?;
         let xs = self.xs_for(&entry, shaped.as_deref());
-        let col = entry.display.source_for_x(&xs, x as f32);
+        let (x, limit) = match self.segment_geometry(line, &entry, &xs, seg) {
+            Some((shift, range)) => (x - shift, Some(range)),
+            None => (x, None),
+        };
+        let mut col = entry.display.source_for_x(&xs, x as f32);
+        if let Some(range) = limit {
+            // 命中落在本段之外时钳到段边界（点续行右侧空白 → 段末，不要跑到下一段）。
+            col = col.clamp(range.start, range.end);
+        }
         Some(self.clamp_position(pos(line, col as u64)))
+    }
+
+    /// 某行某段的 (水平偏移, 源列区间)；不换行时为 `None`。
+    pub(crate) fn segment_geometry(
+        &mut self,
+        line: u64,
+        entry: &Rc<LineEntry>,
+        xs: &[f32],
+        seg: u32,
+    ) -> Option<(f64, Range<u32>)> {
+        if self.wrap.columns == 0 {
+            return None;
+        }
+        let w = self.wrap_of(line, entry);
+        if !w.is_wrapped() {
+            return None;
+        }
+        let range = w.segment_range(seg, entry.display.source_len);
+        let x0 = entry.display.x_for_source(xs, range.start) as f64;
+        let shift = w.indent_columns(seg) as f64 * self.font.cell_width as f64 - x0;
+        Some((shift, range))
     }
 
     /// 文档位置 → 窗口坐标（该位置左上角）。行不在视口内时为 `None`。
@@ -1310,7 +1846,7 @@ impl CodeView {
         if self.folding.map().is_hidden(p.line.0) {
             return None;
         }
-        let view = self.view_line(p.line.0);
+        let view = self.visual_line_of(p);
         let top = (m.line_top(view, &self.zones) - self.current_top()) * m.line_height;
         if top + m.line_height < 0.0 || top > m.viewport_height {
             return None;
@@ -1390,10 +1926,26 @@ impl CodeView {
             let before = self.cursor.selection.active.line.0;
             // #52：次光标各自移动，移动后按设置合并。
             let lines = TextLines(&*text);
-            for c in &mut self.secondary {
-                c.move_caret(&lines, m, extend, tab, page);
+            if self.wrap.columns > 0 {
+                // #58：软换行下 Up / Down / Home / End / PageUp / PageDown 按视觉行走。
+                // 每个光标各取自己附近的换行段，次光标离主光标很远时也不会退回等宽行为。
+                let mut segs = Vec::with_capacity(self.secondary.len() + 1);
+                segs.push(self.wrap_segments(before, page + 2));
+                for i in 0..self.secondary.len() {
+                    let center = self.secondary[i].selection.active.line.0;
+                    segs.push(self.wrap_segments(center, page + 2));
+                }
+                for (c, s) in self.secondary.iter_mut().zip(segs[1..].iter()) {
+                    c.move_caret_visual(&lines, s, m, extend, tab, page);
+                }
+                self.cursor
+                    .move_caret_visual(&lines, &segs[0], m, extend, tab, page);
+            } else {
+                for c in &mut self.secondary {
+                    c.move_caret(&lines, m, extend, tab, page);
+                }
+                self.cursor.move_caret(&lines, m, extend, tab, page);
             }
-            self.cursor.move_caret(&lines, m, extend, tab, page);
             self.skip_folded_lines(before);
             // 只有真的合并掉了光标才整体重建（重建会丢掉各光标记忆的可见列）。
             if self.has_multiple_selections() {
@@ -1469,6 +2021,8 @@ impl CodeView {
                     }
                 }
             }
+            // #58：只切换当前编辑器会话的软换行，不写回 `settings.json`。
+            "editor.action.toggleWordWrap" => self.toggle_word_wrap(cx),
             "editor.action.fontZoomIn" => self.set_zoom_level(self.zoom + 1, cx),
             "editor.action.fontZoomOut" => self.set_zoom_level(self.zoom - 1, cx),
             "editor.action.fontZoomReset" => self.set_zoom_level(0, cx),
@@ -2034,6 +2588,7 @@ impl CodeView {
             paint_runs: Vec::new(),
             font_runs: Arc::from([(len, 0u8)]),
             xs: RefCell::new(None),
+            wrap: RefCell::new(None),
         }
     }
 
@@ -2103,6 +2658,7 @@ impl CodeView {
             paint_runs,
             font_runs: font_runs.into(),
             xs: RefCell::new(None),
+            wrap: RefCell::new(None),
         }
     }
 
@@ -2266,7 +2822,7 @@ impl CodeView {
 
     /// 是否还有可见行或预取行需要准备。
     pub(crate) fn needs_prepare(&self) -> bool {
-        self.pending_lines().next().is_some()
+        !self.wrap.pending.is_empty() || self.pending_lines().next().is_some()
     }
 
     fn prefetch_range(&self) -> Range<u64> {
@@ -2346,11 +2902,17 @@ impl CodeView {
                 changed |= e | s;
             }
         }
+        // #58：剩下的预算用来分帧重算换行点（视口宽度变化时最多 30 万行）。
+        // 这一步只改映射（滚动条长度、行号位置），不影响已经画出来的那一帧。
+        let more_wrap = self.wrap_slice(deadline);
         if changed {
             cx.notify();
         }
         // 读不到的行（例如 #8 尚未索引）不会无限重排：没有进展就等下一帧再试。
-        if out_of_time && progress {
+        if more_wrap || (out_of_time && progress) {
+            if more_wrap {
+                cx.notify();
+            }
             self.schedule_prepare(window, cx);
         }
     }
@@ -2531,6 +3093,7 @@ impl CodeView {
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxHighlighting,
                 Feature::Folding,
+                Feature::WordWrap,
             ],
         }
     }
@@ -2595,7 +3158,12 @@ impl CodeView {
         self.folding.map()
     }
 
-    /// 折叠变化后：重建屏幕行映射与嵌入区域，保持视口首行稳定。
+    /// 折叠映射与当前生效的那一份是否已经不同（布局时的快速判断，不克隆）。
+    pub(crate) fn fold_map_changed(&self) -> bool {
+        *self.folding.map() != self.applied_map
+    }
+
+    /// 折叠或行数变化后：重建视觉行映射与嵌入区域，保持视口首行稳定。
     pub(crate) fn sync_fold_map(&mut self) {
         let doc_lines = self.doc_line_count();
         // #55：折叠会改变「屏幕行 ↔ 文档行」的对应，粘性行的有效区间随之失效
@@ -2603,34 +3171,32 @@ impl CodeView {
         self.sticky.invalidate();
         self.folding.set_doc_lines(doc_lines);
         let map = self.folding.map().clone();
-        if map == self.applied_map {
+        let grew = self.wrap.map.doc_lines() != doc_lines;
+        if map == self.applied_map && !grew {
             self.rebuild_view_zones();
             return;
         }
-        let anchor = self.metrics().map(|m| {
-            let (first, y) = self.scroll.first_visible(&m, &self.zones);
-            (m, self.applied_map.to_doc(first), y)
-        });
+        // 锚点按**旧**映射取（此时 `self.wrap.map` 还是旧的）。
+        let anchor = self.anchor_line();
         self.applied_map = map.clone();
-        self.rebuild_view_zones();
-        if let Some((mut m, doc, y)) = anchor {
-            m.line_count = self.line_count();
-            let top = m.line_top(map.to_view(doc), &self.zones) - y / m.line_height;
-            self.animation = None;
-            self.scroll = ScrollPosition {
-                top,
-                x: self.scroll.x,
-            }
-            .clamped(&m, &self.zones);
+        let known = self.wrap.map.doc_lines();
+        self.wrap.map.set_doc_lines(doc_lines);
+        self.wrap.map.set_folds(map);
+        if grew && self.wrap.map.is_wrapping() && doc_lines > known {
+            // #8 的索引又读出若干行：只有新增的行要算换行点。
+            self.wrap.pending.mark(known..doc_lines);
         }
+        self.rebuild_view_zones();
+        self.restore_anchor(anchor);
     }
 
     fn rebuild_view_zones(&mut self) {
-        let map = self.folding.map();
         let mut zones = ViewZones::default();
         for (after, h) in self.doc_zones.iter() {
-            if !map.is_hidden(after) {
-                zones.set(map.to_view(after), h);
+            if !self.folding.map().is_hidden(after) {
+                // 嵌入区域落在这一缓冲行的**最后一条**视觉行之下。
+                let range = self.wrap.map.visual_range(after);
+                zones.set(range.end.saturating_sub(1), h);
             }
         }
         self.zones = zones;

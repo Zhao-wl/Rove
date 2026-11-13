@@ -447,6 +447,8 @@ impl CodeView {
         // #53：任何编辑都让“这对括号是编辑器补的”失效（自动闭合自己在编辑之后重新记）。
         self.auto_closed.clear();
         let mut lines_moved = false;
+        // #58：被改写的行要重算换行点，其余行的视觉行数跟着行号平移。
+        let mut wrap_dirty: Vec<std::ops::Range<u64>> = Vec::new();
         let first = self.doc_line(self.visible.start);
         let keep = first.saturating_sub(2048)..first + 4096;
         for e in edits {
@@ -463,8 +465,13 @@ impl CodeView {
                     .rekey(|l| old_to_new(changes, *l).filter(|_| keep.contains(l)));
             }
             self.decorations.remap(|l| old_to_new(changes, l));
+            self.remap_wrap(changes);
+            for c in &changes.ranges {
+                wrap_dirty.push(c.new.start().0..c.new.end().0 + 1);
+            }
             self.syntax.borrow_mut().pending.push(changes.clone());
         }
+        self.mark_wrap_dirty(&wrap_dirty);
         if lines_moved {
             self.sync_fold_map();
             self.recompute_folds(cx);

@@ -138,6 +138,12 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "codeView.command.fontZoomReset",
         "重置编辑器字体大小",
     ),
+    // #58：软换行（`alt+z`，只切换当前编辑器会话，不写回设置）。
+    (
+        "editor.action.toggleWordWrap",
+        "codeView.command.toggleWordWrap",
+        "切换自动换行",
+    ),
     // #20：折叠（KEYBINDINGS.md 阅读一节）与“在此会话中切换只读”。
     ("editor.fold", "codeView.command.fold", "折叠"),
     ("editor.unfold", "codeView.command.unfold", "展开"),
@@ -600,6 +606,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("codeView.feature.syntaxHighlighting", "语法高亮"),
     ("codeView.feature.folding", "折叠"),
     ("codeView.feature.stickyScroll", "粘性滚动"),
+    ("codeView.feature.wordWrap", "软换行"),
 ];
 
 /// 分类标题（命令面板里显示为“编辑器: …”）。
@@ -697,6 +704,7 @@ command_actions! {
     FontZoomIn => "editor.action.fontZoomIn",
     FontZoomOut => "editor.action.fontZoomOut",
     FontZoomReset => "editor.action.fontZoomReset",
+    ToggleWordWrap => "editor.action.toggleWordWrap",
     Fold => "editor.fold",
     Unfold => "editor.unfold",
     ToggleFold => "editor.toggleFold",
