@@ -605,6 +605,35 @@ fn read_only_attribute_then_overwrite_clears_it() {
     assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
 }
 
+#[test]
+fn conflict_on_a_read_only_target_keeps_the_attribute() {
+    // 冲突检测要先于清除只读属性：选了“覆盖（清除只读）”但磁盘已被外部改写时，报冲突且属性不变。
+    let dir = tempfile::tempdir().unwrap();
+    let (target, mut file) = conflicted(dir.path());
+    let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&target, permissions).unwrap();
+    let request = SaveRequest {
+        clear_read_only: true,
+        ..SaveRequest::default()
+    };
+    let outcome = file.save(
+        &request,
+        &SaveOptions::default(),
+        None,
+        &WriteOptions::default(),
+        Instant::now(),
+    );
+    assert_eq!(outcome, SaveOutcome::Conflict);
+    assert_eq!(std::fs::read(&target).unwrap(), b"base external");
+    let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+    assert!(permissions.readonly());
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&target, permissions).unwrap();
+    assert!(tmp_files(dir.path()).is_empty());
+}
+
 fn conflicted(dir: &Path) -> (PathBuf, TextFile) {
     let target = dir.join("Player.cs");
     std::fs::write(&target, b"base").unwrap();

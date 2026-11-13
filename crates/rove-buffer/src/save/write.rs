@@ -114,7 +114,8 @@ pub fn write_atomic(
     write_atomic_with(path, bytes, options, &|| Ok(()))
 }
 
-/// 原子地把 `bytes` 写到 `path`，每次替换目标之前（含占用后的每次自动重试）先调用 `before_replace`。
+/// 原子地把 `bytes` 写到 `path`。动目标的只读属性之前、以及每次替换目标之前（含占用后的每次自动重试）都先调用
+/// `before_replace`。
 ///
 /// 回调返回 `Err(e)` 时删除临时文件、保持目标原样，并把 `e` 原样返回（保存冲突检测就是这样把
 /// `Conflict` 带出来的，见模块文档）。写入自身的失败按 [`WriteError`] 分类后转成 `E`。
@@ -128,6 +129,8 @@ pub fn write_atomic_with<E: From<WriteError>>(
     if !parent.is_dir() {
         return Err(WriteError::DirectoryMissing.into());
     }
+    // 先检查一次再动目标的属性：冲突时不能先清掉只读属性再中止（替换前每次仍会再检查）。
+    before_replace()?;
     let existing = std::fs::metadata(path).ok();
     if let Some(metadata) = &existing {
         if metadata.permissions().readonly() {
@@ -505,8 +508,8 @@ mod tests {
             }
         });
         assert_eq!(result.unwrap_err(), TestAbort::Rejected);
-        // 第一次尝试之前检查一次，重试之前再检查一次。
-        assert_eq!(checks.get(), 2);
+        // 动目标属性之前一次、第一次替换之前一次（中间写临时文件、刷盘要时间）、重试之前再一次。
+        assert_eq!(checks.get(), 3);
         assert_eq!(std::fs::read(&path).unwrap(), b"external");
         assert!(temps(dir.path()).is_empty());
     }
