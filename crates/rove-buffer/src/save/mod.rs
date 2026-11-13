@@ -3,7 +3,7 @@
 //! | 模块 | 内容 |
 //! |---|---|
 //! | [`encode`] | 文本 → 磁盘字节：保持编码（含 GBK）与 BOM；无法编码字符的统计与 `?` 替换；UTF-16 自编码 |
-//! | [`write`] | 原子写入：同目录临时文件（关闭即删除）→ `ReplaceFileW`；占用自动重试、只读属性、故障注入点 |
+//! | [`write`] | 原子写入：同目录临时文件（关闭即删除）→ `ReplaceFileW`；占用自动重试、每次替换前的检查回调、只读属性、故障注入点 |
 //! | [`stamp`] | 磁盘标记（长度、修改时间、内容哈希）：冲突检测与自写去重的依据 |
 //! | [`transforms`] | 保存时的文本变换：去行尾空白（可跳过字符串 / 正则）、去末尾空行、补末尾换行 |
 //! | [`watch`] | 自写事件去重（路径 + 时间窗 + 内容哈希）、外部修改风暴按路径去抖 |
@@ -29,4 +29,6 @@ pub use file::{
 pub use settings::{AutoSave, AutoSaveTrigger, ConflictResolution, SaveOptions};
 pub use stamp::{content_hash, DiskStamp};
 pub use watch::{path_key, ChangeCoalescer, SelfWrites};
-pub use write::{write_atomic, FailPoint, WriteError, WriteOptions, Written};
+pub use write::{
+    write_atomic, write_atomic_with, FailPoint, ReplaceFailPoint, WriteError, WriteOptions, Written,
+};
