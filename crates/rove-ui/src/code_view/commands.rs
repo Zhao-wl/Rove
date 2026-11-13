@@ -521,6 +521,37 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "codeView.command.blockComment",
         "切换块注释",
     ),
+    // #55：粘性滚动（KEYBINDINGS.md 阅读一节的 3 条键位、§7 附录「P1 · 阅读」的 2 条，以及 P2 的 `selectEditor`）。
+    (
+        "editor.action.toggleStickyScroll",
+        "codeView.command.toggleStickyScroll",
+        "切换粘性滚动",
+    ),
+    (
+        "editor.action.focusStickyScroll",
+        "codeView.command.focusStickyScroll",
+        "聚焦粘性滚动",
+    ),
+    (
+        "editor.action.selectNextStickyScrollLine",
+        "codeView.command.selectNextStickyScrollLine",
+        "选择下一个粘性滚动行",
+    ),
+    (
+        "editor.action.selectPreviousStickyScrollLine",
+        "codeView.command.selectPreviousStickyScrollLine",
+        "选择上一个粘性滚动行",
+    ),
+    (
+        "editor.action.goToFocusedStickyScrollLine",
+        "codeView.command.goToFocusedStickyScrollLine",
+        "转到聚焦的粘性滚动行",
+    ),
+    (
+        "editor.action.selectEditor",
+        "codeView.command.selectEditor",
+        "选择编辑器",
+    ),
 ];
 
 /// 全部命令：代码视图自己的加上 #52 的多光标 / 列选择 / 行操作。
@@ -568,6 +599,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ),
     ("codeView.feature.syntaxHighlighting", "语法高亮"),
     ("codeView.feature.folding", "折叠"),
+    ("codeView.feature.stickyScroll", "粘性滚动"),
 ];
 
 /// 分类标题（命令面板里显示为“编辑器: …”）。
@@ -788,6 +820,12 @@ command_actions! {
     EditAddCommentLine => "editor.action.addCommentLine",
     EditRemoveCommentLine => "editor.action.removeCommentLine",
     EditBlockComment => "editor.action.blockComment",
+    ToggleStickyScroll => "editor.action.toggleStickyScroll",
+    FocusStickyScroll => "editor.action.focusStickyScroll",
+    SelectNextStickyScrollLine => "editor.action.selectNextStickyScrollLine",
+    SelectPreviousStickyScrollLine => "editor.action.selectPreviousStickyScrollLine",
+    GoToFocusedStickyScrollLine => "editor.action.goToFocusedStickyScrollLine",
+    SelectEditor => "editor.action.selectEditor",
 }
 
 /// 键位上下文名，以及聚焦时发布的 VS Code 上下文键（只读代码视图）。
@@ -801,6 +839,8 @@ pub const FOLDING_CONTEXT_KEY: &str = "foldingEnabled";
 pub const WORD_HIGHLIGHTS_CONTEXT_KEY: &str = "hasWordHighlights";
 /// #47：设置了选择定位点（`editor.action.setSelectionAnchor`）时发布。
 pub const SELECTION_ANCHOR_CONTEXT_KEY: &str = "selectionAnchorSet";
+/// #55：焦点在粘性区时发布。与 #18 列表的 `treestickyScrollFocused` 是两个不同的键。
+pub const STICKY_SCROLL_FOCUSED_CONTEXT_KEY: &str = "stickyScrollFocused";
 /// #47：带参数、没有 GPUI action 的命令（命令桥 → 窗口 → 聚焦的代码视图）。
 pub const TYPE_COMMANDS: &[&str] = &["type", "default:type"];
 

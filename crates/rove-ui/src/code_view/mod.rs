@@ -21,6 +21,7 @@
 //! | 多光标与行操作（#52） | [`CodeView::selections`]、[`CodeView::set_selections`]、[`multicursor`]、[`lineops`] |
 //! | 编辑与输入法（#47）：编辑入口、编辑事件、组合串 | [`CodeView::set_edit_host`]、[`edit::EditHost`]、[`CodeViewEvent::Edited`]、[`CodeView::apply_edits`]、[`CodeView::type_text`]、[`CodeView::composition`] |
 //! | 只读与文档级别（#20） | [`CodeView::set_read_only`]、[`CodeViewEvent::EditBlocked`]、[`CodeView::set_document_level`]、[`CodeView::disabled_features`] |
+//! | 粘性滚动（#55）：符号树、当前粘性行、区高度 | [`CodeView::set_symbols`]、[`CodeView::sticky_lines`]、[`CodeView::sticky_height`]、[`sticky`] |
 //!
 //! 事件用 GPUI 的 `cx.subscribe(&view, |_, _, e: &CodeViewEvent, _| ..)` 订阅；回调只做轻量更新。
 //!
@@ -50,6 +51,7 @@ pub mod occurrences;
 pub mod options;
 pub mod scroll;
 pub mod selection;
+pub mod sticky;
 pub mod view;
 
 pub use decorations::{

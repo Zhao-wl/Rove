@@ -115,6 +115,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "typing",
         requires: "",
     },
+    BenchTarget {
+        // #55：粘性滚动每帧的额外开销（纯计算，不开窗口）。
+        name: "sticky",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

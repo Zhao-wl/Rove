@@ -68,11 +68,23 @@ pub struct Metrics {
     pub content_width: f64,
     /// `editor.scrollBeyondLastColumn` × 半角字符宽。
     pub beyond_last_column: f64,
+    /// 粘性滚动区占据的顶部高度（像素，#55）。它是覆盖在正文上的，不改变内容总高度，
+    /// 但滚动定位要避开它，否则「滚动到某行」会被粘性区遮住。
+    pub sticky_height: f64,
 }
 
 impl Metrics {
     pub fn viewport_lines(&self) -> f64 {
         (self.viewport_height / self.line_height).max(0.0)
+    }
+
+    /// 粘性区占的行数（虚拟行）。
+    pub fn sticky_lines(&self) -> f64 {
+        if self.line_height > 0.0 {
+            (self.sticky_height / self.line_height).max(0.0)
+        } else {
+            0.0
+        }
     }
     /// 第 `line` 行顶边的虚拟行坐标。
     pub fn line_top(&self, line: u64, zones: &ViewZones) -> f64 {
@@ -148,29 +160,36 @@ impl ScrollPosition {
         m: &Metrics,
         zones: &ViewZones,
     ) -> Self {
-        let vis = m.viewport_lines();
+        // 粘性区盖住视口顶部的若干行：可用区从 `top + sticky` 开始、少 `sticky` 行（#55）。
+        let sticky = m.sticky_lines().min((m.viewport_lines() - 1.0).max(0.0));
+        let vis = (m.viewport_lines() - sticky).max(1.0);
+        let visible_top = self.top + sticky;
         let target = m.line_top(line, zones);
-        let inside = target >= self.top && target + 1.0 <= self.top + vis;
+        let inside = target >= visible_top && target + 1.0 <= visible_top + vis;
         let top = match reveal {
             Reveal::Top => target,
             Reveal::Center => target - (vis - 1.0) / 2.0,
-            Reveal::CenterIfOutside if inside => self.top,
+            Reveal::CenterIfOutside if inside => visible_top,
             Reveal::CenterIfOutside => target - (vis - 1.0) / 2.0,
             Reveal::Nearest => {
                 // 视口太矮时 surrounding 自动缩小，保证目标行可见。
                 let s = (surrounding as f64).min(((vis - 1.0) / 2.0).floor().max(0.0));
                 let lo = target - s;
                 let hi = target + 1.0 + s;
-                if lo < self.top {
+                if lo < visible_top {
                     lo
-                } else if hi > self.top + vis {
+                } else if hi > visible_top + vis {
                     hi - vis
                 } else {
-                    self.top
+                    visible_top
                 }
             }
         };
-        Self { top, x: self.x }.clamped(m, zones)
+        Self {
+            top: top - sticky,
+            x: self.x,
+        }
+        .clamped(m, zones)
     }
 
     /// 让水平位置 `x0..x1`（像素，相对文本起点）进入视口。
@@ -299,6 +318,7 @@ mod tests {
             scroll_beyond_last_line: true,
             content_width: 0.0,
             beyond_last_column: 0.0,
+            sticky_height: 0.0,
         }
     }
 
@@ -376,6 +396,31 @@ mod tests {
         assert_eq!(m.total_lines(&z), 100.0 + 5.0 + 19.0);
         assert_eq!(line_for_track_y(124.0, 10.0, &m, &z), 5);
         assert_eq!(track_y_for_line(124.0, 5, &m, &z), 10.0);
+    }
+
+    /// #55：粘性区盖住顶部若干行，滚动定位要把目标行放到粘性区下面。
+    #[test]
+    fn reveal_keeps_the_target_below_the_sticky_band() {
+        let mut m = metrics(1000);
+        let z = ViewZones::default();
+        m.sticky_height = 60.0; // 3 行
+        assert_eq!(m.sticky_lines(), 3.0);
+        let p = ScrollPosition { top: 100.0, x: 0.0 };
+        // 顶端：目标行落在粘性区正下方（首行 = 目标 - 3）。
+        assert_eq!(p.reveal_line(500, Reveal::Top, 0, &m, &z).top, 497.0);
+        // 居中：按粘性区下面的可见区居中。
+        assert_eq!(p.reveal_line(500, Reveal::Center, 0, &m, &z).top, 489.0);
+        // 已经在可见区里：不动。
+        assert_eq!(p.reveal_line(110, Reveal::Nearest, 0, &m, &z).top, 100.0);
+        // 被粘性区遮住的行要滚出来。
+        assert_eq!(p.reveal_line(101, Reveal::Nearest, 0, &m, &z).top, 98.0);
+        assert_eq!(
+            p.reveal_line(102, Reveal::CenterIfOutside, 0, &m, &z).top,
+            91.0
+        );
+        // 没有粘性区时与原来一致。
+        m.sticky_height = 0.0;
+        assert_eq!(p.reveal_line(500, Reveal::Top, 0, &m, &z).top, 500.0);
     }
 
     #[test]

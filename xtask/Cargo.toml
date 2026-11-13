@@ -118,3 +118,8 @@ harness = false
 [[bench]]
 name = "typing"
 harness = false
+
+# #55：粘性滚动每帧的额外开销（纯计算）。
+[[bench]]
+name = "sticky"
+harness = false

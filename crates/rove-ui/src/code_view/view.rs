@@ -21,12 +21,13 @@ use super::scroll::{self, Metrics, Reveal, ScrollPosition, ViewZones, WheelOptio
 use super::selection::{
     self, extend_by_unit, line_unit, pos, Cursor, Granularity, Move, Selection,
 };
+use super::sticky::{StickyLine, StickyModel, StickyScroll, StickySources};
 use gpui::{
     px, App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font,
     FontFallbacks, FontFeatures, FontId, FontStyle, FontWeight, GlyphId, Hsla, IntoElement,
     LineLayout, Pixels, Point, Render, TextRun, Window,
 };
-use rove_base::{Line, LineRange, Position, Version};
+use rove_base::{Line, LineRange, Position, Value, Version};
 use rove_buffer::{ReadOnlyReason, SizeClass, TextSource};
 use rove_config::Settings;
 use rove_syntax::SyntaxSnapshot;
@@ -126,6 +127,8 @@ pub enum CodeViewEvent {
 /// 按文档级别（UX_SPEC §3.1）关闭的功能（#20 提供查询，#22 组装状态栏悬停文案）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Feature {
+    /// 粘性滚动（#55；UX_SPEC §3.1：大文件与超大文件都关闭）。
+    StickyScroll,
     OccurrencesHighlight,
     SyntaxFolding,
     /// 语法高亮仍然有，但改为后台完成（完成前显示纯文本）。
@@ -138,6 +141,7 @@ impl Feature {
     /// 界面字符串 key。
     pub fn label_key(self) -> &'static str {
         match self {
+            Feature::StickyScroll => "codeView.feature.stickyScroll",
             Feature::OccurrencesHighlight => "codeView.feature.occurrencesHighlight",
             Feature::SyntaxFolding => "codeView.feature.syntaxFolding",
             Feature::BackgroundHighlighting => "codeView.feature.backgroundHighlighting",
@@ -272,6 +276,8 @@ pub(crate) struct FrameLayout {
     pub metrics: Option<Metrics>,
     /// 行号栏里折叠控件所在的 x 范围（相对行号栏左边，像素）；没有控件时为空区间。
     pub fold_column: Range<f32>,
+    /// #55：粘性区（行号栏 + 文本区的顶部覆盖区域）；没有粘性行时为 `None`。
+    pub sticky: Option<Bounds<Pixels>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -319,6 +325,14 @@ pub struct CodeView {
     pub(crate) doc_zones: ViewZones,
     pub(crate) folding: Folding,
     fold_task: u64,
+    /// #55：粘性滚动的状态（缓存的作用域链、焦点与悬停）。
+    pub(crate) sticky: StickyScroll,
+    /// #55：缩进模型用的纯缩进区间（与折叠区间一起在后台算出）。
+    pub(crate) sticky_indent: Vec<FoldRange>,
+    /// #55：上一帧粘性区的高度（像素）；滚动定位按它避开粘性区。
+    pub(crate) sticky_height: f32,
+    /// #26 的符号树（大纲模型；宿主通过 [`CodeView::set_symbols`] 给出）。
+    pub(crate) symbols: Option<Arc<rove_syntax::symbols::DocumentSymbols>>,
     pub(crate) syntax: Rc<RefCell<SyntaxLayer>>,
     syntax_layer: LayerId,
     last_syntax_invalidation: Option<Option<Vec<Range<u64>>>>,
@@ -429,6 +443,10 @@ impl Render for CodeView {
         }
         if self.selection_anchor.is_some() {
             context.add(super::commands::SELECTION_ANCHOR_CONTEXT_KEY);
+        }
+        // #55：焦点在粘性区（`↑` / `↓` / `Enter` / `Esc` 改走粘性滚动的命令）。
+        if self.sticky_focused() {
+            context.add(super::commands::STICKY_SCROLL_FOCUSED_CONTEXT_KEY);
         }
         let el = gpui::div()
             .key_context(context)
@@ -563,6 +581,10 @@ impl CodeView {
             doc_zones: ViewZones::default(),
             folding: Folding::default(),
             fold_task: 0,
+            sticky: StickyScroll::default(),
+            sticky_indent: Vec::new(),
+            sticky_height: 0.0,
+            symbols: None,
             syntax,
             syntax_layer,
             last_syntax_invalidation: None,
@@ -638,6 +660,8 @@ impl CodeView {
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
         self.column_select = None;
+        // #55：符号树与区间都属于旧版本，粘性行等新结果到达前先按旧数据画，不清空。
+        self.sticky.invalidate();
         if keep_view_state {
             // 同一文档的新快照：装饰重算前沿用旧结果，折叠保留（区间在后台按新文本重算）。
             self.decorations.mark_all_stale();
@@ -658,6 +682,9 @@ impl CodeView {
             self.doc_zones = ViewZones::default();
             self.syntax.borrow_mut().current = None;
             self.folding.clear();
+            self.sticky.clear();
+            self.sticky_indent.clear();
+            self.symbols = None;
         }
         self.sync_fold_map();
         self.recompute_folds(cx);
@@ -721,7 +748,12 @@ impl CodeView {
             || options.folding != self.options.folding
             || options.folding_strategy != self.options.folding_strategy
             || options.folding_maximum_regions != self.options.folding_maximum_regions
-            || options.large_file_optimizations != self.options.large_file_optimizations;
+            || options.large_file_optimizations != self.options.large_file_optimizations
+            // #55：缩进模型的区间与折叠区间一起在后台算。
+            || (options.sticky_scroll && !self.options.sticky_scroll);
+        let sticky_changed = options.sticky_scroll != self.options.sticky_scroll
+            || options.sticky_scroll_model != self.options.sticky_scroll_model
+            || options.sticky_scroll_max_line_count != self.options.sticky_scroll_max_line_count;
         let tokens_changed =
             options.max_tokenization_line_length != self.options.max_tokenization_line_length;
         let highlights_changed = options.match_brackets != self.options.match_brackets
@@ -738,6 +770,13 @@ impl CodeView {
             self.content_width = 0.0;
         }
         self.apply_feature_options();
+        if sticky_changed {
+            self.sticky.invalidate();
+            if !self.options.sticky_scroll {
+                self.sticky.clear();
+                self.sticky_height = 0.0;
+            }
+        }
         if tokens_changed {
             self.decorations.invalidate(&self.syntax_layer, None);
         }
@@ -1143,6 +1182,8 @@ impl CodeView {
             .max(self.scroll_line_estimate.unwrap_or(0));
         m.line_count = self.folding.map().view_count(doc_lines).max(1);
         m.line_height = self.font.line_height as f64;
+        // #55：粘性区盖住顶部若干行，滚动定位按上一帧的高度避开它。
+        m.sticky_height = self.sticky_height as f64;
         Some(m)
     }
 
@@ -1306,6 +1347,10 @@ impl CodeView {
         // #47：编辑类命令。
         if let Some(handled) = self.execute_edit(id, window, cx) {
             return handled;
+        }
+        // #55：粘性滚动（含焦点在粘性区时的 `↑` / `↓` / `Enter` / `Esc`）。
+        if self.execute_sticky(id, window, cx) {
+            return true;
         }
         if (id == "cursorLeft" || id == "cursorRight")
             && self.sticky_tab_move(id == "cursorLeft", cx)
@@ -1539,6 +1584,68 @@ impl CodeView {
         self.drag = None;
         self.selection_changed(SelectionSource::Mouse, cx);
         cx.emit(CodeViewEvent::LinkClicked { position: p, side });
+    }
+
+    /// #55：指针落在粘性区里的第几行（按上一帧布局）。不在粘性区里时为 `None`。
+    pub fn sticky_index_at(&self, point: Point<Pixels>) -> Option<usize> {
+        let band = self.layout.sticky?;
+        if !band.contains(&point) {
+            return None;
+        }
+        let lh = self.font.line_height.max(1.0);
+        let index = ((point.y - band.origin.y).to_f64() / lh as f64)
+            .floor()
+            .max(0.0) as usize;
+        (index < self.sticky.lines().len()).then_some(index)
+    }
+
+    /// #55：粘性区里按下左键。普通点击跳转并定位到该行；`Ctrl+点击` 与正文一致（转到定义）。
+    /// 返回是否吃掉了这次点击。
+    pub(crate) fn mouse_down_sticky(
+        &mut self,
+        point: Point<Pixels>,
+        ctrl: bool,
+        alt: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self.sticky_index_at(point) else {
+            return false;
+        };
+        let Some(sticky) = self.sticky.lines().get(index).copied() else {
+            return false;
+        };
+        self.sticky.blur();
+        if ctrl {
+            let column = self.sticky_column_at(sticky.line, point).unwrap_or(0);
+            let p = self.clamp_position(pos(sticky.line, column));
+            self.cursor.set(Selection::caret(p));
+            self.drag = None;
+            self.selection_changed(SelectionSource::Mouse, cx);
+            cx.emit(CodeViewEvent::LinkClicked {
+                position: p,
+                side: alt,
+            });
+        } else {
+            self.go_to_sticky_line(index, cx);
+        }
+        true
+    }
+
+    /// 粘性行上某个 x 对应的源列（水平滚动按 `editor.stickyScroll.scrollWithEditor`）。
+    fn sticky_column_at(&mut self, line: u64, point: Point<Pixels>) -> Option<u64> {
+        let x =
+            (point.x - self.layout.text.origin.x).to_f64() + self.sticky_content_offset() as f64;
+        let (entry, shaped) = self.line_geometry(line)?;
+        let xs = self.xs_for(&entry, shaped.as_deref());
+        Some(entry.display.source_for_x(&xs, x as f32) as u64)
+    }
+
+    /// #55：粘性区的悬停行（`editorStickyScrollHover.background`）。
+    pub(crate) fn sticky_hover(&mut self, point: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let index = point.and_then(|p| self.sticky_index_at(p));
+        if self.sticky.set_hover(index) {
+            cx.notify();
+        }
     }
 
     /// #40：指针在文本区上移动（`point = None` 表示离开文本区）或修饰键变化。
@@ -1869,6 +1976,8 @@ impl CodeView {
         if !focused {
             // #47：失焦时组合串在原位置提交，不留残片。
             self.commit_composition(Some(window), cx);
+            // #55：焦点离开编辑器时 `stickyScrollFocused` 一并收回。
+            self.sticky.blur();
         }
         self.focused = focused;
         self.caret_visible = true;
@@ -2182,11 +2291,17 @@ impl CodeView {
         };
         let known = self.text.as_ref().map_or(0, |t| t.lines().known);
         let map = self.folding.map();
-        self.visible
-            .clone()
-            .chain(ahead)
-            .chain(behind)
-            .map(move |v| map.to_doc(v))
+        // #55：粘性行多半在视口之外，也要读文本与整形，否则粘性区一直画占位。
+        let sticky: Vec<u64> = self.sticky.lines().iter().map(|l| l.line).collect();
+        sticky
+            .into_iter()
+            .chain(
+                self.visible
+                    .clone()
+                    .chain(ahead)
+                    .chain(behind)
+                    .map(move |v| map.to_doc(v)),
+            )
             .filter(move |l| *l < known)
             .filter(move |l| match self.lines.peek(l) {
                 None => true,
@@ -2203,7 +2318,14 @@ impl CodeView {
         let deadline = Instant::now() + self.slice_budget;
         let mut changed = false;
         // 可见行的文本与装饰先全部到位（很快），保证下一帧至少能画占位。
-        let visible: Vec<u64> = self.visible.clone().map(|v| self.doc_line(v)).collect();
+        // #55：粘性行跟可见行同等对待，整形好之后立刻重绘，粘性区不会一直停在占位上。
+        let visible: Vec<u64> = self
+            .sticky
+            .lines()
+            .iter()
+            .map(|l| l.line)
+            .chain(self.visible.clone().map(|v| self.doc_line(v)))
+            .collect();
         for &line in &visible {
             changed |= self.ensure_entry(line);
         }
@@ -2373,6 +2495,9 @@ impl CodeView {
         }
         self.level = level;
         self.apply_feature_options();
+        // #55：大文件与超大文件关闭粘性滚动。
+        self.sticky.clear();
+        self.sticky_height = 0.0;
         self.decorations.invalidate(&self.syntax_layer, None);
         self.recompute_folds(cx);
         self.update_highlights(cx);
@@ -2396,11 +2521,13 @@ impl CodeView {
         match self.effective_level() {
             SizeClass::Normal => Vec::new(),
             SizeClass::Large => vec![
+                Feature::StickyScroll,
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxFolding,
                 Feature::BackgroundHighlighting,
             ],
             SizeClass::Huge => vec![
+                Feature::StickyScroll,
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxHighlighting,
                 Feature::Folding,
@@ -2471,6 +2598,9 @@ impl CodeView {
     /// 折叠变化后：重建屏幕行映射与嵌入区域，保持视口首行稳定。
     pub(crate) fn sync_fold_map(&mut self) {
         let doc_lines = self.doc_line_count();
+        // #55：折叠会改变「屏幕行 ↔ 文档行」的对应，粘性行的有效区间随之失效
+        //（被折叠掉的父级仍然要出现在粘性区，所以只是重算，不清空）。
+        self.sticky.invalidate();
         self.folding.set_doc_lines(doc_lines);
         let map = self.folding.map().clone();
         if map == self.applied_map {
@@ -2572,12 +2702,18 @@ impl CodeView {
     /// 后台重算可折叠区间（文本、语言、语法快照、相关设置或级别变化时）。
     pub(crate) fn recompute_folds(&mut self, cx: &mut Context<Self>) {
         self.fold_task += 1;
-        if !self.folding_enabled() {
+        let folding = self.folding_enabled();
+        if !folding {
             if !self.folding.ranges().is_empty() || !self.folding.collapsed_keys().is_empty() {
                 self.folding.clear();
                 self.folds_changed(cx);
             }
-            return;
+            // #55：`editor.folding` 关着时粘性滚动的缩进模型仍然要有区间，所以不在这里返回。
+            if !self.sticky_enabled() {
+                self.sticky_indent.clear();
+                self.sticky.invalidate();
+                return;
+            }
         }
         let Some(text) = self.text.clone() else {
             return;
@@ -2594,31 +2730,225 @@ impl CodeView {
         let tab = self.options.tab_size as usize;
         let syntax_allowed = self.effective_level() == SizeClass::Normal;
         let max = self.options.folding_maximum_regions;
+        // #55：粘性滚动的缩进模型要的是纯缩进区间（与折叠区间同一份文本，一起算）。
+        let sticky = self.sticky_enabled();
         let job = cx.background_executor().spawn(async move {
             let len = text.byte_len();
             let mut source = String::with_capacity(len as usize);
             let span =
                 rove_base::Span::new(rove_base::ByteOffset(0), rove_base::ByteOffset(len)).ok()?;
             text.visit_chunks(span, &mut |c| source.push_str(c)).ok()?;
-            Some(super::folding::compute_ranges(
-                &source,
-                language.as_deref(),
-                &syntax,
-                strategy,
-                tab,
-                syntax_allowed,
-            ))
+            let ranges = folding.then(|| {
+                super::folding::compute_ranges(
+                    &source,
+                    language.as_deref(),
+                    &syntax,
+                    strategy,
+                    tab,
+                    syntax_allowed,
+                )
+            });
+            let indent = if sticky {
+                super::folding::indentation_ranges(&source, language.as_deref(), tab)
+            } else {
+                Vec::new()
+            };
+            Some((ranges, indent))
         });
         cx.spawn(async move |this, cx| {
-            let Some(ranges) = job.await else {
+            let Some((ranges, indent)) = job.await else {
                 return;
             };
             let _ = this.update(cx, |v, cx| {
-                if v.fold_task == task {
-                    v.folding.set_computed(ranges, max);
-                    v.folds_changed(cx);
+                if v.fold_task != task {
+                    return;
+                }
+                v.sticky_indent = indent;
+                v.sticky.invalidate();
+                match ranges {
+                    Some(ranges) => {
+                        v.folding.set_computed(ranges, max);
+                        v.folds_changed(cx);
+                    }
+                    None => cx.notify(),
                 }
             });
+        })
+        .detach();
+    }
+
+    // ------------------------------------------------------------------ 粘性滚动（#55）
+
+    /// 符号树（#26 的 `DocumentSymbols`）。宿主在新版本到达时调用；大纲模型据此计算粘性行。
+    pub fn set_symbols(
+        &mut self,
+        symbols: Option<Arc<rove_syntax::symbols::DocumentSymbols>>,
+        cx: &mut Context<Self>,
+    ) {
+        let same = match (&self.symbols, &symbols) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.symbols = symbols;
+        self.sticky.invalidate();
+        cx.notify();
+    }
+
+    pub fn symbols(&self) -> Option<&Arc<rove_syntax::symbols::DocumentSymbols>> {
+        self.symbols.as_ref()
+    }
+
+    /// 粘性滚动是否可用：`editor.stickyScroll.enabled` 开启、有文本，且文档级别允许
+    /// （UX_SPEC §3.1：大文件与超大文件都关闭，原因见 [`CodeView::disabled_features`]）。
+    pub fn sticky_enabled(&self) -> bool {
+        self.options.sticky_scroll
+            && self.text.is_some()
+            && self.effective_level() == SizeClass::Normal
+    }
+
+    /// 当前的粘性行（由外到内），没有时为空。
+    pub fn sticky_lines(&self) -> &[StickyLine] {
+        self.sticky.lines()
+    }
+
+    /// 粘性区高度（像素，上一帧）。
+    pub fn sticky_height(&self) -> f32 {
+        self.sticky_height
+    }
+
+    /// 实际生效的粘性滚动模型（三档回退之后）。
+    pub fn sticky_model(&self) -> Option<StickyModel> {
+        self.sticky.effective_model()
+    }
+
+    /// 焦点是否在粘性区（`stickyScrollFocused` 上下文键）。
+    pub fn sticky_focused(&self) -> bool {
+        self.sticky.focus().is_some()
+    }
+
+    /// 粘性区里聚焦的行下标。
+    pub fn sticky_focus(&self) -> Option<usize> {
+        self.sticky.focus()
+    }
+
+    /// 一帧之内更新粘性行：`top` 是本帧的滚动位置（虚拟行）。返回粘性区高度（像素）。
+    ///
+    /// 粘性区盖住视口顶部，所以作用域链要按「粘性区下面的第一行」算：先用上一帧的行数试算，
+    /// 行数变了再算一次（最多两次，收敛）。链本身有行区间缓存，绝大多数帧只是一次区间判断。
+    pub(crate) fn update_sticky(&mut self, m: &Metrics, top: f64) -> f32 {
+        if !self.sticky_enabled() {
+            if !self.sticky.lines().is_empty() || self.sticky.focus().is_some() {
+                self.sticky.clear();
+            }
+            self.sticky_height = 0.0;
+            return 0.0;
+        }
+        let lh = self.font.line_height.max(1.0) as f64;
+        // 粘性区最多占视口的一半（VS Code 同样留出正文）。
+        let room = ((m.viewport_height / lh / 2.0).floor() as usize).max(1);
+        let max = self.options.sticky_scroll_max_line_count.min(room);
+        let model = self.options.sticky_scroll_model;
+        let doc_lines = self.doc_line_count();
+        let mut count = self.sticky.lines().len();
+        for _ in 0..2 {
+            let view_line = (top + count as f64)
+                .floor()
+                .max(0.0)
+                .min(self.line_count().saturating_sub(1) as f64) as u64;
+            let first = self.doc_line(view_line).min(doc_lines.saturating_sub(1));
+            let sources = StickySources {
+                symbols: self.symbols.as_deref(),
+                folds: self.folding.ranges(),
+                indent: &self.sticky_indent,
+            };
+            self.sticky.update(first, max, model, sources);
+            let next = self.sticky.lines().len();
+            if next == count {
+                break;
+            }
+            count = next;
+        }
+        self.sticky_height = self.sticky.lines().len() as f32 * self.font.line_height;
+        self.sticky_height
+    }
+
+    /// 粘性行的水平偏移（像素）：`editor.stickyScroll.scrollWithEditor` 为真时跟着正文横向滚动。
+    pub fn sticky_content_offset(&self) -> f32 {
+        if self.options.sticky_scroll_with_editor {
+            self.scroll.x as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// 点击 / 键盘确认一条粘性行：跳到该行并把插入符放在行首（经滚动定位接口，粘性区高度已计入）。
+    pub fn go_to_sticky_line(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(sticky) = self.sticky.lines().get(index).copied() else {
+            return;
+        };
+        let p = self.clamp_position(pos(sticky.line, 0));
+        self.cursor.set(Selection::caret(p));
+        self.selection_changed(SelectionSource::Api, cx);
+        self.reveal_line(sticky.line, Reveal::Top, cx);
+        cx.notify();
+    }
+
+    /// 粘性滚动的命令（`execute` 分发）。
+    fn execute_sticky(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match id {
+            "editor.action.toggleStickyScroll" => {
+                let enabled = !self.options.sticky_scroll;
+                self.options.sticky_scroll = enabled;
+                if !enabled {
+                    self.sticky.clear();
+                    self.sticky_height = 0.0;
+                }
+                self.write_setting("editor.stickyScroll.enabled", Value::Bool(enabled), cx);
+            }
+            "editor.action.focusStickyScroll" => {
+                if self.sticky.focus_first() {
+                    window.focus(&self.focus);
+                }
+            }
+            "editor.action.selectNextStickyScrollLine" => {
+                self.sticky.move_focus(true);
+            }
+            "editor.action.selectPreviousStickyScrollLine" => {
+                self.sticky.move_focus(false);
+            }
+            "editor.action.goToFocusedStickyScrollLine" => {
+                if let Some(index) = self.sticky.focus() {
+                    self.sticky.blur();
+                    self.go_to_sticky_line(index, cx);
+                }
+            }
+            "editor.action.selectEditor" => {
+                self.sticky.blur();
+                window.focus(&self.focus);
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// 写回设置（#13 的保留格式写入）。写不进去时只改本视图的内存状态，重载时以文件为准。
+    fn write_setting(&self, key: &'static str, value: Value, cx: &mut Context<Self>) {
+        let task = self.services.settings.write(
+            key.into(),
+            rove_config::Scope::default(),
+            value,
+            rove_base::Cancellation::default(),
+        );
+        let task = cx.background_executor().spawn(task);
+        cx.spawn(async move |_, _| {
+            if let Err(e) = task.await {
+                eprintln!("{key}: {e}");
+            }
         })
         .detach();
     }

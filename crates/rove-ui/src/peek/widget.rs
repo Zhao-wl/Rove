@@ -127,6 +127,9 @@ impl PeekTheme {
             "sideBar.foreground" => "peekViewResult.lineForeground",
             "editor.background" => "peekViewEditor.background",
             "editorGutter.background" => "peekViewEditorGutter.background",
+            // #55：嵌入预览里的粘性滚动用速览自己的两个键（计算与绘制仍是代码视图那一套）。
+            "editorStickyScroll.background" => "peekViewEditorStickyScroll.background",
+            "editorStickyScrollGutter.background" => "peekViewEditorStickyScrollGutter.background",
             _ => return None,
         })
     }
@@ -1559,5 +1562,44 @@ impl PeekWidget {
         if let Some(n) = self.nested.as_ref().map(|n| n.widget.clone()) {
             n.update(cx, |n, cx| n.reload_settings(cx));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::code_view::colors::Palette;
+    use rove_theme::{ColorRegistry, DefaultTheme};
+
+    /// #55：速览左侧预览里的粘性滚动复用代码视图的计算与绘制，只把两个背景键映射到速览自己的键。
+    #[test]
+    fn preview_sticky_scroll_uses_peek_color_keys() {
+        assert_eq!(
+            PeekTheme::mapped("editorStickyScroll.background"),
+            Some("peekViewEditorStickyScroll.background")
+        );
+        assert_eq!(
+            PeekTheme::mapped("editorStickyScrollGutter.background"),
+            Some("peekViewEditorStickyScrollGutter.background")
+        );
+        let mut colors = ColorRegistry::default();
+        crate::peek::registry::register_colors(&mut colors).unwrap();
+        crate::code_view::colors::register(&mut colors).unwrap();
+        let kind = ThemeKind::Dark;
+        let inner: Arc<dyn Theme> = Arc::new(DefaultTheme { colors, kind });
+        let peek = PeekTheme {
+            inner: inner.clone(),
+            kind,
+        };
+        let background = inner
+            .color("peekViewEditorStickyScroll.background")
+            .unwrap();
+        let gutter = inner
+            .color("peekViewEditorStickyScrollGutter.background")
+            .unwrap();
+        assert!(background.is_some() && gutter.is_some(), "两个键都有默认值");
+        let palette = Palette::resolve(&peek, kind);
+        assert_eq!(Some(palette.sticky_background), background);
+        assert_eq!(Some(palette.sticky_gutter_background), gutter);
     }
 }

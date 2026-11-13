@@ -164,6 +164,12 @@ pub const FEATURE_COLORS: &[&str] = &[
     "editorMultiCursor.primary.background",
     "editorMultiCursor.secondary.foreground",
     "editorMultiCursor.secondary.background",
+    // #55：粘性滚动（THEME_COLORS.md 的 Editor widget colors）。
+    "editorStickyScroll.background",
+    "editorStickyScroll.border",
+    "editorStickyScroll.shadow",
+    "editorStickyScrollGutter.background",
+    "editorStickyScrollHover.background",
 ];
 
 /// 主题服务用的颜色登记表：全部 P0 键，加上代码视图用到的其余键（[`COLORS`]、[`FEATURE_COLORS`]）。
@@ -254,6 +260,12 @@ pub struct Palette {
     /// #52：次光标（`editorMultiCursor.secondary.*`）。
     pub multi_cursor_secondary: Color,
     pub multi_cursor_secondary_text: Option<Color>,
+    // #55：粘性滚动。速览窗口把这两个背景键映射到 `peekViewEditorStickyScroll*`（见 #41 的主题适配）。
+    pub sticky_background: Color,
+    pub sticky_border: Option<Color>,
+    pub sticky_shadow: Option<Color>,
+    pub sticky_gutter_background: Color,
+    pub sticky_hover_background: Option<Color>,
 }
 
 fn fallback(key: &str, kind: ThemeKind) -> Option<Color> {
@@ -345,6 +357,13 @@ impl Palette {
                 .unwrap_or_else(|| get("editorCursor.foreground").unwrap_or(foreground)),
             multi_cursor_secondary_text: get("editorMultiCursor.secondary.background")
                 .or_else(|| get("editorCursor.background")),
+            // 未设色时跟随正文背景（VS Code 的默认值也是 `editor.background` 的派生）。
+            sticky_background: get("editorStickyScroll.background").unwrap_or(background),
+            sticky_border: get("editorStickyScroll.border"),
+            sticky_shadow: get("editorStickyScroll.shadow").or(get("scrollbar.shadow")),
+            sticky_gutter_background: get("editorStickyScrollGutter.background")
+                .unwrap_or(get("editorGutter.background").unwrap_or(background)),
+            sticky_hover_background: get("editorStickyScrollHover.background"),
         }
     }
 }

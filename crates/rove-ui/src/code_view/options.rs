@@ -107,6 +107,17 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
         "editor.unfoldOnClickAfterEndOfLine",
         DefaultValue::Bool(false),
     ),
+    // #55：粘性滚动。
+    ("editor.stickyScroll.enabled", DefaultValue::Bool(true)),
+    ("editor.stickyScroll.maxLineCount", DefaultValue::Num(5.0)),
+    (
+        "editor.stickyScroll.defaultModel",
+        DefaultValue::Str("outlineModel"),
+    ),
+    (
+        "editor.stickyScroll.scrollWithEditor",
+        DefaultValue::Bool(true),
+    ),
     ("editor.guides.indentation", DefaultValue::Bool(true)),
     ("editor.renderWhitespace", DefaultValue::Str("selection")),
     ("editor.largeFileOptimizations", DefaultValue::Bool(true)),
@@ -321,6 +332,13 @@ pub struct EditorOptions {
     pub folding_highlight: bool,
     pub unfold_on_click_after_end_of_line: bool,
     pub guides_indentation: bool,
+    // #55：粘性滚动。
+    pub sticky_scroll: bool,
+    /// `editor.stickyScroll.maxLineCount`（1–[`super::sticky::MAX_LINE_COUNT`]）。
+    pub sticky_scroll_max_line_count: usize,
+    pub sticky_scroll_model: super::sticky::StickyModel,
+    /// 水平滚动时粘性行是否跟着横向滚动。
+    pub sticky_scroll_with_editor: bool,
     pub render_whitespace: super::guides::RenderWhitespace,
     pub large_file_optimizations: bool,
     // #47
@@ -664,6 +682,16 @@ impl EditorOptions {
             folding_highlight: r.bool("editor.foldingHighlight"),
             unfold_on_click_after_end_of_line: r.bool("editor.unfoldOnClickAfterEndOfLine"),
             guides_indentation: r.bool("editor.guides.indentation"),
+            sticky_scroll: r.bool("editor.stickyScroll.enabled"),
+            sticky_scroll_max_line_count: r.num(
+                "editor.stickyScroll.maxLineCount",
+                1.0,
+                super::sticky::MAX_LINE_COUNT as f64,
+            ) as usize,
+            sticky_scroll_model: super::sticky::StickyModel::parse(
+                &r.str("editor.stickyScroll.defaultModel"),
+            ),
+            sticky_scroll_with_editor: r.bool("editor.stickyScroll.scrollWithEditor"),
             render_whitespace: match r.str("editor.renderWhitespace").as_str() {
                 "none" => super::guides::RenderWhitespace::None,
                 "boundary" => super::guides::RenderWhitespace::Boundary,

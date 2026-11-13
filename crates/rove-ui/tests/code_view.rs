@@ -447,6 +447,7 @@ fn gigantic_text_scrolls_without_precision_loss(cx: &mut TestAppContext) {
         scroll_beyond_last_line: true,
         content_width: 0.0,
         beyond_last_column: 0.0,
+        sticky_height: 0.0,
     };
     let zones = scroll::ViewZones::default();
     let total = m.total_lines(&zones);
