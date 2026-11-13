@@ -18,6 +18,7 @@
 //! | 语法着色（#20）：快照与变化行 | [`CodeView::set_syntax`]、[`highlight`] |
 //! | 折叠（#20）：状态读写、区间、文档行 ↔ 屏幕行映射 | [`CodeView::folds`]、[`CodeView::set_folds`]、[`CodeViewEvent::FoldsChanged`]、[`folding::FoldMap`] |
 //! | 括号匹配 / 同名高亮（#20） | [`CodeView::bracket_match`]、[`CodeView::has_word_highlights`] |
+//! | 编辑与输入法（#47）：编辑入口、编辑事件、组合串 | [`CodeView::set_edit_host`]、[`edit::EditHost`]、[`CodeViewEvent::Edited`]、[`CodeView::apply_edits`]、[`CodeView::type_text`]、[`CodeView::composition`] |
 //! | 只读与文档级别（#20） | [`CodeView::set_read_only`]、[`CodeViewEvent::EditBlocked`]、[`CodeView::set_document_level`]、[`CodeView::disabled_features`] |
 //!
 //! 事件用 GPUI 的 `cx.subscribe(&view, |_, _, e: &CodeViewEvent, _| ..)` 订阅；回调只做轻量更新。
@@ -33,6 +34,8 @@ pub mod colors;
 pub mod columns;
 pub mod commands;
 pub mod decorations;
+// #47：编辑交互与输入法。
+pub mod edit;
 mod element;
 pub mod folding;
 pub mod guides;
@@ -47,6 +50,7 @@ pub use decorations::{
     priority, DecorationProvider, GlyphIcon, InlineDecoration, LayerId, LineDecorations, LineStyle,
     Overlay, TextStyle,
 };
+pub use edit::{Composition, EditHost, EditNotice, TextEdited};
 pub use scroll::{Reveal, ScrollPosition};
 pub use selection::Selection;
 pub use view::{

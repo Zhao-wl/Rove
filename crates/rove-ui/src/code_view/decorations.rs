@@ -365,6 +365,34 @@ impl DecorationStore {
         changed
     }
 
+    /// #47：一次编辑后按行平移缓存：`map` 把旧行号换成新行号，返回 `None` 的行（被编辑的行）
+    /// 丢弃各层结果、合并结果标为失效（重算前仍画旧样式，不闪烁）。
+    pub fn remap(&mut self, map: impl Fn(u64) -> Option<u64>) {
+        for layer in &mut self.layers {
+            let lines = std::mem::take(&mut layer.lines);
+            layer.lines = lines
+                .into_iter()
+                .filter_map(|(l, d)| map(l).map(|n| (n, d)))
+                .collect();
+        }
+        let merged = std::mem::take(&mut self.merged);
+        let mut stale = Vec::new();
+        for (l, e) in merged {
+            match map(l) {
+                Some(n) => {
+                    self.merged.insert(n, e);
+                }
+                None => stale.push((l, e)),
+            }
+        }
+        // 被编辑的行：保留旧的合并结果但标为失效（同一行号上若已有平移来的结果则让位）。
+        for (l, mut e) in stale {
+            e.stale = true;
+            self.merged.entry(l).or_insert(e);
+        }
+        self.generation += 1;
+    }
+
     /// 丢弃远离视口的缓存（保持内存有界）。
     pub fn retain_near(&mut self, keep: Range<u64>) {
         if self.merged.len() < 4096 {

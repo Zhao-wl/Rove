@@ -139,6 +139,13 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::search::registry::action_for(id))
         .or_else(|| crate::peek::registry::action_for(id))
         .or_else(|| crate::explorer::registry::action_for(id))
+        // #47：保存、另存为、全部保存、还原、新建未命名文档（#49 的命令，窗口装配随可编辑视图接入）。
+        // `changeEOL` 要带参数（LF / CRLF），经命令桥交给窗口。
+        .or_else(|| {
+            (id != crate::save::registry::CHANGE_EOL)
+                .then(|| crate::save::registry::action_for(id))
+                .flatten()
+        })
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

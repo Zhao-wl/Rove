@@ -204,7 +204,7 @@ impl Workbench {
                     Some((code, caret, scroll))
                 })
                 .collect();
-            self.editor.replace_document(document);
+            self.editor.reload_document(document);
             self.sync_views(cx);
             let (Some(previous), Some(key)) = (previous_show, view_key(&resource)) else {
                 continue;

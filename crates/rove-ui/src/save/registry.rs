@@ -29,6 +29,8 @@ pub const REVERT_LOCAL_CHANGES: &str = "workbench.files.action.revertLocalChange
 pub const ACCEPT_LOCAL_CHANGES: &str = "workbench.files.action.acceptLocalChanges";
 /// 状态栏换行符选择器的“统一为 LF / CRLF”（参数 `"\n"` / `"\r\n"`）。
 pub const CHANGE_EOL: &str = "workbench.action.editor.changeEOL";
+/// #47：`ctrl+n` 新建未命名的可编辑文档。
+pub const NEW_UNTITLED: &str = "workbench.action.files.newUntitledFile";
 
 /// (命令 ID, 标题字符串 key, 中文标题)。
 pub const COMMANDS: &[(&str, &str, &str)] = &[
@@ -59,6 +61,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "使用本地修改覆盖磁盘上的内容",
     ),
     (CHANGE_EOL, "save.command.changeEol", "更改行尾序列"),
+    (NEW_UNTITLED, "save.command.newUntitledFile", "新建文本文件"),
 ];
 
 pub const CATEGORY_KEY: &str = "category.file";
@@ -132,6 +135,9 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("save.action.reload", "重新加载（丢弃本地修改）"),
     ("save.action.keep", "保留本地修改"),
     ("save.status.saved", "已保存 {name}"),
+    // #47：未命名文档的名字与标签上的“已删除”徽标说明。
+    ("save.untitled.name", "Untitled-{n}"),
+    ("save.label.deletedTitle", "{name}（已删除）"),
 ];
 
 pub fn register_commands(registry: &mut CommandRegistry) -> Result<()> {
@@ -163,9 +169,7 @@ pub fn register_strings(table: &mut StringTable) -> Result<()> {
 
 /// 本模块命令的 GPUI action；由窗口（宿主）处理。
 ///
-/// 尚未接入 `keys::action_for`：当前代码视图只读（可编辑视图属于 #47），窗口里没有可保存的修改，
-/// 按“未实现的功能不得注册成可执行菜单项”，这些命令只登记、不进命令面板。#47 接入可编辑视图时
-/// 在 `keys::action_for` 追加 `crate::save::registry::action_for`，并在窗口里把它分发给
+/// #47 已接入 `keys::action_for`：窗口（`skeleton/workbench/edit_host.rs`）把它分发给
 /// [`super::SaveController`]。
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = save, no_json)]

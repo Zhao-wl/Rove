@@ -135,7 +135,7 @@ pub(super) struct Nav {
     pub(super) views: Arc<MetadataViews>,
     /// #134：等下一帧（有窗口句柄时）打开的速览请求。
     pending_peek: Option<PendingPeek>,
-    buffers: OpenBuffers,
+    pub(super) buffers: OpenBuffers,
     pub(super) settings: NavSettings,
     colors: NavColors,
     epoch: u64,

@@ -110,6 +110,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "peek",
         requires: "",
     },
+    BenchTarget {
+        // #47：按键到上屏（真实 GPUI 窗口；无法创建窗口时在基准内部跳过）。
+        name: "typing",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

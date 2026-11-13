@@ -157,6 +157,8 @@ pub const FEATURE_COLORS: &[&str] = &[
     "editorIndentGuide.background5",
     "editorIndentGuide.background6",
     "editorWhitespace.foreground",
+    // #47：输入法组合串的下边框。
+    "editor.compositionBorder",
 ];
 
 /// 主题服务用的颜色登记表：全部 P0 键，加上代码视图用到的其余键（[`COLORS`]、[`FEATURE_COLORS`]）。
@@ -235,6 +237,8 @@ pub struct Palette {
     /// `editorIndentGuide.background1`–`background6`，按缩进层级循环取。
     pub indent_guides: [Option<Color>; 6],
     pub whitespace: Option<Color>,
+    /// #47：`editor.compositionBorder`（输入法组合串下方的线）。
+    pub composition_border: Option<Color>,
 }
 
 fn fallback(key: &str, kind: ThemeKind) -> Option<Color> {
@@ -317,6 +321,7 @@ impl Palette {
                 get("editorIndentGuide.background6"),
             ],
             whitespace: get("editorWhitespace.foreground"),
+            composition_border: get("editor.compositionBorder"),
         }
     }
 }

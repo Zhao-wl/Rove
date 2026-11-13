@@ -625,16 +625,32 @@ impl EditorService {
         let Some(partial) = self.highlights.finish(document, generation) else {
             return false;
         };
+        // #47：分析期间文档又被编辑过：接着按累积的编辑增量分析（取代可见优先之后的全文补完）。
+        let finished = result
+            .as_ref()
+            .map_or(Version(u64::MAX), |u| u.snapshot.version());
+        let resumed = self.highlights.resume(document, finished);
+        let partial = partial && resumed.is_none();
+        if let Some(job) = resumed {
+            (self.schedule_syntax)(job);
+        }
         let Ok(update) = result else {
             return false;
         };
         let version = update.snapshot.version();
+        self.highlights.note_baseline(document, version);
         let mut changed = false;
         let mut shown = None;
         for pane in self.groups.values_mut() {
             for tab in &mut pane.tabs {
                 if let Content::Ready(opened) = &mut tab.content {
-                    if opened.document.id == document && opened.document.text.version() == version {
+                    if opened.document.id == document
+                        && self.highlights.same_content(
+                            document,
+                            opened.document.text.version(),
+                            version,
+                        )
+                    {
                         opened.syntax = Some(update.snapshot.clone());
                         shown.get_or_insert_with(|| opened.document.clone());
                         changed = true;
@@ -648,6 +664,118 @@ impl EditorService {
             }
         }
         changed
+    }
+
+    /// #47：编辑后的新快照换进所有显示该文档的标签（文档身份不变，语法旧结果保留到新结果到达），
+    /// 并按增量编辑在后台重新分析。返回是否有标签显示它。
+    pub(crate) fn replace_document(
+        &mut self,
+        document: Arc<Document>,
+        edit: Option<TextEdit>,
+    ) -> bool {
+        let mut found = false;
+        for pane in self.groups.values_mut() {
+            for tab in &mut pane.tabs {
+                if let Content::Ready(opened) = &mut tab.content {
+                    if opened.document.id == document.id {
+                        opened.document = document.clone();
+                        found = true;
+                    }
+                }
+            }
+        }
+        if found {
+            if let Some(job) = self.highlights.edited(&document, edit) {
+                (self.schedule_syntax)(job);
+            }
+        }
+        found
+    }
+
+    /// #47：同一内容换了快照（可编辑文档换上会话的快照）：换进标签，不重新分析，进行中与已有的
+    /// 着色结果继续有效。
+    pub(crate) fn rebase_document(&mut self, document: Arc<Document>) {
+        let mut from = None;
+        for pane in self.groups.values_mut() {
+            for tab in &mut pane.tabs {
+                if let Content::Ready(opened) = &mut tab.content {
+                    if opened.document.id == document.id {
+                        from.get_or_insert(opened.document.text.version());
+                        opened.document = document.clone();
+                    }
+                }
+            }
+        }
+        if let Some(from) = from {
+            self.highlights
+                .rebased(document.id, from, document.text.version());
+        }
+    }
+
+    /// #47：标签的脏标记（保存控制器的判定）。返回是否有变化。
+    pub(crate) fn set_dirty(&mut self, document: DocumentId, dirty: bool) -> bool {
+        let mut changed = false;
+        for pane in self.groups.values_mut() {
+            for tab in &mut pane.tabs {
+                if tab.opened().is_some_and(|o| o.document.id == document) && tab.dirty != dirty {
+                    tab.dirty = dirty;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// #47：在焦点组里放一个已就绪的文档（`ctrl+n` 的未命名文档）并激活它。
+    pub(crate) fn open_ready(&mut self, resource: Resource, document: Arc<Document>) -> TabId {
+        let id = self.next();
+        let group = self.focused;
+        let tab = Tab {
+            id,
+            resource,
+            kind: EditorKind::Text,
+            preview: false,
+            pinned: false,
+            dirty: false,
+            view: ViewState::default(),
+            secondary: None,
+            content: Content::Ready(Opened {
+                document,
+                syntax: None,
+            }),
+            request: None,
+            options: OpenOptions::default(),
+            used: id,
+            reveal: false,
+        };
+        self.count_up(&tab);
+        let pane = self.groups.get_mut(&group).unwrap();
+        let active = pane
+            .active
+            .and_then(|a| pane.tabs.iter().position(|t| t.id == a));
+        let index = self.settings.insert_at(active, pane.tabs.len());
+        pane.tabs.insert(index.min(pane.tabs.len()), tab);
+        self.activate(group, id, true);
+        self.start_highlight(group, id);
+        id
+    }
+
+    /// #47：关闭确认选了“保存”（已保存）或“不保存”：关掉显示该文档的全部标签。
+    pub(crate) fn force_close_document(&mut self, document: DocumentId) {
+        let tabs: Vec<(EditorGroupId, TabId)> = self
+            .groups
+            .iter()
+            .flat_map(|(g, pane)| {
+                pane.tabs
+                    .iter()
+                    .filter(|t| t.opened().is_some_and(|o| o.document.id == document))
+                    .map(move |t| (*g, t.id))
+            })
+            .collect();
+        for (group, tab) in tabs {
+            self.remove_tab(group, tab, true);
+            self.remove_if_empty(group);
+        }
     }
 
     #[cfg(test)]
@@ -665,7 +793,7 @@ impl EditorService {
     /// the new snapshot in place, keeping scroll and selection (#42: the metadata view re-renders when
     /// `rove.metadataView.showDocs` or the index changes). Highlighting restarts for the new version.
     /// Returns whether any tab changed.
-    pub(crate) fn replace_document(&mut self, document: Arc<Document>) -> bool {
+    pub(crate) fn reload_document(&mut self, document: Arc<Document>) -> bool {
         let mut changed = Vec::new();
         for (&group, pane) in &mut self.groups {
             for tab in &mut pane.tabs {
