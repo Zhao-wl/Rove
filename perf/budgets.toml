@@ -11,7 +11,7 @@
 #   pending 的条目会被打印出来提醒，不参与判定。
 
 schema = 1
-updated = "2026-11-10"
+updated = "2026-11-14"
 source = "docs/PROJECT_CHARTER.md §6"
 
 # 体积守护（cargo xtask check-size）。发布包的完整组成到 #75 才确定，
@@ -234,14 +234,24 @@ status = "enforced"
 bench = "syntax/csharp_edit_5000_lines"
 
 [[budget]]
-id = "csharp_initial_1mb_unity"
-metric = "1 MB Unity 特征 C# 首次全量高亮"
+id = "csharp_visible_1mb_unity"
+metric = "首次打开 1 MB Unity 特征 C#，可见区域出高亮"
 value = 50
 unit = "ms"
-owner = "#94"
-status = "pending"
+owner = "#117"
+status = "enforced"
+bench = "syntax/csharp_visible_1mb_unity"
+reason = "口径按 PROJECT_CHARTER §6 于 2026-11-14 修订：首次打开要求「可见区域 50 ms 内出高亮，全量在后台补齐」（原口径是首次全量高亮 50 ms，见下一条）。测量口径是没有基线的一次 `DocumentSyntax::with_visible(0..50)` 分析——读取 + 分区并行解析 + 行表 + 只为可见行取 capture 与生成 token；上一轮结果的回收放在计时之外（真实的首次打开没有上一份结果要释放）。开发机实测 35.2 ms（机器负载较高）"
+
+[[budget]]
+id = "csharp_initial_1mb_unity"
+metric = "1 MB Unity 特征 C# 全量高亮（后台补齐，另含上一份结果的回收）"
+value = 0
+unit = "ms"
+owner = "#117"
+status = "recorded"
 bench = "syntax/csharp_initial_1mb_unity"
-reason = "#94 把含预处理指令、插值/逐字字符串的 Unity 样本改为分区并行解析+查询并并行组装 token，RopeText 口径下从约 350 ms（单线程）降到 66–76 ms（8 核 16 线程开发机，分段见 ROVE_SYNTAX_TRACE）。剩余瓶颈是 tree-sitter C# 解析与查询本身的 CPU 量（单线程约 250 ms + 95 ms），超线程下每线程变慢约一倍；达标需要减少查询开销（直接遍历语法树）或换可扩展的分配器，见 #94 的 PR"
+reason = "2026-11-14 修订后只记录、不设门槛：全量高亮在后台补齐，不在首屏关键路径上。历史：#94 把样本改为分区并行解析+查询并并行组装 token，从约 350 ms（单线程）降到 66–76 ms；#117 把 C# 高亮从查询引擎改为直接遍历语法树（`csharp_walk.rs`），同一机器背靠背实测 criterion 84.7 → 73.4 ms、ROVE_SYNTAX_TRACE 的分析段中位数 61 → 45 ms。这条用例里每轮还要释放上一轮的全部 token 与语法树，所以比 TRACE 的分析段大一截"
 
 [[budget]]
 id = "breadcrumb_cursor_move_5000_lines"
