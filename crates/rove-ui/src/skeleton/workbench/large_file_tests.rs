@@ -344,10 +344,14 @@ fn streaming_find_on_a_huge_file_has_no_replace(cx: &mut TestAppContext) {
         assert!(!h.replace_allowed(), "超大文件上没有替换");
         assert_eq!(h.model().matches().len(), 6000, "每行一处");
     });
-    // 查找条里没有任何替换命令 / 按钮（M1 本来就没有；#48 必须遵守 replace_allowed）。
-    assert!(!crate::find::registry::COMMANDS
-        .iter()
-        .any(|(id, _, _)| id.contains("replace")));
+    // 查找条里没有替换入口：#48 的 `ctrl+h` 在超大文件上也不展开替换行（必须遵守 replace_allowed）。
+    cx.simulate_keystrokes("ctrl-h");
+    cx.run_until_parked();
+    refresh(cx);
+    find.read_with(cx, |h, cx| {
+        assert!(!h.can_replace(cx), "超大文件上不提供替换");
+        assert!(!h.replace_shown(cx), "替换行不显示");
+    });
 }
 
 /// 超长行：行尾显示截断标记、字符数正确，点击后在只读临时标签里断行显示。

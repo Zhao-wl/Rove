@@ -128,7 +128,7 @@ fn benchmark(c: &mut Criterion) {
         None,
         usize::MAX,
         &cancel,
-        &mut |_| {},
+        &mut |_, _| {},
     )
     .unwrap()
     .matches;

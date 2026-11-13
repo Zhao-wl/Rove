@@ -500,7 +500,7 @@ impl FindHost {
 
     /// 文档可写才有替换入口（超大文件、元数据视图、只读规则命中的文件都不显示替换行）。
     pub fn can_replace(&self, cx: &App) -> bool {
-        self.code.read(cx).is_editable()
+        self.replace_allowed() && self.code.read(cx).is_editable()
     }
 
     /// 替换行此刻是否显示。
@@ -1183,7 +1183,7 @@ impl FindHost {
                             scope.as_ref(),
                             usize::MAX,
                             &Cancellation::default(),
-                            &mut |_| {},
+                            &mut |_, _| {},
                         )?
                         .matches;
                         &scanned

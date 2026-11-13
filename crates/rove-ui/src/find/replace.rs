@@ -356,7 +356,7 @@ mod tests {
             None,
             usize::MAX,
             &Cancellation::default(),
-            &mut |_| {},
+            &mut |_, _| {},
         )
         .unwrap()
         .matches
@@ -536,7 +536,7 @@ mod tests {
             Some(&scope),
             usize::MAX,
             &Cancellation::default(),
-            &mut |_| {},
+            &mut |_, _| {},
         )
         .unwrap()
         .matches;
