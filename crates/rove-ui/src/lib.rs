@@ -40,3 +40,5 @@ pub mod peek;
 pub mod metadata;
 // #23：资源管理器（文件树、紧凑文件夹、定位当前文件、过滤、文件装饰）。
 pub mod explorer;
+// #29：Markdown 预览（WebView2，按需创建；渲染、净化、预览实例与命令）。
+pub mod markdown;

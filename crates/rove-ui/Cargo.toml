@@ -1,5 +1,6 @@
 [package]
 name = "rove-ui"
+build = "build.rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -26,10 +27,30 @@ fancy-regex.workspace = true
 globset.workspace = true
 async-channel.workspace = true
 rayon.workspace = true
+# #29 Markdown 预览。
+pulldown-cmark.workspace = true
+ammonia.workspace = true
+flate2.workspace = true
 
-# #47：组合中途点击 / 失焦时让输入法丢掉组合状态（ImmNotifyIME）。
 [target.'cfg(windows)'.dependencies]
+webview2-com.workspace = true
+raw-window-handle = "0.6"
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# #47：组合中途点击 / 失焦时让输入法丢掉组合状态（ImmNotifyIME）。
 windows-sys = { workspace = true, features = ["Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_Globalization"] }
+
+[build-dependencies]
+# #29：构建时压缩 Markdown 预览的打包资源（`build.rs`）。
+flate2.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

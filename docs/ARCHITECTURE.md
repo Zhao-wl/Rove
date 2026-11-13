@@ -231,6 +231,7 @@ cargo test --workspace
 | `explorer` | 已由 `rove-ui::explorer` 实现（见 §36）：`SKELETON(explorer)` 标记与骨架的 `WorkspaceTree` 适配器、固定绘制已删除；“文件夹”小节是 #18 `ListView` 的包装，数据来自流式扫描的 #15 工作区（根目录立即显示）；`skeleton/workbench/explorer_host.rs` 只做窗口装配 | #23（已完成） |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
+| `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
 
 数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -1250,3 +1251,47 @@ BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（rele
 （行号映射、增量编辑合成、UTF-16 区域换算）、`cargo test -p rove-ui edit_tests`（真实窗口：编辑 → `ctrl+s` → 外部修改
 静默重载且滚动不变 → 本地有修改时提示条 → 删除后“已删除”；C# 编辑与保存登记到 `BufferStates`；`ctrl+n`；标签与窗口的
 关闭确认）。
+
+## 38. Markdown 预览（#29）
+
+位置：`crates/rove-ui/src/markdown/`（`lib.rs` 只追加 `pub mod markdown;`）、打包资源 `crates/rove-ui/assets/markdown/`、
+窗口装配 `crates/rove-ui/src/skeleton/workbench/markdown_host.rs`。按 [M0 WebView2 报告](M0_WEBVIEW_SPIKE_REPORT.md) §5 的
+推荐方案实现（Hwnd + 相交隐藏），并补上报告 §5.1 列出的全部缺口；不修改 #1 的契约（`documents.rs` 的
+`Presentation`/`OpenSource`、`contributions.rs` 的 `Placement::EditorTitle` 均为已有登记点）。
+网页内核只用在这里，且只在第一次有预览要显示时创建。
+
+| 文件 | 内容 | GPUI |
+|---|---|---|
+| `markdown/render.rs` | Markdown → HTML：`pulldown-cmark`（GFM 表格、任务列表、删除线、脚注、提示块、`$` 数学、YAML front matter），自写 HTML 输出给块级元素加 `class="code-line" data-line=<源码行>`（与 VS Code 预览、`markdown.css` 相同）；`ammonia` 白名单净化（去掉脚本、事件属性、`iframe`、`javascript:`，`style` 只留不能带 `url()` 的属性）；资源地址改写：本地 → `https://<盘符>.rove-file.local/…`，远程（含 `//host`、UNC）未放行时换成占位图并计数；`markdown.preview.breaks/linkify/typographer/frontMatter`、`markdown.math.enabled` | 否 |
+| `markdown/page.rs` | 预览页（CSP：`script-src 'nonce-<随机>'`、`connect-src 'none'`）与打包资源表（`build.rs` 构建时 DEFLATE 压缩后嵌入，请求时解压；约 4.3 MB → 见 PR 的体积数据）；主题消息：扫描打包 CSS 里的 `--vscode-*` 变量，按 `textLink-foreground` → `textLink.foreground` 从当前主题取色，加上 `markdown.preview.font*` 与 `editor.font*` | 否 |
+| `markdown/registry.rs` | 命令（`markdown.togglePreview`、`showPreview`、`showPreviewToSide`、`showSource`、`preview.refresh`）、界面字符串、颜色键（含 `markdownAlert.*`）、编辑器标题栏按钮（`Placement::EditorTitle`，`when` 用 `activeCustomEditorId` / `resourceLangId`）、`MarkdownAction` | action |
+| `markdown/backend.rs` | 后端接口 `Backend` 与事件 `BackendEvent`；`FakeBackend`（GPUI 测试窗口没有 HWND）、`UnavailableBackend`（非 Windows） | 类型 |
+| `markdown/webview.rs` | WebView2 后端（`webview2-com` 0.38）：环境参数关闭后台联网（组件更新、SmartScreen、同步、崩溃上报…），`IsReputationCheckingRequired=false`；全部资源请求经 `WebResourceRequested`（打包资源从内存返回、本地文件走盘符映射、远程未放行 403）；拒绝顶层 / 子框架导航、新窗口、下载、权限、外部协议、基本认证；显式 `CoInitializeEx`（STA）；`RasterizationScale` 由宿主给；隐藏时 `TrySuspend`；回调不持有借用调 COM；网页里的 Ctrl/Alt 组合、F 键、Esc 交回 Rove 键位服务 | 是 |
+| `markdown/mod.rs` | `prepare_hwnd_hosting()`：设 `GPUI_DISABLE_DIRECT_COMPOSITION=1`（#6 报告：DirectComposition 的 topmost 合成目标会盖住子 HWND），`skeleton::launch` 在创建应用前调用 | 否 |
+
+**打开方式（D6）**：`workbench.editorAssociations` 的 Rove 默认值 `{"*.md": "vscode.markdown.preview.editor"}` 由
+#17 登记（只在用户未设置时生效）；文件树、快速打开 → 预览；带位置或选区的打开（搜索结果、跳转、引用、转到行、大纲、面包屑）
+→ 源码（#17 的 `EditorTypes::resolve`）。没有运行时时 `EditorTypes::set_preview_available(false)`：关联到预览的文件改为源码，
+显式要求预览返回 `Unsupported`。`EditorService::reopen_as` 把一个标签就地换成另一种编辑器（切换、双击），文档不重新读盘。
+
+**实例生命周期**（`markdown_host.rs`）：每帧选“拥有者”（聚焦组优先的、可见的预览标签），其余可见预览显示一行提示、单击接管；
+第一次有拥有者时才 `Backend::create`（异步，期间显示标题 + 正文灰条的骨架）；拥有者消失 → 隐藏并挂起；所有预览标签都关闭 →
+`rove.markdown.webviewIdleTimeout` 秒的 GPUI 定时任务（不依赖渲染帧），到期在前台任务里 `Close()` 并释放 environment，浏览器进程退出。
+弹出层（快速打开 / 命令面板、转到符号、菜单、模态框、通知、悬停卡片、拖动标签）打开时隐藏实例（`Render` 末尾判定，画布在 prepaint 读）。
+WebView2 的回调只往通道里送 `BackendEvent`，由窗口的前台任务在正常 GPUI 上下文里处理。
+
+**通信**：`{version:1,type,…}`。宿主 → 页面：`render`（`seq`、`documentId`、净化后的 HTML、`markdown.styles`、`markdown.math.macros`、
+初始行或片段）、`theme`、`scrollTo`、`selection`（`markEditorSelection`）、`fragment`；页面 → 宿主：`ready`、`rendered`（统计）、`scroll`、
+`dblclick`、`link`、`focusExit`。旧 `seq` / 别的 `documentId` 的消息丢弃；预览 → 编辑器的滚动带回声抑制。
+
+**链接**：`#片段` 页内滚动；相对 `.md` 按 `markdown.preview.openMarkdownLinks` / `markdown.links.openLocation` 打开（片段在渲染后滚动）；
+其他本地文件以源码打开；`http(s)` / `mailto` 先弹安全确认模态框，确认后交给系统浏览器。
+
+验证：`cargo test -p rove-ui markdown`（`markdown::*` 单元测试：渲染与行号、净化、远程计数与放行、UNC、链接分类、选项、front matter、
+锚点、键转发、资源与 CSP、主题变量与颜色登记；`skeleton::workbench::markdown_tests` 入口测试：打开 `.md` → 预览 → `ctrl+shift+v` 源码 →
+切回、`ctrl+k v` 并排与标题栏按钮、用户 `editorAssociations`、带位置打开为源码、没有运行时只通知一次、远程放行、主题不重建、
+命令面板隐藏实例、空闲回收与超时前复用、双击定位、双向滚动同步）。真实 WebView2：`cargo run -p rove-ui --example markdown_probe`
+（见 AGENTS §8.5）。不做：`markdown.preview.toggleLock` / `showLockedPreviewToSide`（Rove 的预览总是绑定一个文件）、
+`showPreviewSecuritySelector`（放行走提示条）、预览内 `Ctrl+F`（P1，WebView2 Find API 留给后续）、预览中的大纲联动（#26 的大纲
+目前只跟随文本编辑器）。
+

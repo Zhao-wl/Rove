@@ -100,6 +100,8 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::peek::registry::register_commands(&mut registry)?;
     // #23：资源管理器（打开、紧凑文件夹导航、在资源管理器中显示活动文件）。
     crate::explorer::registry::register_commands(&mut registry)?;
+    // #29：Markdown 预览。
+    crate::markdown::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -146,6 +148,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
                 .then(|| crate::save::registry::action_for(id))
                 .flatten()
         })
+        .or_else(|| crate::markdown::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the
