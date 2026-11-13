@@ -69,8 +69,6 @@ pub struct RenderOptions {
     pub typographer: bool,
     pub math: bool,
     pub front_matter: FrontMatter,
-    /// `rove.markdown.allowRemoteResources` 或当前文档已放行。
-    pub allow_remote: bool,
     pub alerts: AlertTitles,
 }
 
@@ -82,7 +80,6 @@ impl Default for RenderOptions {
             typographer: false,
             math: true,
             front_matter: FrontMatter::Table,
-            allow_remote: false,
             alerts: AlertTitles::default(),
         }
     }
@@ -93,7 +90,7 @@ impl Default for RenderOptions {
 pub struct Rendered {
     /// 净化后的正文 HTML（放进预览页的 `<body>`）。
     pub html: String,
-    /// 文档引用的远程资源个数（没有放行时都已被替换成占位图）。
+    /// 文档引用的远程资源个数（已替换成占位图）。
     pub remote: usize,
     /// 正文里引用到的本地盘符（小写），WebView2 需要为它们建立文件主机映射。
     pub drives: BTreeSet<char>,
@@ -110,7 +107,6 @@ pub fn render(text: &str, base: Option<&Path>, options: &RenderOptions) -> Rende
     let html = sanitize(
         &raw,
         base.map(Path::to_path_buf),
-        options.allow_remote,
         remote.clone(),
         drives.clone(),
     );
@@ -825,7 +821,6 @@ fn is_file_host(lower: &str) -> bool {
 fn sanitize(
     html: &str,
     base: Option<PathBuf>,
-    allow_remote: bool,
     remote: Arc<AtomicUsize>,
     drives: Arc<Mutex<BTreeSet<char>>>,
 ) -> String {
@@ -880,11 +875,7 @@ fn sanitize(
             match classify(value, base.as_deref()) {
                 Target::Remote => {
                     remote.fetch_add(1, Ordering::Relaxed);
-                    if allow_remote {
-                        Some(Cow::Owned(value.to_string()))
-                    } else {
-                        Some(Cow::Borrowed(BLOCKED_IMAGE))
-                    }
+                    Some(Cow::Borrowed(BLOCKED_IMAGE))
                 }
                 Target::Local(path, _) => match file_url(&path) {
                     Some((drive, url)) => {
@@ -993,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_resources_are_blocked_and_counted_until_allowed() {
+    fn remote_resources_are_blocked_and_counted() {
         let text = "![a](https://example.com/a.png)\n\n<img src=\"//cdn.example.com/b.png\">\n\n![c](images/c%20d.png)\n";
         let blocked = render(text, Some(Path::new("C:\\docs")), &RenderOptions::default());
         assert_eq!(blocked.remote, 2);
@@ -1007,16 +998,6 @@ mod tests {
             blocked.html
         );
         assert_eq!(blocked.drives, BTreeSet::from(['c']));
-        let allowed = render(
-            text,
-            Some(Path::new("C:\\docs")),
-            &RenderOptions {
-                allow_remote: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(allowed.remote, 2);
-        assert!(allowed.html.contains("https://example.com/a.png"));
     }
 
     #[test]

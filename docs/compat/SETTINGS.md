@@ -49,7 +49,7 @@
 | P0 | `rove.index.enabled` | `true` | 是否启用 C# 语义索引 |
 | P1 | `rove.metadataView.showDocs` | `true` | 元数据视图中是否显示文档注释（UX_SPEC §4.1） |
 | P0 | `rove.markdown.webviewIdleTimeout` | `300` | 所有 Markdown 预览关闭后，多少秒销毁 WebView2 实例（UX_SPEC §4.3） |
-| P0 | `rove.markdown.allowRemoteResources` | `false` | 预览中是否加载远程图片等资源（UX_SPEC §4.3） |
+| P0 | `rove.markdown.allowRemoteResources` | `false` | 旧版兼容键，预览始终拦截远程资源（UX_SPEC §4.3） |
 | P1 | `rove.contextBasket.referenceTemplate` | `"@{path} (lines {start}-{end})"` | “复制为引用”的格式（UX_SPEC §5.3） |
 | P1 | `rove.contextBasket.contextLines` | `3` | 从速览或搜索结果加入时，额外带上的前后行数（UX_SPEC §5.1） |
 | P1 | `rove.locale` | `"auto"` | 界面语言：`auto`（跟随系统）、`zh-cn`、`en`。只读参考共用用户目录下 `argv.json` 的 `locale`，从不写入它 |
