@@ -382,7 +382,17 @@ impl Workbench {
                 };
                 let mut label = self.label(key, &args);
                 if !count.complete && line > known {
-                    label = format!("{label} {}", self.label("quickAccess.line.indexing", &[]));
+                    // #22：等待提示带进度；等待中时 Esc / 关闭快速输入框即取消。
+                    let percent = crate::large_file::progress::IndexProgress::of(&count)
+                        .percent()
+                        .to_string();
+                    label = format!(
+                        "{label} {}",
+                        self.label(
+                            crate::large_file::goto::WAIT_HINT_KEY,
+                            &[("percent", percent)]
+                        )
+                    );
                 }
                 let mut picks = Picks::default();
                 picks.push(
@@ -579,6 +589,12 @@ impl Workbench {
         let LineState::Go { line, column } = line_state(rest, &document.text.lines()) else {
             return;
         };
+        // #22：目标行尚未索引时进入等待（输入框下方提示“正在建立行索引，完成后跳转”，可取消），
+        // 索引到达后由 `large_file_host` 自动跳转。
+        if !self.goto_line_or_wait(&document, line, cx) {
+            cx.notify();
+            return;
+        }
         let line0 = Line(line - 1);
         let column = column.map_or(Utf8Column(0), |c| line_column(&document, line0, c));
         let Some(resource) = self

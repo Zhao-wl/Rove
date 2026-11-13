@@ -42,3 +42,5 @@ pub mod metadata;
 pub mod explorer;
 // #29：Markdown 预览（WebView2，按需创建；渲染、净化、预览实例与命令）。
 pub mod markdown;
+// #22：超大文件与超长行的界面（提示条、状态栏、行索引进度、转到行等待、流式查找、截断标记）。
+pub mod large_file;

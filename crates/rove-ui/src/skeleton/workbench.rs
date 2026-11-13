@@ -95,6 +95,10 @@ mod search_tests;
 mod markdown_host;
 #[cfg(test)]
 mod markdown_tests;
+// #22：超大文件与超长行的界面（提示条、状态栏、索引进度、转到行等待、流式查找、截断标记）。
+mod large_file_host;
+#[cfg(test)]
+mod large_file_tests;
 pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
 mod syntax_tests;
@@ -222,6 +226,8 @@ pub struct Workbench {
     editing: edit_host::Editing,
     /// #29：窗口唯一的 Markdown 预览实例与状态（见 `markdown_host.rs`）。
     markdown: markdown_host::MarkdownPreview,
+    /// #22：超大文件提示条 / 状态栏 / 索引进度 / 转到行等待 / 超长行临时标签（见 `large_file_host.rs`）。
+    large_files: large_file_host::LargeFiles,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -355,9 +361,13 @@ impl Workbench {
         );
         let search = Self::new_search(root.clone(), services.clone(), theme.clone(), cx);
         // #42：元数据视图是一份普通的虚拟文档，由文档加载器按资源名生成。
-        let metadata = metadata_host::MetadataHost::new(
+        // #22 的超长行临时标签也是虚拟文档，串在元数据加载器前面。
+        let metadata_loader = Arc::new(crate::metadata::MetadataLoader::new(nav.views.clone()));
+        let large_files = large_file_host::LargeFiles::new(metadata_loader.clone());
+        let metadata = metadata_host::MetadataHost::with_loader(
             FileDocuments::new(root.clone(), services.clone()).with_size_policy(size),
-            nav.views.clone(),
+            metadata_loader,
+            large_files.long_lines.clone(),
         );
         let explorer = Self::new_explorer(theme.clone(), &services, cx);
         // #47：编辑与元数据视图共用同一个加载器，编辑后的新快照回填它的缓存。
@@ -412,6 +422,7 @@ impl Workbench {
             metadata,
             editing: edit_host::Editing::new(files),
             markdown: Default::default(),
+            large_files,
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -425,6 +436,9 @@ impl Workbench {
         for (id, _, _) in crate::markdown::registry::COMMANDS {
             view.shell.mark_implemented(*id);
         }
+        // #22：查看完整的超长行。
+        view.shell
+            .mark_implemented(crate::large_file::long_line::OPEN_LONG_LINE);
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
             assert!(
@@ -798,6 +812,10 @@ impl Workbench {
             self.markdown_command(id, cx);
             return;
         }
+        // #22：查看完整的超长行。
+        if self.large_file_command(id, cx) {
+            return;
+        }
         if self.commands.is_registered(id) && editor_actions::execute(&mut self.editor, id) {
             self.note_switch(previous, start);
             cx.notify();
@@ -935,6 +953,10 @@ impl Workbench {
             CodeViewEvent::Edited(notice) => {
                 return self.text_edited(group, secondary, notice, cx);
             }
+            // #22：点击超长行的截断标记 → 在只读临时标签中打开这一行。
+            CodeViewEvent::OverlayClicked { line, .. } => {
+                return self.truncation_overlay_clicked(*line, cx);
+            }
             _ => {}
         }
         let Some(slot) = self.views.get(&group).and_then(|views| {
@@ -987,6 +1009,8 @@ impl Workbench {
             | CodeViewEvent::PointerLeft
             | CodeViewEvent::LinkClicked { .. }
             | CodeViewEvent::Edited(_) => {}
+            // #22：截断标记的点击由 `large_file_host` 处理（不是视图状态）。
+            CodeViewEvent::OverlayClicked { .. } => {}
         }
     }
 
@@ -1728,6 +1752,8 @@ impl Render for Workbench {
                 );
             });
         }
+        // #22：超大文件提示条、状态栏标记、索引进度、滚动估计与流式查找。
+        self.sync_large_files(cx);
         let status = StatusEntry {
             text: self.file_status(),
             ..Default::default()

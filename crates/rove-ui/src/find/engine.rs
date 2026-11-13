@@ -458,13 +458,16 @@ fn for_each_block(
 }
 
 /// 全量扫描：按块依次产出匹配（最多 `limit` 个，多一个即标记超限）。
+///
+/// 每扫完一块回调一次 `progress`，第二个参数是**这一块新找到的匹配**（流式查找，#22）：
+/// 界面据此让结果逐步出现、在已找到的结果之间跳转，不必等整份文件扫完。
 pub fn search_all(
     text: &dyn TextSource,
     searcher: &Searcher,
     scope: Option<&TextRange>,
     limit: usize,
     cancel: &Cancellation,
-    progress: &mut dyn FnMut(Progress),
+    progress: &mut dyn FnMut(Progress, &[Match]),
 ) -> Result<SearchOutput> {
     let (first, end, partial) = line_span(text, scope);
     let (span_start, span_end) = span_bytes(text, first, end)?;
@@ -474,6 +477,7 @@ pub fn search_all(
         ..Default::default()
     };
     let mut scanned = 0u64;
+    let mut published = 0usize;
     for_each_block(text, searcher, first, end, cancel, &mut |hay| {
         searcher.scan(hay, 0, &mut |r| {
             let m = hay.to_match(r);
@@ -488,11 +492,15 @@ pub fn search_all(
             true
         });
         scanned += hay.text.len() as u64 + 1;
-        progress(Progress {
-            found: out.matches.len(),
-            scanned_bytes: scanned.min(total),
-            total_bytes: total,
-        });
+        progress(
+            Progress {
+                found: out.matches.len(),
+                scanned_bytes: scanned.min(total),
+                total_bytes: total,
+            },
+            &out.matches[published..],
+        );
+        published = out.matches.len();
         !out.limit_exceeded
     })?;
     Ok(out)
@@ -684,8 +692,37 @@ pub(crate) mod tests {
             scope,
             usize::MAX,
             &Cancellation::default(),
-            &mut |_| {},
+            &mut |_, _| {},
         )
+    }
+
+    /// 流式回调拼起来的匹配列表与一次性结果完全一致（#22 的流式查找据此逐步显示）。
+    #[test]
+    fn streamed_batches_reassemble_the_full_result() {
+        let doc = "needle\n".repeat(5000);
+        let rope = RopeText::from_text(&doc);
+        let s = Searcher::compile(&query("needle", true, false, false))
+            .unwrap()
+            .unwrap();
+        let mut streamed = Vec::new();
+        let mut reports = 0usize;
+        let out = search_all(
+            &rope,
+            &s,
+            None,
+            usize::MAX,
+            &Cancellation::default(),
+            &mut |p, batch| {
+                reports += 1;
+                assert!(p.scanned_bytes <= p.total_bytes);
+                assert_eq!(p.found, streamed.len() + batch.len());
+                streamed.extend_from_slice(batch);
+            },
+        )
+        .unwrap();
+        assert_eq!(streamed, out.matches);
+        assert_eq!(out.matches.len(), 5000);
+        assert!(reports >= 1);
     }
 
     fn spans(out: &SearchOutput) -> Vec<(u64, u64, u64, u64)> {
@@ -791,10 +828,26 @@ pub(crate) mod tests {
         let s = Searcher::compile(&query("a", true, false, false))
             .unwrap()
             .unwrap();
-        let out = search_all(&rope, &s, None, 10, &Cancellation::default(), &mut |_| {}).unwrap();
+        let out = search_all(
+            &rope,
+            &s,
+            None,
+            10,
+            &Cancellation::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
         assert_eq!(out.matches.len(), 10);
         assert!(out.limit_exceeded);
-        let out = search_all(&rope, &s, None, 50, &Cancellation::default(), &mut |_| {}).unwrap();
+        let out = search_all(
+            &rope,
+            &s,
+            None,
+            50,
+            &Cancellation::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
         assert!(!out.limit_exceeded);
     }
 
@@ -826,7 +879,7 @@ pub(crate) mod tests {
             None,
             usize::MAX,
             &Cancellation::default(),
-            &mut |p| seen.push(p),
+            &mut |p, _| seen.push(p),
         )
         .unwrap();
         assert!(seen.len() >= 2, "应分成多块");
@@ -844,7 +897,7 @@ pub(crate) mod tests {
             .unwrap();
         let cancel = Cancellation::default();
         cancel.cancel();
-        let r = search_all(&rope, &s, None, 100, &cancel, &mut |_| {});
+        let r = search_all(&rope, &s, None, 100, &cancel, &mut |_, _| {});
         assert_eq!(r.err(), Some(Error::Cancelled));
     }
 
