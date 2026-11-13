@@ -539,6 +539,68 @@ fn csharp_cr_only_lines_use_text_source_coordinates() {
         }));
 }
 
+/// 混合换行（LF + 独立 CR）：tree-sitter 只把 `\n` 当换行，`class C {}` 在它眼里还在
+/// 第 1 行，而文本源（#7）把独立 CR 也算一行、它在第 2 行。高亮必须按文本源的行号
+/// 归档 token，否则第 2 行会没有 token、第 1 行会多出别人的（issue #92）。
+#[test]
+fn csharp_mixed_line_terminators_use_text_source_coordinates() {
+    use rove_buffer::{open_path, settings, LoadOptions, TextSource};
+    use rove_config::{DefaultSettings, SettingRegistry};
+
+    let source = "class A {}\nclass B {}\rclass C {}\n";
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("mixed-eol.cs");
+    std::fs::write(&path, source).unwrap();
+
+    let mut registry = SettingRegistry::default();
+    settings::register(&mut registry).unwrap();
+    let settings = DefaultSettings(registry);
+    let document = open_path(&path, &LoadOptions::new("csharp", &settings)).unwrap();
+    assert_eq!(document.text.lines().known, 4, "末尾换行后还有一个空行");
+    let text = document.text.clone();
+    let result = block_on(TreeSitterSyntax::default().analyze(
+        document.text,
+        document.metadata.language,
+        Cancellation::default(),
+    ))
+    .unwrap();
+
+    for (row, name) in [(0u64, "A"), (1, "B"), (2, "C")] {
+        let line = text.line_range(Line(row)).unwrap();
+        let tokens = result.snapshot.tokens(Line(row)).unwrap();
+        assert!(
+            tokens
+                .iter()
+                .all(|token| token.range.start() >= line.start()
+                    && token.range.end() <= line.end()),
+            "第 {row} 行的 token 越出了文本源给的行范围"
+        );
+        let slice = |token: &rove_syntax::Token| {
+            source[token.range.start().0 as usize..token.range.end().0 as usize].to_string()
+        };
+        assert!(
+            tokens.iter().any(|token| slice(token) == "class"
+                && token
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.as_ref() == "storage.type.class.cs")),
+            "第 {row} 行缺少 class 关键字的着色"
+        );
+        assert!(
+            tokens.iter().any(|token| slice(token) == name
+                && token
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.as_ref() == "entity.name.type.class.cs")),
+            "第 {row} 行缺少类型名 {name} 的着色"
+        );
+    }
+    assert!(
+        result.snapshot.tokens(Line(3)).unwrap().is_empty(),
+        "末尾空行没有 token"
+    );
+}
+
 #[test]
 fn empty_line_table_does_not_panic_during_analysis_or_refresh() {
     let document = TreeSitterSyntax::default().document();
