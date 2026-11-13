@@ -306,6 +306,72 @@ fn status_gbk_file_is_detected_and_reopens_with_another_encoding(cx: &mut TestAp
     assert!(document_text(&view, cx).contains("中文注释"));
 }
 
+/// 「通过编码重新打开」之后 #49 的编辑会话也必须换成新编码解出的文本：否则第一次编辑时
+/// `run_edit` 会把会话里的旧快照换回视图，重新解码的正文被悄悄丢弃，保存还按旧编码写回。
+#[gpui::test]
+fn status_reopen_with_encoding_carries_into_edit_and_save(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let source = "// 中文注释，用来验证自动识别\nclass A {}\n";
+    fx.file("Assets/A.cs", gbk(source));
+    let (view, cx) = fx.open(cx);
+    open_file(&view, cx, "Assets/A.cs");
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    assert!(
+        code.read_with(cx, |c, _| c.is_editable()),
+        "#49 的编辑会话已经挂上"
+    );
+
+    // 先故意换成 UTF-8（乱码），再编辑：会话拿到的必须是乱码的文本，不是 GBK 的旧快照。
+    click(&view, cx, ids::ENCODING);
+    pick(&view, cx, "通过编码重新打开");
+    pick(&view, cx, "UTF-8");
+    type_at_second_line(&view, cx, "X");
+    let garbled = document_text(&view, cx);
+    assert!(garbled.contains('\u{fffd}'), "编辑后仍是 UTF-8 解出的乱码");
+    assert!(
+        garbled.contains("Xclass A {}"),
+        "编辑落在重新解码后的正文上"
+    );
+    assert!(!garbled.contains("中文注释"));
+
+    // 再换回 GBK：正文恢复，编辑继续落在 GBK 解出的正文上（旧的乱码快照不会被换回来）。
+    click(&view, cx, ids::ENCODING);
+    pick(&view, cx, "通过编码重新打开");
+    pick(&view, cx, "GBK");
+    type_at_second_line(&view, cx, "Y");
+    let edited = document_text(&view, cx);
+    assert_eq!(edited, "// 中文注释，用来验证自动识别\nYclass A {}\n");
+    assert!(!edited.contains('\u{fffd}'));
+
+    // 保存：按重新打开时选的编码写回，不是旧编码。
+    let action = crate::save::registry::action_for(crate::save::registry::SAVE).unwrap();
+    cx.update(|window, cx| window.dispatch_action(action, cx));
+    refresh(cx);
+    let written = std::fs::read(fx.path("Assets/A.cs")).unwrap();
+    assert!(
+        std::str::from_utf8(&written).is_err(),
+        "写回的是 GBK 字节，不是 UTF-8"
+    );
+    assert_eq!(written, gbk(&edited));
+    assert_eq!(text_of(&view, cx, ids::ENCODING), "GBK");
+}
+
+/// 把光标放到第二行行首再输入（第一行是中文注释，避开它才好断言）。
+fn type_at_second_line(view: &Entity<Workbench>, cx: &mut VisualTestContext, text: &str) {
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    code.update(cx, |c, cx| {
+        c.set_selection(
+            crate::code_view::Selection::caret(crate::code_view::selection::pos(1, 0)),
+            None,
+            cx,
+        )
+    });
+    refresh(cx);
+    cx.simulate_input(text);
+    refresh(cx);
+}
+
 #[gpui::test]
 fn status_mixed_line_endings_show_mixed_and_leave_the_file_untouched(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");

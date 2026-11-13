@@ -220,6 +220,44 @@ impl Workbench {
         cx.notify();
     }
 
+    /// #27 的「通过编码重新打开」：#49 的编辑会话也要按新编码重载，否则会话仍持有旧编码的快照，
+    /// 第一次编辑时 `run_edit` 会把旧快照换回视图，保存又按旧编码写回，覆盖掉原始字节。
+    ///
+    /// 返回换上会话快照的文档（视图显示的必须就是会话的快照）；没有编辑会话（超大文件、
+    /// 虚拟文档、还在后台加载）时原样返回传入的文档。
+    pub(super) fn reopen_edit_session(
+        &mut self,
+        document: Arc<Document>,
+        encoding: &str,
+    ) -> Arc<Document> {
+        let saves = self.editing.saves.clone();
+        let settings = self.settings.clone();
+        let mut controller = saves.borrow_mut();
+        let Some(file) = controller.file_mut(document.id) else {
+            return document;
+        };
+        if let Err(error) = file.reopen_with_encoding(encoding, &*settings, Instant::now()) {
+            // 会话重载不了：撤下它，`sync_editing` 下一帧按磁盘重新挂一个，别留着旧编码的会话。
+            eprintln!("reopenWithEncoding session {encoding}: {error}");
+            drop(controller);
+            saves.borrow_mut().detach(document.id);
+            return document;
+        }
+        let metadata = DocumentMetadata {
+            line_endings: file.line_endings().clone(),
+            encoding: file.encoding().clone(),
+            bom: file.bom(),
+            ..document.metadata.clone()
+        };
+        let text: Arc<dyn TextSource> = file.snapshot();
+        Arc::new(Document {
+            id: document.id,
+            resource: document.resource.clone(),
+            metadata,
+            text,
+        })
+    }
+
     /// 只读状态变了（会话切换等）：会话的只读原因跟着变。
     pub(super) fn refresh_edit_read_only(&mut self) {
         let docs: Vec<DocumentId> = self.editing.saves.borrow().documents().collect();

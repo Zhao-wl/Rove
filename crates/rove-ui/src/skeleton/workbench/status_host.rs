@@ -554,6 +554,9 @@ impl Workbench {
         let files: &FileDocuments = &self.metadata.files;
         match files.reopen_with_encoding(document, encoding) {
             Ok(reopened) => {
+                // #49 的编辑会话按同一个编码重载，并换上会话的快照：否则会话还拿着旧编码解出的
+                // 文本，第一次编辑就把正文换回去，保存时按旧编码写回、覆盖原始字节。
+                let reopened = self.reopen_edit_session(reopened, encoding);
                 self.metadata.files.replace(&reopened);
                 let name = model::encoding_label(&reopened.metadata.encoding);
                 self.editor.reload_document(reopened);
