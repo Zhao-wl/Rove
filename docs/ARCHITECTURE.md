@@ -229,7 +229,7 @@ cargo test --workspace
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
 | `explorer` | 已由 `rove-ui::explorer` 实现（见 §36）：`SKELETON(explorer)` 标记与骨架的 `WorkspaceTree` 适配器、固定绘制已删除；“文件夹”小节是 #18 `ListView` 的包装，数据来自流式扫描的 #15 工作区（根目录立即显示）；`skeleton/workbench/explorer_host.rs` 只做窗口装配 | #23（已完成） |
-| `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
+| `status` | 已由 `rove-ui::status_items` 与 `skeleton/workbench/status_host.rs` 实现（见 §39）：`SKELETON(status)` 标记、骨架的 `rove.status.file` 条目与“文件名 / 行数 / 编码”固定内容都已删除，右侧改为六个登记过的条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）；状态栏左侧只保留 #16 的临时消息、问题计数与 #36 的索引状态 | #27（已完成） |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
 | `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
 | `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
@@ -1446,3 +1446,58 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 流式查找且没有替换 → 超长行截断标记与只读临时标签 → `editor.stopRenderingLineAfter` 改值 → 末尾追加后滚动位置保持）。
 入口测试把 `rove.largeFile.threshold` 调到 4 KB，用小文件走**同一条**超大文件路径；1 GB / 单行 50 MB 的真实数据
 由 `cargo xtask gen-testdata` + `cargo xtask bench --filter "scroll/|huge/|find/"` 在本机复跑（见 PR 的对比数据）。
+
+## 42. 状态栏的文件状态条目（#27）
+
+位置：`crates/rove-ui/src/status_items/`（`lib.rs` 只追加 `pub mod status_items;`）与窗口装配
+`crates/rove-ui/src/skeleton/workbench/status_host.rs`。容器、登记机制与临时消息是 #16 的
+`shell::status`，本模块只**往里登记条目**并把文档状态投影成内容；不修改 #1 的契约。
+
+| 文件 | 内容 | GPUI |
+|---|---|---|
+| `status_items/registry.rs` | 六个状态栏条目（`StatusRight`，`order` 100/90/80/70/60/50，工厂 `workbench.statusItem`）、命令（`changeEditorIndentation`、`editor.action.indentUsingSpaces` / `indentUsingTabs` / `detectIndentation`、`workbench.action.editor.changeEncoding` / `changeLanguageMode`）、界面字符串、`StatusAction` | 仅 action |
+| `status_items/model.rs` | 纯数据：状态 → `StatusEntry`（文本、悬停、`StatusKind`），VS Code `guessIndentation` 的简化移植，以及四个选择器的条目列表 | 否 |
+| `skeleton/workbench/status_host.rs` | 每帧同步、选择器浮层（复用 #18 的快速输入）、按编码重新打开、语言模式覆盖、缩进视图参数 | 是 |
+
+**条目**（顺序与 VS Code 一致，数值越大越靠左；通知铃铛 `i32::MIN` 仍在最右）：
+
+| ID | 显示 | 点击 |
+|---|---|---|
+| `rove.status.cursor` | `行 12，列 34`；单选区有内容时附加已选字符数，多选区显示个数与总字符数 | `workbench.action.gotoLine`（#24） |
+| `rove.status.indentation` | `空格: 4` / `制表符长度: 4` | `changeEditorIndentation` |
+| `rove.status.encoding` | 编码名（带 BOM 时 `… with BOM`）；自动识别出来的在悬停里注明 | `workbench.action.editor.changeEncoding` |
+| `rove.status.eol` | `LF` / `CRLF` / `CR` / `混合` | `workbench.action.editor.changeEOL`（#49） |
+| `rove.status.language` | 语言显示名（未登记显示名的语言用 ID） | `workbench.action.editor.changeLanguageMode`（`ctrl+k m`） |
+| `rove.status.readOnly` | `只读` / `超大文件 · 只读`，`StatusKind::Warning` → `statusBarItem.warning*` | 无（纯提示） |
+
+**同步**：`Workbench::sync_status` 在 `Render` 末尾调用，先比较一个状态快照（文档、文本版本、光标、选区、
+缩进、语言、编码、BOM、是否自动识别、换行符、大小级别、只读原因）；没有变化就直接返回，所以光标移动不会让
+整条状态栏重新布局（`StatusBar::set` 的内容相同也不会涨 revision）。没有活动文本编辑器时六个条目全部移除。
+缩进检测按文本版本缓存，切换标签不会重复扫描文件头部。
+
+**数据来源**（本 issue 不自己探测）：编码、BOM、换行符、大小级别、只读原因来自 #7/#8 的
+`DocumentMetadata`；被关闭的功能来自 #8 的 `rove_buffer::disabled_features`（顺序即悬停里的列出顺序）；
+只读原因的文案复用 #20 的 `codeView.readonly.reason.*`；语言列表来自 #12 的 `builtin_languages()` 加
+`plaintext`。`Detection::guessed`（编码是不是自动识别出来的）不在冻结的元信息里，由
+`skeleton/text.rs` 的 `FileDocuments` 按文档 ID 记下来（`encoding_guessed`）。
+
+**选择器**（复用 #18 的快速输入，和 #24 共用同一个浮层实体；命令分发路径上没有 `Window`，所以命令只记下
+意图，浮层在下一帧的 `sync_status` 里打开）：
+
+- **缩进**：`使用空格缩进` / `使用制表符缩进`（接着选 1–8 的宽度）/ `从内容中检测缩进` 只改本文件的缩进视图
+  参数（写进 `status_host` 的会话内覆盖，并把制表位宽度同步给代码视图）；可编辑的文件再加
+  `editor.action.indentationToSpaces` / `indentationToTabs`，由 #46 的编辑核心改写内容（只读文件不显示）。
+- **编码**：M1 只有「通过编码重新打开」，走 #7 的 `explicit_encoding` 重读（`force_open`：用户明确选了编码，
+  解不出合法文本时按 lossy 显示乱码，而不是报「二进制或不支持的编码」）。文档身份不变，滚动位置与选区由 #17 的
+  快照替换保持。候选列表是 `files.encoding` → `files.candidateGuessEncodings` → 常用编码，去重后分三组。
+  「通过编码保存」等 R48 的另存接口接入后再加。
+- **换行符**：显示当前值；可编辑时提供「统一为 LF / CRLF」，发 `workbench.action.editor.changeEOL` 带参数，
+  由 #49 的保存控制器改写（只读与超大文件不显示）。
+- **语言模式**：列出 #12 的语言，选中后只对本文件生效（会话内）：换上带新语言的 `Document` 快照，
+  `EditorService::reload_document` 重新触发 #9 的解析，并把新语言推给显示它的代码视图。
+
+验证：`cargo test -p rove-ui status_items`（登记表顺序与工厂、字符串、条目文字、缩进检测、选择器内容）与
+`cargo test -p rove-ui status_ -j 1`（入口测试：六项顺序与文字、光标与选区同步、真实 GBK 文件的「自动识别」与
+按编码重新打开后的乱码与恢复、混合换行符且打开再关闭字节不变、超大文件与 `Library/PackageCache/**` 的只读提示、
+切换标签后一次完整重算 < 16 ms、`.asmdef` 的语言模式切换与重新高亮、缩进选择器）。需要真实 Unity 项目的那条
+用例按 AGENTS §8 在未设置 `ROVE_TEST_UNITY_MEDIUM` 时跳过。

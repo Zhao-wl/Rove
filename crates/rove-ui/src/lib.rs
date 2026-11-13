@@ -22,6 +22,8 @@ pub mod app_settings;
 // #36：C# 索引状态（状态栏条目、详情面板、失败通知、rove.index.* 命令）。
 pub mod index_status;
 pub mod outline;
+// #27：状态栏右侧的文件状态条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）。
+pub mod status_items;
 
 // #21：当前文件查找条。
 pub mod find;

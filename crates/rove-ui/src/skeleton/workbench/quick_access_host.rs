@@ -133,7 +133,8 @@ impl Workbench {
 
     // ------------------------------------------------------------------ 浮层
 
-    fn ensure_quick_view(&mut self, cx: &mut Context<Self>) -> Entity<QuickInputView> {
+    /// #27 的状态栏选择器与 #24 的快速打开共用这一个浮层实体。
+    pub(super) fn ensure_quick_view(&mut self, cx: &mut Context<Self>) -> Entity<QuickInputView> {
         if let Some(view) = &self.quick.view {
             return view.clone();
         }
@@ -527,6 +528,10 @@ impl Workbench {
     // ------------------------------------------------------------------ 接受
 
     fn quick_picked(&mut self, event: QuickPickEvent, cx: &mut Context<Self>) {
+        // #27：状态栏条目的选择器用同一个浮层，先让它认领自己的那一次“接受”。
+        if self.status_picked(&event, cx) {
+            return;
+        }
         let QuickPickEvent::Accepted {
             id,
             items,

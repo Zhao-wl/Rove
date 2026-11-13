@@ -135,3 +135,56 @@ fn feature_registers_a_menu_item_that_shows_only_when_implemented() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].1.command.as_ref(), "workbench.action.quickOpen");
 }
+
+#[test]
+fn status_items_register_the_file_state_entries_on_the_right() {
+    // 例：#27 的六个文件状态条目全部经登记机制加入，顺序与 VS Code 一致（数值越大越靠左），
+    // 通知铃铛（i32::MIN）仍在最右。
+    let mut views = default_contributions();
+    rove_ui::status_items::registry::register_contributions(&mut views).unwrap();
+    let mut bar = StatusBar::default();
+    for (id, ..) in rove_ui::status_items::registry::ITEMS {
+        bar.set(
+            &views,
+            id,
+            StatusEntry {
+                text: id.into(),
+                kind: StatusKind::Standard,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    bar.set(
+        &views,
+        catalog::STATUS_NOTIFICATIONS,
+        StatusEntry {
+            text: "$(bell)".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let right: Vec<_> = bar
+        .items(&views, Alignment::Right)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    assert_eq!(
+        right,
+        [
+            "rove.status.cursor",
+            "rove.status.indentation",
+            "rove.status.encoding",
+            "rove.status.eol",
+            "rove.status.language",
+            "rove.status.readOnly",
+            catalog::STATUS_NOTIFICATIONS,
+        ]
+    );
+    // 每个条目都用工作台的通用工厂绘制，点击命令来自登记表。
+    for (id, _, _, command) in rove_ui::status_items::registry::ITEMS {
+        let c = views.get(id).unwrap();
+        assert_eq!(c.factory_key.as_ref(), catalog::STATUS_FACTORY, "{id}");
+        assert_eq!(c.command.as_deref(), command, "{id}");
+    }
+}

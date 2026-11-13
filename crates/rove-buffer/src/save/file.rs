@@ -501,6 +501,23 @@ impl TextFile {
         self.reload(stamp, &bytes, settings, now)
     }
 
+    /// #27 的「通过编码重新打开」：按 `encoding`（VS Code 的编码 ID）重新解码磁盘内容，
+    /// 换掉会话里的文本与编码 / BOM / 换行符，丢弃本地修改（可撤销）。用户明确选了编码，
+    /// 解不出合法文本也按 lossy 显示（同打开路径的 `force_open`）。
+    pub fn reopen_with_encoding(
+        &mut self,
+        encoding: &str,
+        settings: &dyn Settings,
+        now: Instant,
+    ) -> Result<DiskChange> {
+        if crate::settings::encoding_from_id(encoding).is_none() {
+            return Err(Error::Unsupported);
+        }
+        let path = self.path.clone().ok_or(Error::Unsupported)?;
+        let (stamp, bytes) = DiskStamp::read(&path)?.ok_or(Error::NotFound)?;
+        self.reload_decoded(stamp, &bytes, settings, Some(encoding), now)
+    }
+
     /// 提示条“保留本地修改”：以这次外部修改为新的基准，之后保存直接写入、不再报保存冲突。
     pub fn keep_local_changes(&mut self) {
         if let Some(stamp) = self.external.take() {
@@ -515,9 +532,22 @@ impl TextFile {
         settings: &dyn Settings,
         now: Instant,
     ) -> Result<DiskChange> {
+        self.reload_decoded(stamp, bytes, settings, None, now)
+    }
+
+    /// `explicit` 为 `Some` 时按指定编码解码（不走自动识别）。
+    fn reload_decoded(
+        &mut self,
+        stamp: DiskStamp,
+        bytes: &[u8],
+        settings: &dyn Settings,
+        explicit: Option<&str>,
+        now: Instant,
+    ) -> Result<DiskChange> {
         let mut options = LoadOptions::new(&self.language, settings);
         options.read_only = Arc::from(self.session.buffer().read_only());
         options.force_open = true;
+        options.explicit_encoding = explicit;
         let loaded = open_bytes(bytes, &options)?;
         let line_endings_before = self.line_endings().clone();
         let mut text = String::with_capacity(loaded.text.byte_len() as usize);
