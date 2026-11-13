@@ -1,6 +1,6 @@
 //! #21 入口集成测试（真实 GPUI 窗口，只通过键位驱动）：`ctrl+f` 打开查找条并按选区取种子；
 //! 输入即查找与光标跟随；`enter` / `f3` / `shift+f3` / `ctrl+f3` 导航与循环；四个开关；非法正则；
-//! 在选区内查找与 `autoFindInSelection`；历史；`escape` 清除装饰；替换入口不存在。
+//! 在选区内查找与 `autoFindInSelection`；历史；`escape` 清除装饰（替换入口见 `replace_tests.rs`）。
 use super::*;
 use crate::find::{
     engine::FindOptions,
@@ -453,16 +453,17 @@ fn counts_cover_none_single_many(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn find_with_selection_and_no_replace_entry_points(cx: &mut TestAppContext) {
+fn find_with_selection_and_no_cross_file_replace_commands(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);
-    // `ctrl+h`（startFindReplaceAction）没有注册：什么也不会发生。
-    press("ctrl-h", cx);
-    assert!(!visible(&view, cx));
-    // 命令登记表里没有任何替换命令。
+    // 当前文件的替换由 #48 接入（见 `replace_tests.rs`）；跨文件替换（#62）与多选区（#52）
+    // 的命令仍然不登记。
     view.read_with(cx, |v, _| {
         for (id, _) in v.commands.registry().entries() {
-            assert!(!id.to_lowercase().contains("replace"), "{id}");
+            assert!(!id.starts_with("search.action.replace"), "{id}");
+            assert_ne!(id, "workbench.action.replaceInFiles");
+            assert_ne!(id, "closeReplaceInFilesWidget");
+            assert_ne!(id, "editor.action.selectAllMatches");
         }
     });
     // actions.findWithSelection（无默认键位）：以选区为查找文本打开，不抢焦点。

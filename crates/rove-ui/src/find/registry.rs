@@ -1,10 +1,13 @@
-//! 查找条的登记项（#21）：命令（VS Code ID）、界面字符串、上下文键名与颜色键。
+//! 查找条的登记项（#21、#48）：命令（VS Code ID）、界面字符串、上下文键名与颜色键。
 //!
-//! - 设置项 `editor.find.*` 与 `editor.wordSeparators` 由 `rove_config::register_builtin` 按 compat/SETTINGS.md
-//!   登记，这里只读（[`super::host::FindSettings`]）；
-//! - 默认键位来自 #14 生成的 VS Code 默认键位表（`ctrl+f`、`f3`、`alt+c` 等），不重复登记；
-//! - **不登记**任何替换命令（`editor.action.replaceOne` / `replaceAll` / `startFindReplaceAction` /
-//!   `togglePreserveCase`，留给 #48）与 `editor.action.selectAllMatches`（随多光标 R51）。
+//! - 设置项 `editor.find.*`（含 #48 的 `editor.find.replaceHistory`）与 `editor.wordSeparators` 由
+//!   `rove_config::register_builtin` 按 compat/SETTINGS.md 登记，这里只读（[`super::host::FindSettings`]）；
+//! - 默认键位来自 #14 生成的 VS Code 默认键位表（`ctrl+f`、`f3`、`alt+c`、`ctrl+h`、`ctrl+alt+enter`、
+//!   `ctrl+shift+1`、`alt+p` 等），不重复登记；
+//! - #48 登记四个替换命令（`editor.action.startFindReplaceAction` / `replaceOne` / `replaceAll` /
+//!   `togglePreserveCase`）与替换行的界面字符串，**不新增颜色键**（复用查找条已登记的
+//!   `editorWidget.*`、`input.*`、`inputOption.active*`）；
+//! - **不登记** `editor.action.selectAllMatches`（随多光标 #52）与跨文件替换（#62）的命令。
 
 use gpui::Action;
 use rove_base::{Error, Result};
@@ -24,11 +27,19 @@ pub const TOGGLE_CASE: &str = "toggleFindCaseSensitive";
 pub const TOGGLE_REGEX: &str = "toggleFindRegex";
 pub const TOGGLE_WHOLE_WORD: &str = "toggleFindWholeWord";
 pub const TOGGLE_IN_SELECTION: &str = "toggleFindInSelection";
+// #48：替换。
+pub const START_REPLACE: &str = "editor.action.startFindReplaceAction";
+pub const REPLACE_ONE: &str = "editor.action.replaceOne";
+pub const REPLACE_ALL: &str = "editor.action.replaceAll";
+pub const TOGGLE_PRESERVE_CASE: &str = "togglePreserveCase";
 
 /// 发布在查找条上的 VS Code 上下文键（KEYBINDINGS.md 的 when 子句用到）。
 pub mod context {
     pub const WIDGET_VISIBLE: &str = "findWidgetVisible";
     pub const INPUT_FOCUSSED: &str = "findInputFocussed";
+    /// #48：替换输入框有焦点（框内 `enter` = 替换当前匹配）。与 `findInputFocussed` 互斥：
+    /// 哪个输入框有焦点就只发布哪一个，否则两条 `enter` 规则会同时命中。
+    pub const REPLACE_INPUT_FOCUSSED: &str = "replaceInputFocussed";
 }
 
 /// (命令 ID, 标题字符串 key, 中文标题)。
@@ -64,6 +75,15 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "find.command.toggleInSelection",
         "切换在选定内容中查找",
     ),
+    // #48：替换。
+    (START_REPLACE, "find.command.startReplace", "替换"),
+    (REPLACE_ONE, "find.command.replaceOne", "替换当前匹配项"),
+    (REPLACE_ALL, "find.command.replaceAll", "全部替换"),
+    (
+        TOGGLE_PRESERVE_CASE,
+        "find.command.togglePreserveCase",
+        "切换保留大小写",
+    ),
 ];
 
 /// 命令分类（命令面板里显示为“编辑器: …”，与代码视图共用）。
@@ -88,6 +108,12 @@ pub const STRINGS: &[(&str, &str)] = &[
         "find.count.searching",
         "已找到 {found} 处 · 已搜索 {percent}%",
     ),
+    // #48：替换行。
+    ("find.replace.placeholder", "替换"),
+    ("find.toggle.preserveCase", "保留大小写"),
+    ("find.button.replace", "替换"),
+    ("find.button.replaceAll", "全部替换"),
+    ("find.button.toggleReplace", "切换替换"),
     ("find.error.regex", "正则表达式无效：{reason}"),
     (
         "find.error.tooLarge",
@@ -254,7 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registers_find_commands_without_any_replace_command() {
+    fn registers_find_and_replace_commands() {
         let mut r = CommandRegistry::default();
         register_commands(&mut r).unwrap();
         register_commands(&mut r).unwrap();
@@ -268,9 +294,19 @@ mod tests {
         for (key, _) in STRINGS {
             assert!(t.get(key).is_some());
         }
-        // 替换入口一律不登记（#48）。
+        // #48 的四个替换入口都在；跨文件替换（#62）与多选区（#52）的命令仍然不登记。
+        for id in [
+            START_REPLACE,
+            REPLACE_ONE,
+            REPLACE_ALL,
+            TOGGLE_PRESERVE_CASE,
+        ] {
+            assert!(r.get(id).is_some(), "{id}");
+        }
         for (id, _) in r.entries() {
-            assert!(!id.to_lowercase().contains("replace"), "{id}");
+            assert!(!id.starts_with("search.action.replace"), "{id}");
+            assert_ne!(id, "workbench.action.replaceInFiles");
+            assert_ne!(id, "closeReplaceInFilesWidget");
             assert_ne!(id, "editor.action.selectAllMatches");
         }
     }

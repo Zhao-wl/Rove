@@ -222,7 +222,7 @@ cargo test --workspace
 | `lists` | 已由 `rove-ui::list_widget` 实现：虚拟化列表/树/快速输入与全部 `list.*`、`quickInput.*` 命令（见下文“列表、树与快速输入组件”）；骨架文件树的数据与控制已改用 `ListWidget` + `TreeModel` | #18（已完成） |
 | `code-view` | 已由 `rove-ui::code_view` 实现：自定义 Element、f64 滚动、整形缓存与预取、行号、只读选区、命中测试、滚动条；`workbench.rs` 只挂载 `CodeView` | #19（已完成） |
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
-| `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
+| `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史，以及 #48 的替换行、替换语义与“全部替换 = 一次事务”；`workbench.rs` 只给每个代码视图包一层 `FindHost` | #21、#48（已完成） |
 | `nav` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::nav` 与 `skeleton/workbench/nav_host.rs` 实现（见 §31）：转到定义 / 声明 / 实现、`Ctrl+悬停` 与 `Ctrl+点击`、悬停卡片、符号导航模式、语义同名高亮、近似结果提示，以及 #38 `CsRouter` 的装配（语义来源、L1、`BufferStates` 的打开 / 重新载入 / 关闭） | #40（已完成） |
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；窗口装配（`ctrl+s` / 另存为 / 全部保存 → `SaveController`、`ctrl+n`、重载后刷新视图、脏点与“已删除”、窗口关闭确认）由 #47 在 `workbench/edit_host.rs` 完成（见 §37） | #49（已完成） |
@@ -880,9 +880,9 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 验证：`cargo test -p rove-lang-cs`（`index_tests.rs` 的段 13 解析与校验）；`cargo test -p rove-lang-cs --lib -- --ignored`（`roslyn_writer_generates_metadata_views`：真实索引进程 + 临时构建的第三方库 1.0/2.0，覆盖缺 `.xml`、DLL 被独占锁住、同名不同版本、嵌套类型、泛型约束、确定性输出）；设置 `ROVE_TEST_UNITY_MEDIUM` 后，`cargo test -p rove-lang-cs --test metadata_views` 在真实项目上抽查 `Transform.position`、`List<T>.Add`、第三方 DLL 和去重。准确率：`nav_check` 的 `external` 分类现在按「符号在视图里有定义位置」判定。
 
 
-## 27. 当前文件查找条（#21）
+## 27. 当前文件查找条（#21）与当前文件替换（#48）
 
-位置：`crates/rove-ui/src/find/`。只依赖 #1 的冻结契约（`TextSource`、`Settings`、`Theme`、登记表）、#12 的 JavaScript 正则兼容层（`rove-syntax::language_config::CompiledRegex`）与 #18 的输入框和历史；不修改契约。`lib.rs` 只追加 `pub mod find;`。
+位置：`crates/rove-ui/src/find/`。只依赖 #1 的冻结契约（`TextSource`、`Settings`、`Theme`、登记表）、#12 的 JavaScript 正则兼容层（`rove-syntax::language_config::CompiledRegex`）、#18 的输入框和历史，以及 #46 的编辑会话（替换只经 `EditSession` 改文本）；不修改契约。`lib.rs` 只追加 `pub mod find;`。
 
 | 文件 | 内容 | GPUI |
 |---|---|---|
@@ -891,21 +891,23 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 ` 在搜索文本里规整为 `
 `，列号仍是源行 UTF-8 字节列 | 否 |
 | `state.rs` | `FindModel`：查找文本、选项、范围、匹配列表、当前项、校验错误、搜索状态机（每次改动取消上一次、过期结果按代次丢弃）；`CountLabel`（无结果 / 第 N 项共 M 项 / 超过上限 / 已找到 N 处 · 已搜索 P%）；`plan_open`（种子与 `autoFindInSelection` 的决定） | 否 |
+| `replace.rs`（#48） | `ReplacePattern`：只在正则模式下解析替换串（`$0` / `$&` / `$1`…`$99` / `$$`、`\n` `\t` `\\` 转义、`\u` `\U` `\l` `\L` 大小写操作符，不认识的序列原样保留）；`preserve_case_text`（VS Code `buildReplaceStringWithCasePreserved`，含连字符 / 下划线逐段）；`plan_replacements`：一组匹配 → 一组 `Replacement`（捕获组经 `Searcher::capture_texts` 按同一口径重跑正则取得；静态替换串不读文本，几千处替换共用一个 `Arc<str>`）；`scope_delta` / `shifted_scope`：替换后“在选区内查找”的范围平移 | 否 |
 | `registry.rs` | 命令（VS Code ID）、界面字符串、颜色键、`FindColors`、`FindAction`（GPUI action） | 是（仅 action） |
-| `host.rs` | `FindHost`：包住一个 `CodeView`，在右上角浮出查找条（输入框 + 区分大小写 / 全词 / 正则三个开关 + 计数 + 在选区内查找 + 上一个 / 下一个 / 关闭），后台搜索、装饰层、导航、历史、`editor.find.*`；`FindShared`：窗口内共享的选项、上次查找文本与历史 | 是 |
+| `host.rs` | `FindHost`：包住一个 `CodeView`，在右上角浮出查找条（展开箭头 + 输入框 + 区分大小写 / 全词 / 正则三个开关 + 计数 + 在选区内查找 + 上一个 / 下一个 / 关闭；可写文档上再加一行替换：替换框 + 保留大小写 + 替换 + 全部替换），后台搜索、装饰层、导航、历史、`editor.find.*` 与替换的执行；`FindShared`：窗口内共享的选项、上次查找文本与历史，以及替换串、替换历史、替换行展开状态与保留大小写 | 是 |
 
-**接入**：每个编辑器组的每个代码视图一个 `FindHost`（`CodeSlot::find`，`editor_panes.rs` 绘制它而不是裸 `CodeView`）。选项开关、上次的查找文本与历史在窗口内共享（`Workbench::find_shared`），所以切换文件、切换组、再次打开后保持；历史按 `editor.find.history = workspace` 存到 `%APPDATA%\Rove\workspaceStorage\<哈希>\find-history.json`（后台写，`never` 时不记）。命令：`actions.find`、`actions.findWithSelection`、`closeFindWidget`、`editor.action.{next,previous}{Match,SelectionMatch}FindAction`、`toggleFind{CaseSensitive,Regex,WholeWord,InSelection}`，默认键位全部来自 #14 的 VS Code 默认键位表；查找条在 key context 上发布 `findWidgetVisible`、`findInputFocussed` 与 `editorFocus`（VS Code 里 `editorFocus` 包含编辑器内的小组件），输入框的 `↑` / `↓` 走 #18 的 `history.showPrevious` / `showNext`。**不登记**任何替换命令（`replaceOne`、`replaceAll`、`startFindReplaceAction`、`togglePreserveCase`）与 `selectAllMatches`；`ctrl+h` 按下没有任何反应。
+**接入**：每个编辑器组的每个代码视图一个 `FindHost`（`CodeSlot::find`，`editor_panes.rs` 绘制它而不是裸 `CodeView`）。选项开关、上次的查找文本与历史在窗口内共享（`Workbench::find_shared`），所以切换文件、切换组、再次打开后保持；历史按 `editor.find.history = workspace` 存到 `%APPDATA%\Rove\workspaceStorage\<哈希>\find-history.json`（后台写，`never` 时不记）。命令：`actions.find`、`actions.findWithSelection`、`closeFindWidget`、`editor.action.{next,previous}{Match,SelectionMatch}FindAction`、`toggleFind{CaseSensitive,Regex,WholeWord,InSelection}`，默认键位全部来自 #14 的 VS Code 默认键位表；查找条在 key context 上发布 `findWidgetVisible` 与 `editorFocus`（VS Code 里 `editorFocus` 包含编辑器内的小组件），`findInputFocussed` 与 `replaceInputFocussed` 挂在**各自输入框**的外层（两者互斥，否则 `enter` 的两条规则会同时命中），输入框的 `↑` / `↓` 走 #18 的 `history.showPrevious` / `showNext`。**不登记** `selectAllMatches`（随多光标 #52）与跨文件替换（#62）的命令。
+
+**替换（#48）**：命令 `editor.action.startFindReplaceAction`（`ctrl+h`）、`editor.action.replaceOne`（`ctrl+shift+1`、替换框里的 `enter`）、`editor.action.replaceAll`（`ctrl+alt+enter`）、`togglePreserveCase`（`alt+p`），默认键位同样来自 #14 的表。替换行只在**可写文档**上出现（`CodeView::is_editable`：超大文件、元数据视图、`files.readonly*` 与 `rove.files.extraReadonlyInclude` 命中的文件都没有替换入口，按 UX_SPEC §1.2 整行不显示而不是置灰），`ctrl+h` 在只读文档上只打开查找条。展开状态、替换串与保留大小写都在 `FindShared` 里，同一窗口内保持；替换历史按 `editor.find.replaceHistory` 与查找历史写在同一个 `find-history.json` 的两个数组里。语义：替换一处 = 选区正好落在当前匹配上才替换，之后重新搜索并前进到下一处（否则只前进，VS Code `replace()` 同）；**全部替换把所有匹配合成一次多区间事务**交给 #46 的 `EditSession::edit`（`EditKind::Other`，前后都断开撤销单元），所以一次 `ctrl+z` 全部回退、一次 `ctrl+y` 全部重做，混合换行符文件逐字节还原（反向事务按原样写入）；替换过程中不逐条刷新界面，结束后由一次重新搜索更新计数与装饰。匹配列表与编辑会话的快照版本对不上、或超过 19999 个上限时，全部替换在事务里就地重新扫描一遍（`engine::search_all`，不限数量），不会按过期位置改错地方。“在选区内查找”的范围在替换后按范围内的长度变化平移（`replace::shifted_scope`），不会被文本变化清掉。
 
 **装饰**：匹配是代码视图的一个装饰层（优先级 `priority::FIND_MATCH`）。层里只存匹配列表的引用，`decorate(line)` 在某行进入视口或预取范围时二分定位本行的匹配，所以 1 GB 文件上几十万个匹配也只为可见行生成装饰。当前匹配用 `editor.findMatch*`，其他匹配用 `editor.findMatchHighlight*`（两套键不混用），在选区内查找时范围用 `editor.findRangeHighlight*`。导航到的匹配通过 `set_selection(.., Reveal::CenterIfOutside)` 显示。`editor.find.addExtraSpaceOnTop` 经 `CodeView::set_top_inset` 在第一行之上留出查找条的高度。
 
 **线程与取消**：输入、点击只登记请求；搜索在后台执行器按块（约 1 MiB）进行，每块检查取消并回报进度，结果经代次校验后回到界面。匹配列表完整（未超过 19999 个、文本版本未变）时“上一个 / 下一个”在内存里二分；列表被截断或过期时回到引擎在后台查找。多行正则需要整个范围一次读入，超过 128 MiB 返回 `Unsupported`（界面提示“文件太大”）。
 
-**给 #22 / #48 的扩展点**：
+**给 #22 的扩展点**：`engine::search_all` 已按块回报 `Progress{found, scanned_bytes, total_bytes}`，`SearchOutput::partial` 标明行索引未建完只扫了已知行；`FindModel` 的 `SearchState::Searching{found, progress}` 与 `CountLabel::Searching` 已能显示“已找到 N 处 · 已搜索 37%”（文本不到 8 MiB 时不显示进度）。#22 只需换流式入口，状态机与界面不用改（超大文件是只读文档，替换行本来就不显示）。
 
-- #22（超大文件）：`engine::search_all` 已按块回报 `Progress{found, scanned_bytes, total_bytes}`，`SearchOutput::partial` 标明行索引未建完只扫了已知行；`FindModel` 的 `SearchState::Searching{found, progress}` 与 `CountLabel::Searching` 已能显示“已找到 N 处 · 已搜索 37%”（文本不到 8 MiB 时不显示进度）。#22 只需换流式入口或在 `FindHost` 里按文件级别隐藏替换按钮，状态机与界面不用改。
-- #48（替换）：匹配列表、当前项、范围与 `Searcher` 都在可独立测试的 `FindModel` 里；替换按钮 / 输入框与命令在 `host.rs` 的 `render_widget` 与 `execute` 追加，查找条布局的第一列（展开替换的箭头）留给它，不需要改状态机。
+#48 对 #21 / #12 的改动只是**追加**：`Searcher::capture_texts`（按与 `scan` 相同的口径重跑正则取捕获组，对不上就只给组 0）与 `CompiledRegex::capture_ranges`；查找模型、匹配算法与既有签名都没有动。
 
-验证：`cargo test -p rove-ui find`（引擎、模型、登记的单元测试）与 `cargo test -p rove-ui find_tests`（`skeleton/workbench/find_tests.rs`，真实 GPUI 窗口、只通过键位驱动：`ctrl+f` 种子、输入即查找与光标跟随、`enter` / `f3` / `ctrl+f3`、循环开关、四个开关与跨文件保持、非法正则、在选区内查找与 `autoFindInSelection`、历史、计数、替换入口不存在）。性能：`cargo xtask bench --filter find/`（10 万行输入一个字符到计数更新，预算 `find_input_char_100k_lines`）与 `cargo xtask bench --filter scroll/find_visible`（查找条打开时的帧预算，对照 `scroll/frame_cpu_cache_hit`）。
+验证：`cargo test -p rove-ui find`（引擎、模型、替换串与保留大小写、登记的单元测试）、`cargo test -p rove-ui find_tests`（`skeleton/workbench/find_tests.rs`，真实 GPUI 窗口、只通过键位驱动：`ctrl+f` 种子、输入即查找与光标跟随、`enter` / `f3` / `ctrl+f3`、循环开关、四个开关与跨文件保持、非法正则、在选区内查找与 `autoFindInSelection`、历史、计数）与 `cargo test -p rove-ui replace_tests`（`ctrl+h` 展开与保持、替换一处并前进、全部替换与一次撤销 / 重做、CRLF 与混合换行符逐字节还原、正则捕获组、保留大小写、在选区内替换不越界、只读文档没有替换入口、5000 处替换一次撤销）。性能：`cargo xtask bench --filter find/`（10 万行输入一个字符到计数更新，预算 `find_input_char_100k_lines`；`replace_all_*_5000_in_100k_lines` 是 10 万行里替换 5000 处的区间表与事务耗时）与 `cargo xtask bench --filter scroll/find_visible`（查找条打开时的帧预算，对照 `scroll/frame_cpu_cache_hit`）。
 
 ## 28. 快速打开与命令面板（#24）
 

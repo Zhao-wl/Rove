@@ -10,6 +10,8 @@
 
 use super::engine::{self, FindOptions, Match, MATCHES_LIMIT};
 use super::registry::{self as reg, FindAction, FindColors};
+// #48：替换串解析、保留大小写、把匹配变成一次事务。
+use super::replace;
 use super::state::{
     plan_open, AutoFindInSelection, CountLabel, FindModel, OpenContext, SearchState, SeedMode,
 };
@@ -26,6 +28,8 @@ use gpui::{
     IntoElement, KeyContext, MouseButton, Render, SharedString, Window,
 };
 use rove_base::{Cancellation, Position, Span, TextRange};
+use rove_buffer::edit::Transaction;
+use rove_buffer::TextSource;
 use rove_config::{Key, Scope, Settings};
 use rove_i18n::{Message, Strings};
 use rove_theme::{Theme, ThemeKind};
@@ -51,6 +55,8 @@ pub struct FindSettings {
     pub seed: SeedMode,
     pub auto_in_selection: AutoFindInSelection,
     pub history_workspace: bool,
+    /// #48：`editor.find.replaceHistory`，与查找历史各自独立。
+    pub replace_history_workspace: bool,
     pub word_separators: Arc<str>,
 }
 
@@ -79,17 +85,28 @@ impl FindSettings {
                 "never",
             )),
             history_workspace: text("editor.find.history", "workspace") == "workspace",
+            replace_history_workspace: text("editor.find.replaceHistory", "workspace")
+                == "workspace",
             word_separators: text("editor.wordSeparators", "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?")
                 .into(),
         }
     }
 }
 
-/// 窗口内所有查找条共享的状态：三个选项开关、上次的查找文本与查找历史。
+/// 窗口内所有查找条共享的状态：三个选项开关、上次的查找文本与查找历史，以及 #48 的替换串、
+/// 替换历史、替换行展开状态与“保留大小写”。
 pub struct FindShared {
     pub options: FindOptions,
     pub search: String,
     pub history: Vec<String>,
+    /// #48：上次的替换串。
+    pub replace: String,
+    /// #48：替换历史（`editor.find.replaceHistory`）。
+    pub replace_history: Vec<String>,
+    /// #48：替换行是否展开（同一窗口内保持）。
+    pub expanded: bool,
+    /// #48：保留大小写开关。
+    pub preserve_case: bool,
     history_path: Option<PathBuf>,
     loaded: bool,
 }
@@ -103,6 +120,10 @@ impl FindShared {
             options: FindOptions::default(),
             search: String::new(),
             history: Vec::new(),
+            replace: String::new(),
+            replace_history: Vec::new(),
+            expanded: false,
+            preserve_case: false,
             history_path,
             loaded: false,
         }))
@@ -118,32 +139,62 @@ impl FindShared {
         };
         let parsed = std::fs::read(path)
             .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| {
-                v.get("search")?.as_array().map(|a| {
-                    a.iter()
-                        .filter_map(|s| s.as_str().map(String::from))
-                        .collect()
-                })
-            });
-        if let Some(entries) = parsed {
-            self.history = entries;
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        let list = |v: &serde_json::Value, key: &str| -> Option<Vec<String>> {
+            Some(
+                v.get(key)?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect(),
+            )
+        };
+        if let Some(value) = parsed {
+            if let Some(entries) = list(&value, "search") {
+                self.history = entries;
+            }
+            if let Some(entries) = list(&value, "replace") {
+                self.replace_history = entries;
+            }
         }
     }
 
     /// 记一条历史（去重、移到末尾、截断）；返回需要写盘的内容。
     fn add_history(&mut self, search: &str) -> Option<(PathBuf, serde_json::Value)> {
-        if search.is_empty() {
+        if !push_history(&mut self.history, search) {
             return None;
         }
-        self.history.retain(|e| e != search);
-        self.history.push(search.to_string());
-        if self.history.len() > HISTORY_LIMIT {
-            self.history.remove(0);
-        }
-        let path = self.history_path.clone()?;
-        Some((path, serde_json::json!({ "search": self.history })))
+        self.to_disk()
     }
+
+    /// #48：记一条替换历史。
+    fn add_replace_history(&mut self, replace: &str) -> Option<(PathBuf, serde_json::Value)> {
+        if !push_history(&mut self.replace_history, replace) {
+            return None;
+        }
+        self.to_disk()
+    }
+
+    fn to_disk(&self) -> Option<(PathBuf, serde_json::Value)> {
+        let path = self.history_path.clone()?;
+        Some((
+            path,
+            serde_json::json!({ "search": self.history, "replace": self.replace_history }),
+        ))
+    }
+}
+
+/// 去重、移到末尾、截断；条目为空或没有变化时返回 `false`。
+fn push_history(list: &mut Vec<String>, entry: &str) -> bool {
+    if entry.is_empty() {
+        return false;
+    }
+    list.retain(|e| e != entry);
+    list.push(entry.to_string());
+    if list.len() > HISTORY_LIMIT {
+        list.remove(0);
+    }
+    true
 }
 
 /// 匹配装饰的数据：只存引用，不为每个匹配生成对象。
@@ -274,6 +325,8 @@ enum Problem {
 pub struct FindHost {
     code: Entity<CodeView>,
     input: Entity<TextInput>,
+    /// #48：替换输入框（只在替换行展开时绘制）。
+    replace_input: Entity<TextInput>,
     shared: SharedFind,
     settings: Arc<dyn Settings>,
     strings: Arc<dyn Strings>,
@@ -290,6 +343,10 @@ pub struct FindHost {
     nav_cancel: Cancellation,
     pending_close: bool,
     pending_research: bool,
+    /// 下一次重新搜索之后要做的事（#48 的替换之后前进到下一处匹配）。
+    pending_after: After,
+    /// #48：这一次文本变化是本查找条的替换引起的，范围已经自己算好了，不要清掉。
+    keep_scope: bool,
     /// 查找文本改了但还没搜索（`editor.find.findOnType` 关闭时等回车）。
     dirty: bool,
     _subs: Vec<gpui::Subscription>,
@@ -316,6 +373,7 @@ impl FindHost {
     ) -> Self {
         let colors = FindColors::resolve(theme.as_ref(), kind);
         let input = cx.new(|cx| TextInput::new(cx, input_colors(&colors)));
+        let replace_input = cx.new(|cx| TextInput::new(cx, input_colors(&colors)));
         let cfg = FindSettings::read(&*settings);
         let decor = Rc::new(RefCell::new(Decor {
             matches: Arc::new(Vec::new()),
@@ -347,16 +405,25 @@ impl FindHost {
                 _ => {}
             }),
         );
-        input.update(cx, |input, _| {
-            input.set_placeholder(
-                strings
-                    .text(&Message::key("find.placeholder"))
-                    .unwrap_or_default(),
-            );
-        });
+        // #48：替换串的改动只记在共享状态里，不触发搜索。
+        subs.push(
+            cx.subscribe(&replace_input, |this, _, event: &TextInputEvent, _| {
+                if let TextInputEvent::Changed { text, .. } = event {
+                    this.shared.borrow_mut().replace = text.clone();
+                }
+            }),
+        );
+        for (entity, key) in [
+            (&input, "find.placeholder"),
+            (&replace_input, "find.replace.placeholder"),
+        ] {
+            let text = strings.text(&Message::key(key)).unwrap_or_default();
+            entity.update(cx, |input, _| input.set_placeholder(text));
+        }
         Self {
             code,
             input,
+            replace_input,
             shared,
             settings,
             strings,
@@ -372,6 +439,8 @@ impl FindHost {
             nav_cancel: Cancellation::default(),
             pending_close: false,
             pending_research: false,
+            pending_after: After::Nothing,
+            keep_scope: false,
             dirty: false,
             _subs: subs,
         }
@@ -395,6 +464,30 @@ impl FindHost {
 
     pub fn input_focus(&self, cx: &App) -> FocusHandle {
         self.input.read(cx).focus_handle(cx)
+    }
+
+    // ------------------------------------------------------------------ 替换（#48）的对外状态
+
+    /// 文档可写才有替换入口（超大文件、元数据视图、只读规则命中的文件都不显示替换行）。
+    pub fn can_replace(&self, cx: &App) -> bool {
+        self.code.read(cx).is_editable()
+    }
+
+    /// 替换行此刻是否显示。
+    pub fn replace_shown(&self, cx: &App) -> bool {
+        self.visible && self.shared.borrow().expanded && self.can_replace(cx)
+    }
+
+    pub fn replace_text(&self, cx: &App) -> String {
+        self.replace_input.read(cx).text().to_string()
+    }
+
+    pub fn preserve_case(&self) -> bool {
+        self.shared.borrow().preserve_case
+    }
+
+    pub fn replace_input_focus(&self, cx: &App) -> FocusHandle {
+        self.replace_input.read(cx).focus_handle(cx)
     }
 
     /// 查找条自己的 GPUI 动作入口，也供测试与 `rove-app` 直接按命令 ID 调用。
@@ -427,6 +520,11 @@ impl FindHost {
             reg::TOGGLE_REGEX => self.toggle(window, cx, |o| o.regex = !o.regex),
             reg::TOGGLE_WHOLE_WORD => self.toggle(window, cx, |o| o.whole_word = !o.whole_word),
             reg::TOGGLE_IN_SELECTION => self.toggle_in_selection(cx),
+            // #48：替换。
+            reg::START_REPLACE => self.start_replace(window, cx),
+            reg::REPLACE_ONE => self.replace_one(window, cx),
+            reg::REPLACE_ALL => self.replace_all(window, cx),
+            reg::TOGGLE_PRESERVE_CASE => self.toggle_preserve_case(cx),
             _ => return false,
         }
         true
@@ -536,6 +634,19 @@ impl FindHost {
                 input.select_all(cx);
             }
         });
+        // #48：替换输入框与它自己的历史（`editor.find.replaceHistory`）。
+        let replace_history = self.cfg.replace_history_workspace.then(|| {
+            let mut h = InputHistory::new(HISTORY_LIMIT);
+            for entry in &self.shared.borrow().replace_history {
+                h.add(entry);
+            }
+            h
+        });
+        let replace = self.shared.borrow().replace.clone();
+        self.replace_input.update(cx, |input, cx| {
+            input.history = replace_history;
+            input.set_text(&replace, cx);
+        });
         self.shared.borrow_mut().search = search;
         self.set_visible(true, cx);
         self.apply_top_inset(cx);
@@ -550,7 +661,12 @@ impl FindHost {
             return;
         }
         self.record_history(cx);
-        let input_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+        let input_focused = self.input.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .replace_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
         self.visible = false;
         self.pending_close = false;
         self.after = After::Nothing;
@@ -579,8 +695,10 @@ impl FindHost {
     }
 
     fn apply_top_inset(&mut self, cx: &mut Context<Self>) {
+        // 替换行展开时查找条高一行（#48），留出的空白跟着变。
+        let rows = if self.replace_shown(cx) { 2.0 } else { 1.0 };
         let inset = if self.visible && self.cfg.add_extra_space_on_top {
-            ROW_HEIGHT
+            ROW_HEIGHT * rows
         } else {
             0.0
         };
@@ -617,11 +735,15 @@ impl FindHost {
     }
 
     fn text_changed(&mut self, cx: &mut Context<Self>) {
+        let own_replacement = std::mem::take(&mut self.keep_scope);
         if !self.visible {
             return;
         }
         // 换了文档或快照：范围作废，匹配重新计算（渲染时在窗口里执行）。
-        self.model.set_in_selection(None);
+        // #48 自己的替换例外：范围已经按替换的长度变化平移好了。
+        if !own_replacement {
+            self.model.set_in_selection(None);
+        }
         self.pending_research = true;
         cx.notify();
     }
@@ -899,6 +1021,190 @@ impl FindHost {
         self.research(After::Nothing, cx);
     }
 
+    // ------------------------------------------------------------------ 替换（#48）
+
+    /// `ctrl+h`：打开查找条并展开替换行，种子规则与 `ctrl+f` 相同；文档不可写时只打开查找条。
+    fn start_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let can = self.can_replace(cx);
+        if can {
+            self.shared.borrow_mut().expanded = true;
+        }
+        self.open(
+            OpenOptions {
+                focus_input: true,
+                update_scope: true,
+                seed: Seed::Setting,
+            },
+            window,
+            cx,
+        );
+        if can {
+            // VS Code 的 `startFindReplaceAction` 把焦点放在替换框里。
+            window.focus(&self.replace_input.read(cx).focus_handle(cx));
+        }
+    }
+
+    /// 展开箭头：只切换替换行（没有对应的 VS Code 命令 ID，是查找条自己的按钮）。
+    fn toggle_replace_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.visible || !self.can_replace(cx) {
+            return;
+        }
+        let expanded = {
+            let mut shared = self.shared.borrow_mut();
+            shared.expanded = !shared.expanded;
+            shared.expanded
+        };
+        if expanded {
+            window.focus(&self.replace_input.read(cx).focus_handle(cx));
+        } else if self
+            .replace_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            window.focus(&self.input.read(cx).focus_handle(cx));
+        }
+        self.apply_top_inset(cx);
+        cx.notify();
+    }
+
+    fn toggle_preserve_case(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
+        let mut shared = self.shared.borrow_mut();
+        shared.preserve_case = !shared.preserve_case;
+        drop(shared);
+        cx.notify();
+    }
+
+    /// `editor.action.replaceOne`：选区正好落在当前匹配上就替换它并前进，否则只前进到下一处
+    /// （VS Code `FindModelBoundToEditorModel.replace`）。
+    fn replace_one(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.replace_shown(cx) {
+            return;
+        }
+        let current = self
+            .model
+            .current()
+            .and_then(|i| self.model.matches().get(i).copied());
+        let Some(m) = current else {
+            let from = self.code.read(cx).selection().end();
+            self.step(from, true, cx);
+            return;
+        };
+        self.run_replacements(Some(m), window, cx);
+    }
+
+    /// `editor.action.replaceAll`：全部匹配合成**一个**事务，撤销一次全部回退。
+    fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.replace_shown(cx) {
+            return;
+        }
+        self.run_replacements(None, window, cx);
+    }
+
+    /// 替换 `single`（`None` = 全部）。区间与替换文本都在编辑会话的快照上算，所以界面上的匹配
+    /// 列表过期时也不会改错位置：模型的列表对不上版本或被截断时，这里就地重新扫描一遍。
+    fn run_replacements(
+        &mut self,
+        single: Option<Match>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(searcher) = self.model.searcher().cloned() else {
+            return;
+        };
+        let template = self.replace_input.read(cx).text().to_string();
+        let pattern = replace::ReplacePattern::parse(&template, self.model.options().regex);
+        let preserve_case = self.shared.borrow().preserve_case;
+        let scope = self.model.scope().cloned();
+        let searched_version = self.searched_version;
+        let usable =
+            !self.model.limit_exceeded() && matches!(self.model.state(), SearchState::Idle);
+        let cached = self.model.matches().clone();
+        let moved_scope: Rc<RefCell<Option<TextRange>>> = Rc::default();
+        let out = moved_scope.clone();
+        // 文本变化事件会先于下面的收尾到达：别让它把范围清掉。
+        self.keep_scope = true;
+        let edited = self.code.update(cx, |code, cx| {
+            code.run_edit(Some(window), cx, move |session, snap, now| {
+                let fresh = searched_version == Some(snap.version());
+                let scanned;
+                let matches: &[Match] = match &single {
+                    Some(m) if fresh => std::slice::from_ref(m),
+                    // 列表与快照对不上：单处替换放弃（位置可能已经不对），全部替换重新扫描。
+                    Some(_) => return Err(rove_base::Error::InvalidInput),
+                    None if fresh && usable => cached.as_slice(),
+                    None => {
+                        scanned = engine::search_all(
+                            &**snap,
+                            &searcher,
+                            scope.as_ref(),
+                            usize::MAX,
+                            &Cancellation::default(),
+                            &mut |_| {},
+                        )?
+                        .matches;
+                        &scanned
+                    }
+                };
+                if matches.is_empty() {
+                    return Ok(Default::default());
+                }
+                let edits = replace::plan_replacements(
+                    &**snap,
+                    &searcher,
+                    matches,
+                    &pattern,
+                    preserve_case,
+                )?;
+                let bounds = match &scope {
+                    Some(s) => Some((snap.offset(s.start())?, snap.offset(s.end())?)),
+                    None => None,
+                };
+                let delta = bounds
+                    .map(|(_, end)| replace::scope_delta(end, &edits))
+                    .unwrap_or(0);
+                let applied = session.edit(Transaction::new(edits)?, now)?;
+                if let Some((start, end)) = bounds {
+                    *out.borrow_mut() =
+                        replace::shifted_scope(start, end, delta, &*session.snapshot()).ok();
+                }
+                Ok(Some(applied).into())
+            })
+        });
+        if !edited {
+            self.keep_scope = false;
+            return;
+        }
+        if let Some(moved) = moved_scope.borrow_mut().take() {
+            self.model.set_in_selection(Some(moved));
+        }
+        self.record_replace_history(cx);
+        // 替换之后重新搜索（文本变化事件会登记）；替换一处时再前进到下一处匹配。
+        self.pending_after = match single {
+            Some(_) => After::MoveFrom(self.code.read(cx).selection().end()),
+            None => After::Nothing,
+        };
+        self.pending_research = true;
+        cx.notify();
+    }
+
+    fn record_replace_history(&mut self, cx: &mut Context<Self>) {
+        if !self.cfg.replace_history_workspace {
+            return;
+        }
+        let text = self.replace_input.read(cx).text().to_string();
+        self.replace_input.update(cx, |input, _| {
+            if let Some(h) = input.history.as_mut() {
+                h.add(&text);
+            }
+        });
+        let write = self.shared.borrow_mut().add_replace_history(&text);
+        self.write_history(write, cx);
+    }
+
     // ------------------------------------------------------------------ 历史、装饰
 
     fn record_history(&mut self, cx: &mut Context<Self>) {
@@ -912,6 +1218,10 @@ impl FindHost {
             }
         });
         let write = self.shared.borrow_mut().add_history(&text);
+        self.write_history(write, cx);
+    }
+
+    fn write_history(&self, write: Option<(PathBuf, serde_json::Value)>, cx: &mut Context<Self>) {
         if let Some((path, value)) = write {
             cx.background_executor()
                 .spawn(async move {
@@ -1137,23 +1447,41 @@ impl FindHost {
                 reg::TOGGLE_REGEX,
                 cx,
             ));
-        let input_box = div()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .items_center()
-            .h(px(24.0))
-            .px(px(4.0))
-            .bg(paint(c.input_background))
-            .border_1()
-            .border_color(if error {
-                paint(c.error_border)
-            } else {
-                paint(c.input_border)
-            })
-            .text_size(px(13.0))
-            .text_color(paint(c.input_foreground))
-            .child(self.input.clone())
+        // 输入框的 key context 跟着焦点走：`findInputFocussed` 与 #48 的 `replaceInputFocussed`
+        // 必须互斥，否则两条 `enter` 规则会同时命中。
+        let field = |context_key: &'static str, child: gpui::AnyElement| {
+            let mut context = KeyContext::default();
+            context.add(context_key);
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .key_context(context)
+                .child(child)
+        };
+        let boxed = |children: gpui::Div, error: bool| {
+            children
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .h(px(24.0))
+                .px(px(4.0))
+                .bg(paint(c.input_background))
+                .border_1()
+                .border_color(if error {
+                    paint(c.error_border)
+                } else {
+                    paint(c.input_border)
+                })
+                .text_size(px(13.0))
+                .text_color(paint(c.input_foreground))
+        };
+        let input_box = boxed(div(), error)
+            .child(field(
+                reg::context::INPUT_FOCUSSED,
+                self.input.clone().into_any_element(),
+            ))
             .child(toggles);
         let count = div()
             .flex_shrink_0()
@@ -1206,11 +1534,100 @@ impl FindHost {
                 reg::CLOSE,
                 cx,
             ));
+        // #48：替换行。只读文档上整行不显示（UX_SPEC §1.2“不可用的项直接不显示”）。
+        let can_replace = self.can_replace(cx);
+        let expanded = self.shared.borrow().expanded;
+        let replace_row = (can_replace && expanded).then(|| {
+            let preserve = self.shared.borrow().preserve_case;
+            let replace_box = boxed(div(), false)
+                .child(field(
+                    reg::context::REPLACE_INPUT_FOCUSSED,
+                    self.replace_input.clone().into_any_element(),
+                ))
+                .child(div().flex().items_center().pr(px(2.0)).child(toggle(
+                    "find-preserve-case",
+                    "preserve-case",
+                    preserve,
+                    tip(
+                        self,
+                        "find.toggle.preserveCase",
+                        reg::TOGGLE_PRESERVE_CASE,
+                        cx,
+                    ),
+                    reg::TOGGLE_PRESERVE_CASE,
+                    cx,
+                )));
+            div()
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .h(px(ROW_HEIGHT - 8.0))
+                .child(replace_box)
+                .child(button(
+                    "find-replace",
+                    "replace",
+                    true,
+                    tip(self, "find.button.replace", reg::REPLACE_ONE, cx),
+                    reg::REPLACE_ONE,
+                    cx,
+                ))
+                .child(button(
+                    "find-replace-all",
+                    "replace-all",
+                    true,
+                    tip(self, "find.button.replaceAll", reg::REPLACE_ALL, cx),
+                    reg::REPLACE_ALL,
+                    cx,
+                ))
+        });
+        // 展开箭头（查找条自己的按钮，不是 VS Code 命令）：只在可写文档上出现。
+        let chevron = can_replace.then(|| {
+            let glyph = icons::codepoint(if expanded {
+                "chevron-down"
+            } else {
+                "chevron-right"
+            })
+            .unwrap_or('?');
+            let hover = paint(c.hover_background.or(c.option_hover_background));
+            div()
+                .id("find-toggle-replace")
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.0))
+                .h(px(ROW_HEIGHT - 8.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .text_color(paint(c.widget_foreground))
+                .child(crate::shell::view::icon(glyph, px(14.0)))
+                .tooltip(simple_tooltip(
+                    self.tooltip("find.button.toggleReplace", reg::START_REPLACE, cx),
+                    &c,
+                ))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |host, _, window, cx| {
+                        host.toggle_replace_row(window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+        });
+        let mut rows = div().flex().flex_col().flex_1().min_w_0().child(row);
+        if let Some(replace_row) = replace_row {
+            rows = rows.child(replace_row);
+        }
+        let body = div()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            // 没有替换入口时也留出箭头的位置，查找行不会左右跳动。
+            .child(div().w(px(16.0)).flex_shrink_0().children(chevron))
+            .child(rows);
         let mut context = KeyContext::default();
         context.add("FindWidget");
         context.add("editorFocus");
         context.add(reg::context::WIDGET_VISIBLE);
-        context.add(reg::context::INPUT_FOCUSSED);
         let mut widget = div()
             .id("find-widget")
             .occlude()
@@ -1227,7 +1644,7 @@ impl FindHost {
             .border_1()
             .border_color(paint(c.widget_border))
             .shadow_md()
-            .child(row);
+            .child(body);
         if let Some(message) = self.problem_text() {
             widget = widget.child(
                 div()
@@ -1352,7 +1769,8 @@ impl Render for FindHost {
         if std::mem::take(&mut self.pending_research) && self.visible {
             let typed = self.model.search().to_string();
             self.model.set_search(&typed);
-            self.research(After::Nothing, cx);
+            let after = std::mem::replace(&mut self.pending_after, After::Nothing);
+            self.research(after, cx);
         }
         if std::mem::take(&mut self.pending_close) {
             self.close(window, cx);
