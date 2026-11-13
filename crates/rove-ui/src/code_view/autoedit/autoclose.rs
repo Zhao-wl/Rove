@@ -121,14 +121,6 @@ impl AutoClosedTracker {
     pub fn contains(&self, line: u64, column: usize) -> bool {
         self.0.iter().any(|c| c.line == line && c.column == column)
     }
-    /// 自动闭合符所在位置随同一行上的插入 / 删除平移。
-    pub fn shift(&mut self, line: u64, at: usize, delta: isize) {
-        for c in &mut self.0 {
-            if c.line == line && c.column >= at {
-                c.column = (c.column as isize + delta).max(0) as usize;
-            }
-        }
-    }
 }
 
 /// 按输入的字符判定该用哪种 `autoClosing*` 设置：注释对看的是 `autoClosingComments`。

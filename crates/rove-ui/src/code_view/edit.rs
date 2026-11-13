@@ -842,7 +842,7 @@ impl CodeView {
             let start = (sel.start().line.0, sel.start().column.0 as usize);
             let end = (sel.end().line.0, sel.end().column.0 as usize);
             let changes = autoedit::autoclose::surround_changes(pair, start, end);
-            let close_len = pair.close.len();
+            // 包围后选区仍然是原来那段文本：起点与（同一行时的）终点都右移一个 `open`。
             let open_len = pair.open.len();
             let moved = Selection::new(
                 pos(sel.start().line.0, (start.1 + open_len) as u64),
@@ -856,7 +856,6 @@ impl CodeView {
                         }) as u64,
                 ),
             );
-            let _ = close_len;
             return self.run_edit(window, cx, move |s, snap, now| {
                 let replacements = to_replacements(&**snap, &changes)?;
                 Ok(EditOutcome {
@@ -1427,11 +1426,57 @@ impl CodeView {
                     ..ClipboardData::plain(text)
                 };
                 let overtype = self.overtype && self.options.overtype_on_paste;
+                // #53：`editor.autoIndentOnPaste`（默认关）。在字符串里粘贴另看
+                // `editor.autoIndentOnPasteWithinString`（默认开）。
+                let caret = self.cursor.selection.start();
+                let in_string = self
+                    .syntax
+                    .borrow()
+                    .scope_at(caret.line.0, caret.column.0 as u32)
+                    .0;
+                let reindent = self.auto_edit_allowed()
+                    && self.options.auto_indent_on_paste
+                    && (!in_string || self.options.auto_indent_on_paste_within_string);
+                let config = reindent.then(|| self.language_config()).flatten();
+                let converter = self.options.indent_converter();
+                let auto_indent = self.options.auto_indent;
                 self.run_edit(w, cx, move |s, snap, now| {
                     if overtype && !data.text.contains(['\n', '\r']) {
                         extend_for_overtype(s, &**snap, &data.text)?;
                     }
-                    Ok(s.paste(&data, now)?.into())
+                    let Some(applied) = s.paste(&data, now)? else {
+                        return Ok(EditOutcome::default());
+                    };
+                    let mut edits = vec![applied];
+                    if let Some(config) = config {
+                        // 粘贴进来的那几行逐行重新缩进，并入同一个撤销单元。
+                        let pasted = edits[0]
+                            .changes
+                            .ranges
+                            .iter()
+                            .map(|c| (c.new.start().0, c.new.end().0))
+                            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+                        if let Some((first, end)) = pasted {
+                            let after = s.snapshot();
+                            let lines = TextLines(&*after);
+                            let changes = autoedit::indent::reindent_lines(
+                                auto_indent,
+                                &lines,
+                                config,
+                                first,
+                                end.saturating_sub(1).max(first),
+                                &converter,
+                            );
+                            if !changes.is_empty() {
+                                let replacements = to_replacements(&*after, &changes)?;
+                                edits.push(s.edit_joined(Transaction::new(replacements)?, now)?);
+                            }
+                        }
+                    }
+                    Ok(EditOutcome {
+                        edits,
+                        selection: None,
+                    })
                 });
             }
             "editor.action.toggleOvertypeInsertMode" => {

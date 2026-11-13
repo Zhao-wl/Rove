@@ -1621,7 +1621,7 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 | 模块 | 内容 | 对应的 VS Code 源文件 |
 |---|---|---|
 | `autoedit/mod.rs` | `Change`（行 + UTF-8 字节列的抽象改动）、`AutoEdit`、`leading_whitespace` / `first_non_whitespace` / `is_quote` | `base/common/strings.ts` |
-| `autoedit/indent.rs` | `AutoIndent`（`none`/`keep`/`brackets`/`advanced`/`full`）、`IndentConverter`（`shift_indent` / `unshift_indent` / `normalize`）、`IndentRules` 与 `indent_metadata` 的四个掩码、`inherit_indent_for_line`、`good_indent_for_line`、`enter_indent`、`indent_action_for_type` | `languages/autoIndent.ts`、`supports/indentRules.ts`、`commands/shiftCommand.ts`、`model/textModel.ts` 的 `normalizeIndentation` |
+| `autoedit/indent.rs` | `AutoIndent`（`none`/`keep`/`brackets`/`advanced`/`full`）、`IndentConverter`（`shift_indent` / `unshift_indent` / `normalize`）、`IndentRules` 与 `indent_metadata` 的四个掩码、`inherit_indent_for_line`、`good_indent_for_line`、`enter_indent`、`indent_action_for_type`、`reindent_lines`（粘贴） | `languages/autoIndent.ts`、`supports/indentRules.ts`、`commands/shiftCommand.ts`、`model/textModel.ts` 的 `normalizeIndentation`、`contrib/indentation` 的 `AutoIndentOnPaste` |
 | `autoedit/on_enter.rs` | `on_enter`（`onEnterRules` 的三个条件 + 括号的 `indentOutdent` / `indent`）、`enter_action`（`appendText` 默认值与 `removeText`）、`enter`（回车的实际改动与光标） | `supports/onEnter.ts`、`enterAction.ts`、`cursorTypeOperations.ts` 的 `_enter` |
 | `autoedit/autoclose.rs` | `AutoClosing` / `AutoClosingEdit` / `AutoSurround` 取值、`find_open_pair`（最长 `open` 优先）、`should_auto_close`（`autoCloseBefore`、`notIn`、引号不跟在单词字符后）、`should_overtype`、`should_delete_pair`、`should_surround`、`AutoClosedTracker` | `cursorTypeOperations.ts`、`cursorDeleteOperations.ts` |
 | `autoedit/comments.rs` | `toggle_line_comment`（Toggle / ForceAdd / ForceRemove、`_analyzeLines`、`_normalizeInsertionPoint`）、`toggle_block_comment` | `contrib/comment/browser/lineCommentCommand.ts`、`blockCommentCommand.ts` |
@@ -1644,6 +1644,10 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 缩进单位取 `EditorOptions::indent_converter()`（`insertSpaces` / `tabSize` / `indentSize`，
 检测属于 #27，本模块只消费结果）。
 
+**粘贴**：`editor.autoIndentOnPaste`（默认关）打开时，粘贴进来的那几行按 `reindent_lines` 逐行重新
+缩进，用 `EditSession::edit_joined` 并进粘贴那一个撤销单元；在字符串里粘贴另看
+`editor.autoIndentOnPasteWithinString`（默认开）。
+
 **按键路径**：`CodeView::type_text` 先试 `auto_type`（包围 → 越过 → 自动闭合 → `decreaseIndentPattern`
 重新对齐），不命中才普通输入。正则匹配只看光标所在的几行，语法 token 只在真的有一对可闭合时才查
 （`SyntaxLayer::scope_at`），普通字符在按键路径上没有额外开销。超大文件（`SizeClass::Huge`）与只读
@@ -1654,10 +1658,11 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 C#（`///` 与 `//` 续写）与 JSON（`//` 续写）；`/* */` 里补 ` * ` 的规则 VS Code 放在 JS/TS 的配置里，
 引擎支持但这八份数据里没有，用 `javascriptOnEnterRules` 的夹具逐例验证。
 
-验证：`cargo test -p rove-ui code_view::autoedit`（53 个单元测试，其中 `onEnter.test.ts` 的
+验证：`cargo test -p rove-ui code_view::autoedit`（56 个单元测试，其中 `onEnter.test.ts` 的
 `uses brackets` 16 例、`uses regExpRules` 24 例逐例移植，`javascriptIndentationRules` 的四条正则
-驱动 `getInheritIndentForLine` / `getGoodIndentForLine` / `getIndentActionForType` 的推导）、
-`cargo test -p rove-ui --test code_view_autoedit`（24 例入口集成测试：五种语言的注释切换、公共缩进、
-回车的五种 `autoIndent` 取值、`indentOutdent`、`///` 续写、自动闭合 / 越过 / 成对删除 / 包围、
-只读与超大文件）。性能：`cargo xtask bench --filter typing/`（按键到上屏，预算 `keystroke_to_paint`）。
+驱动 `getInheritIndentForLine` / `getGoodIndentForLine` / `getIndentActionForType` / `reindent_lines`
+的推导）、`cargo test -p rove-ui --test code_view_autoedit`（31 个入口集成测试：五种语言的注释切换、
+公共缩进、回车的五种 `autoIndent` 取值、`indentOutdent`、`///` 续写、自动闭合 / 越过 / 成对删除 /
+包围、`editor.autoClosing*` 与 `comments.*` 的取值、粘贴重新缩进、只读与超大文件）。
+性能：`cargo xtask bench --filter typing/`（按键到上屏，预算 `keystroke_to_paint`）。
 

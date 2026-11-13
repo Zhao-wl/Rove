@@ -19,7 +19,34 @@ use std::sync::Arc;
 
 // ------------------------------------------------------------------ 夹具
 
-fn services() -> CodeViewServices {
+/// 默认设置加上几个用户值（`editor.autoClosingBrackets` 等取值的集成验证）。
+struct Overrides {
+    defaults: DefaultSettings,
+    user: Vec<(&'static str, rove_base::Value)>,
+}
+
+impl rove_config::Settings for Overrides {
+    fn read(&self, key: &str, scope: &rove_config::Scope) -> rove_base::Result<rove_base::Value> {
+        match self.user.iter().find(|(k, _)| *k == key) {
+            Some((_, v)) => Ok(v.clone()),
+            None => self.defaults.read(key, scope),
+        }
+    }
+    fn write(
+        &self,
+        _: Arc<str>,
+        _: rove_config::Scope,
+        _: rove_base::Value,
+        _: rove_base::Cancellation,
+    ) -> rove_base::Task<()> {
+        Box::pin(async { Err(rove_base::Error::Unsupported) })
+    }
+    fn changes(&self) -> &dyn rove_base::Events<rove_config::SettingsChange> {
+        &rove_base::NoEvents
+    }
+}
+
+fn services(user: Vec<(&'static str, rove_base::Value)>) -> CodeViewServices {
     let mut settings = SettingRegistry::default();
     let mut colors = ColorRegistry::default();
     let mut commands = rove_commands::CommandRegistry::default();
@@ -27,7 +54,10 @@ fn services() -> CodeViewServices {
     code_view::register(&mut settings, &mut colors, &mut commands, &mut strings).unwrap();
     rove_buffer::edit::settings::register(&mut settings).unwrap();
     CodeViewServices {
-        settings: Arc::new(DefaultSettings(settings)),
+        settings: Arc::new(Overrides {
+            defaults: DefaultSettings(settings),
+            user,
+        }),
         theme: Arc::new(DefaultTheme {
             colors,
             kind: ThemeKind::Dark,
@@ -44,12 +74,21 @@ struct Fixture<'a> {
 }
 
 fn open<'a>(cx: &'a mut TestAppContext, language: &str, text: &str) -> Fixture<'a> {
+    open_with(cx, language, text, Vec::new())
+}
+
+fn open_with<'a>(
+    cx: &'a mut TestAppContext,
+    language: &str,
+    text: &str,
+    user: Vec<(&'static str, rove_base::Value)>,
+) -> Fixture<'a> {
     let session = Rc::new(RefCell::new(EditSession::new(
         EditBuffer::new(text, LineEndings::Uniform(Eol::Lf)),
         EditOptions::default(),
     )));
     let snapshot: Arc<dyn TextSource> = session.borrow().snapshot();
-    let s = services();
+    let s = services(user);
     let host: Rc<dyn EditHost> = session.clone();
     let events: Rc<RefCell<Vec<CodeViewEvent>>> = Rc::default();
     let sink = events.clone();
@@ -384,7 +423,120 @@ fn overtype_mode_does_not_auto_close(cx: &mut TestAppContext) {
     assert_eq!(f.contents(), "(b\n", "改写模式下只覆盖，不补闭合符");
 }
 
-// ------------------------------------------------------------------ 四、只读与超大文件
+// ------------------------------------------------------------------ 四、设置项取值
+
+#[gpui::test]
+fn auto_closing_brackets_never_disables_the_pair(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "csharp",
+        "f\n",
+        vec![(
+            "editor.autoClosingBrackets",
+            rove_base::Value::String("never".into()),
+        )],
+    );
+    f.caret(0, 1);
+    f.type_text("(");
+    assert_eq!(f.contents(), "f(\n");
+}
+
+#[gpui::test]
+fn auto_closing_brackets_always_ignores_auto_close_before(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "csharp",
+        "fabc\n",
+        vec![(
+            "editor.autoClosingBrackets",
+            rove_base::Value::String("always".into()),
+        )],
+    );
+    f.caret(0, 1);
+    f.type_text("(");
+    assert_eq!(f.contents(), "f()abc\n");
+}
+
+#[gpui::test]
+fn auto_surround_never_replaces_the_selection(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "csharp",
+        "abc\n",
+        vec![(
+            "editor.autoSurround",
+            rove_base::Value::String("never".into()),
+        )],
+    );
+    f.select(Selection::new(pos(0, 0), pos(0, 3)));
+    f.type_text("\"");
+    assert_eq!(f.contents(), "\"\n");
+}
+
+#[gpui::test]
+fn comments_insert_space_can_be_turned_off(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "csharp",
+        "a\n",
+        vec![("editor.comments.insertSpace", rove_base::Value::Bool(false))],
+    );
+    f.caret(0, 0);
+    f.run("editor.action.commentLine");
+    assert_eq!(f.contents(), "//a\n");
+}
+
+#[gpui::test]
+fn ignore_empty_lines_can_be_turned_off(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "csharp",
+        "a\n\nb\n",
+        vec![(
+            "editor.comments.ignoreEmptyLines",
+            rove_base::Value::Bool(false),
+        )],
+    );
+    f.select(Selection::new(pos(0, 0), pos(2, 1)));
+    f.run("editor.action.commentLine");
+    assert_eq!(f.contents(), "// a\n// \n// b\n");
+}
+
+#[gpui::test]
+fn auto_indent_none_inserts_a_bare_newline(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "csharp",
+        "    if (x) {\n",
+        vec![("editor.autoIndent", rove_base::Value::String("none".into()))],
+    );
+    f.caret(0, 12);
+    f.cx.simulate_keystrokes("enter");
+    settle(f.cx);
+    assert_eq!(f.contents(), "    if (x) {\n\n");
+}
+
+#[gpui::test]
+fn auto_indent_on_paste_reindents_the_pasted_block(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "json",
+        "{\n",
+        vec![("editor.autoIndentOnPaste", rove_base::Value::Bool(true))],
+    );
+    f.cx.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("\"a\": [\n\"b\"\n]".into()))
+    });
+    f.caret(0, 1);
+    f.cx.simulate_keystrokes("enter");
+    settle(f.cx);
+    f.run("editor.action.clipboardPasteAction");
+    assert_eq!(f.contents(), "{\n    \"a\": [\n        \"b\"\n    ]\n");
+    f.run("undo");
+    assert_eq!(f.contents(), "{\n    \n", "粘贴与重新缩进是一个撤销单元");
+}
+
+// ------------------------------------------------------------------ 五、只读与超大文件
 
 #[gpui::test]
 fn read_only_documents_reject_every_automatic_command(cx: &mut TestAppContext) {

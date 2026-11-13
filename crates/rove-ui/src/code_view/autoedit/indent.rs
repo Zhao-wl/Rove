@@ -367,6 +367,72 @@ pub fn inherit_indent_for_line(
     empty(leading_whitespace(&text_of(lines, 0)).to_string(), Some(0))
 }
 
+// ------------------------------------------------------------------ 粘贴后的重新缩进
+
+/// 覆盖一段连续行的虚拟模型（`AutoIndentOnPaste` 逐行调整时用）。
+struct PatchedLines<'a> {
+    inner: &'a dyn LineSource,
+    first: u64,
+    rows: &'a [String],
+}
+
+impl LineSource for PatchedLines<'_> {
+    fn line_count(&self) -> u64 {
+        self.inner.line_count()
+    }
+    fn line_text(&self, line: u64) -> Option<String> {
+        if line >= self.first && (line - self.first) < self.rows.len() as u64 {
+            return Some(self.rows[(line - self.first) as usize].clone());
+        }
+        self.inner.line_text(line)
+    }
+}
+
+/// `editor.autoIndentOnPaste`：把 `first..=last` 这几行按 [`good_indent_for_line`] 逐行重新缩进
+/// （VS Code `contrib/indentation` 的 `AutoIndentOnPaste`：每一行都在“前面几行已经调整好”的
+/// 模型上判定）。只改前导空白，缩进宽度不变的行不产生改动。
+pub fn reindent_lines(
+    auto_indent: AutoIndent,
+    lines: &dyn LineSource,
+    config: &CompiledLanguageConfiguration,
+    first: u64,
+    last: u64,
+    converter: &IndentConverter,
+) -> Vec<super::Change> {
+    if auto_indent < AutoIndent::Full || last < first {
+        return Vec::new();
+    }
+    let mut rows: Vec<String> = (first..=last).map(|l| text_of(lines, l)).collect();
+    let mut changes = Vec::new();
+    for line in first..=last {
+        let index = (line - first) as usize;
+        if rows[index].trim().is_empty() {
+            continue;
+        }
+        let patched = PatchedLines {
+            inner: lines,
+            first,
+            rows: &rows,
+        };
+        let Some(good) = good_indent_for_line(auto_indent, &patched, config, line, converter)
+        else {
+            continue;
+        };
+        let old = leading_whitespace(&rows[index]).to_string();
+        let tab = converter.tab_size.max(1);
+        if visible_width(&good, tab) == visible_width(&old, tab) {
+            continue;
+        }
+        changes.push(super::Change::replace(
+            (line, 0),
+            (line, old.len()),
+            good.clone(),
+        ));
+        rows[index] = format!("{good}{}", &rows[index][old.len()..]);
+    }
+    changes
+}
+
 // ------------------------------------------------------------------ getGoodIndentForLine
 
 /// `getGoodIndentForLine`：`line` 这一行“应该有的”缩进（粘贴与 `reindent` 的判定基础）。
@@ -747,6 +813,36 @@ mod tests {
             &spaces(4)
         )
         .is_none());
+    }
+
+    #[test]
+    fn reindent_lines_fixes_a_pasted_block() {
+        let c = javascript_rules();
+        // 粘到 `function foo() {` 下面的两行缩进不对：逐行按 good indent 调整。
+        let l = lines(&["function foo() {", "if (x) {", "return 1;", "}", "}"]);
+        let changes = reindent_lines(AutoIndent::Full, &l, &c, 1, 3, &spaces(4));
+        let got: Vec<(u64, String)> = changes
+            .iter()
+            .map(|c| (c.start.0, c.text.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, "    ".to_string()),
+                (2, "        ".to_string()),
+                (3, "    ".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reindent_lines_leaves_correct_indentation_alone() {
+        let c = javascript_rules();
+        let l = lines(&["function foo() {", "    return 1;", "}"]);
+        assert!(reindent_lines(AutoIndent::Full, &l, &c, 1, 1, &spaces(4)).is_empty());
+        // `full` 以下不重新缩进。
+        let l = lines(&["function foo() {", "return 1;", "}"]);
+        assert!(reindent_lines(AutoIndent::Advanced, &l, &c, 1, 1, &spaces(4)).is_empty());
     }
 
     #[test]
