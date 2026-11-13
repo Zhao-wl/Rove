@@ -13,7 +13,7 @@ Rove 是用 Rust + GPUI 0.2.2 开发的高性能代码阅读编辑器，Windows 
 
 **两条贯穿始终的硬约束**
 
-1. **运行时不发起任何网络请求**（[PROJECT_CHARTER](docs/PROJECT_CHARTER.md) §4.4）。
+1. **运行时不发起任何网络请求**，唯一例外是自动更新模块（[PROJECT_CHARTER](docs/PROJECT_CHARTER.md) §2.1，2026-11-13 修订）：联网代码只能出现在更新模块所在的 crate 里。
 2. **不读取 `.gitignore`**，排除规则走 `files.exclude` 等设置项（[FEATURES](docs/FEATURES.md) §6）。
 
 ## 2. crate 分层与依赖方向
@@ -53,7 +53,7 @@ docs: 补充索引格式的元数据段说明
 - [ ] 涉及性能的改动附基准数据，做法见 §8.1（`cargo xtask bench` / `perf/budgets.toml` / `perf/README.md`，由 #4 提供）。不允许只写"感觉更快了"。
 - [ ] 移植第三方代码或资产时，在 `THIRD_PARTY_NOTICES.md` 注明来源与许可（该文件由 #80 建立）。
 - [ ] 自己的入口点有集成测试（见 5.2 第 3 条），且 PR 里写清怎么跑。
-- [ ] 不引入网络请求，不读取 `.gitignore`（§1 的两条硬约束）。
+- [ ] 不引入网络请求（更新模块除外），不读取 `.gitignore`（§1 的两条硬约束）。
 - [ ] PR 描述里逐条引用 issue 的验收标准并说明如何验证。
 
 ### 5.2 三条硬规则（逐字照抄自 issue #3，评审时逐条对照）
