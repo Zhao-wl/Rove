@@ -8,7 +8,7 @@
 //!   `true`，只在用户未设置时生效），本模块只读取；
 //! - **不登记** `markdown.preview.toggleLock`、`markdown.showLockedPreviewToSide`、
 //!   `markdown.showPreviewSecuritySelector`：Rove 的预览总是绑定到一个文件（相当于 VS Code 的锁定预览），
-//!   远程资源的放行走预览上方的提示条；未实现的命令不进命令面板（ARCHITECTURE §6）。
+//!   远程资源始终拦截；未实现的命令不进命令面板（ARCHITECTURE §6）。
 use crate::contributions::{Contribution, ContributionRegistry, Placement};
 use gpui::Action;
 use rove_base::{Error, Result};

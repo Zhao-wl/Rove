@@ -1295,3 +1295,8 @@ WebView2 的回调只往通道里送 `BackendEvent`，由窗口的前台任务�
 `showPreviewSecuritySelector`（放行走提示条）、预览内 `Ctrl+F`（P1，WebView2 Find API 留给后续）、预览中的大纲联动（#26 的大纲
 目前只跟随文本编辑器）。
 
+**#161 离线策略更新**：预览始终拦截远程资源。旧版 `rove.markdown.allowRemoteResources` 键保留登记，
+渲染和 WebView2 不读取该键，提示条只报告拦截数量。样式、图片、媒体和字体的 CSP 来源限制为打包资源、本地文件主机
+和相应的内联数据。WebView2 只为本地盘符建立文件主机映射，对外部资源请求直接返回 403。真实 Windows 探针验证
+旧设置为 `true` 时的首次打开、重新渲染、切换，以及本地图片、Mermaid 和公式渲染。
+
