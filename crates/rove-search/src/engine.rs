@@ -12,6 +12,12 @@
 //!   所以取消后几毫秒内所有线程退出；[`search`] 返回时工作线程已全部结束。
 //! - **编码**：先按字节快速判定（BOM、合法 UTF-8），只有疑似非 UTF-8 的文件才走 #7 的完整编码识别
 //!   （`files.autoGuessEncoding`，GBK 中文能搜到）。含 NUL 的文件按二进制跳过（与 ripgrep / VS Code 一致）。
+//!   走内存映射的大文件同样识别编码（#145）：编辑器的大文件档从 20 MB 起，17 MiB 的 GBK 文件在编辑器里
+//!   是正常文本，搜索不能漏掉其中的中文字面量。
+//! - **行列口径**：报告的行列与编辑器（`rove-buffer` 的 `TextSource::position`）一致——搜索器只认 `\n`，
+//!   这里再把 `\n` 行按独立 `\r` 切开（编辑器把 `\r` 也算换行，#145）。
+//! - **零宽匹配**：`^`、`$`、`\b` 这类零宽命中保留为空区间（与文件内查找 `rove-ui::find` 的约定一致），
+//!   匹配器的 `find_iter` 遇到空匹配会前进一个字节，不会死循环。
 //! - **上限**：`search.maxResults` 按匹配处数计；达到上限时停止全部线程并在摘要里报告 `limit_hit`。
 
 use crate::query::{self, SearchQuery};
@@ -37,8 +43,29 @@ const CHUNK: usize = if cfg!(debug_assertions) {
 } else {
     256 << 10
 };
-/// 超过这个大小的文件用内存映射读取（不复制、不做 UTF-8 校验，只看 BOM 与二进制）。
+/// 超过这个大小的文件用内存映射读取（不复制；仍然看 BOM、二进制与编码）。
 const MMAP_THRESHOLD: u64 = 16 << 20;
+/// 走内存映射的大小阈值。测试里可以调低（见 [`set_mmap_threshold`]），免得为了覆盖这条分支
+/// 造一个 17 MiB 的样本文件。
+#[cfg(test)]
+static MMAP_THRESHOLD_OVERRIDE: AtomicU64 = AtomicU64::new(MMAP_THRESHOLD);
+
+#[cfg(not(test))]
+fn mmap_threshold() -> u64 {
+    MMAP_THRESHOLD
+}
+
+#[cfg(test)]
+fn mmap_threshold() -> u64 {
+    MMAP_THRESHOLD_OVERRIDE.load(Ordering::Relaxed)
+}
+
+/// 仅测试用：临时调低内存映射阈值。进程内全局，调用它的测试之间不要并发。
+#[cfg(test)]
+fn set_mmap_threshold(bytes: u64) {
+    MMAP_THRESHOLD_OVERRIDE.store(bytes, Ordering::Relaxed);
+}
+
 /// 二进制判定只看文件开头这么多字节里有没有 NUL（与 ripgrep 的快速判定一致）。
 const BINARY_PROBE: usize = 8 << 10;
 /// 行预览最多保留的字节数；更长的行只保留第一处匹配附近的一段。
@@ -48,7 +75,8 @@ const PREVIEW_LEAD: usize = 100;
 /// 第一批之后，结果每隔这么久交给回调一次。
 const BATCH_INTERVAL: Duration = Duration::from_millis(30);
 
-/// 一行里的匹配。列是该行解码后文本的 UTF-8 字节列（`Utf8Column`，不是磁盘字节）。
+/// 一行里的匹配。行与列都按编辑器口径：行终止符包括 `\n`、`\r\n` 与独立的 `\r`，
+/// 列是该行解码后文本的 UTF-8 字节列（`Utf8Column`，不是磁盘字节）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineMatch {
     /// 从 0 开始的行号。
@@ -57,19 +85,21 @@ pub struct LineMatch {
     pub preview: Arc<str>,
     /// `preview` 第一个字节在该行中的列。
     pub preview_start: u32,
-    /// 匹配区间（行内列，半开）。跨行的匹配截到本行末尾。
+    /// 匹配区间（行内列，半开）。跨行的匹配截到本行末尾；`^`、`$` 这类零宽命中是空区间。
     pub ranges: Vec<Range<u32>>,
 }
 
 impl LineMatch {
     /// 匹配区间换算成 `preview` 内的字节区间（落在预览之外的部分被截掉）。
+    /// 零宽命中（空区间）落在预览起点上时保留，不当作“在预览之前”丢掉。
     pub fn preview_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         let start = self.preview_start as usize;
         let len = self.preview.len();
         self.ranges.iter().filter_map(move |r| {
             let s = (r.start as usize).saturating_sub(start).min(len);
             let e = (r.end as usize).saturating_sub(start).min(len);
-            (r.end as usize > start && s <= e).then_some(s..e)
+            let visible = r.end as usize > start || (r.start == r.end && r.end as usize >= start);
+            (visible && s <= e).then_some(s..e)
         })
     }
 }
@@ -407,11 +437,20 @@ fn search_file(
     if len == 0 {
         return Ok(());
     }
-    if len > MMAP_THRESHOLD {
+    if len > mmap_threshold() {
         // SAFETY: 只读映射；文件在搜索期间被别人截断属于外部竞争，最坏结果是这次读到的内容不完整，
         // 与 ripgrep 的取舍相同。
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        let text = decode(&map, shared, false)?;
+        if shared.ascii_literal
+            && !map.starts_with(b"\xFF\xFE")
+            && !map.starts_with(b"\xFE\xFF")
+            && shared.matcher.find(&map).ok().flatten().is_none()
+        {
+            // 与小文件同样的快速路径：ASCII 字面量在原始字节里都没有，解码后也不会有。
+            return Ok(());
+        }
+        // 大文件也做 UTF-8 校验与编码识别（#145）：校验只是一次顺序扫描，真的不是 UTF-8 才解码。
+        let text = decode(&map, shared, true)?;
         return search_text(&text, shared, searcher, out);
     }
     // 先只读开头一段做二进制判定：Unity 项目里贴图、模型、程序集占了绝大多数字节，
@@ -498,7 +537,8 @@ fn search_text(
         }
         let chunk = &text[start..end];
         search_chunk(chunk, base_line, shared, searcher, out)?;
-        base_line += memchr::memchr_iter(b'\n', chunk).count() as u64;
+        // 块在 `\n` 之后切开，`\r\n` 不会被切断；行号按编辑器口径累加（独立 `\r` 也是一行）。
+        base_line += line_breaks(chunk);
         start = end;
     }
     Ok(())
@@ -514,6 +554,9 @@ fn search_chunk(
     let mut sink = Collect {
         shared,
         base_line,
+        chunk,
+        scanned: 0,
+        lone_cr: 0,
         out,
     };
     searcher
@@ -525,7 +568,28 @@ fn search_chunk(
 struct Collect<'a> {
     shared: &'a Shared,
     base_line: u64,
+    /// 本块的全部字节：用来把搜索器只认 `\n` 的行号补成编辑器口径。
+    chunk: &'a [u8],
+    /// `chunk` 中已经数过独立 `\r` 的前缀长度（匹配按位置递增到达，只向前扫一遍）。
+    scanned: usize,
+    /// `chunk[..scanned]` 里独立 `\r` 的个数。
+    lone_cr: u64,
     out: &'a mut Vec<LineMatch>,
+}
+
+impl Collect<'_> {
+    /// `chunk` 开头到 `offset` 之间独立 `\r` 的个数（每个都让编辑器多算一行）。
+    fn lone_cr_before(&mut self, offset: usize) -> u64 {
+        let offset = offset.min(self.chunk.len());
+        if offset > self.scanned {
+            let (chunk, from) = (self.chunk, self.scanned);
+            self.lone_cr += memchr::memchr_iter(b'\r', &chunk[from..offset])
+                .filter(|i| chunk.get(from + i + 1) != Some(&b'\n'))
+                .count() as u64;
+            self.scanned = offset;
+        }
+        self.lone_cr
+    }
 }
 
 impl Sink for Collect<'_> {
@@ -539,37 +603,54 @@ impl Sink for Collect<'_> {
         if self.shared.cancel.check().is_err() {
             return Ok(false);
         }
-        let first_line = self.base_line + mat.line_number().unwrap_or(1) - 1;
-        let bytes = mat.bytes();
-        // (行在 bytes 中的起点, 行号, 区间)
-        let mut per_line: Vec<(usize, u64, Vec<Range<u32>>)> = Vec::new();
+        let offset = usize::try_from(mat.absolute_byte_offset()).unwrap_or(usize::MAX);
+        let first_line =
+            self.base_line + mat.line_number().unwrap_or(1) - 1 + self.lone_cr_before(offset);
+        let raw = mat.bytes();
+        // 非多行搜索的行终止符不参与匹配（匹配器设了 `line_terminator`），先剥掉行尾的 `\n`：
+        // 否则 `$` 这类零宽模式会匹配到行终止符之后，报成“下一行的行首”
+        // （grep-searcher 的慢路径同样先剥终止符）。多行搜索的 `\n` 可能是模式的一部分，不能剥。
+        let bytes = if self.shared.multi_line {
+            raw
+        } else {
+            raw.strip_suffix(b"\n").unwrap_or(raw)
+        };
+        // (行在 bytes 中的起止, 行号, 区间)。这里的“行”已经按独立 `\r` 切开。
+        let mut per_line: Vec<(usize, usize, u64, Vec<Range<u32>>)> = Vec::new();
         let _ = self.shared.matcher.find_iter(bytes, |m| {
-            if m.start() == m.end() {
+            // 零宽命中（`^` / `$` / `\b`）保留为空区间；`find_iter` 遇到空匹配会前进一个字节。
+            // 整段末尾、行终止符之后的空匹配是“下一行的行首”，不是一处命中。
+            if m.start() == m.end() && m.start() == bytes.len() && bytes.ends_with(b"\n") {
                 return true;
             }
-            let line_start = memchr::memrchr(b'\n', &bytes[..m.start()]).map_or(0, |i| i + 1);
-            let line_index = memchr::memchr_iter(b'\n', &bytes[..line_start]).count() as u64;
-            let line_end = line_end(bytes, line_start);
-            let start = (m.start() - line_start) as u32;
-            let end = (m.end().min(line_end).max(m.start()) - line_start) as u32;
+            let lf_start = memchr::memrchr(b'\n', &bytes[..m.start()]).map_or(0, |i| i + 1);
+            let lf_index = memchr::memchr_iter(b'\n', &bytes[..lf_start]).count() as u64;
+            let lf_end = line_end(bytes, lf_start);
+            // 独立 `\r` 也是换行（编辑器口径）：把 `\n` 行再按 `\r` 切成段，跨行匹配截到段末。
+            let pos = m.start().min(lf_end).max(lf_start);
+            let start = memchr::memrchr(b'\r', &bytes[lf_start..pos])
+                .map_or(lf_start, |i| lf_start + i + 1);
+            let cr_index = memchr::memchr_iter(b'\r', &bytes[lf_start..start]).count() as u64;
+            let end = memchr::memchr(b'\r', &bytes[start..lf_end]).map_or(lf_end, |i| start + i);
+            let range = (pos - start) as u32..(m.end().min(end).max(pos) - start) as u32;
             match per_line.last_mut() {
-                Some((s, _, ranges)) if *s == line_start => ranges.push(start..end),
+                Some((s, _, _, ranges)) if *s == start => ranges.push(range),
                 _ => per_line.push((
-                    line_start,
-                    first_line + line_index,
-                    std::iter::once(start..end).collect(),
+                    start,
+                    end,
+                    first_line + lf_index + cr_index,
+                    std::iter::once(range).collect(),
                 )),
             }
             true
         });
-        for (line_start, line, mut ranges) in per_line {
+        for (start, end, line, mut ranges) in per_line {
             let granted = self.shared.claim(ranges.len());
             ranges.truncate(granted);
             if ranges.is_empty() {
                 return Ok(false);
             }
-            let text = &bytes[line_start..line_end(bytes, line_start)];
-            self.out.push(preview(line, text, ranges));
+            self.out.push(preview(line, &bytes[start..end], ranges));
             if granted == 0 || self.shared.cancel.check().is_err() {
                 return Ok(false);
             }
@@ -578,7 +659,7 @@ impl Sink for Collect<'_> {
     }
 }
 
-/// 从 `start` 起这一行（不含 `\n` 与前面的 `\r`）的结束位置。
+/// 从 `start` 起这一行（不含 `\n` 与前面的 `\r`）的结束位置。独立的 `\r` 不在这里处理。
 fn line_end(bytes: &[u8], start: usize) -> usize {
     let end = memchr::memchr(b'\n', &bytes[start..]).map_or(bytes.len(), |i| start + i);
     if end > start && bytes[end - 1] == b'\r' {
@@ -586,6 +667,15 @@ fn line_end(bytes: &[u8], start: usize) -> usize {
     } else {
         end
     }
+}
+
+/// 按编辑器口径（`rove-buffer`：`\n`、`\r\n`、独立的 `\r`）统计换行数。
+fn line_breaks(bytes: &[u8]) -> u64 {
+    let lf = memchr::memchr_iter(b'\n', bytes).count() as u64;
+    let lone_cr = memchr::memchr_iter(b'\r', bytes)
+        .filter(|i| bytes.get(i + 1) != Some(&b'\n'))
+        .count() as u64;
+    lf + lone_cr
 }
 
 fn preview(line: u64, text: &[u8], ranges: Vec<Range<u32>>) -> LineMatch {
@@ -648,5 +738,55 @@ mod tests {
     fn line_end_strips_crlf() {
         assert_eq!(line_end(b"ab\r\ncd", 0), 2);
         assert_eq!(line_end(b"ab\r\ncd", 4), 6);
+    }
+
+    #[test]
+    fn line_breaks_count_lone_cr_like_the_editor() {
+        // 与 `rove-buffer` 的 `line_ranges_exclude_all_terminator_forms` 同一个样本。
+        assert_eq!(line_breaks(b"a\r\nb\nc\rd"), 3);
+        assert_eq!(line_breaks(b"abc"), 0);
+        assert_eq!(line_breaks(b"a\r"), 1);
+    }
+
+    #[test]
+    fn empty_range_at_the_preview_start_is_kept() {
+        let m = preview(0, b"let x = 1;", vec![0..0]);
+        assert_eq!(m.preview_ranges().collect::<Vec<_>>(), vec![0..0]);
+    }
+
+    fn shared_for(query: &SearchQuery) -> Shared {
+        Shared {
+            matcher: query::compile(query, false).expect("合法查询"),
+            multi_line: query.is_multiline(),
+            ascii_literal: !query.is_regex && query.pattern.is_ascii(),
+            cancel: Cancellation::default(),
+            budget: None,
+            limit_hit: AtomicBool::new(false),
+            files_searched: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+            settings: Arc::new(crate::settings::default_settings()),
+        }
+    }
+
+    /// 走内存映射的大文件同样做编码识别（#145）。阈值调低到几个字节，免得造 17 MiB 的样本。
+    #[test]
+    fn mmapped_files_still_detect_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Gbk.cs");
+        let (gbk, _, _) = encoding_rs::GBK.encode("// 玩家移动的速度\nfloat 速度 = 1;\n");
+        std::fs::write(&path, &gbk).unwrap();
+        assert!(gbk.len() as u64 > 8, "样本要大于下面调低的阈值");
+
+        let shared = shared_for(&SearchQuery::new("速度"));
+        let mut searcher = searcher(false);
+        let mut out = Vec::new();
+        set_mmap_threshold(8);
+        let result = search_file(&path, &shared, &mut searcher, &mut out);
+        set_mmap_threshold(MMAP_THRESHOLD);
+        result.expect("GBK 文件能搜索");
+
+        assert_eq!(out.len(), 2, "两行都有「速度」");
+        assert_eq!(&*out[1].preview, "float 速度 = 1;");
+        assert_eq!(out[1].ranges, vec![6..12]);
     }
 }
