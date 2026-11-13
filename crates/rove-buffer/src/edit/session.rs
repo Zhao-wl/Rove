@@ -103,9 +103,11 @@ impl EditSession {
         self.previous_kind
     }
 
-    /// 显式改变选区（点击、方向键、按单词移动……）：先按设置截断与合并；位置真的变了时记入
+    /// 显式改变选区（点击、方向键、按单词移动……）：先把落在 CRLF 中间的端点规整掉
+    /// （见 [`normalize_crlf`]），再按设置截断与合并；位置真的变了时记入
     /// 光标撤销栈，并断开文本撤销单元（下一次输入开始新单元）。
-    pub fn set_selections(&mut self, mut selections: Selections) {
+    pub fn set_selections(&mut self, selections: Selections) {
+        let mut selections = normalize_crlf(&self.buffer, &selections);
         selections.normalize(
             self.options.multi_cursor_merge_overlapping,
             self.options.multi_cursor_limit,
@@ -243,15 +245,8 @@ impl EditSession {
             ))
         });
         // 编辑可能把光标两侧的 `\r` 与 `\n` 并成一个换行，端点停在 CRLF 中间时下一次输入会被
-        // 拒绝；统一规整到换行之后（`EditBuffer::normalize_crlf`）。
-        let normalized = after.map(|s| {
-            Ok(Selection {
-                anchor: self.buffer.normalize_crlf(s.anchor),
-                active: self.buffer.normalize_crlf(s.active),
-                desired_column: s.desired_column,
-            })
-        });
-        let mut after = normalized.unwrap_or(after);
+        // 拒绝；统一规整到换行之后。
+        let mut after = normalize_crlf(&self.buffer, &after);
         after.normalize(
             self.options.multi_cursor_merge_overlapping,
             self.options.multi_cursor_limit,
@@ -658,6 +653,19 @@ impl EditSession {
             .text()
             .position(self.selections.primary().active)
     }
+}
+
+/// 把每个端点落在 `\r\n` 中间的选区规整到换行之后（其余端点原样）。
+///
+/// 任何入口都不能把光标停在 CRLF 中间：编辑可能把光标两侧的 `\r` 与 `\n` 并成一个换行
+/// （`\rX\n` 删掉 `X`），外部的点击 / 转到定义也可能直接给出这样的偏移；端点停在中间时
+/// 下一次普通输入会被 [`EditBuffer::apply`] 判为 [`Error::OutOfBounds`]。
+fn normalize_crlf(buffer: &EditBuffer, selections: &Selections) -> Selections {
+    selections.map_each(|s| Selection {
+        anchor: buffer.normalize_crlf(s.anchor),
+        active: buffer.normalize_crlf(s.active),
+        desired_column: s.desired_column,
+    })
 }
 
 fn map_selection(applied: &AppliedEdit, selection: &Selection) -> Selection {

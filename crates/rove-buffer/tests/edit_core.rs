@@ -313,6 +313,66 @@ fn map_offset_after_skips_every_touching_range() {
         applied.map_offset(ByteOffset(1), Bias::After),
         ByteOffset(3)
     );
+
+    // 但首尾相接的两个**非空**替换之间的偏移仍停在接缝处，不会被后一段插入的文本越过。
+    let mut buffer = EditBuffer::new("ab", LineEndings::Uniform(Eol::Lf));
+    let applied = buffer
+        .apply(
+            &Transaction::new(vec![
+                Replacement::new(span(0, 1), "XX"),
+                Replacement::new(span(1, 2), "YY"),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(buffer.contents(), "XXYY");
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::After),
+        ByteOffset(2)
+    );
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::Before),
+        ByteOffset(0)
+    );
+}
+
+#[test]
+fn whole_document_rewrites_keep_the_cursor_at_the_seam() {
+    // 连续空行换行尾：每个行尾一个替换，区间首尾相接，光标不能被带到下一行。
+    let mut session = lf_session("a\n\n\nb");
+    cursor(&mut session, 2);
+    session.change_eol(Eol::CrLf, Instant::now()).unwrap();
+    assert_eq!(session.contents(), "a\r\n\r\n\r\nb");
+    assert_eq!(offsets(&session), vec![(3, 3)]);
+
+    // 全部替换（#47）同理：光标停在两个匹配之间时只跟着前一个匹配走。
+    let mut session = lf_session("abab");
+    cursor(&mut session, 2);
+    session
+        .edit(
+            Transaction::new(vec![
+                Replacement::new(span(0, 2), "xyz"),
+                Replacement::new(span(2, 4), "xyz"),
+            ])
+            .unwrap(),
+            Instant::now(),
+        )
+        .unwrap();
+    assert_eq!(session.contents(), "xyzxyz");
+    assert_eq!(offsets(&session), vec![(3, 3)]);
+}
+
+#[test]
+fn set_selections_never_parks_a_cursor_inside_a_crlf() {
+    // 点击 / 转到定义（R51、R40）直接给出的偏移也可能落在 CRLF 中间，同样要规整。
+    let mut session = EditSession::new(
+        EditBuffer::new("a\r\nb", LineEndings::Uniform(Eol::CrLf)),
+        EditOptions::default(),
+    );
+    cursor(&mut session, 2);
+    assert_eq!(offsets(&session), vec![(3, 3)]);
+    session.type_text("X", Instant::now()).unwrap().unwrap();
+    assert_eq!(session.contents(), "a\r\nXb");
 }
 
 #[test]
