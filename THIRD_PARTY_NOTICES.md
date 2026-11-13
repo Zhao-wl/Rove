@@ -220,3 +220,22 @@ GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `pac
 来源：<https://github.com/microsoft/vscode/tree/7d28f73cae52e9fda9662bf6cdc815333b461720>
 原始许可证：<https://github.com/microsoft/vscode/blob/7d28f73cae52e9fda9662bf6cdc815333b461720/LICENSE.txt>
 （MIT，Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。
+
+## Markdown 预览的打包资源（#29）
+
+以下文件位于 `crates/rove-ui/assets/markdown/vendor/`，编译时嵌入 `rove.exe`（`include_bytes!`），
+运行时经 WebView2 的资源请求事件从内存返回，**不联网、不读安装目录**。原始许可证全文保存在同目录的
+`LICENSES/` 下（不嵌入二进制）。合计约 4.29 MB（含 Rove 自写的 `bridge.js`、`rove.css`、`blocked-image.svg`）。
+
+| 文件 | 来源 | 版本 | 许可 | SHA-256（前 16 位） |
+|---|---|---|---|---|
+| `markdown.css`、`highlight.css` | Microsoft VS Code `extensions/markdown-language-features/media/`（提交 `c4453f8ea430795f941c1b2ff6c9321135a74a02`） | 1.145.2 | MIT（`LICENSES/vscode.LICENSE`） | `31acba626be3846f`、`b73e0ecc7a5b9153` |
+| `highlight.min.js` | highlight.js，npm 包 `@highlightjs/cdn-assets`（常用语言包） | 11.11.1 | BSD-3-Clause（`LICENSES/highlight.js.LICENSE`） | `c4a399dd6f488bc9` |
+| `katex/katex.min.js`、`katex/katex.min.css`、`katex/fonts/*.woff2`（20 个） | KaTeX，npm 包 `katex` 的 `dist/` | 0.16.25 | MIT（`LICENSES/KaTeX.LICENSE`） | `76d534cf11670670`、`0c8126645bb983a7` |
+| `mermaid.min.js` | Mermaid，npm 包 `mermaid` 的 `dist/mermaid.min.js` | 11.17.2 | MIT（`LICENSES/mermaid.LICENSE`）；压缩包内嵌的依赖（d3 等）的许可注释保留在文件内，完整分发清单由 #75 维护 | `581ed7d74bd90488` |
+
+`highlight.css` 文件头注明其改编自 highlight.js 的 `vs2015.css`。
+
+Rust 依赖（只记直接依赖，许可以上游 crate 为准）：`pulldown-cmark` 0.13（MIT）、`ammonia` 4（MIT OR Apache-2.0）、
+`webview2-com` 0.38（MIT）、`windows` 0.61 与 `raw-window-handle` 0.6（MIT OR Apache-2.0）。WebView2 运行时是
+Windows 的系统组件，不随 Rove 分发，也不由 Rove 下载。

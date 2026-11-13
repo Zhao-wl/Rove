@@ -47,7 +47,7 @@ pub fn strings() -> Result<StringTable> {
         ),
         (
             "editors.markdown",
-            "Markdown 预览尚未实现；带位置打开可查看源码。",
+            "Markdown 预览",
         ),
         ("editors.fileMissing", "无法打开编辑器：找不到文件。"),
         ("editors.fileDenied", "无法打开编辑器：没有读取权限。"),

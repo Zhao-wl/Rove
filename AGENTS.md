@@ -210,3 +210,22 @@ CI 上不做绝对性能判定（托管机器波动大）；相对比较与预�
 cargo run --release -p rove-lang-cs --example incr_check -- --project large --latency 50 --edits 0
 cargo run --release -p rove-lang-cs --example incr_check -- --project large --edits 1000 --checkpoint 100 --seed 42
 ```
+
+<!-- #29 追加：markdown_probe 用法 -->
+
+### 8.4 Markdown 预览的真实 WebView2 验收（#29，`markdown_probe`）
+
+GPUI 测试窗口没有 HWND，入口测试用假后端；真实 WebView2 的首开耗时、内存、渲染结果、滚动同步、主题不重建、空闲回收与
+网络连接由 `rove-ui` 的 example `markdown_probe` 验收。**只在本地跑，不进 CI**（会弹出真实窗口，约 45 秒）。
+
+- 报告写到 `target/markdown-probe/report.json`，标准输出每个阶段一行 `MARKDOWN_PROBE {...}`；`ROVE_MARKDOWN_TRACE=1` 另打印
+  controller 创建、页面就绪、首次渲染的耗时与渲染统计。
+- `ROVE_WEBVIEW_USER_DATA=<目录>` 指定 WebView2 用户数据目录（默认 `%LOCALAPPDATA%\Rove\WebView2`）；第一次用新目录是冷启动，
+  数字明显偏大，报告里要分开写。`ROVE_WEBVIEW_BROWSER_FOLDER=<不存在的目录>` 可模拟“没有 WebView2 运行时”。
+- 网络：全程每 500 ms 用 `netstat -ano` 采样 WebView2 进程树的连接，报告的 `network_connections_of_webview_processes` 应为空。
+  这不是 OS 级抓包；需要更强的证据时另用 `pktmon`（要管理员权限）。**注明机器负载**。
+
+```powershell
+$env:ROVE_MARKDOWN_TRACE=1; cargo run -p rove-ui --example markdown_probe
+```
+
