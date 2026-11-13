@@ -42,11 +42,21 @@ pub struct OpenRequest {
     pub pinned: bool,
 }
 
+/// #51：`addCursorsAtSearchResults`——打开这个文件并在每一处匹配上放一个光标。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddCursorsRequest {
+    pub path: WorkspacePath,
+    /// 该文件里全部匹配的区间（UTF-8 列），按出现顺序。
+    pub selections: Vec<TextRange>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SearchViewEvent {
     Open(OpenRequest),
     /// “查看排除设置”链接。
     OpenSettings,
+    /// #51：在结果处添加光标。
+    AddCursors(AddCursorsRequest),
 }
 
 /// 视图的搜索状态。
@@ -501,6 +511,36 @@ impl SearchView {
         }
     }
 
+    /// #51：`addCursorsAtSearchResults`。聚焦的是文件行还是匹配行都取该文件的全部匹配
+    /// （VS Code 在选中整个文件时也是这个行为）。
+    fn add_cursors_at_results(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.focused_target(cx) else {
+            return;
+        };
+        let path = target_path(&target).clone();
+        let selections: Vec<TextRange> = {
+            let rows = self.rows.borrow();
+            let Some(file) = rows.file(&path) else {
+                return;
+            };
+            file.lines
+                .iter()
+                .flat_map(|l| {
+                    l.ranges
+                        .iter()
+                        .map(move |r| selection(l.line, r.start, r.end))
+                })
+                .collect()
+        };
+        if selections.is_empty() {
+            return;
+        }
+        cx.emit(SearchViewEvent::AddCursors(AddCursorsRequest {
+            path,
+            selections,
+        }));
+    }
+
     fn toggle_file(
         &mut self,
         path: &WorkspacePath,
@@ -553,6 +593,8 @@ impl SearchView {
                     None => {}
                 }
             }
+            // #51：当前聚焦文件的全部匹配变成多光标。
+            reg::ADD_CURSORS => self.add_cursors_at_results(cx),
             reg::NEXT_RESULT => self.step(true, cx),
             reg::PREVIOUS_RESULT => self.step(false, cx),
             reg::REMOVE => self.remove_focused(cx),

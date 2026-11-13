@@ -478,3 +478,29 @@ fn find_with_selection_and_no_cross_file_replace_commands(cx: &mut TestAppContex
     assert!(visible(&view, cx));
     assert_eq!(input(&view, cx), "baz");
 }
+
+// #51：`alt+enter`（查找条可见时）把全部匹配变成多光标。
+#[gpui::test]
+fn alt_enter_selects_all_matches_as_cursors(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    select(&view, pos(0, 0), pos(0, 3), cx);
+    press("ctrl-f", cx);
+    assert!(visible(&view, cx));
+    let found = matches(&view, cx);
+    assert_eq!(found.len(), 5);
+    // 焦点在输入框里，`alt+enter` 的 when 是 `editorFocus && findWidgetVisible`。
+    press("alt-enter", cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    let selections = code.read_with(cx, |c, _| c.selections());
+    assert_eq!(selections.len(), found.len(), "每处匹配一个光标");
+    let mut starts: Vec<(u64, u64)> = selections
+        .iter()
+        .map(|s| (s.start().line.0, s.start().column.0))
+        .collect();
+    starts.sort_unstable();
+    let mut expected = found;
+    expected.sort_unstable();
+    assert_eq!(starts, expected);
+    assert!(code.read_with(cx, |c, _| c.has_multiple_selections()));
+}

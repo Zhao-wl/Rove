@@ -555,9 +555,41 @@ impl FindHost {
             reg::REPLACE_ONE => self.replace_one(window, cx),
             reg::REPLACE_ALL => self.replace_all(window, cx),
             reg::TOGGLE_PRESERVE_CASE => self.toggle_preserve_case(cx),
+            // #51：选中全部匹配（查找条可见时的 `alt+enter`），交给代码视图的多选区。
+            reg::SELECT_ALL_MATCHES => self.select_all_matches(cx),
             _ => return false,
         }
         true
+    }
+
+    /// `editor.action.selectAllMatches`：把当前的匹配列表变成多光标。
+    fn select_all_matches(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
+        let matches = self.model.matches().clone();
+        if matches.is_empty() {
+            return;
+        }
+        let selections: Vec<crate::code_view::Selection> = matches
+            .iter()
+            .map(|m| crate::code_view::Selection::new(m.start, m.end))
+            .collect();
+        self.code.update(cx, |code, cx| {
+            code.set_selections(
+                selections,
+                Some(crate::code_view::Reveal::CenterIfOutside),
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// #51：查找条的当前选项交给代码视图（`Ctrl+D` 是否区分大小写取它）；关闭时清掉。
+    fn sync_match_options(&mut self, cx: &mut Context<Self>) {
+        let options = self.visible.then(|| self.model.options());
+        self.code
+            .update(cx, |code, _| code.set_find_match_options(options));
     }
 
     /// 以给定的查找文本打开查找条，不取选区种子也不抢焦点（基准、嵌入方使用）。
@@ -706,6 +738,7 @@ impl FindHost {
         self.model.clear();
         self.problem = None;
         self.searched_version = None;
+        self.sync_match_options(cx);
         self.sync_decor(cx);
         self.apply_top_inset(cx);
         cx.emit(FindEvent::VisibilityChanged(false));
@@ -721,6 +754,7 @@ impl FindHost {
             self.visible = visible;
             cx.emit(FindEvent::VisibilityChanged(visible));
         }
+        self.sync_match_options(cx);
         cx.notify();
     }
 
@@ -1037,6 +1071,7 @@ impl FindHost {
         change(&mut options);
         self.shared.borrow_mut().options = options;
         self.model.set_options(options);
+        self.sync_match_options(cx);
         if self.visible {
             let from = self.code.read(cx).selection().start();
             self.research(After::MoveFrom(from), cx);

@@ -189,6 +189,41 @@ pub fn combine_spans(
     })
 }
 
+/// #51：对会话里的**每个**选区各算一次替换，合成一个事务（一次撤销）。
+fn for_each_selection(
+    session: &EditSession,
+    text: &dyn TextSource,
+    mut f: impl FnMut(Selection) -> rove_base::Result<Option<CursorEdit>>,
+) -> rove_base::Result<Vec<Option<CursorEdit>>> {
+    let mut out = Vec::with_capacity(session.selections().len());
+    for s in session.selections().all() {
+        out.push(f(Selection::new(
+            text.position(s.anchor)?,
+            text.position(s.active)?,
+        ))?);
+    }
+    Ok(out)
+}
+
+/// #51：事务之后把光标显式放到一组偏移上（`lineBreakInsert`、`insertLine*`）。
+fn place_cursors(session: &mut EditSession, offsets: Vec<ByteOffset>) {
+    let placed: Vec<ed::Selection> = offsets.into_iter().map(ed::Selection::cursor).collect();
+    if let Ok(selections) = Selections::new(placed) {
+        session.set_selections(selections);
+    }
+}
+
+/// #51：把会话读回来的选区列表与命令显式指定的主选区合并成视图的选区列表。
+fn selections_with_primary(all: &[Selection], primary: Option<Selection>) -> Vec<Selection> {
+    let mut out = all.to_vec();
+    match (primary, out.first_mut()) {
+        (Some(p), Some(first)) => *first = p,
+        (Some(p), None) => out.push(p),
+        _ => {}
+    }
+    out
+}
+
 fn to_core(text: &dyn TextSource, s: Selection) -> Option<ed::Selection> {
     Some(ed::Selection::new(
         text.offset(s.anchor).ok()?,
@@ -469,23 +504,34 @@ impl CodeView {
             self.set_text(Some(snapshot.clone() as Arc<dyn TextSource>), true, cx);
         }
         let before: Arc<dyn TextSource> = snapshot.clone();
+        let view_selections = self.selections();
         let result = {
             let Some(mut session) = host.session() else {
                 return false;
             };
-            if let Some(sel) = to_core(&*snapshot, self.cursor.selection) {
-                session.set_selections(Selections::single(sel));
+            // #51：主选区在前，次光标跟在后面；整个命令对所有光标生效。
+            let core: Vec<ed::Selection> = view_selections
+                .iter()
+                .filter_map(|s| to_core(&*snapshot, *s))
+                .collect();
+            if let Ok(selections) = Selections::new(core) {
+                session.set_selections(selections);
             }
             match f(&mut session, &snapshot, Instant::now()) {
                 Ok(outcome) => {
                     let after = session.snapshot();
-                    let primary = from_core(&*after, session.selections().primary());
-                    Ok((outcome, after, primary))
+                    let all: Vec<Selection> = session
+                        .selections()
+                        .all()
+                        .iter()
+                        .filter_map(|s| from_core(&*after, s))
+                        .collect();
+                    Ok((outcome, after, all))
                 }
                 Err(e) => Err(e),
             }
         };
-        let (outcome, after, primary) = match result {
+        let (outcome, after, all) = match result {
             Ok(r) => r,
             Err(Error::Unsupported) => {
                 self.edit_blocked(cx);
@@ -493,10 +539,13 @@ impl CodeView {
             }
             Err(_) => return false,
         };
+        let primary = all.first().copied();
         let selection = outcome.selection.or(primary);
         if outcome.edits.is_empty() {
-            if let Some(s) = selection.filter(|s| *s != self.cursor.selection) {
-                self.cursor.set(s);
+            let changed = selection.is_some_and(|s| s != self.cursor.selection)
+                || all.len() != view_selections.len();
+            if changed {
+                self.apply_selections(selections_with_primary(&all, selection));
                 self.reveal_caret_nearest(cx);
                 self.selection_changed(SelectionSource::Keyboard, cx);
             }
@@ -504,8 +553,12 @@ impl CodeView {
         }
         let after: Arc<dyn TextSource> = after;
         self.apply_text(after.clone(), &outcome.edits, cx);
-        if let Some(s) = selection {
-            self.cursor.set(self.clamp_selection(s));
+        let mut placed = selections_with_primary(&all, selection);
+        for s in &mut placed {
+            *s = self.clamp_selection(*s);
+        }
+        if !placed.is_empty() {
+            self.apply_selections(placed);
         }
         if let Some(window) = window {
             self.rebuild_lines_now(&outcome.edits, window);
@@ -540,8 +593,14 @@ impl CodeView {
         if session.snapshot().version() != text.version() {
             return;
         }
-        if let Some(sel) = to_core(&*text, self.cursor.selection) {
-            session.set_selections(Selections::single(sel));
+        // #51：全部光标（主选区在前）。
+        let core: Vec<ed::Selection> = self
+            .selections()
+            .iter()
+            .filter_map(|s| to_core(&*text, *s))
+            .collect();
+        if let Ok(selections) = Selections::new(core) {
+            session.set_selections(selections);
         }
     }
 
@@ -569,25 +628,24 @@ impl CodeView {
     /// 只有空白的当前行在换行时清空。
     pub(crate) fn enter(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) -> bool {
         let trim = self.options.trim_auto_whitespace;
-        let sel = self.cursor.selection;
         self.run_edit(window, cx, move |s, snap, now| {
             let text: &dyn TextSource = &**snap;
-            let start = sel.start();
-            let line = line_text(text, start.line.0);
-            let indent = leading_whitespace(&line[..(start.column.0 as usize).min(line.len())]);
-            let only_ws = sel.is_empty()
-                && trim
-                && !line.is_empty()
-                && line.trim().is_empty()
-                && start.column.0 as usize == line.len();
-            let from = if only_ws { pos(start.line.0, 0) } else { start };
-            let range = Span::new(text.offset(from)?, text.offset(sel.end())?)?;
-            let inserted = format!("\n{indent}");
+            // #51：每个光标各自换行、各自保持本行缩进，合成一个事务。
+            let edits = for_each_selection(s, text, |sel| {
+                let start = sel.start();
+                let line = line_text(text, start.line.0);
+                let indent = leading_whitespace(&line[..(start.column.0 as usize).min(line.len())]);
+                let only_ws = sel.is_empty()
+                    && trim
+                    && !line.is_empty()
+                    && line.trim().is_empty()
+                    && start.column.0 as usize == line.len();
+                let from = if only_ws { pos(start.line.0, 0) } else { start };
+                let range = Span::new(text.offset(from)?, text.offset(sel.end())?)?;
+                Ok(Some(CursorEdit::replace(range, format!("\n{indent}"))))
+            })?;
             let kind = EditKind::typing("\n", s.previous_kind());
-            Ok(
-                s.edit_each(vec![Some(CursorEdit::replace(range, inserted))], kind, now)?
-                    .into(),
-            )
+            Ok(s.edit_each(edits, kind, now)?.into())
         })
     }
 
@@ -674,29 +732,52 @@ impl CodeView {
             }
             "deleteLeft" => {
                 let (tab_stops, size) = (self.options.use_tab_stops, self.options.tab_size as u64);
-                let sel = self.cursor.selection;
                 self.run_edit(w, cx, move |s, snap, now| {
-                    if tab_stops && sel.is_empty() && sel.active.column.0 > 0 {
-                        let line = line_text(&**snap, sel.active.line.0);
-                        let prefix = &line[..sel.active.column.0 as usize];
-                        if !prefix.is_empty() && prefix.bytes().all(|b| b == b' ') {
-                            // 缩进里的空格：退到上一个制表位（VS Code `useTabStops`）。
-                            let col = prefix.len() as u64;
+                    let text: &dyn TextSource = &**snap;
+                    // 缩进里的空格：退到上一个制表位（VS Code `useTabStops`）。
+                    let on_tab_stop = |sel: &Selection| {
+                        if !tab_stops || !sel.is_empty() || sel.active.column.0 == 0 {
+                            return false;
+                        }
+                        let line = line_text(text, sel.active.line.0);
+                        let end = (sel.active.column.0 as usize).min(line.len());
+                        !line[..end].is_empty() && line[..end].bytes().all(|b| b == b' ')
+                    };
+                    let any_tab_stop = s
+                        .selections()
+                        .all()
+                        .iter()
+                        .filter_map(|c| {
+                            Some(Selection::new(
+                                text.position(c.anchor).ok()?,
+                                text.position(c.active).ok()?,
+                            ))
+                        })
+                        .any(|sel| on_tab_stop(&sel));
+                    if !any_tab_stop {
+                        return Ok(s.delete_left(now)?.into());
+                    }
+                    let edits = for_each_selection(s, text, |sel| {
+                        if on_tab_stop(&sel) {
+                            let col = sel.active.column.0;
                             let target = (col - 1) / size * size;
                             let range = Span::new(
-                                snap.offset(pos(sel.active.line.0, target))?,
-                                snap.offset(sel.active)?,
+                                text.offset(pos(sel.active.line.0, target))?,
+                                text.offset(sel.active)?,
                             )?;
-                            return Ok(s
-                                .edit_each(
-                                    vec![Some(CursorEdit::replace(range, ""))],
-                                    EditKind::DeletingLeft,
-                                    now,
-                                )?
-                                .into());
+                            return Ok(Some(CursorEdit::replace(range, "")));
                         }
-                    }
-                    Ok(s.delete_left(now)?.into())
+                        if !sel.is_empty() {
+                            let range =
+                                Span::new(text.offset(sel.start())?, text.offset(sel.end())?)?;
+                            return Ok(Some(CursorEdit::replace(range, "")));
+                        }
+                        let at = text.offset(sel.active)?;
+                        let left = ed::selection::grapheme_left(text, at)?;
+                        Ok((left != at)
+                            .then(|| CursorEdit::replace(Span::new(left, at).expect("有序"), "")))
+                    })?;
+                    Ok(s.edit_each(edits, EditKind::DeletingLeft, now)?.into())
                 });
             }
             "deleteRight" => {
@@ -704,33 +785,31 @@ impl CodeView {
             }
             "deleteAllLeft" | "deleteAllRight" => {
                 let left = id == "deleteAllLeft";
-                let sel = self.cursor.selection;
                 self.run_edit(w, cx, move |s, snap, now| {
-                    let range = if !sel.is_empty() {
-                        Span::new(snap.offset(sel.start())?, snap.offset(sel.end())?)?
-                    } else {
-                        let p = sel.active;
-                        let line = line_text(&**snap, p.line.0);
-                        let (a, b) = if left {
-                            (pos(p.line.0, 0), p)
-                        } else if (p.column.0 as usize) < line.len() {
-                            (p, pos(p.line.0, line.len() as u64))
+                    let text: &dyn TextSource = &**snap;
+                    let edits = for_each_selection(s, text, |sel| {
+                        let range = if !sel.is_empty() {
+                            Span::new(text.offset(sel.start())?, text.offset(sel.end())?)?
                         } else {
-                            // 行尾：删除换行（VS Code `deleteAllRight`）。
-                            let next = (p.line.0 + 1).min(snap.lines().known.saturating_sub(1));
-                            (p, pos(next, 0))
+                            let p = sel.active;
+                            let line = line_text(text, p.line.0);
+                            let (a, b) = if left {
+                                (pos(p.line.0, 0), p)
+                            } else if (p.column.0 as usize) < line.len() {
+                                (p, pos(p.line.0, line.len() as u64))
+                            } else {
+                                // 行尾：删除换行（VS Code `deleteAllRight`）。
+                                let next = (p.line.0 + 1).min(text.lines().known.saturating_sub(1));
+                                (p, pos(next, 0))
+                            };
+                            Span::new(text.offset(a)?, text.offset(b)?)?
                         };
-                        Span::new(snap.offset(a)?, snap.offset(b)?)?
-                    };
-                    if range.start() == range.end() {
+                        Ok((range.start() != range.end()).then(|| CursorEdit::replace(range, "")))
+                    })?;
+                    if edits.iter().all(Option::is_none) {
                         return Ok(EditOutcome::default());
                     }
-                    Ok(s.edit_each(
-                        vec![Some(CursorEdit::replace(range, ""))],
-                        EditKind::Other,
-                        now,
-                    )?
-                    .into())
+                    Ok(s.edit_each(edits, EditKind::Other, now)?.into())
                 });
             }
             "tab" => {
@@ -757,49 +836,63 @@ impl CodeView {
             "outdent" | "editor.action.outdentLines" => self.shift_lines(true, w, cx),
             "editor.action.indentLines" => self.shift_lines(false, w, cx),
             "lineBreakInsert" => {
-                let sel = self.cursor.selection;
-                self.run_edit(w, cx, move |s, snap, now| {
-                    let range = Span::new(snap.offset(sel.start())?, snap.offset(sel.end())?)?;
-                    let out = s.edit_each(
-                        vec![Some(CursorEdit::replace(range, "\n"))],
-                        EditKind::Other,
-                        now,
-                    )?;
-                    Ok(EditOutcome {
-                        edits: out.into_iter().collect(),
-                        selection: Some(Selection::caret(sel.start())),
-                    })
+                self.run_edit(w, cx, move |s, _, now| {
+                    // 换行插在光标之后：每个光标都停在原位（VS Code `lineBreakInsert`）。
+                    let starts: Vec<ByteOffset> =
+                        s.selections().all().iter().map(|c| c.start()).collect();
+                    let edits = s
+                        .selections()
+                        .all()
+                        .iter()
+                        .map(|c| Some(CursorEdit::replace(c.range(), "\n")))
+                        .collect();
+                    let out = s.edit_each(edits, EditKind::Other, now)?;
+                    if let Some(applied) = &out {
+                        let placed = starts
+                            .into_iter()
+                            .map(|o| applied.map_offset(o, ed::Bias::Before))
+                            .collect();
+                        place_cursors(s, placed);
+                    }
+                    Ok(out.into())
                 });
             }
             "editor.action.insertLineAfter" | "editor.action.insertLineBefore" => {
                 let after = id.ends_with("After");
-                let line = self.cursor.selection.active.line.0;
                 self.run_edit(w, cx, move |s, snap, now| {
-                    let text = line_text(&**snap, line);
-                    let indent = leading_whitespace(&text).to_string();
-                    let (at, inserted, caret) = if after {
-                        (
-                            pos(line, text.len() as u64),
-                            format!("\n{indent}"),
-                            pos(line + 1, indent.len() as u64),
-                        )
-                    } else {
-                        (
-                            pos(line, 0),
-                            format!("{indent}\n"),
-                            pos(line, indent.len() as u64),
-                        )
-                    };
-                    let o = snap.offset(at)?;
-                    let out = s.edit_each(
-                        vec![Some(CursorEdit::replace(Span::new(o, o)?, inserted))],
-                        EditKind::Other,
-                        now,
-                    )?;
-                    Ok(EditOutcome {
-                        edits: out.into_iter().collect(),
-                        selection: Some(Selection::caret(caret)),
-                    })
+                    let text: &dyn TextSource = &**snap;
+                    // #51：每个光标各插一行；插入点按偏移排序后与 `inserted_ranges()` 一一对应。
+                    let mut indents: Vec<(ByteOffset, usize)> = Vec::new();
+                    let edits = for_each_selection(s, text, |sel| {
+                        let line = sel.active.line.0;
+                        let content = line_text(text, line);
+                        let indent = leading_whitespace(&content).to_string();
+                        let (at, inserted) = if after {
+                            (pos(line, content.len() as u64), format!("\n{indent}"))
+                        } else {
+                            (pos(line, 0), format!("{indent}\n"))
+                        };
+                        let o = text.offset(at)?;
+                        indents.push((o, indent.len()));
+                        Ok(Some(CursorEdit::replace(Span::new(o, o)?, inserted)))
+                    })?;
+                    let out = s.edit_each(edits, EditKind::Other, now)?;
+                    if let Some(applied) = &out {
+                        indents.sort_by_key(|(o, _)| *o);
+                        let placed = indents
+                            .iter()
+                            .zip(applied.inserted_ranges())
+                            .map(|((_, indent), range)| {
+                                if after {
+                                    range.end()
+                                } else {
+                                    ByteOffset(range.start().0 + *indent as u64)
+                                }
+                            })
+                            .collect();
+                        place_cursors(s, placed);
+                    }
+                    Ok(out.into())
                 });
             }
             "undo" | "redo" => {

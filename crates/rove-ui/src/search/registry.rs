@@ -37,6 +37,8 @@ pub const PREVIOUS_INPUT: &str = "search.focus.previousInputBox";
 pub const TOGGLE_CASE: &str = "toggleSearchCaseSensitive";
 pub const TOGGLE_WORD: &str = "toggleSearchWholeWord";
 pub const TOGGLE_REGEX: &str = "toggleSearchRegex";
+/// #51：`ctrl+shift+l`，把结果列表里当前文件的匹配变成编辑器里的多光标。
+pub const ADD_CURSORS: &str = "addCursorsAtSearchResults";
 
 /// 发布在搜索视图上的 VS Code 上下文键（默认键位的 when 子句用到）。
 pub mod context {
@@ -102,6 +104,12 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         TOGGLE_REGEX,
         "search.command.toggleRegex",
         "切换使用正则表达式",
+    ),
+    // #51：在搜索结果处添加光标。
+    (
+        ADD_CURSORS,
+        "search.command.addCursorsAtSearchResults",
+        "在搜索结果处添加光标",
     ),
 ];
 

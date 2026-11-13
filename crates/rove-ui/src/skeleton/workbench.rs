@@ -250,6 +250,9 @@ pub struct Workbench {
     status: status_host::StatusItems,
     /// #50：热退出的备份服务、待恢复的备份与退出标记（见 `hotexit_host.rs`）。
     hotexit: hotexit_host::HotExit,
+    /// #51：`addCursorsAtSearchResults` 要放的多光标；目标文件显示出来之后才写进代码视图
+    /// （打开本身会先按 #17 的 `OpenOptions::selection` 放一个单选区）。
+    pub(super) pending_cursors: Option<(Resource, Vec<rove_base::TextRange>)>,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -469,6 +472,7 @@ impl Workbench {
             large_files,
             status: Default::default(),
             hotexit: Default::default(),
+            pending_cursors: None,
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -1199,6 +1203,7 @@ impl Workbench {
     /// already in its `ViewState` (see [`Self::code_event`]); the incoming tab's state is restored
     /// from its own, and a pending reveal from a completed open is applied last.
     fn sync_views(&mut self, cx: &mut Context<Self>) {
+        let mut revealed = false;
         let groups: Vec<_> = self.editor.groups.keys().copied().collect();
         self.views.retain(|group, _| groups.contains(group));
         for group in groups {
@@ -1223,14 +1228,19 @@ impl Workbench {
                 (false, true) => self.views.get_mut(&group).unwrap().secondary = None,
                 _ => {}
             }
-            self.sync_slot(group, false, cx);
+            revealed |= self.sync_slot(group, false, cx);
             if side_by_side {
-                self.sync_slot(group, true, cx);
+                revealed |= self.sync_slot(group, true, cx);
             }
+        }
+        // #51：打开并定位之后才写 `addCursorsAtSearchResults` 的多光标（见 `search_host.rs`）。
+        if revealed {
+            self.apply_pending_cursors(cx);
         }
     }
 
-    fn sync_slot(&mut self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) {
+    /// 把活动标签载入代码视图；返回是否应用了“打开时的定位”（#51 的多光标跟在它后面）。
+    fn sync_slot(&mut self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) -> bool {
         let Self {
             editor,
             views,
@@ -1257,13 +1267,13 @@ impl Workbench {
         });
         let reveal = !secondary && tab.as_ref().is_some_and(|tab| tab.reveal);
         if slot.shown == target && !reveal {
-            return;
+            return false;
         }
         let previous = std::mem::replace(&mut slot.shown, target);
         let Some(tab) = tab else {
             slot.code
                 .update(cx, |code, cx| code.set_text(None, false, cx));
-            return;
+            return false;
         };
         let opened = tab.opened().unwrap();
         let text = opened.document.text.clone();
@@ -1309,6 +1319,7 @@ impl Workbench {
                 code.set_selection(selection_of(&state), Some(Reveal::CenterIfOutside), cx);
             }
         });
+        reveal
     }
 
     /// A background analysis of `document` finished: hand the new snapshot to the code views
