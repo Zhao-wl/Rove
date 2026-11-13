@@ -256,7 +256,6 @@ struct Walker {
     field_expression: u16,
     field_function: u16,
     generic_name: u16,
-    qualified_name: u16,
     base_list: u16,
     invocation_expression: u16,
     member_access_expression: u16,
@@ -555,7 +554,6 @@ impl Walker {
             field_expression: field("expression"),
             field_function: field("function"),
             generic_name: kind("generic_name", true),
-            qualified_name: kind("qualified_name", true),
             base_list: kind("base_list", true),
             invocation_expression: kind("invocation_expression", true),
             member_access_expression: kind("member_access_expression", true),
@@ -848,9 +846,6 @@ fn identifier(
             push(LOCAL_NAME_RULE);
         }
     }
-    // `(using_directive [(identifier) (qualified_name)])` is handled by `rules.any` above;
-    // the qualified form is reached through `Action::QualifiedName`.
-    debug_assert!(parent != walker.qualified_name || rules.any.is_none());
 }
 
 #[cfg(test)]
