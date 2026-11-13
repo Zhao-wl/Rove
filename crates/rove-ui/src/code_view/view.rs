@@ -1760,7 +1760,9 @@ impl CodeView {
         let surrounding = self.options.cursor_surrounding_lines;
         self.unfold_to_reveal(p.line.0, cx);
         if let Some(m) = self.metrics() {
-            let line = self.view_line(p.line.0);
+            // 目标是光标真正所在的那条视觉行（续行段号 > 0 时不是本缓冲行的首条），
+            // 否则 `Reveal::Nearest` 会误判为已可见而不滚动，插入符落在视口外。
+            let line = self.visual_line_of(p);
             let mut s = self
                 .scroll
                 .reveal_line(line, reveal, surrounding, &m, &self.zones);
@@ -2846,7 +2848,6 @@ impl CodeView {
             self.visible.end..(self.visible.end + n / 2).min(count)
         };
         let known = self.text.as_ref().map_or(0, |t| t.lines().known);
-        let map = self.folding.map();
         // #55：粘性行多半在视口之外，也要读文本与整形，否则粘性区一直画占位。
         let sticky: Vec<u64> = self.sticky.lines().iter().map(|l| l.line).collect();
         sticky
@@ -2856,7 +2857,9 @@ impl CodeView {
                     .clone()
                     .chain(ahead)
                     .chain(behind)
-                    .map(move |v| map.to_doc(v)),
+                    // `self.visible` 等都是视觉行区间，必须走 `VisualMap`（含软换行）换算成
+                    // 缓冲行，否则软换行开启后视觉行号大于缓冲行号，可见行永远整形不到（整屏灰条）。
+                    .map(move |v| self.doc_line(v)),
             )
             .filter(move |l| *l < known)
             .filter(move |l| match self.lines.peek(l) {
