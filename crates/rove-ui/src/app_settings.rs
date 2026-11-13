@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 9] {
+fn modules() -> [(&'static str, Register); 10] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -30,6 +30,11 @@ fn modules() -> [(&'static str, Register); 9] {
         ("rove-buffer-save", rove_buffer::save::settings::register),
         // #25：search.*（全局搜索）。
         ("rove-search", rove_search::settings::register_settings),
+        // #50：热退出读取的 files.hotExit 与 files.restoreUndoStack。
+        (
+            "rove-buffer-hotexit",
+            rove_buffer::hotexit::settings::register,
+        ),
     ]
 }
 

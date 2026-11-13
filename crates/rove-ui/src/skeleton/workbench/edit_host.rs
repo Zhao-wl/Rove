@@ -70,7 +70,7 @@ const UNTITLED_BASE: u64 = 1 << 62;
 impl Workbench {
     // ------------------------------------------------------------- 文档 ↔ 可保存文件
 
-    fn edit_options(&self, language: &str) -> EditOptions {
+    pub(super) fn edit_options(&self, language: &str) -> EditOptions {
         let scope = Scope {
             language: (!language.is_empty()).then(|| Arc::from(language)),
         };
@@ -99,7 +99,7 @@ impl Workbench {
             .map(|o| o.document.clone())
     }
 
-    fn disk_path(&self, resource: &Resource) -> Option<PathBuf> {
+    pub(super) fn disk_path(&self, resource: &Resource) -> Option<PathBuf> {
         match resource {
             Resource::Workspace(p) => Some(self.root.join(p.as_str())),
             Resource::File(p) => Some(p.clone()),
@@ -127,8 +127,12 @@ impl Workbench {
             if !ids.contains(&id) {
                 self.editing.saves.borrow_mut().detach(id);
                 self.editing.deleted.remove(&id);
+                // #50：标签关掉了，它的热退出备份也不再需要。
+                self.discard_hot_exit_backup(id);
             }
         }
+        // #50：打开失败的标签不能把启动恢复卡住。
+        self.finish_restore_if_done(cx);
         for document in open {
             let attached = self.editing.saves.borrow().file(document.id).is_some();
             if attached || self.editing.loading.contains(&document.id) {
@@ -166,6 +170,12 @@ impl Workbench {
 
     /// 后台读盘建 `TextFile`（编码识别同打开路径），回到窗口后挂到控制器，并把文件的快照换进文档。
     fn load_text_file(&mut self, document: Arc<Document>, path: PathBuf, cx: &mut Context<Self>) {
+        // #50：这个路径有待恢复的热退出备份时不读盘，内容直接取自备份（标记为脏）。
+        if let Some(file) = self.take_restored_file(&path) {
+            self.attach_text_file(document, file, cx);
+            self.finish_restore_if_done(cx);
+            return;
+        }
         self.editing.loading.insert(document.id);
         let settings = self.settings.clone();
         let language = document.metadata.language.to_string();
@@ -215,6 +225,9 @@ impl Workbench {
         if let Some(files) = &self.editing.files {
             files.replace(&replaced);
         }
+        // #50：从备份恢复出来的文档带着未保存的修改，标签上的脏点要跟上。
+        let dirty = self.editing.saves.borrow().is_dirty(document.id);
+        self.editor.set_dirty(document.id, dirty);
         self.sync_views(cx);
         self.sync_editing(cx);
         cx.notify();
@@ -344,6 +357,8 @@ impl Workbench {
         }
         let dirty = self.editing.saves.borrow().is_dirty(document.id);
         self.editor.set_dirty(document.id, dirty);
+        // #50：持续备份按编辑去抖（不是只在退出时备份）。
+        self.note_hot_exit_edit(document.id, cx);
         cx.notify();
     }
 
@@ -572,6 +587,8 @@ impl Workbench {
                     ..
                 } => {
                     self.editing.deleted.remove(&document);
+                    // #50：已经落盘了，备份没用了。
+                    self.discard_hot_exit_backup(document);
                     self.saved_as(document, &path);
                     self.editor.set_dirty(document, false);
                     if let Some(Resource::Workspace(p)) =
@@ -610,6 +627,7 @@ impl Workbench {
                     self.editor.force_close_document(document);
                     self.editing.saves.borrow_mut().detach(document);
                     self.editing.deleted.remove(&document);
+                    self.discard_hot_exit_backup(document);
                     self.sync_views(cx);
                     self.continue_window_close(cx);
                 }
@@ -821,6 +839,8 @@ impl Workbench {
             .filter(|t| t.dirty)
             .and_then(Tab::opened)
             .map(|o| o.document.id);
+        // #50：关闭单个标签永远询问，热退出只在窗口 / 应用级别接管。
+        self.end_hot_exit_window_close();
         match document {
             Some(document) => {
                 let check = self
@@ -858,6 +878,9 @@ impl Workbench {
     /// 窗口关闭按钮：逐个确认未保存的文档；全部处理完才真正关闭。返回是否可以立即关闭。
     pub(super) fn window_should_close(&mut self, cx: &mut Context<Self>) -> bool {
         self.editing.closing_window = true;
+        // #50：`files.hotExit` 允许时接管关闭确认（Rove 一个窗口一个文件夹，所以关掉本窗口
+        // 就是退出应用）。
+        self.begin_hot_exit_window_close(true);
         let next = self
             .editing
             .saves
@@ -880,10 +903,22 @@ impl Workbench {
                     self.editing.closing_window = false;
                     return true;
                 }
+                self.end_hot_exit_window_close();
                 cx.notify();
                 false
             }
         }
+    }
+
+    /// 窗口关闭按钮的完整流程：#49 的逐个确认 + #50 的备份与干净退出标记。
+    /// 返回是否可以立即关闭。
+    pub(super) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let closing = self.window_should_close(cx);
+        if closing {
+            // 窗口真的要关了：脏文档的备份同步写完，再写下干净的退出标记。
+            self.flush_hot_exit();
+        }
+        closing
     }
 
     /// 一个文档处理完（保存或不保存）：窗口关闭流程中继续下一个，全部处理完就关窗口。
@@ -893,6 +928,7 @@ impl Workbench {
         }
         if self.window_should_close(cx) {
             self.editing.closing_window = false;
+            self.flush_hot_exit();
             if let Some(window) = self.editing.window {
                 cx.defer(move |cx| {
                     let _ = window.update(cx, |_, window, _| window.remove_window());
@@ -923,7 +959,7 @@ pub(super) fn attach_close_confirmation(
         entity.update(cx, |view, cx| {
             view.shell_mut().record_window(window);
             view.shell_mut().save_now();
-            view.window_should_close(cx)
+            view.request_window_close(cx)
         })
     });
 }
