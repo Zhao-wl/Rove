@@ -176,7 +176,8 @@ fn main() {
     });
     let sample = SAMPLE.replace("__ROVE_TEST_ORIGIN__", &origin);
     std::fs::write(root.join("Sample.md"), &sample).unwrap();
-    std::fs::write(root.join("Other.md"), &sample).unwrap();
+    let other = format!("{sample}\n![切换后的远程图片]({origin}/other.png)\n");
+    std::fs::write(root.join("Other.md"), other).unwrap();
     std::fs::write(
         root.join("local.css"),
         format!(r#"@import url("{origin}/import.css");"#),
@@ -335,14 +336,15 @@ fn main() {
             }
             phase("offline_rerender", json!({ "rendered": snap.rendered && snap.render_sequence != before, "stats": snap.stats, "remote_blocked": snap.remote }));
             let previous_owner = snap.owner;
+            let before = snap.render_sequence;
             open(cx, "Other.md", false);
             let started = Instant::now();
             let mut snap = snapshot(cx);
-            while (!snap.rendered || snap.owner == previous_owner) && started.elapsed() < Duration::from_secs(20) {
+            while (!snap.rendered || snap.owner == previous_owner || snap.render_sequence == before) && started.elapsed() < Duration::from_secs(20) {
                 sleep(50).await;
                 snap = snapshot(cx);
             }
-            phase("offline_switch", json!({ "rendered": snap.rendered && snap.owner != previous_owner, "stats": snap.stats, "remote_blocked": snap.remote }));
+            phase("offline_switch", json!({ "rendered": snap.rendered && snap.owner != previous_owner && snap.render_sequence != before, "stats": snap.stats, "remote_blocked": snap.remote }));
 
             // 长文档并排：源码 → 预览、预览 → 源码。
             open(cx, "Long.md", true);
@@ -436,7 +438,8 @@ fn main() {
                 let extra = &phase["extra"];
                 let stats = &extra["stats"];
                 assert_eq!(extra["rendered"], true, "{name}: {extra}");
-                assert_eq!(extra["remote_blocked"], 2, "{name}: {extra}");
+                let expected = if name == "offline_switch" { 3 } else { 2 };
+                assert_eq!(extra["remote_blocked"], expected, "{name}: {extra}");
                 assert_eq!(stats["imagesLoaded"], 1, "{name}: {stats}");
                 assert_eq!(stats["mermaid"], 1, "{name}: {stats}");
                 assert_eq!(stats["mermaidErrors"], 0, "{name}: {stats}");
