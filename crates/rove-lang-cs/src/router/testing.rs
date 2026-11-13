@@ -42,6 +42,16 @@ pub struct TestIndex {
     pub docs: Vec<(u32, String)>,
     /// 每个文件的不生效行区间。
     pub inactive: Vec<(u32, u32, u32)>,
+    /// 元数据视图（#34 段 13）。
+    pub views: Vec<TestView>,
+}
+
+/// 一份元数据视图：外部类型、正文与成员名字位置（symbol, line, col, len）。
+#[derive(Clone, Debug)]
+pub struct TestView {
+    pub type_symbol: u32,
+    pub text: String,
+    pub members: Vec<(u32, u32, u32, u32)>,
 }
 
 pub const KIND_FIELD: u8 = 6;
@@ -49,6 +59,7 @@ pub const KIND_LOCAL: u8 = 8;
 pub const KIND_METHOD: u8 = 9;
 pub const KIND_TYPE: u8 = 11;
 pub const KIND_PARAMETER: u8 = 13;
+pub const KIND_PROPERTY: u8 = 15;
 
 impl TestIndex {
     pub fn file(&mut self, path: &str, hash: u64) -> u32 {
@@ -218,6 +229,35 @@ impl TestIndex {
         };
         let signatures = texts(&self.signatures);
         let docs = texts(&self.docs);
+        let metadata = {
+            let mut views = self.views.clone();
+            views.sort_by_key(|v| v.type_symbol);
+            let mut records = Vec::new();
+            let mut members = Vec::new();
+            for v in &views {
+                let start = (members.len() / 16) as u32;
+                let mut m = v.members.clone();
+                m.sort();
+                for (symbol, line, col, len) in &m {
+                    for x in [*symbol, *line, *col, *len] {
+                        members.extend_from_slice(&x.to_le_bytes());
+                    }
+                }
+                for x in [v.type_symbol, strings.add(&v.text), start, m.len() as u32] {
+                    records.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+            if views.is_empty() {
+                Vec::new()
+            } else {
+                let mut out = Vec::new();
+                out.extend_from_slice(&(views.len() as u32).to_le_bytes());
+                out.extend_from_slice(&((members.len() / 16) as u32).to_le_bytes());
+                out.extend_from_slice(&records);
+                out.extend_from_slice(&members);
+                out
+            }
+        };
         let (offsets, payload) = strings.finish();
         let sections: [(&[u8], usize); 15] = [
             (&offsets, 4),
@@ -233,7 +273,7 @@ impl TestIndex {
             (&inactive, 8),
             (&signatures, 8),
             (&docs, 8),
-            (&[], 1),
+            (&metadata, 1),
             (&payload, 1),
         ];
         encode(sections, self.config_hash)
@@ -444,6 +484,178 @@ pub fn sample_index(player: &str, hero: &str) -> (TestIndex, SampleSymbols) {
         s.object_to_string,
         "public virtual string ToString()".into(),
     ));
+    (t, s)
+}
+
+/// #42 的示例：一个源码文件使用外部 API，三个外部类型各有一份元数据视图。
+pub const GAME_PATH: &str = "Assets/Game.cs";
+pub const GAME_CS: &str = "namespace Game
+{
+    public class Player
+    {
+        public void Update()
+        {
+            var p = transform.position;
+            transform.position = p;
+            var q = transform.position;
+            var parent = transform.parent;
+            list.Add(1);
+            transform.Translate(p);
+        }
+    }
+}
+";
+
+pub const TRANSFORM_KEY: &str = "UnityEngine.CoreModule|T:UnityEngine.Transform";
+pub const VECTOR3_KEY: &str = "UnityEngine.CoreModule|T:UnityEngine.Vector3";
+pub const POSITION_KEY: &str = "UnityEngine.CoreModule|P:UnityEngine.Transform.position";
+pub const PARENT_KEY: &str = "UnityEngine.CoreModule|P:UnityEngine.Transform.parent";
+pub const TRANSLATE_KEY: &str =
+    "UnityEngine.CoreModule|M:UnityEngine.Transform.Translate(UnityEngine.Vector3)";
+pub const LIST_KEY: &str = "mscorlib|T:System.Collections.Generic.List`1";
+pub const ENUMERATOR_KEY: &str = "mscorlib|T:System.Collections.Generic.List`1.Enumerator";
+pub const ADD_KEY: &str = "mscorlib|M:System.Collections.Generic.List`1.Add(`0)";
+
+pub const TRANSFORM_VIEW: &str =
+    "#region 程序集 UnityEngine.CoreModule, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
+// C:/Unity/Managed/UnityEngine.CoreModule.dll
+#endregion
+
+namespace UnityEngine;
+
+/// <summary>Position, rotation and scale of an object.</summary>
+public class Transform : Component
+{
+    /// <summary>The world space position of the Transform.</summary>
+    public Vector3 position { get; set; }
+    /// <summary>The parent of the transform.</summary>
+    public Transform parent { get; set; }
+    public Player Owner { get; }
+    public void Translate(Vector3 translation);
+}
+";
+
+pub const VECTOR3_VIEW: &str =
+    "#region 程序集 UnityEngine.CoreModule, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
+// C:/Unity/Managed/UnityEngine.CoreModule.dll
+#endregion
+
+namespace UnityEngine;
+
+public struct Vector3
+{
+    public float x;
+}
+";
+
+pub const LIST_VIEW: &str =
+    "#region 程序集 mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+// C:/Windows/Microsoft.NET/Framework64/v4.0.30319/mscorlib.dll
+#endregion
+
+namespace System.Collections.Generic;
+
+public class List<T>
+{
+    public void Add(T item);
+    public struct Enumerator
+    {
+    }
+}
+";
+
+const NL: char = '\n';
+
+/// 元数据示例的符号。
+#[derive(Clone, Copy, Debug)]
+pub struct MetadataSample {
+    pub player: u32,
+    pub translate: u32,
+    pub parent: u32,
+    pub position: u32,
+    pub transform: u32,
+    pub vector3: u32,
+    pub add: u32,
+    pub list: u32,
+    pub enumerator: u32,
+}
+
+/// 元数据示例索引。符号按键的字节序排列（`find_symbol` 二分查找的前提），所以不能叠在 `sample_index` 上。
+/// `game` 是 [`GAME_CS`] 的当前内容。
+pub fn metadata_sample_index(game: &str) -> (TestIndex, MetadataSample) {
+    use super::buffers::hash_bytes;
+    let mut t = TestIndex::default();
+    let file = t.file(GAME_PATH, hash_bytes(game.as_bytes()));
+    let s = MetadataSample {
+        player: t.symbol("Game|T:Game.Player", "Player", KIND_TYPE, None),
+        translate: t.symbol(TRANSLATE_KEY, "Translate", KIND_METHOD, None),
+        parent: t.symbol(PARENT_KEY, "parent", KIND_PROPERTY, None),
+        position: t.symbol(POSITION_KEY, "position", KIND_PROPERTY, None),
+        transform: t.symbol(TRANSFORM_KEY, "Transform", KIND_TYPE, None),
+        vector3: t.symbol(VECTOR3_KEY, "Vector3", KIND_TYPE, None),
+        add: t.symbol(ADD_KEY, "Add", KIND_METHOD, None),
+        list: t.symbol(LIST_KEY, "List", KIND_TYPE, None),
+        enumerator: t.symbol(ENUMERATOR_KEY, "Enumerator", KIND_TYPE, None),
+    };
+    t.symbols[s.parent as usize].container = Some(s.transform);
+    t.symbols[s.translate as usize].container = Some(s.transform);
+    t.symbols[s.position as usize].container = Some(s.transform);
+    t.symbols[s.add as usize].container = Some(s.list);
+    t.symbols[s.enumerator as usize].container = Some(s.list);
+    let (line, col) = find_word(game, "Player", 0);
+    t.def(s.player, file, line, col);
+    for nth in 0..3 {
+        let (line, col) = find_word(game, "position", nth);
+        t.reference(s.position, file, line, col);
+    }
+    let (line, col) = find_word(game, "parent", 1);
+    t.reference(s.parent, file, line, col);
+    let (line, col) = find_word(game, "Add", 0);
+    t.reference(s.add, file, line, col);
+    let (line, col) = find_word(game, "Translate", 0);
+    t.reference(s.translate, file, line, col);
+    // 成员名字的位置：先找声明里的片段（避开文档注释里的同名单词），再在片段里找名字。
+    let members = |text: &str, names: &[(u32, &str, &str)]| -> Vec<(u32, u32, u32, u32)> {
+        names
+            .iter()
+            .map(|(sym, anchor, name)| {
+                let at = text.find(anchor).expect("anchor") + anchor.find(name).unwrap();
+                let line = text[..at].matches(NL).count() as u32;
+                let col = text[..at].rfind(NL).map_or(at, |n| at - n - 1) as u32;
+                (*sym, line, col, name.len() as u32)
+            })
+            .collect()
+    };
+    t.views.push(TestView {
+        type_symbol: s.transform,
+        text: TRANSFORM_VIEW.into(),
+        members: members(
+            TRANSFORM_VIEW,
+            &[
+                (s.transform, "class Transform", "Transform"),
+                (s.position, "Vector3 position", "position"),
+                (s.parent, "Transform parent", "parent"),
+                (s.translate, "void Translate", "Translate"),
+            ],
+        ),
+    });
+    t.views.push(TestView {
+        type_symbol: s.vector3,
+        text: VECTOR3_VIEW.into(),
+        members: members(VECTOR3_VIEW, &[(s.vector3, "struct Vector3", "Vector3")]),
+    });
+    t.views.push(TestView {
+        type_symbol: s.list,
+        text: LIST_VIEW.into(),
+        members: members(
+            LIST_VIEW,
+            &[
+                (s.list, "class List", "List"),
+                (s.add, "void Add", "Add"),
+                (s.enumerator, "struct Enumerator", "Enumerator"),
+            ],
+        ),
+    });
     (t, s)
 }
 

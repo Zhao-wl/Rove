@@ -357,6 +357,20 @@ fn cursor_hint(view: &Entity<Workbench>, cx: &VisualTestContext) -> Option<Strin
     })
 }
 
+/// 焦点组上速览窗口的结果数（没有窗口为 `None`）。#134：多候选时按设置打开速览窗口。
+fn peek_total(view: &Entity<Workbench>, cx: &VisualTestContext) -> Option<usize> {
+    let widget = view.read_with(cx, |v, _| v.peek_widget(v.editor.focused, false))?;
+    widget.read_with(cx, |w, _| w.results().map(|r| r.total()))
+}
+
+/// 速览窗口的（标题, 近似标记）。
+fn peek_title(view: &Entity<Workbench>, cx: &VisualTestContext) -> (String, Option<String>) {
+    let widget = view
+        .read_with(cx, |v, _| v.peek_widget(v.editor.focused, false))
+        .expect("peek widget");
+    widget.read_with(cx, |w, _| w.title_text())
+}
+
 fn context(view: &Entity<Workbench>, cx: &VisualTestContext) -> String {
     view.read_with(cx, |v, _| {
         editor_actions::context(&v.editor) + &v.nav_context()
@@ -457,7 +471,7 @@ fn ctrl_f12_goes_to_implementations(cx: &mut TestAppContext) {
     caret(&view, word(SHAPES_CS, "Stop", 0), cx);
     press("ctrl-f12", cx);
     assert_eq!(location(&view, cx).1, word(SHAPES_CS, "Stop", 1));
-    // 接口方法：两个实现 → 交给速览（#41 未合并时按 goto：跳到第一个并进入符号导航模式）。
+    // 接口方法：两个实现 → 速览窗口（#134），插入符留在原处，不进入符号导航模式。
     caret(&view, word(SHAPES_CS, "Draw", 0), cx);
     press("ctrl-f12", cx);
     let peek = view
@@ -465,10 +479,14 @@ fn ctrl_f12_goes_to_implementations(cx: &mut TestAppContext) {
         .expect("peek request");
     assert_eq!(peek.targets.len(), 2);
     assert!(peek.annotation.is_none(), "精确结果的标题没有任何标记");
-    assert_eq!(location(&view, cx).1, word(SHAPES_CS, "Draw", 1));
+    assert_eq!(peek_total(&view, cx), Some(2));
+    assert_eq!(peek_title(&view, cx), ("Draw — 2 个实现".to_string(), None));
+    assert_eq!(location(&view, cx).1, word(SHAPES_CS, "Draw", 0));
+    assert!(!context(&view, cx).contains("hasSymbols"));
     // 没有实现：光标处提示。
-    caret(&view, word(SHAPES_CS, "Draw", 1), cx);
     press("escape", cx);
+    assert_eq!(peek_total(&view, cx), None);
+    caret(&view, word(SHAPES_CS, "Draw", 1), cx);
     press("ctrl-f12", cx);
     assert_eq!(
         cursor_hint(&view, cx).as_deref(),
@@ -484,11 +502,25 @@ fn partial_class_definitions_enter_symbol_navigation(cx: &mut TestAppContext) {
     let reference = word(BIG2_CS, "Big", 1);
     caret(&view, reference, cx);
     press("f12", cx);
-    // multipleDefinitions = peek（默认）：请求交给速览；速览不可用时进入符号导航模式。
+    // multipleDefinitions = peek（默认，#134）：打开速览窗口，不跳转、不进入符号导航模式。
     let peek = view
         .read_with(cx, |v, _| v.nav.last_peek.clone())
         .expect("peek request");
     assert_eq!(peek.targets.len(), 2);
+    assert_eq!(peek_total(&view, cx), Some(2));
+    assert_eq!(location(&view, cx), ("Assets/Big2.cs".into(), reference));
+    assert!(!context(&view, cx).contains("hasSymbols"));
+    press("escape", cx);
+    assert_eq!(peek_total(&view, cx), None);
+    // multipleDefinitions = goto：跳到第一个并进入符号导航模式，不请求速览。
+    view.update(cx, |v, _| {
+        v.nav.last_peek = None;
+        v.nav.settings.multiple_definitions = crate::nav::settings::GotoMode::Goto;
+    });
+    caret(&view, reference, cx);
+    press("f12", cx);
+    assert!(view.read_with(cx, |v, _| v.nav.last_peek.is_none()));
+    assert_eq!(peek_total(&view, cx), None);
     assert!(context(&view, cx).contains("hasSymbols"));
     let first = location(&view, cx);
     assert_eq!(status(&view, cx).as_deref(), Some("第 1 / 共 2 个符号"));
@@ -503,16 +535,19 @@ fn partial_class_definitions_enter_symbol_navigation(cx: &mut TestAppContext) {
     // Esc 退出模式。
     press("escape", cx);
     assert!(!context(&view, cx).contains("hasSymbols"));
-    // multipleDefinitions = goto：不请求速览。
+    // multipleDefinitions = gotoAndPeek：先跳到第一个候选，再在那里打开速览。
     view.update(cx, |v, _| {
         v.nav.last_peek = None;
-        v.nav.settings.multiple_definitions = crate::nav::settings::GotoMode::Goto;
+        v.nav.settings.multiple_definitions = crate::nav::settings::GotoMode::GotoAndPeek;
     });
     open_file(&view, "Assets/Big2.cs", cx);
     caret(&view, reference, cx);
     press("f12", cx);
-    assert!(view.read_with(cx, |v, _| v.nav.last_peek.is_none()));
-    assert!(context(&view, cx).contains("hasSymbols"));
+    assert!(view.read_with(cx, |v, _| v.nav.last_peek.is_some()));
+    let landed = location(&view, cx);
+    assert_ne!(landed, ("Assets/Big2.cs".into(), reference));
+    assert_eq!(peek_total(&view, cx), Some(2));
+    assert!(!context(&view, cx).contains("hasSymbols"));
 }
 
 /// 鼠标移到某个位置所在单词的中间（窗口坐标）。
@@ -611,6 +646,9 @@ fn ctrl_hover_underlines_and_ctrl_click_jumps(cx: &mut TestAppContext) {
         .read_with(cx, |v, _| v.nav.last_peek.clone())
         .expect("peek");
     assert_eq!(peek.targets.len(), 1);
+    // 速览窗口真的打开了（单个结果），原编辑器没有跳转。
+    assert_eq!(peek_total(&view, cx), Some(1));
+    assert_eq!(location(&view, cx).0, "Assets/Hero.cs");
 }
 
 #[gpui::test]
@@ -756,6 +794,8 @@ fn approximate_results_follow_ux_spec(cx: &mut TestAppContext) {
     let title = view.read_with(cx, |v, _| v.label(key, &args));
     assert_eq!(title, format!("近似 · {} 个候选", peek.targets.len()));
     assert!(peek.targets.len() >= 2);
+    // 速览窗口的标题标记就是 #40 传入的文案。
+    assert_eq!(peek_title(&view, cx).1, Some(title));
     press("escape", cx);
     // ③ 查找引用的速览标题“近似”（文案由 #40 传给 #41）。
     let (key, args) = crate::nav::model::references_annotation(true).unwrap();

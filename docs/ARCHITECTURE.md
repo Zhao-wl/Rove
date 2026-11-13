@@ -1046,8 +1046,8 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 - **上下文键**：焦点组活动标签是 C# 时在编辑器区域发布 `editorHasDefinitionProvider` / `DeclarationProvider` / `ImplementationProvider` / `ReferenceProvider` / `HoverProvider`（D2：其他语言一个都不发布，`F12` 的 when 不成立，命令直接执行也什么都不做）；符号导航模式发布 `hasSymbols`；卡片可见发布 `editorHoverVisible`，卡片有焦点时卡片自己的 key context 是 `editorHoverFocused`。
 - **跳转**一律经打开文档服务（`OpenSource::CodeNavigation`，目标组 = 发起的组，`revealDefinitionAside` 为 `Beside`），插入符放到符号名起点，目标行 `Reveal::CenterIfOutside`；跳转前的位置由 #17 自动压入导航历史（跨文件、跨标签、跨分屏，目标标签已关闭时后退会重新打开）。
-- **多候选**按 `editor.gotoLocation.multiple*`：`peek` 交给 `Workbench::open_peek(PeekRequest)`——**#41 的接入点**，合并前只记录请求并返回 false，调用方按 `goto` 处理；`goto` 跳到第一个并进入符号导航模式（`f12` 循环、`escape` 退出、状态栏“第 N / 共 M 个符号”）；`gotoAndPeek` 先跳再交给速览。速览标题的近似标记由 `PeekRequest::annotation` 传入（精确为 `None`，近似为“近似 · N 个候选”；查找引用用 `model::references_annotation`，近似为“近似”）。`Ctrl+点击` 在 `editor.definitionLinkOpensInPeek` 为真时总是交给速览。
-- **外部符号**（只有 `rove-cs-metadata:` 目标）：`Workbench::open_metadata`——**#42 的接入点**，合并前按 UX_SPEC §4.1 末行在状态栏提示“未找到 `X` 的元数据”，不打开空标签。
+- **多候选**按 `editor.gotoLocation.multiple*`：`peek` 交给 `Workbench::open_peek(PeekRequest)`——**#41 的接入点**，合并前只记录请求并返回 false，调用方按 `goto` 处理（#134 已接上，见 §34）；`goto` 跳到第一个并进入符号导航模式（`f12` 循环、`escape` 退出、状态栏“第 N / 共 M 个符号”）；`gotoAndPeek` 先跳再交给速览。速览标题的近似标记由 `PeekRequest::annotation` 传入（精确为 `None`，近似为“近似 · N 个候选”；查找引用用 `model::references_annotation`，近似为“近似”）。`Ctrl+点击` 在 `editor.definitionLinkOpensInPeek` 为真时总是交给速览。
+- **外部符号**（只有 `rove-cs-metadata:` 目标）：`Workbench::open_metadata`——**#42 的接入点**，合并前按 UX_SPEC §4.1 末行在状态栏提示“未找到 `X` 的元数据”，不打开空标签（#42 已接上，见 §34）。
 - **近似结果**（UX_SPEC §2.2 逐行）：单个候选跳转 + 状态栏 3 秒“近似结果：语义索引未就绪”（同一目标位置每次会话只提示一次）；多候选与引用的速览标题标记；悬停底部灰色“近似结果”；同名高亮退化为 #20 的文本高亮且无提示；精确结果没有任何标记。空状态在光标处提示“未找到 `X` 的定义 / 声明 / 实现”，近似时追加“（语义索引构建中）”。查询失败（未就绪、版本过期、资源不支持）按“近似的空结果”处理。
 - **悬停**：鼠标停在 C# 标识符上 `editor.hover.delay` 后在后台查询（`hover_detailed`），300 ms 内没有结果显示“正在加载…”；`editor.hover.enabled = off` 时只有 `ctrl+k ctrl+i`；`sticky` 时离开单词等 `hidingDelay`、指针在卡片上不收起，否则立即收起；`above` 决定先上后下（`gpui::anchored` 放不下时翻转）；长行（超过 `editor.maxTokenizationLineLength`）在 `showLongLineWarning` 时追加提示。第二次 `ctrl+k ctrl+i` 把焦点移进卡片，方向键 / 翻页键 / `ctrl+home|end` 滚动卡片，`escape` 收起并把焦点还给编辑器。悬停详细程度只有一级（两个命令只登记）。
 - **`Ctrl+悬停`**：标识符加 `editorLink.activeForeground` 下划线与前景色、手形光标，并在 `delay` 后弹出定义预览（定义处开始最多 8 行源码，打开中的缓冲区优先，否则读盘）；松开 Ctrl（`on_modifiers_changed`）立即收起。
@@ -1146,3 +1146,20 @@ BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（rele
 | 界面 | `rove-ui::index_status`：状态栏条目、悬停与详情页（未安装时的安装方法、不兼容时更新哪一边）全部是 `index.*` 字符串，在 `STRINGS` 里登记；点击仍走 `rove.index.showDetails` |
 
 验证：`cargo test -p rove-lang-cs --test component`（发现与选择、未安装、三种不兼容方向且不重试、`hello` 协议区间不相交被拒绝与相交被接受、缓存索引在常驻握手失败时保持可用）；`cargo test -p rove-lang-cs --lib lifecycle::component`（清单解析、协议协商、候选选择的单元测试）；`cargo test -p rove-lang-cs --test incremental protocol_version_negotiation_and_component_info`（真实进程的 `--version`、`hello` 区间与不支持协议的 `initialize` 被拒绝，需先 `dotnet build`）；`cargo test -p rove-ui index_status`（未安装、不兼容的状态栏文字、悬停、详情页内容）。组件包的打包与干净机器验证见 `scripts/components/` 与 [CS_INDEX_FORMAT](CS_INDEX_FORMAT.md)。
+
+## 35. 元数据视图界面（#42）与多候选速览接线（#134）
+
+**元数据视图是一份普通的只读文档**：资源 `Resource::Virtual("rove-metadata:<最外层类型的全局符号键>")`（键形如 `UnityEngine.CoreModule|T:UnityEngine.Transform`，取自索引，不用显示标题；嵌套类型落在外层类型的视图里，泛型用文档注释 ID，所以“同一个类型”的判定稳定）。正文是 #34 生成的签名 + XML 文档注释，经文档加载器的虚拟来源（`skeleton/text.rs` 的 `VirtualSource`，`FileDocuments::with_virtual_source`）交给 #17 的打开文档服务与 #19 的代码视图，只读原因为 `ReadOnlyReason::Metadata`（标签锁形图标、输入时光标处提示；“在此会话中切换只读”无效）。标签复用、预览 / 固定、导航历史、面包屑、`Ctrl+Shift+O`、`#region` 折叠、C# 语法与主题全部沿用既有实现。**没有单独注册一种编辑器类型**（issue 的风险提示即建议做成普通文档）：归属在这里登记，编辑器类型解析仍是文本。
+
+| 位置 | 内容 | GPUI |
+|---|---|---|
+| `rove-lang-cs::metadata_view` | `MetadataViews`（语义来源 + `rove.metadataView.showDocs`）：符号键 → 视图位置（`locate`）、类型键 → 内容（`content`：正文、标题含泛型参数、程序集、DLL 路径）、`showDocs = false` 时去掉 `///` 行与显示 / 原始行号换算、按名字找有视图的外部类型（按快照代次缓存） | 否 |
+| `rove-lang-cs::router::metadata` | 视图内的查询点（显示坐标）→ 符号：先按成员位置记录，再按名字解析（唯一外部类型为精确，多个或 L1 源码类型为近似），然后交给与源码相同的 `l2_navigate`，所以视图内 `Shift+F12` 的条数就是同一个符号在源码里的引用数 | 否 |
+| `rove-ui::metadata` | `MetadataLoader`（`VirtualSource`，记下标题与 DLL 路径）、`MetadataSnippets`（#41 `ExternalSnippets` 的提供方）、界面字符串、标签悬停提示 | 仅 tooltip |
+| `skeleton/workbench/metadata_host.rs` | `open_metadata_targets`（#40 的接入点：定位 → `OpenDocuments`，找不到时状态栏提示）、`showDocs` 与索引快照代次变化时重新渲染（`EditorService::replace_document`，光标与滚动换算）、标签标题 `Transform [元数据]` | 是 |
+
+没有新增命令、设置项或颜色键（`rove.metadataView.showDocs` 由 #13 登记）。面包屑的文件路径段对元数据视图只有程序集名。元数据视图不做本文件的语义同名高亮。测试写出器（`router::testing`）新增 `TestView` 与 `metadata_sample_index`。
+
+**#134**：`Workbench::open_peek` 不再是空实现。#40 的 `PeekRequest`（目标列表、近似标记、符号名）登记为待办，下一帧 `sync_nav`（手里有 `Window`）转成 #41 的 `PeekRequest`（`preset` 带结果）调用 `show_peek`；`peek` / `goto` / `gotoAndPeek` 按 `editor.gotoLocation.multiple*`（`gotoAndPeek` 等目标显示且插入符到位后再在那里开）。单个候选仍直接跳转。#40 / #41 的“合并前”说明以此为准。
+
+验证：`cargo test -p rove-lang-cs metadata`、`cargo test -p rove-ui metadata_`（窗口级：`F12` 打开 / 定位 / 只读 / 标签复用 / 泛型与嵌套 / 找不到 / `showDocs` / 面包屑 / 视图内导航与 `Alt+←` / `Alt+F12` / `Shift+F12` / 索引替换 / 预览片段）与 `nav_tests`、`peek_tests`（多候选速览）。

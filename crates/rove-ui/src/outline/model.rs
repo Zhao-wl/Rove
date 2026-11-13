@@ -352,6 +352,19 @@ pub enum Segment {
 
 /// 文件路径段：工作区文件按 `/` 拆分（文件夹名 + 文件名）；外部文件只显示文件名。
 pub fn file_segments(resource: &Resource, mode: PathMode) -> Vec<Segment> {
+    // #42：元数据视图的文件路径段只有程序集名（`UnityEngine.CoreModule › UnityEngine › Transform › position`）；
+    // 目录 `rove-metadata:` 不是合法的工作区路径，选择器因此没有可列的条目。
+    if let Some(key) = rove_lang_cs::metadata_view::view_key(resource) {
+        let segment = Segment::File {
+            label: rove_lang_cs::metadata_view::assembly_of(key).into(),
+            dir: rove_lang_cs::metadata_view::VIEW_SCHEME.into(),
+            is_file: true,
+        };
+        return match mode {
+            PathMode::Off => Vec::new(),
+            PathMode::On | PathMode::Last => vec![segment],
+        };
+    }
     let path: String = match resource {
         Resource::Workspace(p) => p.as_str().to_string(),
         Resource::File(p) => p
