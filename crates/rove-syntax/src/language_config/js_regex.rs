@@ -161,11 +161,7 @@ impl CompiledRegex {
     /// Byte ranges of the whole match and of every capture group of the first match at or after
     /// byte `start`; `None` for a group that did not participate. Added for #48, whose regular
     /// expression replacement expands `$1`…`$9` from the groups of the match it is replacing.
-    pub fn capture_ranges(
-        &self,
-        text: &str,
-        start: usize,
-    ) -> Result<Option<CaptureRanges>> {
+    pub fn capture_ranges(&self, text: &str, start: usize) -> Result<Option<CaptureRanges>> {
         if start > text.len() || !text.is_char_boundary(start) {
             return Err(Error::OutOfBounds);
         }

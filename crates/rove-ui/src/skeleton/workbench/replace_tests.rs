@@ -377,9 +377,9 @@ fn read_only_documents_have_no_replace_entry_point(cx: &mut TestAppContext) {
 #[gpui::test]
 fn replace_all_rewrites_five_thousand_matches_in_one_undo_unit(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
-    let mut big = String::with_capacity(900_000);
-    for i in 0..30_000u32 {
-        if i % 6 == 0 {
+    let mut big = String::with_capacity(4_500_000);
+    for i in 0..100_000u32 {
+        if i % 20 == 0 {
             big.push_str("    var target = GetComponent<TargetComponent>();\n");
         } else {
             big.push_str("    int value = Mathf.Max(1, speed * delta);\n");
