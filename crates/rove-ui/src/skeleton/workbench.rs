@@ -1464,7 +1464,9 @@ impl Workbench {
                     // #140：保存失败的通知 / 模态框被关掉，那次保存就此作罢，忘掉记住的请求。
                     FeedbackEvent::Dismissed { key } if key.starts_with("save.") => {
                         if this
-                            .update(cx, |view, _| view.editing.saves.borrow_mut().on_dismissed(&key))
+                            .update(cx, |view, _| {
+                                view.editing.saves.borrow_mut().on_dismissed(&key)
+                            })
                             .is_err()
                         {
                             break;
