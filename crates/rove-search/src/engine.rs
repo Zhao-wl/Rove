@@ -13,11 +13,15 @@
 //! - **编码**：先按字节快速判定（BOM、合法 UTF-8），只有疑似非 UTF-8 的文件才走 #7 的完整编码识别
 //!   （`files.autoGuessEncoding`，GBK 中文能搜到）。含 NUL 的文件按二进制跳过（与 ripgrep / VS Code 一致）。
 //!   走内存映射的大文件同样识别编码（#145）：编辑器的大文件档从 20 MB 起，17 MiB 的 GBK 文件在编辑器里
-//!   是正常文本，搜索不能漏掉其中的中文字面量。
+//!   是正常文本，搜索不能漏掉其中的中文字面量。解码有上限（[`MAX_DECODE`]，64 MB）：再大的非 UTF-8
+//!   文件按原始字节搜索，免得为一次搜索占住文件几倍大小的内存。
 //! - **行列口径**：报告的行列与编辑器（`rove-buffer` 的 `TextSource::position`）一致——搜索器只认 `\n`，
 //!   这里再把 `\n` 行按独立 `\r` 切开（编辑器把 `\r` 也算换行，#145）。
 //! - **零宽匹配**：`^`、`$`、`\b` 这类零宽命中保留为空区间（与文件内查找 `rove-ui::find` 的约定一致），
 //!   匹配器的 `find_iter` 遇到空匹配会前进一个字节，不会死循环。
+//!   已知限制：切段只改行列的换算，正则引擎的行终止符仍然只有 `\n`，所以在**独立 `\r`** 分出来的段上，
+//!   `^` / `$` 不会各自命中（`ab\rcd` 只报一处 `^`、一处 `$`），`.` 与 `[^x]` 也能跨过这个 `\r`
+//!   （跨段的区间截到段末）。独立 `\r` 的文件极少（经典 Mac 换行），行号与列号本身仍然与编辑器一致。
 //! - **上限**：`search.maxResults` 按匹配处数计；达到上限时停止全部线程并在摘要里报告 `limit_hit`。
 
 use crate::query::{self, SearchQuery};
@@ -60,14 +64,44 @@ fn mmap_threshold() -> u64 {
     MMAP_THRESHOLD_OVERRIDE.load(Ordering::Relaxed)
 }
 
-/// 仅测试用：临时调低内存映射阈值。进程内全局，调用它的测试之间不要并发。
+/// 阈值是进程内全局的，而 libtest 并发跑用例：这把锁让“调低 → 搜索 → 还原”整段互斥，
+/// 不靠“别同时用”的约定。
 #[cfg(test)]
-fn set_mmap_threshold(bytes: u64) {
-    MMAP_THRESHOLD_OVERRIDE.store(bytes, Ordering::Relaxed);
+static MMAP_THRESHOLD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 仅测试用：在作用域内临时调低内存映射阈值，析构时还原。
+#[cfg(test)]
+struct MmapThresholdGuard {
+    /// 只为了持锁到析构。
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl MmapThresholdGuard {
+    fn new(bytes: u64) -> Self {
+        // 别的用例 panic 时不让这把锁跟着中毒：阈值由析构无条件还原，锁本身没有需要保护的不变量。
+        let lock = MMAP_THRESHOLD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        MMAP_THRESHOLD_OVERRIDE.store(bytes, Ordering::Relaxed);
+        Self { _lock: lock }
+    }
+}
+
+#[cfg(test)]
+impl Drop for MmapThresholdGuard {
+    fn drop(&mut self) {
+        MMAP_THRESHOLD_OVERRIDE.store(MMAP_THRESHOLD, Ordering::Relaxed);
+    }
 }
 
 /// 二进制判定只看文件开头这么多字节里有没有 NUL（与 ripgrep 的快速判定一致）。
 const BINARY_PROBE: usize = 8 << 10;
+/// 需要转码的文件最多解码这么多字节（#145）。`rove_buffer::open_bytes` 会在内存里建一棵完整的
+/// Rope、这里再复制成一段 UTF-8，峰值约文件大小的 2~3 倍；超过这个上限的非 UTF-8 文件退回按原始
+/// 字节搜索（ASCII 部分仍能搜到）。取 `rove.largeFile.threshold` 的默认值 64 MB：编辑器从这里起
+/// 只读映射、不再当成普通文本，搜索的解码上限跟着它走。
+const MAX_DECODE: usize = 64 << 20;
 /// 行预览最多保留的字节数；更长的行只保留第一处匹配附近的一段。
 const PREVIEW_BYTES: usize = 1000;
 /// 预览在第一处匹配之前保留的字节数。
@@ -441,16 +475,19 @@ fn search_file(
         // SAFETY: 只读映射；文件在搜索期间被别人截断属于外部竞争，最坏结果是这次读到的内容不完整，
         // 与 ripgrep 的取舍相同。
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        if shared.ascii_literal
-            && !map.starts_with(b"\xFF\xFE")
-            && !map.starts_with(b"\xFE\xFF")
-            && shared.matcher.find(&map).ok().flatten().is_none()
-        {
+        // 顺序与小文件一致，二进制判定必须在字面量扫描之前：Unity 项目里几百 MB 的贴图、模型、
+        // 程序集只看开头 8 KiB 就跳过（并计入摘要的 `skipped`），不会为了一次“多半没有”的
+        // 字面量扫描把整个映射全部换页进来。
+        let utf16 = map.starts_with(b"\xFF\xFE") || map.starts_with(b"\xFE\xFF");
+        if !utf16 && memchr::memchr(0, &map[..map.len().min(BINARY_PROBE)]).is_some() {
+            return Err(Error::Unsupported);
+        }
+        if shared.ascii_literal && !utf16 && shared.matcher.find(&map).ok().flatten().is_none() {
             // 与小文件同样的快速路径：ASCII 字面量在原始字节里都没有，解码后也不会有。
             return Ok(());
         }
         // 大文件也做 UTF-8 校验与编码识别（#145）：校验只是一次顺序扫描，真的不是 UTF-8 才解码。
-        let text = decode(&map, shared, true)?;
+        let text = decode(&map, shared)?;
         return search_text(&text, shared, searcher, out);
     }
     // 先只读开头一段做二进制判定：Unity 项目里贴图、模型、程序集占了绝大多数字节，
@@ -470,7 +507,7 @@ fn search_file(
         // 绝大多数文件没有匹配：一次 memchr 级别的扫描就结束，不校验、不解码、不分行。
         return Ok(());
     }
-    let text = decode(&bytes, shared, true)?;
+    let text = decode(&bytes, shared)?;
     search_text(&text, shared, searcher, out)
 }
 
@@ -479,9 +516,9 @@ fn search_file(
 /// 1. UTF-8 BOM：去掉 BOM（行首列号与编辑器一致）；UTF-16 BOM：转码；
 /// 2. 开头 8 KiB 有 NUL：二进制，跳过；
 /// 3. 合法 UTF-8（绝大多数文件）：原样搜索，不复制；
-/// 4. 否则交给 #7 的编码识别（`files.autoGuessEncoding`、候选编码 GBK…）解码；识别失败按原始字节搜索
-///    （与 ripgrep 一样，ASCII 部分仍能搜到）。
-fn decode<'a>(bytes: &'a [u8], shared: &Shared, validate: bool) -> Result<Cow<'a, [u8]>> {
+/// 4. 否则交给 #7 的编码识别（`files.autoGuessEncoding`、候选编码 GBK…）解码；识别失败、
+///    或者文件大过 [`MAX_DECODE`]，按原始字节搜索（与 ripgrep 一样，ASCII 部分仍能搜到）。
+fn decode<'a>(bytes: &'a [u8], shared: &Shared) -> Result<Cow<'a, [u8]>> {
     if let Some(rest) = bytes.strip_prefix(b"\xEF\xBB\xBF") {
         return Ok(Cow::Borrowed(rest));
     }
@@ -494,7 +531,11 @@ fn decode<'a>(bytes: &'a [u8], shared: &Shared, validate: bool) -> Result<Cow<'a
     if memchr::memchr(0, probe).is_some() {
         return Err(Error::Unsupported);
     }
-    if !validate || std::str::from_utf8(bytes).is_ok() {
+    if std::str::from_utf8(bytes).is_ok() {
+        return Ok(Cow::Borrowed(bytes));
+    }
+    if bytes.len() > MAX_DECODE {
+        // 解码的峰值内存是文件的几倍（见 [`MAX_DECODE`]）：太大的文件退回按原始字节搜索。
         return Ok(Cow::Borrowed(bytes));
     }
     let options = rove_buffer::LoadOptions::new("", &*shared.settings);
@@ -768,25 +809,89 @@ mod tests {
         }
     }
 
-    /// 走内存映射的大文件同样做编码识别（#145）。阈值调低到几个字节，免得造 17 MiB 的样本。
+    /// 以下几条都走内存映射分支（#145）：阈值调低到几个字节，免得造 17 MiB 的样本。
+    fn search_mmapped(path: &Path, pattern: &str) -> (Result<()>, Vec<LineMatch>) {
+        let _guard = MmapThresholdGuard::new(8);
+        let mut out = Vec::new();
+        let result = search_file(
+            path,
+            &shared_for(&SearchQuery::new(pattern)),
+            &mut searcher(false),
+            &mut out,
+        );
+        (result, out)
+    }
+
+    /// 走内存映射的大文件同样做编码识别（#145）。
     #[test]
     fn mmapped_files_still_detect_encoding() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Gbk.cs");
         let (gbk, _, _) = encoding_rs::GBK.encode("// 玩家移动的速度\nfloat 速度 = 1;\n");
         std::fs::write(&path, &gbk).unwrap();
-        assert!(gbk.len() as u64 > 8, "样本要大于下面调低的阈值");
+        assert!(gbk.len() > 8, "样本要大于调低后的阈值");
 
-        let shared = shared_for(&SearchQuery::new("速度"));
-        let mut searcher = searcher(false);
-        let mut out = Vec::new();
-        set_mmap_threshold(8);
-        let result = search_file(&path, &shared, &mut searcher, &mut out);
-        set_mmap_threshold(MMAP_THRESHOLD);
+        let (result, out) = search_mmapped(&path, "速度");
         result.expect("GBK 文件能搜索");
-
         assert_eq!(out.len(), 2, "两行都有「速度」");
         assert_eq!(&*out[1].preview, "float 速度 = 1;");
         assert_eq!(out[1].ranges, vec![6..12]);
+    }
+
+    /// 内存映射分支的 ASCII 字面量快速路径：在文件里的要照常报，不在的才短路。
+    #[test]
+    fn mmapped_ascii_literal_fast_path_keeps_real_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Player.cs");
+        std::fs::write(&path, "class Player {\n    void Move() {}\n}\n").unwrap();
+
+        let (result, out) = search_mmapped(&path, "Move");
+        result.expect("可以搜索");
+        assert_eq!(out.len(), 1, "字面量在文件里，不能被短路吞掉");
+        assert_eq!(out[0].line, 1);
+        assert_eq!(out[0].ranges, vec![9..13]);
+
+        let (result, out) = search_mmapped(&path, "Jump");
+        result.expect("可以搜索");
+        assert!(out.is_empty(), "字面量不在文件里：短路后没有匹配");
+    }
+
+    /// UTF-16 的原始字节里 ASCII 字面量是断开的（夹着 NUL）：既不能被二进制判定跳过，
+    /// 也不能走“原始字节里没有就短路”的快速路径，必须先转码。
+    #[test]
+    fn mmapped_utf16_files_are_transcoded_before_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Utf16.cs");
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in "float speed = 1;\n".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+
+        let (result, out) = search_mmapped(&path, "speed");
+        result.expect("UTF-16 文件能搜索");
+        assert_eq!(out.len(), 1);
+        assert_eq!(&*out[0].preview, "float speed = 1;");
+        assert_eq!(out[0].ranges, vec![6..11]);
+    }
+
+    /// 二进制判定排在字面量扫描之前：几百 MB 的贴图只读开头 8 KiB 就跳过，
+    /// 而且不管字面量在不在里面，都计入摘要的 `skipped`。
+    #[test]
+    fn mmapped_binary_files_are_skipped_before_the_literal_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Texture.psd");
+        let mut bytes = b"8BPS\x00\x01\x00\x00Move".to_vec();
+        bytes.resize(4096, b'x');
+        std::fs::write(&path, &bytes).unwrap();
+
+        for pattern in ["Move", "Jump"] {
+            let (result, out) = search_mmapped(&path, pattern);
+            assert!(
+                matches!(result, Err(Error::Unsupported)),
+                "{pattern}：二进制文件要按跳过报告"
+            );
+            assert!(out.is_empty());
+        }
     }
 }
