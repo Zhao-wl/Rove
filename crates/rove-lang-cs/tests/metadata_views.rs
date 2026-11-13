@@ -127,6 +127,55 @@ fn unity_external_symbols_land_in_metadata_views() {
     }
     assert!(found > 0, "project references List<T>.Add");
 
+    // #126 命名实参引用的外部参数：键是「所属成员键 + # + 序号」，位置落在所属成员签名行上的参数名。
+    // Roslyn SymbolKind.Parameter = 13；flags bit 0 为 0 表示没有源码位置，即外部成员的参数。
+    let parameters: Vec<u32> = (0..index.symbols().len() as u32)
+        .filter(|&s| {
+            let rec = index.symbols()[s as usize];
+            rec.kind == 13 && rec.flags & 1 == 0
+        })
+        .collect();
+    assert!(
+        parameters.len() > 10,
+        "project uses named arguments on external members: {}",
+        parameters.len()
+    );
+    let mut located = 0;
+    for &s in &parameters {
+        let key = index.symbol_key(s);
+        let Ok(SymbolKey::Global(key)) = key else {
+            panic!("{key:?} is not a global key");
+        };
+        // 取不到所属成员文档注释 ID 的参数（匿名委托等）仍用问号后备键，它们没有被引用到。
+        let Some((member, ordinal)) = key.rsplit_once('#') else {
+            assert!(key.starts_with('?'), "{key}");
+            assert_eq!(index.reference_count(s), 0, "{key}");
+            continue;
+        };
+        assert!(member.contains("|M:") || member.contains("|P:"), "{key}");
+        assert!(ordinal.bytes().all(|b| b.is_ascii_digit()), "{key}");
+        let defs = index.metadata_definitions(s);
+        assert!(!defs.is_empty(), "{key} has no metadata view");
+        let name = index.str(index.symbols()[s as usize].name).unwrap();
+        for location in &defs {
+            assert_eq!(landing(&index, location).0, name, "{key}");
+        }
+        located += 1;
+    }
+    assert!(located > 10, "only {located} external parameters located");
+    eprintln!("external parameters with a view location: {located}");
+    // 落空的只剩元组元素名（元数据里只有 Item1、Item2）。
+    let missing: Vec<&str> = metadata["top_missing"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(
+        missing.iter().all(|k| k.contains("System.ValueTuple")),
+        "{missing:?}"
+    );
+
     // 第三方 DLL（不是 Unity、BCL）：被引用的符号能跳到视图，且 DLL 旁有 .xml 时带文档注释。
     let third_party: Vec<u32> = (0..index.symbols().len() as u32)
         .filter(|&s| {

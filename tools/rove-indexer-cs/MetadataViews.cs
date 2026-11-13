@@ -29,6 +29,49 @@ sealed class MetadataView
 
 readonly record struct ViewMember(string Key, uint Line, uint Col, uint Len);
 
+/// 渲染出的签名里一个参数名的位置（字符计，相对于 Rendered.Text）。
+record struct ParameterSpan(IParameterSymbol Symbol, int Start, int Length);
+
+/// 一行声明的渲染结果：文本、名字片段的位置，以及签名里各参数名的位置（#126）。
+/// 文本被改写（加修饰符、去掉外层类型限定、替换类型参数的变体写法）时，这些位置跟着移动。
+sealed class Rendered(string text, int nameStart, int nameLength)
+{
+    public string Text { get; private set; } = text;
+    public int NameStart { get; private set; } = nameStart;
+    public int NameLength { get; } = nameLength;
+    public readonly List<ParameterSpan> Parameters = new();
+
+    /// 在文本开头插入（修饰符等）。
+    public void Prefix(string s)
+    {
+        if (s.Length == 0) return;
+        Text = s + Text;
+        Shift(0, s.Length);
+    }
+
+    /// 在末尾追加（基类型列表、约束等），不影响既有位置。
+    public void Append(string s) => Text += s;
+
+    public void Remove(int at, int count)
+    {
+        Text = Text.Remove(at, count);
+        Shift(at, -count);
+    }
+
+    public void Replace(int at, int count, string s)
+    {
+        Text = Text[..at] + s + Text[(at + count)..];
+        Shift(at + count, s.Length - count);
+    }
+
+    void Shift(int from, int delta)
+    {
+        if (NameStart >= from) NameStart += delta;
+        for (int i = 0; i < Parameters.Count; i++)
+            if (Parameters[i].Start >= from) Parameters[i] = Parameters[i] with { Start = Parameters[i].Start + delta };
+    }
+}
+
 /// 绑定阶段登记的外部类型。键为程序集标识的显示名（含版本），值为该程序集的引用与被引用到的类型。
 sealed class MetadataRequests
 {
@@ -241,11 +284,11 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
         {
             var d = Variance(type, Render(type, MemberFormat));
             // 嵌套委托的名字会带上外层类型（Outer.Callback），声明处去掉。
-            if (type.ContainingType is { } outer && Render(outer, TypeRefFormat).text + "." is var qualifier
-                && d.nameStart >= qualifier.Length && string.CompareOrdinal(d.text, d.nameStart - qualifier.Length, qualifier, 0, qualifier.Length) == 0)
-                d = (d.text.Remove(d.nameStart - qualifier.Length, qualifier.Length), d.nameStart - qualifier.Length, d.nameLength);
-            var access = TypeModifiers(type, d.text);
-            DeclareLine(type, indent, access + d.text, d.nameStart + access.Length, d.nameLength, ";");
+            if (type.ContainingType is { } outer && Render(outer, TypeRefFormat).Text + "." is var qualifier
+                && d.NameStart >= qualifier.Length && string.CompareOrdinal(d.Text, d.NameStart - qualifier.Length, qualifier, 0, qualifier.Length) == 0)
+                d.Remove(d.NameStart - qualifier.Length, qualifier.Length);
+            d.Prefix(TypeModifiers(type, d.Text));
+            DeclareLine(type, indent, d, ";");
             // 调用委托（callback()）绑定到 Invoke；视图里没有单独的 Invoke 声明，落到委托名上。
             if (type.DelegateInvokeMethod is { } invoke) Alias(invoke, _members.Count > 0 ? _members[^1] : null, type);
             return;
@@ -253,7 +296,7 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
         var head = Variance(type, Render(type, TypeHeadFormat));
         var full = Variance(type, Render(type, TypeFullFormat));
         // 基类型列表要插在类型参数约束之前：约束部分取完整渲染比不含约束的渲染多出来的后缀。
-        var constraints = full.text.StartsWith(head.text, StringComparison.Ordinal) ? full.text[head.text.Length..] : "";
+        var constraints = full.Text.StartsWith(head.Text, StringComparison.Ordinal) ? full.Text[head.Text.Length..] : "";
         var bases = new List<string>();
         if (type.TypeKind == TypeKind.Enum)
         {
@@ -265,10 +308,9 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
                 bases.Add(TypeRef(bt));
             foreach (var i in type.Interfaces) if (IsVisible(i)) bases.Add(TypeRef(i));
         }
-        var modifiers = TypeModifiers(type, head.text);
-        head = (modifiers + head.text, head.nameStart + modifiers.Length, head.nameLength);
-        var line = head.text + (bases.Count > 0 ? " : " + string.Join(", ", bases) : "") + constraints;
-        DeclareLine(type, indent, line, head.nameStart, head.nameLength);
+        head.Prefix(TypeModifiers(type, head.Text));
+        head.Append((bases.Count > 0 ? " : " + string.Join(", ", bases) : "") + constraints);
+        DeclareLine(type, indent, head);
         _lines.Add(indent + "{");
         var inner = indent + Indent;
         if (type.TypeKind == TypeKind.Enum)
@@ -287,18 +329,15 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
                 if (m is INamedTypeSymbol nested) WriteType(nested, inner);
                 else
                 {
-                    var (text, nameStart, nameLength) = Render(m, MemberFormat);
+                    var r = Render(m, MemberFormat);
                     // decimal 常量在元数据里是带 DecimalConstant 特性的 static readonly 字段，Roslyn 同时报告 const 与 readonly。
-                    if (m is IFieldSymbol { IsConst: true, IsReadOnly: true } && text.IndexOf("const readonly ", StringComparison.Ordinal) is var at and >= 0
-                        && at < nameStart)
-                    {
-                        text = text.Remove(at + 5, 9);
-                        nameStart -= 9;
-                    }
+                    if (m is IFieldSymbol { IsConst: true, IsReadOnly: true } && r.Text.IndexOf("const readonly ", StringComparison.Ordinal) is var at and >= 0
+                        && at < r.NameStart)
+                        r.Remove(at + 5, 9);
                     // decimal 常量的值没有后缀，超出 long 范围的字面量会被当作整数常量报错。
-                    if (m is IFieldSymbol { IsConst: true, Type.SpecialType: SpecialType.System_Decimal } && text.Length > 0 && char.IsDigit(text[^1]))
-                        text += "M";
-                    DeclareLine(m, inner, text, nameStart, nameLength, m is IPropertySymbol ? "" : ";");
+                    if (m is IFieldSymbol { IsConst: true, Type.SpecialType: SpecialType.System_Decimal } && r.Text.Length > 0 && char.IsDigit(r.Text[^1]))
+                        r.Append("M");
+                    DeclareLine(m, inner, r, m is IPropertySymbol ? "" : ";");
                 }
             }
         }
@@ -378,22 +417,22 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
     }
 
     /// 把声明名处不带变体的 Name<T> 替换为带变体的 Name<out T>。
-    (string text, int nameStart, int nameLength) Variance(INamedTypeSymbol type, (string text, int nameStart, int nameLength) r)
+    Rendered Variance(INamedTypeSymbol type, Rendered r)
     {
         if (type.TypeParameters.All(p => p.Variance == VarianceKind.None)) return r;
         var plain = type.ToDisplayString(PlainNameFormat);
         var varied = type.ToDisplayString(VarianceNameFormat);
-        if (string.CompareOrdinal(r.text, r.nameStart, plain, 0, plain.Length) != 0) return r;
-        return (r.text[..r.nameStart] + varied + r.text[(r.nameStart + plain.Length)..], r.nameStart, r.nameLength);
+        if (string.CompareOrdinal(r.Text, r.NameStart, plain, 0, plain.Length) != 0) return r;
+        r.Replace(r.NameStart, plain.Length, varied);
+        return r;
     }
 
-    string TypeRef(ITypeSymbol t)
-    {
-        var (text, _, _) = Render(t, TypeRefFormat);
-        return text;
-    }
+    string TypeRef(ITypeSymbol t) => Render(t, TypeRefFormat).Text;
 
-    void DeclareLine(ISymbol symbol, string indent, string text, int nameStart, int nameLength, string suffix = "")
+    void DeclareLine(ISymbol symbol, string indent, string text, int nameStart, int nameLength, string suffix = "") =>
+        DeclareLine(symbol, indent, new Rendered(text, nameStart, nameLength), suffix);
+
+    void DeclareLine(ISymbol symbol, string indent, Rendered r, string suffix = "")
     {
         _declared++;
         var id = symbol.GetDocumentationCommentId();
@@ -403,22 +442,37 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
             foreach (var l in DocLines(xml)) _lines.Add(indent + (l.Length == 0 ? "///" : "/// " + l));
         }
         int line = _lines.Count;
+        var text = r.Text;
         _lines.Add(indent + text + suffix);
+        uint indentBytes = (uint)Encoding.UTF8.GetByteCount(indent);
+        uint ColOf(int at) => indentBytes + (uint)Encoding.UTF8.GetByteCount(text.AsSpan(0, at));
+        // 命名实参引用的外部参数：位置落在本行签名里的参数名上（#126）。参数不进段 11，签名取所属成员的。
+        foreach (var p in r.Parameters)
+        {
+            if (ParameterKey(p.Symbol) is not { } pkey || !symbols.Map.ContainsKey(SymbolKey.Global(pkey))) continue;
+            _members.Add(new ViewMember(pkey, (uint)line, ColOf(p.Start),
+                (uint)Encoding.UTF8.GetByteCount(text.AsSpan(p.Start, p.Length))));
+        }
         if (id == null) return;
         var key = _prefix + id;
         // 只为符号表中存在的符号（被引用到的成员与类型链）写位置记录。
         if (!symbols.Map.ContainsKey(SymbolKey.Global(key))) return;
-        uint col = (uint)(Encoding.UTF8.GetByteCount(indent) + Encoding.UTF8.GetByteCount(text.AsSpan(0, nameStart)));
-        uint len = (uint)Encoding.UTF8.GetByteCount(text.AsSpan(nameStart, nameLength));
-        _members.Add(new ViewMember(key, (uint)line, col, len));
+        uint len = (uint)Encoding.UTF8.GetByteCount(text.AsSpan(r.NameStart, r.NameLength));
+        _members.Add(new ViewMember(key, (uint)line, ColOf(r.NameStart), len));
         _referenced.Add((key, line));
     }
 
+    /// 参数的全局键，与 ProjectBinder 里命名实参引用用的键一致。
+    static string? ParameterKey(IParameterSymbol p) => ProjectBinder.OwnerOf(p) is { } owner
+        ? ProjectBinder.ParameterKey(owner.assembly, owner.ownerId, owner.ordinal) : null;
+
     /// 渲染并定位成员名：取显示片段中指向该符号本身的名字片段；构造函数、析构函数取类型名，索引器取 this，运算符取 operator。
-    (string text, int nameStart, int nameLength) Render(ISymbol symbol, SymbolDisplayFormat format)
+    /// 同时记下签名里各参数名的位置。
+    Rendered Render(ISymbol symbol, SymbolDisplayFormat format)
     {
         var parts = symbol.ToDisplayParts(format);
         var sb = new StringBuilder();
+        var parameters = new List<ParameterSpan>();
         int nameStart = -1, nameLength = 0;
         foreach (var part in parts)
         {
@@ -428,6 +482,8 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
                 nameStart = sb.Length;
                 nameLength = s.Length;
             }
+            if (part.Kind == SymbolDisplayPartKind.ParameterName && part.Symbol is IParameterSymbol parameter)
+                parameters.Add(new ParameterSpan(parameter, sb.Length, s.Length));
             if (part.Symbol is INamedTypeSymbol { ContainingNamespace: { IsGlobalNamespace: false } ns } named
                 && !SymbolEqualityComparer.Default.Equals(named, symbol) && named.TypeKind != TypeKind.Error)
                 _usings.Add(ns.ToDisplayString());
@@ -439,7 +495,9 @@ sealed class ViewBuilder(INamedTypeSymbol root, string identity, string? path, F
             nameStart = Math.Max(0, text.IndexOf('('));
             nameLength = 0;
         }
-        return (text, nameStart, nameLength);
+        var result = new Rendered(text, nameStart, nameLength);
+        result.Parameters.AddRange(parameters);
+        return result;
     }
 
     static bool IsName(ISymbol symbol, SymbolDisplayPart part, string text) => symbol switch
