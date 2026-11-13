@@ -1,0 +1,31 @@
+[package]
+# 包名必须叫 `gpui_http_client`：workspace 的 `[patch.crates-io]` 按包名替换，改名就匹配不上。
+# 版本必须满足 gpui 0.2.2 的 `http_client = { version = "0.2.2", package = "gpui_http_client" }`，
+# 所以这里不用 workspace 的 0.0.1。目录名 `rove-gpui-http-stub` 才是它在仓库里的身份。
+name = "gpui_http_client"
+version = "0.2.2"
+edition.workspace = true
+# 实现是 Rove 自己写的（MIT），但公开 API 形状派生自上游 Apache-2.0 的 gpui_http_client 0.2.2，
+# 来源与声明见 THIRD_PARTY_NOTICES.md。
+license = "MIT AND Apache-2.0"
+publish = false
+description = "Rove 的 gpui_http_client 替身：保留 gpui 需要的 API 形状，不含任何网络实现（issue #74）"
+
+[lib]
+name = "gpui_http_client"
+path = "src/lib.rs"
+
+[features]
+# gpui 的 `test-support` feature 会打开 `http_client/test-support`，需要 FakeHttpClient。
+test-support = []
+
+[dependencies]
+# 这几个都不是 workspace 级共享依赖（只有本 crate 用），所以就地声明；
+# 全部与上游 gpui_http_client 的版本一致，且都不含网络实现。
+anyhow = "1"
+bytes = "1"
+futures = "0.3"
+http = "1.1"
+log = "0.4"
+parking_lot = "0.12"
+url = "2.2"

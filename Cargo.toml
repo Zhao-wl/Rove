@@ -74,3 +74,8 @@ debug = "line-tables-only"
 
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
+# #74：gpui 对 gpui_http_client 的依赖不是 optional，默认会把 zed-reqwest / hyper / rustls /
+# ring / tokio 整条 HTTP + TLS 栈拉进依赖图。Rove 不联网（PROJECT_CHARTER §2.1），这里整个换成
+# 本仓库自己的替身：API 形状不变、调用即失败并记日志，vendor/gpui 的源码零改动。
+# `cargo xtask check-deps` 守住它不被重新引入。
+gpui_http_client = { path = "crates/rove-gpui-http-stub" }

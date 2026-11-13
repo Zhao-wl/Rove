@@ -50,3 +50,6 @@ pub mod markdown;
 pub mod welcome;
 // #22：超大文件与超长行的界面（提示条、状态栏、行索引进度、转到行等待、流式查找、截断标记）。
 pub mod large_file;
+
+// #74：Rove 不联网。装给 gpui 的 HTTP 客户端拒绝一切请求并记日志。
+pub mod net;

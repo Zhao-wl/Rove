@@ -57,3 +57,5 @@ gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 rove-test-support.workspace = true
 futures-lite = "2"
+# #74：no_network 入口测试要捕获被拒绝请求写出的日志。
+log = "0.4"
