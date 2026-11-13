@@ -98,15 +98,14 @@ pub fn asset(path: &str) -> Option<(&'static str, Vec<u8>)> {
 }
 
 /// 预览页：CSP 只放行带本次随机 nonce 的打包脚本（文档里的脚本即使漏过净化也不会执行）；
-/// 样式与字体只来自打包主机和本地文件主机；图片另外允许 `https:`/`http:`，但远程请求在没有放行时
-/// 会被 WebView2 的资源请求拦截（返回 403）。
+/// 资源仅来自打包主机、本地文件主机或内联数据；WebView2 另有独立的请求拦截。
 pub fn index_html(nonce: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{nonce}'; style-src https://rove.local https://*.rove-file.local https: 'unsafe-inline'; img-src https://rove.local https://*.rove-file.local https: http: data:; media-src https://rove.local https://*.rove-file.local https: http: data:; font-src https://rove.local https://*.rove-file.local data:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{nonce}'; style-src https://rove.local https://*.rove-file.local 'unsafe-inline'; img-src https://rove.local https://*.rove-file.local data:; media-src https://rove.local https://*.rove-file.local data:; font-src https://rove.local https://*.rove-file.local data:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
 <link rel="stylesheet" href="https://rove.local/vendor/markdown.css">
 <link rel="stylesheet" href="https://rove.local/vendor/highlight.css">
 <link rel="stylesheet" href="https://rove.local/vendor/katex/katex.min.css">
@@ -264,6 +263,10 @@ mod tests {
         }
         assert!(page.contains("script-src 'nonce-abc'"));
         assert!(page.contains("connect-src 'none'"));
+        assert!(page
+            .contains("style-src https://rove.local https://*.rove-file.local 'unsafe-inline';"));
+        assert!(page.contains("img-src https://rove.local https://*.rove-file.local data:;"));
+        assert!(page.contains("media-src https://rove.local https://*.rove-file.local data:;"));
         // katex.min.css 引用的 woff2 字体都已打包（ttf/woff 回退永远不会被请求）。
         let (_, css) = asset("vendor/katex/katex.min.css").unwrap();
         let css = String::from_utf8_lossy(&css);

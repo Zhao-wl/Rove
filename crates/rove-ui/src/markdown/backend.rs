@@ -66,7 +66,6 @@ pub trait Backend {
     /// 为这些盘符建立本地文件主机映射（`https://<盘符>.rove-file.local/`）。
     fn map_drives(&mut self, drives: &BTreeSet<char>);
     /// 当前显示的文档是否放行远程资源。
-    fn set_allow_remote(&mut self, allow: bool);
     /// 实例就绪前的底色（跟随编辑器背景，避免白屏闪烁）。
     fn set_background(&mut self, _rgba: (u8, u8, u8, u8)) {}
     /// 属于该实例的进程 ID（测量用；没有实例时为空）。
@@ -87,7 +86,6 @@ pub struct FakeLog {
     pub focus_requests: u32,
     pub released: u32,
     pub drives: BTreeSet<char>,
-    pub allow_remote: bool,
     pub zoom: f64,
 }
 
@@ -192,9 +190,6 @@ impl Backend for FakeBackend {
     fn map_drives(&mut self, drives: &BTreeSet<char>) {
         self.log.borrow_mut().drives.extend(drives.iter().copied());
     }
-    fn set_allow_remote(&mut self, allow: bool) {
-        self.log.borrow_mut().allow_remote = allow;
-    }
 }
 
 /// 不支持 WebView2 的平台：总是“运行时缺失”。
@@ -220,5 +215,4 @@ impl Backend for UnavailableBackend {
     fn suspend(&mut self) {}
     fn dispose(&mut self) {}
     fn map_drives(&mut self, _: &BTreeSet<char>) {}
-    fn set_allow_remote(&mut self, _: bool) {}
 }
