@@ -14,6 +14,12 @@
 //!   其余拒绝访问归为 [`WriteError::AccessDenied`]。**不提供提权写入**。
 //!
 //! 写入的线性化点是替换成功的那一刻；之后发生的任何事情都不会把结果报告成失败（ARCHITECTURE §3.8）。
+//!
+//! **替换前检查**：[`write_atomic_with`] 在**每次**替换目标之前（含占用后的每次自动重试）调用调用方
+//! 给的回调，保存冲突检测走这里（#139）；重试要等几百毫秒，期间占用文件的程序可能写入新内容并释放，
+//! 只在写临时文件之前检查一次会把这份新内容悄悄覆盖掉。回调返回 `Err` 时删除临时文件、保持目标原样。
+//! 检查与替换之间仍有一段很短的竞争窗口（无法用 Win32 的替换语义消除），这段时间里的外部写入还是会被
+//! 覆盖；这是已知的、可接受的残余风险。
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -38,6 +44,9 @@ pub struct WriteOptions {
     /// 测试用的故障注入点（见 [`FailPoint`]）。
     #[doc(hidden)]
     pub fail_point: Option<FailPoint>,
+    /// 测试用的替换故障注入点（见 [`ReplaceFailPoint`]）。
+    #[doc(hidden)]
+    pub replace_fail_point: Option<ReplaceFailPoint>,
 }
 
 impl Default for WriteOptions {
@@ -47,6 +56,7 @@ impl Default for WriteOptions {
             busy_retry_delay: Duration::from_millis(300),
             clear_read_only: false,
             fail_point: None,
+            replace_fail_point: None,
         }
     }
 }
@@ -60,6 +70,16 @@ pub struct FailPoint(pub FailHook);
 /// 故障注入回调：参数是临时文件路径。
 #[doc(hidden)]
 pub type FailHook = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
+
+/// 替换故障注入：每次替换目标之前（替换前检查之后）调用，返回 `Some` 时用这个错误代替真正的替换
+/// （测试用它模拟“第一次被占用、重试前被外部改写”，不必真去抢文件句柄）。
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ReplaceFailPoint(pub ReplaceFailHook);
+
+/// 替换故障注入回调：参数是第几次尝试（从 1 开始）。
+#[doc(hidden)]
+pub type ReplaceFailHook = Arc<dyn Fn(u32) -> Option<WriteError> + Send + Sync>;
 
 /// 写入失败的类别（界面按类别选通知文案与按钮）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,21 +105,34 @@ pub struct Written {
     pub attempts: u32,
 }
 
-/// 原子地把 `bytes` 写到 `path`。在后台线程调用（会刷盘、可能等待重试）。
+/// 原子地把 `bytes` 写到 `path`，不做替换前检查。在后台线程调用（会刷盘、可能等待重试）。
 pub fn write_atomic(
     path: &Path,
     bytes: &[u8],
     options: &WriteOptions,
 ) -> Result<Written, WriteError> {
+    write_atomic_with(path, bytes, options, &|| Ok(()))
+}
+
+/// 原子地把 `bytes` 写到 `path`，每次替换目标之前（含占用后的每次自动重试）先调用 `before_replace`。
+///
+/// 回调返回 `Err(e)` 时删除临时文件、保持目标原样，并把 `e` 原样返回（保存冲突检测就是这样把
+/// `Conflict` 带出来的，见模块文档）。写入自身的失败按 [`WriteError`] 分类后转成 `E`。
+pub fn write_atomic_with<E: From<WriteError>>(
+    path: &Path,
+    bytes: &[u8],
+    options: &WriteOptions,
+    before_replace: &dyn Fn() -> Result<(), E>,
+) -> Result<Written, E> {
     let parent = parent_dir(path);
     if !parent.is_dir() {
-        return Err(WriteError::DirectoryMissing);
+        return Err(WriteError::DirectoryMissing.into());
     }
     let existing = std::fs::metadata(path).ok();
     if let Some(metadata) = &existing {
         if metadata.permissions().readonly() {
             if !options.clear_read_only {
-                return Err(WriteError::ReadOnly);
+                return Err(WriteError::ReadOnly.into());
             }
             clear_read_only(path).map_err(|error| classify(path, error))?;
         }
@@ -113,13 +146,26 @@ pub fn write_atomic(
     let mut attempts = 0;
     loop {
         attempts += 1;
-        // 每次都重新判断：重试期间目标可能被删除或创建。
-        let result = if path.exists() {
-            replace(path, &temp)
-        } else {
-            rename(&temp, path)
+        // 替换前检查（#139）：重试要等待，期间外部程序可能写入新内容，每次都要重新检查。
+        if let Err(error) = before_replace() {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        let injected = options
+            .replace_fail_point
+            .as_ref()
+            .and_then(|ReplaceFailPoint(hook)| hook(attempts));
+        let result = match injected {
+            Some(error) => Err(error),
+            // 每次都重新判断：重试期间目标可能被删除或创建。
+            None => if path.exists() {
+                replace(path, &temp)
+            } else {
+                rename(&temp, path)
+            }
+            .map_err(|error| classify(path, error)),
         };
-        match result.map_err(|error| classify(path, error)) {
+        match result {
             Ok(()) => break,
             Err(WriteError::Busy { .. }) if attempts <= options.busy_retries => {
                 std::thread::sleep(options.busy_retry_delay);
@@ -129,7 +175,8 @@ pub fn write_atomic(
                 return Err(match error {
                     WriteError::Busy { .. } => WriteError::Busy { attempts },
                     other => other,
-                });
+                }
+                .into());
             }
         }
     }
@@ -416,6 +463,71 @@ mod tests {
         write_atomic(&path, b"new", &options).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!std::fs::metadata(&path).unwrap().permissions().readonly());
+    }
+
+    /// 调用方的中止原因（这里替代 `SaveFailure`）。
+    #[derive(Debug, PartialEq)]
+    enum TestAbort {
+        Write(WriteError),
+        Rejected,
+    }
+
+    impl From<WriteError> for TestAbort {
+        fn from(error: WriteError) -> Self {
+            TestAbort::Write(error)
+        }
+    }
+
+    /// 第一次替换报占用、等待期间目标被外部改写：重试之前要重新检查，不能覆盖新内容（#139）。
+    #[test]
+    fn pre_replace_check_runs_before_every_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.cs");
+        std::fs::write(&path, b"original").unwrap();
+        let target = path.clone();
+        let options = WriteOptions {
+            busy_retry_delay: Duration::from_millis(1),
+            replace_fail_point: Some(ReplaceFailPoint(Arc::new(move |attempt| {
+                (attempt == 1).then(|| {
+                    std::fs::write(&target, b"external").unwrap();
+                    WriteError::Busy { attempts: 1 }
+                })
+            }))),
+            ..WriteOptions::default()
+        };
+        let checks = std::cell::Cell::new(0u32);
+        let result = write_atomic_with(&path, b"mine", &options, &|| {
+            checks.set(checks.get() + 1);
+            if std::fs::read(&path).unwrap() == b"original" {
+                Ok(())
+            } else {
+                Err(TestAbort::Rejected)
+            }
+        });
+        assert_eq!(result.unwrap_err(), TestAbort::Rejected);
+        // 第一次尝试之前检查一次，重试之前再检查一次。
+        assert_eq!(checks.get(), 2);
+        assert_eq!(std::fs::read(&path).unwrap(), b"external");
+        assert!(temps(dir.path()).is_empty());
+    }
+
+    /// 检查通过时重试路径照常替换。
+    #[test]
+    fn passing_pre_replace_check_writes_on_the_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.cs");
+        std::fs::write(&path, b"original").unwrap();
+        let options = WriteOptions {
+            busy_retry_delay: Duration::from_millis(1),
+            replace_fail_point: Some(ReplaceFailPoint(Arc::new(|attempt| {
+                (attempt == 1).then_some(WriteError::Busy { attempts: 1 })
+            }))),
+            ..WriteOptions::default()
+        };
+        let written = write_atomic_with::<TestAbort>(&path, b"mine", &options, &|| Ok(())).unwrap();
+        assert_eq!(written.attempts, 2);
+        assert_eq!(std::fs::read(&path).unwrap(), b"mine");
+        assert!(temps(dir.path()).is_empty());
     }
 
     #[test]
