@@ -1172,7 +1172,7 @@ fn extend_for_overtype(
     snap: &dyn TextSource,
     text: &str,
 ) -> rove_base::Result<()> {
-    let primary = s.selections().primary().clone();
+    let primary = *s.selections().primary();
     if !primary.is_empty() {
         return Ok(());
     }

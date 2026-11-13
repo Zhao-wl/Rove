@@ -37,6 +37,11 @@ pub(crate) struct Highlights {
     /// #47：分析进行中又来了编辑：不取消它（它完成后基线前进到它的版本），先记下最新文档与
     /// 之后的编辑，完成时合成一个增量编辑再分析。`None` 表示中间有无法增量的变化（整篇重来）。
     pending: BTreeMap<DocumentId, (Arc<Document>, Option<Vec<TextEdit>>)>,
+    /// #47：同一内容换了版本（可编辑文档换上会话的快照）：(旧版本, 新版本)。两个版本的分析结果与
+    /// 增量编辑互认，不因为换快照丢掉进行中的着色、也不让第一次输入退化成整篇重解析。
+    alias: BTreeMap<DocumentId, (Version, Version)>,
+    /// #47：最近一次成功分析的版本（增量编辑的基线）。
+    baseline: BTreeMap<DocumentId, Version>,
 }
 
 /// Highlighting is skipped for huge documents, which open read-only and unparsed.
@@ -61,7 +66,28 @@ impl Highlights {
             running: BTreeMap::new(),
             serial: 0,
             pending: BTreeMap::new(),
+            alias: BTreeMap::new(),
+            baseline: BTreeMap::new(),
         }
+    }
+
+    /// #47：`document` 的内容不变、版本从 `from` 换成 `to`。
+    pub(crate) fn rebased(&mut self, document: DocumentId, from: Version, to: Version) {
+        self.alias.insert(document, (from, to));
+    }
+
+    /// #47：两个版本是否是同一内容（相同，或互为别名）。
+    pub(crate) fn same_content(&self, document: DocumentId, a: Version, b: Version) -> bool {
+        a == b
+            || self
+                .alias
+                .get(&document)
+                .is_some_and(|(from, to)| (a == *from && b == *to) || (a == *to && b == *from))
+    }
+
+    /// #47：一次分析成功完成（基线前进到它的版本）。
+    pub(crate) fn note_baseline(&mut self, document: DocumentId, version: Version) {
+        self.baseline.insert(document, version);
     }
 
     /// #47：文档被编辑（新快照、相对上一版本的增量编辑）。返回要在后台运行的分析；正在分析时
@@ -93,7 +119,10 @@ impl Highlights {
     pub(crate) fn resume(&mut self, document: DocumentId, finished: Version) -> Option<SyntaxJob> {
         let (latest, edits) = self.pending.remove(&document)?;
         let edit = edits
-            .filter(|e| e.first().is_some_and(|e| e.version == finished))
+            .filter(|e| {
+                e.first()
+                    .is_some_and(|e| self.same_content(document, e.version, finished))
+            })
             .and_then(|e| combine_text_edits(&e, &*latest.text));
         Some(self.launch(&latest, edit, None))
     }
@@ -107,6 +136,15 @@ impl Highlights {
         if let Some(running) = self.running.get(&document.id) {
             running.cancel.cancel();
         }
+        // 增量编辑以基线为准：基线与编辑的起点是同一内容的两个版本时改写成基线的版本。
+        let edit = edit.map(|mut e| {
+            if let Some(base) = self.baseline.get(&document.id).copied() {
+                if self.same_content(document.id, e.version, base) {
+                    e.version = base;
+                }
+            }
+            e
+        });
         self.serial += 1;
         let cancel = Cancellation::default();
         self.running.insert(
@@ -186,6 +224,8 @@ impl Highlights {
     /// The last tab of `document` closed: cancel its analysis and drop its baseline.
     pub(crate) fn release(&mut self, document: DocumentId) {
         self.pending.remove(&document);
+        self.alias.remove(&document);
+        self.baseline.remove(&document);
         if let Some(running) = self.running.remove(&document) {
             running.cancel.cancel();
         }

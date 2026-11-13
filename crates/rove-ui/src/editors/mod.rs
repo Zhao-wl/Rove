@@ -638,12 +638,19 @@ impl EditorService {
             return false;
         };
         let version = update.snapshot.version();
+        self.highlights.note_baseline(document, version);
         let mut changed = false;
         let mut shown = None;
         for pane in self.groups.values_mut() {
             for tab in &mut pane.tabs {
                 if let Content::Ready(opened) = &mut tab.content {
-                    if opened.document.id == document && opened.document.text.version() == version {
+                    if opened.document.id == document
+                        && self.highlights.same_content(
+                            document,
+                            opened.document.text.version(),
+                            version,
+                        )
+                    {
                         opened.syntax = Some(update.snapshot.clone());
                         shown.get_or_insert_with(|| opened.document.clone());
                         changed = true;
@@ -683,6 +690,26 @@ impl EditorService {
             }
         }
         found
+    }
+
+    /// #47：同一内容换了快照（可编辑文档换上会话的快照）：换进标签，不重新分析，进行中与已有的
+    /// 着色结果继续有效。
+    pub(crate) fn rebase_document(&mut self, document: Arc<Document>) {
+        let mut from = None;
+        for pane in self.groups.values_mut() {
+            for tab in &mut pane.tabs {
+                if let Content::Ready(opened) = &mut tab.content {
+                    if opened.document.id == document.id {
+                        from.get_or_insert(opened.document.text.version());
+                        opened.document = document.clone();
+                    }
+                }
+            }
+        }
+        if let Some(from) = from {
+            self.highlights
+                .rebased(document.id, from, document.text.version());
+        }
     }
 
     /// #47：标签的脏标记（保存控制器的判定）。返回是否有变化。

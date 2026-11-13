@@ -211,7 +211,7 @@ impl Workbench {
             metadata,
             text: snapshot,
         });
-        self.editor.replace_document(replaced.clone(), None);
+        self.editor.rebase_document(replaced.clone());
         if let Some(files) = &self.editing.files {
             files.replace(&replaced);
         }
@@ -320,7 +320,7 @@ impl Workbench {
                 return;
             };
             let snapshot = file.snapshot();
-            let primary = file.session().selections().primary().clone();
+            let primary = *file.session().selections().primary();
             let selection = snapshot
                 .position(primary.anchor)
                 .ok()
