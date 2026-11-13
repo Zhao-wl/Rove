@@ -10,12 +10,8 @@ use crate::{
         syntax::SyntaxJob,
         Axis, Content, Direction, EditorService, Layout, OpenJob, Tab, TabId, ViewState,
     },
-    list_widget::{
-        options::ListOptions,
-        tree::{ChildCount, Children, TreeItem, TreeModel, TreeSource},
-        widget::{ListWidget, RowHeight},
-    },
-    lists::{ItemId, ListController, ListModel, Row},
+    list_widget::widget::{ListWidget, RowHeight},
+    lists::ListModel,
     shell::{
         self,
         catalog::{CONTAINER_FACTORY, FILE_VIEW, PROBLEMS, STATUS_FACTORY},
@@ -26,8 +22,8 @@ use crate::{
     },
 };
 use gpui::{
-    div, point, prelude::*, px, relative, rgba, size, uniform_list, AnyElement, App, Application,
-    Bounds, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, Render, SharedString,
+    div, point, prelude::*, px, relative, rgba, size, AnyElement, App, Application, Bounds,
+    Context, Entity, FocusHandle, Focusable, Hsla, IntoElement, Render, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 #[cfg(test)]
@@ -57,8 +53,12 @@ use std::{
 };
 
 mod editor_panes;
+// #23：资源管理器（文件树）的装配。
 #[cfg(test)]
 mod editor_tests;
+mod explorer_host;
+#[cfg(test)]
+mod explorer_tests;
 #[cfg(test)]
 mod find_tests;
 mod outline_host;
@@ -93,47 +93,6 @@ mod syntax_tests;
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
     rgba(((c.0 as u32) << 24) | ((c.1 as u32) << 16) | ((c.2 as u32) << 8) | c.3 as u32).into()
-}
-
-// SKELETON(explorer): fixed expandable file tree; replaced by #23.
-// Tree data/control use the #18 list component (lazy children, stable ItemId); only this
-// adapter and the fixed rendering below remain skeleton.
-struct WorkspaceTree(Arc<dyn Workspace>);
-impl TreeSource for WorkspaceTree {
-    fn children(&self, parent: Option<&ItemId>) -> Children {
-        let path = parent.and_then(|p| WorkspacePath::new(&p.0).ok());
-        match self.0.children(path.as_ref(), 0..usize::MAX) {
-            Ok(page) => Children::Ready(
-                page.items
-                    .iter()
-                    .map(|e| TreeItem {
-                        id: ItemId(e.path.as_str().into()),
-                        label: e.path.as_str().rsplit('/').next().unwrap().into(),
-                        detail: None,
-                        children: if matches!(e.kind, EntryKind::Directory) {
-                            ChildCount::Unknown
-                        } else {
-                            ChildCount::None
-                        },
-                    })
-                    .collect(),
-            ),
-            Err(e) => {
-                eprintln!("workspace: {e}");
-                Children::Ready(Arc::from([]))
-            }
-        }
-    }
-}
-type FileTree = ListWidget;
-fn file_tree(workspace: Arc<dyn Workspace>) -> CoreResult<FileTree> {
-    // Surface a failing root listing as a scan failure, as before.
-    workspace.children(None, 0..1)?;
-    Ok(ListWidget::tree(
-        TreeModel::new(Arc::new(WorkspaceTree(workspace))),
-        RowHeight::Fixed(24.0),
-        ListOptions::default(),
-    ))
 }
 
 /// What a code view currently displays: a tab's document at one text version.
@@ -196,7 +155,11 @@ fn apply_zoom(code: &mut CodeView, zoom: f64, cx: &mut Context<CodeView>) {
 /// 骨架窗口：工作台（标题栏、活动栏、侧边栏、面板、状态栏、反馈）由 #16 的 `shell` 提供，
 /// 编辑器组网格、标签与打开文档服务由 #17 的 `editors` 提供，每个组的正文是 #19 的代码视图。
 pub struct Workbench {
-    tree: Option<FileTree>,
+    /// #23：资源管理器（“文件夹”小节，见 `explorer_host.rs`）。
+    explorer: Entity<crate::explorer::view::ExplorerView>,
+    explorer_events: Option<rove_base::Subscription>,
+    /// 自动定位最近一次处理的活动标签。
+    explorer_revealed: Option<TabId>,
     editor: EditorService,
     root: PathBuf,
     views: BTreeMap<EditorGroupId, GroupViews>,
@@ -381,8 +344,11 @@ impl Workbench {
             FileDocuments::new(root.clone(), services.clone()).with_size_policy(size),
             nav.views.clone(),
         );
+        let explorer = Self::new_explorer(theme.clone(), &services, cx);
         let mut view = Self {
-            tree: None,
+            explorer,
+            explorer_events: None,
+            explorer_revealed: None,
             editor: EditorService::new(
                 metadata.files.clone(),
                 // #94: one baseline per open document, configured by the shared settings.
@@ -504,6 +470,8 @@ impl Workbench {
         self.search_settings_changed(keys, cx);
         // #42：rove.metadataView.showDocs 变化：打开着的元数据视图立即重新渲染。
         self.metadata_settings_changed(keys, cx);
+        // #23：explorer.* 与装饰设置变化。
+        self.explorer_settings_changed(keys, cx);
         // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
@@ -602,38 +570,70 @@ impl Workbench {
     }
     fn scan(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.scans += 1;
-        // SKELETON: build the workspace through the #15 implementation. The explorer still waits
-        // for the initial snapshot before building its rows; streaming (root in the first frame)
-        // is available from `rove_workspace::Folder::start` and belongs to #23's explorer.
+        let generation = self.scans;
+        // 流式扫描（#15 `Folder::start`）：根目录已列出就立即返回，资源管理器马上显示；
+        // 其余目录随后通过文件事件到达。依赖完整文件列表的功能（快速打开、C# 快速索引、
+        // 关闭已删除文件的标签）在扫描完成后再装配。
         let settings = self.settings.clone();
         let task = cx.background_executor().spawn(async move {
             let config = rove_workspace::WorkspaceConfig::from_settings(&*settings)?;
-            let folder = rove_workspace::Folder::scan_root(root, config)?;
-            Ok(folder as Arc<dyn Workspace>)
+            rove_workspace::Folder::start(root, config)
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {
-                let tree = result.and_then(|workspace| {
-                    view.watch_workspace(&workspace, cx);
-                    view.workspace = Some(workspace.clone());
-                    // #24：后台建快速打开的文件索引。
-                    view.quick_workspace_ready(cx);
-                    // #40：后台建 C# 的 L1 快速声明索引（导航的近似回退）。
-                    view.nav_workspace_ready(cx);
-                    file_tree(workspace)
-                });
-                match tree {
-                    Ok(tree) => view.tree = Some(tree),
+                if view.scans != generation {
+                    return;
+                }
+                match result {
+                    Ok(folder) => view.workspace_started(folder, generation, cx),
                     Err(e) => {
                         eprintln!("workspace: {e}");
                         view.scan_failed = true;
+                        cx.notify();
                     }
                 }
-                cx.notify();
             });
         })
         .detach();
+    }
+    /// 根目录已可用：资源管理器立即显示；后台等扫描完成后再装配其余消费者。
+    fn workspace_started(
+        &mut self,
+        folder: Arc<rove_workspace::Folder>,
+        generation: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace: Arc<dyn Workspace> = folder.clone();
+        self.scan_failed = false;
+        self.workspace = Some(workspace.clone());
+        self.show_workspace(&workspace, cx);
+        let wait =
+            cx.background_executor().spawn({
+                let folder = folder.clone();
+                async move {
+                    rove_workspace::wait_until_complete(&folder, Duration::from_secs(24 * 3600))
+                }
+            });
+        cx.spawn(async move |this, cx| {
+            let complete = wait.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.scans == generation && complete {
+                    view.workspace_scanned(workspace, cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    /// 初始扫描完成。
+    fn workspace_scanned(&mut self, workspace: Arc<dyn Workspace>, cx: &mut Context<Self>) {
+        self.watch_workspace(&workspace, cx);
+        // #24：后台建快速打开的文件索引。
+        self.quick_workspace_ready(cx);
+        // #40：后台建 C# 的 L1 快速声明索引（导航的近似回退）。
+        self.nav_workspace_ready(cx);
+        cx.notify();
     }
     /// `workbench.editor.closeOnFileDelete`: close tabs whose file was removed or renamed away.
     /// 总是订阅，事件到达时再看设置：`closeOnFileDelete` 可以热加载（#104）。
@@ -688,35 +688,6 @@ impl Workbench {
             }
         })
         .detach();
-    }
-    fn activate(&mut self, row: Row, cx: &mut Context<Self>) {
-        if row.expandable {
-            if let Some(tree) = self.tree.as_mut() {
-                if let Err(e) = ListController::expand(tree, &row.id, !row.expanded) {
-                    eprintln!("expand: {e}");
-                }
-            }
-            cx.notify();
-            return;
-        }
-        let path = row.id.0.to_string();
-        let resource = Resource::Workspace(WorkspacePath::new(&path).expect("workspace path"));
-        let _ = crate::feedback::FeedbackService::dismiss(
-            &mut self.shell.feedback,
-            "command.placeholder",
-        );
-        let options = OpenOptions {
-            source: OpenSource::Explorer,
-            preserve_focus: self.editor.settings.explorer_preserve_focus,
-            ..Default::default()
-        };
-        if let Err(error) = self
-            .open_documents()
-            .open(resource, options, Cancellation::default())
-        {
-            eprintln!("open {path}: {error}");
-        }
-        cx.notify();
     }
     /// The installed, window-owned service. Subscribe to events before opening.
     pub fn open_documents(&mut self) -> &mut dyn OpenDocuments {
@@ -1270,7 +1241,7 @@ impl Workbench {
             return self.label("workbench.scanFailed", &[]);
         }
         let current = self.editor.active().current();
-        if current.is_some_and(Tab::show_progress) || self.tree.is_none() {
+        if current.is_some_and(Tab::show_progress) || self.workspace.is_none() {
             return self.label("common.loading", &[]);
         }
         if let Some(tab) = current.filter(|tab| matches!(tab.content, Content::Failed(_))) {
@@ -1299,56 +1270,20 @@ impl Workbench {
             self.label("workbench.empty", &[])
         }
     }
-    fn render_file_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.tree.is_none() {
-            let key = if self.scan_failed {
-                "workbench.scanFailed"
-            } else {
-                "common.loading"
-            };
-            return div().px_2().child(self.label(key, &[])).into_any_element();
+    fn render_file_tree(&mut self, _cx: &mut Context<Self>) -> AnyElement {
+        if self.scan_failed {
+            return div()
+                .px_2()
+                .child(self.label("workbench.scanFailed", &[]))
+                .into_any_element();
         }
-        let rows = self.tree.as_ref().map_or(0, ListModel::count);
-        let row_height = 24.0 * self.shell.zoom();
-        uniform_list(
-            "file-tree",
-            rows,
-            cx.processor(move |v, range, _, cx| {
-                let rows = v
-                    .tree
-                    .as_ref()
-                    .and_then(|t| ListModel::rows(t, range).ok())
-                    .unwrap_or_else(|| Arc::from([]));
-                rows.iter()
-                    .map(|row| {
-                        let label = if row.expandable {
-                            v.label(
-                                if row.expanded {
-                                    "tree.open"
-                                } else {
-                                    "tree.closed"
-                                },
-                                &[("name", row.label.to_string())],
-                            )
-                        } else {
-                            row.label.to_string()
-                        };
-                        let row = row.clone();
-                        div()
-                            .id(SharedString::from(row.id.0.to_string()))
-                            .h(px(row_height))
-                            .pl(px(10.0 + row.depth as f32 * 16.0))
-                            .cursor_pointer()
-                            .overflow_hidden()
-                            .child(label)
-                            .on_click(cx.listener(move |v, _, _, cx| v.activate(row.clone(), cx)))
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        )
-        .flex_1()
-        .min_h_0()
-        .into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(self.explorer.clone())
+            .into_any_element()
     }
 }
 
@@ -1686,6 +1621,8 @@ impl Render for Workbench {
         self.sync_nav(window, cx);
         // #25：搜索视图的全局上下文键与焦点。
         self.sync_search(window, cx);
+        // #23：资源管理器自动定位当前文件、显示后接过焦点。
+        self.sync_explorer(window, cx);
         // #41：代码视图换了文档时关闭它上面的速览。
         self.sync_peeks(cx);
         if self.focus_group != Some(self.editor.focused) {
@@ -1787,6 +1724,12 @@ impl Render for Workbench {
                     v.search_command(a, window, cx)
                 }),
             )
+            // #23：资源管理器命令（焦点不在树里时，例如“在资源管理器中显示活动文件”）。
+            .on_action(cx.listener(
+                |v, a: &crate::explorer::registry::ExplorerAction, window, cx| {
+                    v.explorer_command(a, window, cx)
+                },
+            ))
             .child(workbench)
             .children(goto)
             .children(quick)
@@ -1893,7 +1836,9 @@ mod tests {
         let (view, cx) =
             cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
         cx.run_until_parked();
-        view.read_with(cx, |v, _| assert_eq!(v.tree.as_ref().unwrap().count(), 1));
+        view.read_with(cx, |v, cx| {
+            assert_eq!(v.explorer.read(cx).rows(cx).len(), 1)
+        });
         cx.simulate_click(point(px(128.0), px(104.0)), Modifiers::default());
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -1946,7 +1891,9 @@ mod tests {
             cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
         cx.run_until_parked();
         cx.simulate_click(point(px(128.0), px(104.0)), Modifiers::default());
-        view.read_with(cx, |v, _| assert_eq!(v.tree.as_ref().unwrap().count(), 3));
+        view.read_with(cx, |v, cx| {
+            assert_eq!(v.explorer.read(cx).rows(cx).len(), 3)
+        });
         cx.simulate_click(point(px(128.0), px(128.0)), Modifiers::default());
         cx.run_until_parked();
         view.read_with(cx, |v, _| {

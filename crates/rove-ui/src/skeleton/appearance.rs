@@ -90,6 +90,8 @@ pub fn strings() -> Result<StringTable> {
     crate::peek::registry::register_strings(&mut t)?;
     // #42：元数据视图的标签标题与悬停提示。
     crate::metadata::registry::register_strings(&mut t)?;
+    // #23：资源管理器的空状态、读取失败提示与命令标题。
+    crate::explorer::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
