@@ -113,6 +113,9 @@ pub enum CodeViewEvent {
         position: Position,
         side: bool,
     },
+    /// #47：本视图里的一次编辑（或撤销 / 重做）已经写进会话；宿主据此同步同一文档的其他视图、
+    /// 语法增量解析、`BufferStates` 与标签脏标记。
+    Edited(super::edit::EditNotice),
 }
 
 /// 按文档级别（UX_SPEC §3.1）关闭的功能（#20 提供查询，#22 组装状态栏悬停文案）。
@@ -349,6 +352,18 @@ pub struct CodeView {
     pointer: Option<Point<Pixels>>,
     /// #40：指针下是可跳转的链接（`Ctrl+悬停`），文本区显示手形光标。
     pub(crate) link_cursor: bool,
+    /// #47：编辑入口（宿主借出会话）；`None` 时视图只读阅读。
+    pub(crate) edit_host: Option<Rc<dyn super::edit::EditHost>>,
+    /// #47：输入法组合串（不在缓冲区里）。
+    pub(crate) composition: Option<super::edit::Composition>,
+    /// #47：组合行的显示条目缓存（按组合串内容）。
+    pub(crate) composition_entry: Option<(super::edit::Composition, Rc<LineEntry>)>,
+    /// #47：改写模式。
+    pub(crate) overtype: bool,
+    /// #47：选择定位点。
+    pub(crate) selection_anchor: Option<Position>,
+    /// #47：上一帧插入符的窗口坐标；变化时让输入法候选框重新定位。
+    pub(crate) last_caret: Option<Bounds<Pixels>>,
 }
 
 impl Focusable for CodeView {
@@ -377,19 +392,28 @@ impl Render for CodeView {
         if self.has_word_highlights() {
             context.add(super::commands::WORD_HIGHLIGHTS_CONTEXT_KEY);
         }
+        if self.selection_anchor.is_some() {
+            context.add(super::commands::SELECTION_ANCHOR_CONTEXT_KEY);
+        }
         let el = gpui::div()
             .key_context(context)
             .track_focus(&self.focus)
             .size_full()
-            // 可打印字符：只读时在光标处提示原因（编辑本身由 R46 实现）。
             // #40：按下 / 松开 Ctrl 时在指针处重新判定 `Ctrl+悬停`（不动鼠标也出现 / 收起下划线）。
             .on_modifiers_changed(cx.listener(|v, e: &gpui::ModifiersChangedEvent, _, cx| {
                 v.modifiers_changed(e.modifiers.control, cx)
             }))
-            .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _, cx| {
+            // #47：可打印字符经输入法接口（`EntityInputHandler`）到达；回车没有键位，在这里换行。
+            // 只读时回车同样在光标处提示原因。
+            .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, window, cx| {
                 let m = &e.keystroke.modifiers;
-                if e.keystroke.key_char.is_some() && !m.control && !m.alt && !m.platform {
-                    v.typed(cx);
+                if e.keystroke.key == "enter" && !m.control && !m.alt && !m.platform {
+                    if v.is_read_only() {
+                        v.edit_blocked(cx);
+                    } else {
+                        v.enter(Some(window), cx);
+                    }
+                    cx.stop_propagation();
                 }
             }))
             .child(super::element::CodeElement { view: cx.entity() });
@@ -541,6 +565,12 @@ impl CodeView {
             semantic_words: None,
             pointer: None,
             link_cursor: false,
+            edit_host: None,
+            composition: None,
+            composition_entry: None,
+            overtype: false,
+            selection_anchor: None,
+            last_caret: None,
         };
         view.apply_feature_options();
         view
@@ -881,7 +911,7 @@ impl CodeView {
         self.selection_changed(SelectionSource::Api, cx);
     }
 
-    fn clamp_selection(&self, s: Selection) -> Selection {
+    pub(crate) fn clamp_selection(&self, s: Selection) -> Selection {
         Selection::new(self.clamp_position(s.anchor), self.clamp_position(s.active))
     }
 
@@ -966,7 +996,9 @@ impl CodeView {
         }
     }
 
-    fn selection_changed(&mut self, source: SelectionSource, cx: &mut Context<Self>) {
+    pub(crate) fn selection_changed(&mut self, source: SelectionSource, cx: &mut Context<Self>) {
+        // #47：光标撤销栈与撤销分组以会话为准。
+        self.push_selection_to_session();
         self.update_highlights(cx);
         self.caret_visible = true;
         self.blink_epoch.set(self.blink_epoch.get() + 1);
@@ -1149,7 +1181,15 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let _ = window;
+        // #47：编辑类命令。
+        if let Some(handled) = self.execute_edit(id, window, cx) {
+            return handled;
+        }
+        if (id == "cursorLeft" || id == "cursorRight")
+            && self.sticky_tab_move(id == "cursorLeft", cx)
+        {
+            return true;
+        }
         let page = self.metrics().map_or(1, |m| m.page_lines());
         let mv = |m: Move, extend: bool| Some((m, extend));
         let movement = match id {
@@ -1265,6 +1305,8 @@ impl CodeView {
         shift: bool,
         cx: &mut Context<Self>,
     ) {
+        // #47：组合中途点击：先在原位置提交组合串，再按新位置放插入符。
+        self.commit_composition(None, cx);
         let Some(p) = self.position_for_point(point) else {
             return;
         };
@@ -1631,6 +1673,10 @@ impl CodeView {
         if focused == self.focused {
             return;
         }
+        if !focused {
+            // #47：失焦时组合串在原位置提交，不留残片。
+            self.commit_composition(Some(window), cx);
+        }
         self.focused = focused;
         self.caret_visible = true;
         self.blinking = false;
@@ -1673,6 +1719,37 @@ impl CodeView {
             runs: e.font_runs.clone(),
             font_generation: self.font.generation,
         }
+    }
+
+    /// #47：没有装饰的显示条目（输入法组合行）。
+    pub(crate) fn plain_entry(&self, display: DisplayLine, source: Arc<str>) -> LineEntry {
+        let len = display.text.len() as u32;
+        LineEntry {
+            hash: content_hash(&display.text),
+            display,
+            source,
+            merged: None,
+            paint_runs: Vec::new(),
+            font_runs: Arc::from([(len, 0u8)]),
+            xs: RefCell::new(None),
+        }
+    }
+
+    /// #47：编辑后立即读入并整形一行（事件处理里调用，避免下一帧画占位）。
+    pub(crate) fn ensure_line_now(&mut self, line: u64, window: &mut Window) {
+        self.ensure_entry(line);
+        self.ensure_shaped(line, window);
+    }
+
+    /// #47：整形一个不在行缓存里的条目（组合行）。
+    pub(crate) fn shape_entry_now(&mut self, entry: &LineEntry, window: &mut Window) {
+        let key = self.shape_key(entry);
+        if self.shapes.contains(&key) {
+            return;
+        }
+        let shaped = self.shape(entry, window);
+        let cost = shaped.glyphs.len() * 48 + entry.display.text.len() + 96;
+        self.shapes.insert(key, Rc::new(shaped), cost);
     }
 
     /// 读一行并构建显示形式与装饰（不整形）。
@@ -1736,7 +1813,7 @@ impl CodeView {
     }
 
     /// 准备一行：保证显示形式与装饰最新。返回是否有变化。
-    fn ensure_entry(&mut self, line: u64) -> bool {
+    pub(crate) fn ensure_entry(&mut self, line: u64) -> bool {
         match self.lines.peek(&line).cloned() {
             Some(e) => {
                 if self.decorations.needs(line) {
@@ -1753,7 +1830,7 @@ impl CodeView {
     }
 
     /// 整形一行（必须在帧外调用）。返回是否新整形了。
-    fn ensure_shaped(&mut self, line: u64, window: &mut Window) -> bool {
+    pub(crate) fn ensure_shaped(&mut self, line: u64, window: &mut Window) -> bool {
         let Some(entry) = self.lines.peek(&line).cloned() else {
             return false;
         };
@@ -1814,7 +1891,7 @@ impl CodeView {
             .insert(key, Rc::new(shaped), text.len() * 48 + 96);
     }
 
-    fn shape(&self, entry: &LineEntry, window: &mut Window) -> Shaped {
+    pub(crate) fn shape(&self, entry: &LineEntry, window: &mut Window) -> Shaped {
         let runs: Vec<TextRun> = entry
             .font_runs
             .iter()
@@ -2154,13 +2231,11 @@ impl CodeView {
         !self.read_only.is_empty()
     }
 
-    /// 用户在视图里输入了字符。只读时发出 [`CodeViewEvent::EditBlocked`]（编辑由 R46 实现）。
+    /// 用户在视图里输入了字符。只读时发出 [`CodeViewEvent::EditBlocked`]（可编辑时字符经输入法接口
+    /// 写入，见 `edit.rs`）。
     pub fn typed(&mut self, cx: &mut Context<Self>) {
         if self.is_read_only() {
-            cx.emit(CodeViewEvent::EditBlocked {
-                position: self.cursor.selection.active,
-                reasons: self.read_only.clone(),
-            });
+            self.edit_blocked(cx);
         }
     }
 
@@ -2201,7 +2276,7 @@ impl CodeView {
     }
 
     /// 折叠变化后：重建屏幕行映射与嵌入区域，保持视口首行稳定。
-    fn sync_fold_map(&mut self) {
+    pub(crate) fn sync_fold_map(&mut self) {
         let doc_lines = self.doc_line_count();
         self.folding.set_doc_lines(doc_lines);
         let map = self.folding.map().clone();
@@ -2302,7 +2377,7 @@ impl CodeView {
     }
 
     /// 后台重算可折叠区间（文本、语言、语法快照、相关设置或级别变化时）。
-    fn recompute_folds(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn recompute_folds(&mut self, cx: &mut Context<Self>) {
         self.fold_task += 1;
         if !self.folding_enabled() {
             if !self.folding.ranges().is_empty() || !self.folding.collapsed_keys().is_empty() {

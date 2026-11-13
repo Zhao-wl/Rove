@@ -135,6 +135,23 @@ impl FileDocuments {
         self
     }
 }
+impl FileDocuments {
+    /// #47：编辑后同一文档换了新快照（新的 `Arc<Document>`，身份不变）：缓存改指向它，
+    /// 之后再打开同一文件仍得到这个文档（不会读盘另建一个）。
+    pub fn replace(&self, document: &Arc<Document>) {
+        let mut index = self.cache.lock().unwrap();
+        let path = index
+            .documents
+            .iter()
+            .find(|(_, weak)| weak.upgrade().is_some_and(|d| d.id == document.id))
+            .map(|(path, _)| path.clone())
+            .or_else(|| index.aliases.get(&document.resource).cloned());
+        if let Some(path) = path {
+            index.documents.insert(path, Arc::downgrade(document));
+        }
+    }
+}
+
 impl Documents for FileDocuments {
     fn find(&self, r: &Resource) -> Option<Arc<Document>> {
         self.cache.lock().unwrap().find(r)

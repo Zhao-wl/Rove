@@ -52,6 +52,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+// #47：可编辑代码视图与 #49 保存控制器的窗口装配。
+mod edit_host;
+#[cfg(test)]
+mod edit_tests;
 mod editor_panes;
 // #23：资源管理器（文件树）的装配。
 #[cfg(test)]
@@ -110,6 +114,8 @@ struct CodeSlot {
     /// #21：包住代码视图并在右上角浮出查找条。
     find: Entity<crate::find::host::FindHost>,
     shown: Option<Shown>,
+    /// #47：已装上编辑入口的文档。
+    edit_doc: Option<DocumentId>,
     _events: gpui::Subscription,
 }
 
@@ -207,6 +213,8 @@ pub struct Workbench {
     peek: peek_host::Peeks,
     /// #42：元数据视图的文档加载器与重新载入入口（见 `metadata_host.rs`）。
     metadata: metadata_host::MetadataHost,
+    /// #47：可保存文件、保存控制器、外部修改与关闭确认（见 `edit_host.rs`）。
+    editing: edit_host::Editing,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -345,12 +353,14 @@ impl Workbench {
             nav.views.clone(),
         );
         let explorer = Self::new_explorer(theme.clone(), &services, cx);
+        // #47：编辑与元数据视图共用同一个加载器，编辑后的新快照回填它的缓存。
+        let files = metadata.files.clone();
         let mut view = Self {
             explorer,
             explorer_events: None,
             explorer_revealed: None,
             editor: EditorService::new(
-                metadata.files.clone(),
+                files.clone(),
                 // #94: one baseline per open document, configured by the shared settings.
                 Arc::new(SyntaxDocuments::new(
                     TreeSitterSyntax::default().with_settings(services.clone()),
@@ -393,6 +403,7 @@ impl Workbench {
             search,
             peek: Default::default(),
             metadata,
+            editing: edit_host::Editing::new(files),
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -669,6 +680,8 @@ impl Workbench {
                         // #36：源文件变化标记过期，项目配置变化触发重建。
                         view.index_files_changed(&changes);
                         view.quick_files_changed(quick, cx);
+                        // #47：打开中的文档在磁盘上被修改 / 删除。
+                        view.note_disk_events(&nav, cx);
                         view.nav_files_changed(&nav, cx);
                         if !view.editor.settings.close_on_delete {
                             return;
@@ -749,6 +762,18 @@ impl Workbench {
         let previous = self.editor.active().active;
         if crate::index_status::is_index_command(id) {
             self.index_command(id, cx);
+            return;
+        }
+        // #47：带参数的编辑命令，以及关闭有未保存修改的标签（先确认）。
+        if code_view::commands::TYPE_COMMANDS.contains(&id) {
+            self.type_command(&invocation.args, cx);
+            return;
+        }
+        if id == crate::save::registry::CHANGE_EOL {
+            self.change_eol_command(&invocation.args, cx);
+            return;
+        }
+        if id == "workbench.action.closeActiveEditor" && self.close_active_checked(cx) {
             return;
         }
         if self.commands.is_registered(id) && editor_actions::execute(&mut self.editor, id) {
@@ -860,6 +885,7 @@ impl Workbench {
             code,
             find,
             shown: None,
+            edit_doc: None,
             _events: events,
         }
     }
@@ -880,6 +906,10 @@ impl Workbench {
             }
             CodeViewEvent::ToggleReadonlyRequested => {
                 return self.toggle_readonly_in_session(group, secondary, cx);
+            }
+            // #47：编辑后同步文档、其他视图、语法、BufferStates 与脏标记。
+            CodeViewEvent::Edited(notice) => {
+                return self.text_edited(group, secondary, notice, cx);
             }
             _ => {}
         }
@@ -931,7 +961,8 @@ impl Workbench {
             | CodeViewEvent::ToggleReadonlyRequested
             | CodeViewEvent::PointerMoved { .. }
             | CodeViewEvent::PointerLeft
-            | CodeViewEvent::LinkClicked { .. } => {}
+            | CodeViewEvent::LinkClicked { .. }
+            | CodeViewEvent::Edited(_) => {}
         }
     }
 
@@ -1000,6 +1031,8 @@ impl Workbench {
                 code.update(cx, |code, cx| code.set_read_only(reasons, cx));
             }
         }
+        // #47：会话的只读原因跟着变（编辑命令据此拒绝）。
+        self.refresh_edit_read_only();
         cx.notify();
     }
 
@@ -1405,6 +1438,16 @@ impl Workbench {
                 let FeedbackEvent::Action { key, action } = event else {
                     continue;
                 };
+                // #47：#49 的通知、模态框与提示条按钮。
+                if key.starts_with("save.") {
+                    if this
+                        .update(cx, |view, cx| view.save_feedback_action(&key, &action, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
                 if !key.starts_with(index_status::FAILURE_KEY_PREFIX)
                     || !index_status::is_index_command(&action)
                 {
@@ -1611,6 +1654,8 @@ impl Render for Workbench {
         // Groups, active tabs and reveals change through commands, clicks and the open service;
         // load them into the per-group code views before drawing.
         self.sync_views(cx);
+        // #47：可保存文件与代码视图的编辑入口。
+        self.sync_editing(cx);
         // A tab that finished loading in the background reports Ready once it is shown here.
         self.editor.flush_ready();
         // #26: outline, breadcrumbs and symbol requests follow the active editor.
@@ -1718,6 +1763,12 @@ impl Render for Workbench {
                     v.nav_command(a.0, window, cx)
                 }),
             )
+            // #47：保存、另存为、全部保存、还原、新建未命名文档（#49 的命令）。
+            .on_action(
+                cx.listener(|v, a: &crate::save::registry::SaveAction, window, cx| {
+                    v.save_command(a.0, window, cx)
+                }),
+            )
             // #25：全局搜索命令。
             .on_action(
                 cx.listener(|v, a: &crate::search::registry::SearchAction, window, cx| {
@@ -1797,6 +1848,8 @@ pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
                         let mut view = Workbench::with_settings(root, started, store, settings, cx)
                             .expect("valid editor settings");
                         Shell::attach_window(&mut view, window, cx);
+                        // #47：窗口关闭按钮先确认未保存的文档（替换上一行登记的回调，并做它原来的事）。
+                        edit_host::attach_close_confirmation(&mut view, window, cx);
                         view
                     })
                 },
