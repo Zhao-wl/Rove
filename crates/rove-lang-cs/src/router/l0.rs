@@ -89,6 +89,17 @@ impl L0File {
         resolve(ident, &self.text)
     }
 
+    /// #60 转到类型定义：**声明名字**处写出的类型名。给定一个落在声明名字上的字节偏移
+    /// （`Player field;` 的 `field`、`void F(Player p)` 的 `p`、`Box<T> Prop { get; }` 的 `Prop`……），
+    /// 返回这个声明的类型里最后那个可跳转的名字的字节区间：`A.B.Foo<T>` → `Foo`，
+    /// `Foo[]` / `Foo?` → `Foo`，`int` 这类预定义类型与元组没有名字可跳，返回 `None`。
+    ///
+    /// `var` 从初始化器推断（`new T()`、`new T[n]`、`(T)x`、`x as T`），推不出来返回 `None`。
+    pub fn declared_type_name(&self, offset: usize) -> Option<Range<usize>> {
+        let ident = self.identifier_at(offset)?;
+        Some(declared_type(ident)?.byte_range())
+    }
+
     /// 某个局部声明的全部出现位置（含声明本身），按位置排序。
     pub fn references(&self, decl: &LocalDecl) -> Vec<Range<usize>> {
         let root = self.tree.root_node();
@@ -156,6 +167,77 @@ fn is_member_position(ident: Node<'_>) -> bool {
                     .is_some_and(|g| g.kind() == "initializer_expression")
         }
         _ => false,
+    }
+}
+
+/// 声明名字 → 它写出的类型里那个可跳转的名字节点（[`L0File::declared_type_name`]）。
+fn declared_type<'t>(ident: Node<'t>) -> Option<Node<'t>> {
+    let parent = ident.parent()?;
+    let (ty, value) = match parent.kind() {
+        // 局部变量、字段、事件（`field_declaration` 内部也是 `variable_declaration`）。
+        "variable_declarator" if field_is(parent, "name", ident) => (
+            parent.parent()?.child_by_field_name("type")?,
+            initializer(parent),
+        ),
+        "parameter"
+        | "declaration_expression"
+        | "declaration_pattern"
+        | "catch_declaration"
+        | "property_declaration"
+        | "delegate_declaration"
+            if field_is(parent, "name", ident) =>
+        {
+            (parent.child_by_field_name("type")?, None)
+        }
+        // 方法与局部函数：类型定义指向返回类型。
+        "method_declaration" | "local_function_statement" if field_is(parent, "name", ident) => {
+            (parent.child_by_field_name("returns")?, None)
+        }
+        // `foreach (var x in xs)`：左侧直接就是名字。
+        "foreach_statement" if field_is(parent, "left", ident) => {
+            (parent.child_by_field_name("type")?, None)
+        }
+        _ => return None,
+    };
+    if ty.kind() == "implicit_type" {
+        value.and_then(inferred_type)
+    } else {
+        type_name(ty)
+    }
+}
+
+/// `= …` 右边的初始化器（声明符里除名字以外的最后一个子节点）。
+fn initializer<'t>(declarator: Node<'t>) -> Option<Node<'t>> {
+    let name = declarator.child_by_field_name("name");
+    let mut cursor = declarator.walk();
+    declarator
+        .named_children(&mut cursor)
+        .filter(|c| Some(*c) != name)
+        .last()
+}
+
+/// 类型里可以跳转的名字；预定义类型、元组、函数指针没有。
+fn type_name<'t>(ty: Node<'t>) -> Option<Node<'t>> {
+    match ty.kind() {
+        "identifier" => Some(ty),
+        "generic_name" => ty.named_child(0).filter(|c| is_identifier(*c)),
+        "qualified_name" | "alias_qualified_name" => type_name(ty.child_by_field_name("name")?),
+        "nullable_type" | "array_type" | "pointer_type" | "ref_type" | "scoped_type" => {
+            type_name(ty.child_by_field_name("type")?)
+        }
+        _ => None,
+    }
+}
+
+/// `var` 的类型：只认初始化器里写出了类型的那几种写法，其余交给上层给空状态。
+fn inferred_type<'t>(value: Node<'t>) -> Option<Node<'t>> {
+    match value.kind() {
+        "object_creation_expression" | "array_creation_expression" | "cast_expression" => {
+            type_name(value.child_by_field_name("type")?)
+        }
+        "as_expression" => type_name(value.child_by_field_name("right")?),
+        "parenthesized_expression" => inferred_type(value.named_child(0)?),
+        _ => None,
     }
 }
 
@@ -500,6 +582,49 @@ mod tests {
         check("class C { void F() { Parse(out var ⟦n⟧); Use(‸n); } }");
         check("class C { void F() { using (var ⟦r⟧ = Open()) { r.Close(); ‸r.Dispose(); } } }");
         check("class C { void F() { var q = from ⟦p⟧ in ps select ‸p; } }");
+    }
+
+    /// `‸` 标查询点，`⟦⟧` 标期望跳到的类型名。
+    fn check_type(src: &str) {
+        let (text, at, expected) = marked(src);
+        let file = L0File::parse(text.clone()).unwrap();
+        let got = file.declared_type_name(at);
+        assert_eq!(got, expected, "{src}");
+    }
+
+    #[test]
+    fn declared_type_of_locals_fields_parameters_and_properties() {
+        check_type("class C { void F(⟦Player⟧ ‸p) { } }");
+        check_type("class C { ⟦Player⟧ ‸field; }");
+        check_type("class C { public ⟦Player⟧ ‸Prop { get; set; } }");
+        check_type("class C { void F() { ⟦Player⟧ ‸p = null; } }");
+        // 限定名、泛型、数组、可空：跳到最后那个名字（泛型跳到泛型类型本身）。
+        check_type("class C { Game.World.⟦Player⟧ ‸p; }");
+        check_type("class C { ⟦Box⟧<Player> ‸b; }");
+        check_type("class C { ⟦Player⟧[] ‸ps; }");
+        check_type("class C { ⟦Player⟧? ‸p; }");
+        // 预定义类型没有可跳的名字。
+        check_type("class C { int ‸n; }");
+        // 方法跳到返回类型；光标在类型名本身上时这里不回答（交给已有的类型名解析）。
+        check_type("class C { ⟦Player⟧ ‸F() { return null; } }");
+        check_type("class C { ‸Player F() { return null; } }");
+    }
+
+    #[test]
+    fn declared_type_of_var_comes_from_the_initializer() {
+        check_type("class C { void F() { var ‸p = new ⟦Player⟧(); } }");
+        check_type("class C { void F() { var ‸b = new ⟦Box⟧<Player>(); } }");
+        check_type("class C { void F() { var ‸ps = new ⟦Player⟧[4]; } }");
+        check_type("class C { void F(object o) { var ‸p = (⟦Player⟧)o; } }");
+        check_type("class C { void F(object o) { var ‸p = o as ⟦Player⟧; } }");
+        // 推不出来：函数返回值、字面量、foreach。
+        check_type("class C { void F() { var ‸p = Find(); } }");
+        check_type("class C { void F() { var ‸n = 1; } }");
+        check_type("class C { void F(Player[] ps) { foreach (var ‸p in ps) { } } }");
+        // 写出了类型的 foreach、模式变量、catch。
+        check_type("class C { void F(object[] xs) { foreach (⟦Player⟧ ‸p in xs) { } } }");
+        check_type("class C { void F(object o) { if (o is ⟦Player⟧ ‸p) { } } }");
+        check_type("class C { void F() { try { } catch (⟦Oops⟧ ‸e) { } } }");
     }
 
     #[test]

@@ -806,8 +806,8 @@ impl Workbench {
         let result = match result {
             Ok(r) => r,
             Err(Error::Cancelled) => return,
-            // 未就绪、版本过期：不能确定，按“近似的空结果”提示；不支持的位置（#60 的类型定义
-            // 在非类型上就是这一类）按“确实没有”。口径与速览共用 `source::error_precision`。
+            // 未就绪、版本过期：不能确定，按“近似的空结果”提示；不支持的资源（元数据视图之外的
+            // 虚拟文档）按“确实没有”。口径与速览共用 `source::error_precision`。
             Err(e) => QueryResult {
                 value: Arc::from([]),
                 precision: crate::peek::source::error_precision(&e),

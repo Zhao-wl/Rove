@@ -856,8 +856,10 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 精确度与契约：`navigate_detailed` 返回 `RoutedTarget { target, precision, reason, role }`，**逐条**标记（`role`：定义 / 引用 / L1 候选 / 元数据）。冻结的 `CsQueries::navigate` 只有批级精确度，按契约取最弱（精确 > 近似 > 语法）。空结果 + `Exact` 表示“确实没有”；空结果 + 非精确表示“不能确定”，`reason` 说明原因。
 
-各查询：`navigate`（定义；类型定义仅对类型符号，否则 `Unsupported`——索引不记录符号的类型；引用含定义处；实现 = 类型的派生类型或成员的实现/重写，传递闭包；派生/基类型；`Overrides` = 本成员重写或实现的成员）、`hover`（索引签名，否则显示名 + XML 文档；L0 回退给出声明文本）、`file_symbols`（当前文本上 #26 的语法大纲，`Syntax`）、`workspace_symbols`（L1，`Syntax`；没有 L1 时 `NotReady`）、`inactive_regions`（L2 的不生效行区间，映射到当前坐标）、`semantic_tokens`（`Unsupported`，属于 R58）。
+各查询：`navigate`（定义；类型定义见下；引用含定义处；实现 = 类型的派生类型或成员的实现/重写，传递闭包；派生/基类型；`Overrides` = 本成员重写或实现的成员）、`hover`（索引签名，否则显示名 + XML 文档；L0 回退给出声明文本）、`file_symbols`（当前文本上 #26 的语法大纲，`Syntax`）、`workspace_symbols`（L1，`Syntax`；没有 L1 时 `NotReady`）、`inactive_regions`（L2 的不生效行区间，映射到当前坐标）、`semantic_tokens`（`Unsupported`，属于 R58）。
 外部符号（没有源码定义）指向 `Resource::Virtual("rove-cs-metadata:<程序集|文档注释 ID>")`（`router::METADATA_SCHEME`，`metadata_symbol_key` 取回符号键），由 #42 按 #34 的元数据视图打开。
+
+**类型定义**（`NavigationKind::TypeDefinition`）问的是符号**声明的类型**，不是它自己的声明。索引里没有「符号 → 声明类型」这一项，但声明处的源码里写着它：`CsRouter::declared_types` 走到符号的定义处，用 L0 语法树读出声明写出来的类型名（`A.B.Foo<T>` → `Foo`，`Foo[]` / `Foo?` → `Foo`，`var` 从 `new T()` / `new T[n]` / `(T)x` / `x as T` 推断，方法取返回类型），再用索引里那个位置上的**出现位置**换回类型符号——名字到符号这一步仍然是 L2 的精确答案，不猜同名。类型与类型参数本身的类型定义就是它们的定义；外部类型照常指向元数据视图。读不出类型名（`int` 这类预定义类型、元组、推断不出的 `var`）或声明处的文本与索引对不上时返回**空结果**（不是 `Unsupported`），由界面按空状态提示。声明处的文件有未保存的编辑时按 `EditMap` 做两次映射（索引坐标 → 文本坐标找类型名，文本坐标 → 索引坐标问符号），落在改过的行上就不猜。回退层同理：L0 先找到局部声明，把查询点挪到它写出的类型名上，再交给 L1 的类型名解析（近似）。
 
 装配（#40 接入时完成；本 PR 不改 UI/app）：`CsRouter::new(lifecycle, buffers).with_l1(l1).with_root(项目根)`；文档打开时 `BufferStates::opened(path, text, hash_bytes(磁盘原始字节))`，外部修改重新载入时 `reloaded`，M3 编辑事务 `edited`，保存 `saved`，关闭 `closed`。所有查询在后台执行器上调用。
 
@@ -1819,9 +1821,11 @@ ZWJ / 肤色 emoji、组合字符、连字、折叠组合、增量更新、30 �
 - 空状态按 `UX_SPEC` §6.3 在**光标处**提示「未找到 `X` 的类型定义」，不能确定时追加「（语义索引构建中）」。
   查询失败的口径与速览统一到一处：`nav_host` 改用 `peek::source::error_precision`
   （`NotReady` / `Stale` → 近似，其余 → 确实没有）。
-- **数据层的已知边界**：#38 的索引不记录符号的声明类型，所以光标落在 `var` 变量、字段、属性、参数、泛型实参的
-  **名字**上时查询返回 `Unsupported` → 按空状态提示；落在写出来的**类型名**上时正常跳到该类型的定义。
-  已另开跟进 issue（#177）请 #38 补「符号 → 声明类型」的关系，用例也补进 #39 的测试集。
+- **声明类型从哪儿来**：#38 的索引不记录「符号 → 声明类型」，由 #38 的路由到声明处把写出来的类型名读回来
+  （见 §25「类型定义」）。光标落在 `var` 变量、字段、属性、参数、泛型类型参数的**名字**上时跳到其声明类型的
+  定义处；落在写出来的**类型名**上时跳到该类型的定义（与 F12 相同）。
+  已知边界：预定义类型（`int`）、元组、以及推断不出的 `var`（`var x = Find();`）没有可跳的目标，按空状态提示；
+  #177 在索引里补上这层关系后，这里可以直接问索引，界面不用改。
 
 ### 转到工作区中的符号（`Ctrl+T` 与快速打开的 `#`）
 

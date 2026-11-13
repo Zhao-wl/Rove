@@ -12,7 +12,7 @@ pub struct TestSymbol {
     pub name: String,
     pub display: String,
     pub container: Option<u32>,
-    /// Roslyn `SymbolKind`（9 方法、11 类型、6 字段、8 局部变量、13 参数、15 属性）。
+    /// Roslyn `SymbolKind`（9 方法、11 类型、6 字段、8 局部变量、13 参数、15 属性、17 类型参数）。
     pub kind: u8,
     pub local: Option<(u32, u32)>,
 }
@@ -60,6 +60,7 @@ pub const KIND_METHOD: u8 = 9;
 pub const KIND_TYPE: u8 = 11;
 pub const KIND_PARAMETER: u8 = 13;
 pub const KIND_PROPERTY: u8 = 15;
+pub const KIND_TYPE_PARAMETER: u8 = 17;
 
 impl TestIndex {
     pub fn file(&mut self, path: &str, hash: u64) -> u32 {

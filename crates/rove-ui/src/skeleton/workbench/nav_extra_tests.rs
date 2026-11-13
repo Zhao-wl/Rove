@@ -15,7 +15,10 @@ use rove_lang_cs::query::{
     CsQueries, Hover, NavigationKind, Precision, QueryPoint, QueryResult, SemanticToken, Target,
     WorkspaceSymbol,
 };
-use rove_lang_cs::router::testing::{find_word, TestIndex, HERO_CS, KIND_TYPE, PLAYER_CS};
+use rove_lang_cs::router::testing::{
+    find_word, TestIndex, HERO_CS, KIND_FIELD, KIND_LOCAL, KIND_PARAMETER, KIND_PROPERTY,
+    KIND_TYPE, KIND_TYPE_PARAMETER, PLAYER_CS,
+};
 use rove_lang_cs::router::{hash_bytes, ManualSemantic, SemanticSource};
 use rove_lang_cs::CsIndex;
 use rove_syntax::Symbol;
@@ -38,6 +41,8 @@ const WRITES_CS: &str = "namespace Game
             var local = new Player();
             var box = new Box<Player>();
         }
+
+        private int count;
     }
 }
 ";
@@ -73,7 +78,8 @@ fn word(text: &str, w: &str, nth: usize) -> Position {
     pos(l as u64, c as u64)
 }
 
-/// 只索引类型符号：类型定义查询由类型本身回答（#38 的索引不记录变量的声明类型）。
+/// 索引里有类型、也有用到这些类型的字段 / 属性 / 参数 / 局部变量（#38 的索引不记录声明类型，
+/// 类型定义查询靠“到声明处读回写出来的类型名”回答，所以声明处的那几个 `Player` 引用是关键）。
 fn build_index() -> TestIndex {
     let mut t = TestIndex::default();
     let f: Vec<u32> = FILES
@@ -83,6 +89,7 @@ fn build_index() -> TestIndex {
     let (hero, player, writes, writes2) = (f[0], f[1], f[2], f[3]);
     let player_t = t.symbol("Game|T:Game.Player", "Player", KIND_TYPE, None);
     let box_t = t.symbol("Game|T:Game.Box`1", "Box", KIND_TYPE, None);
+    let item_t = t.symbol("Game|T:Game.Box`1.T", "T", KIND_TYPE_PARAMETER, None);
     let (line, col) = find_word(PLAYER_CS, "Player", 0);
     t.def(player_t, player, line, col);
     let (line, col) = find_word(HERO_CS, "Player", 0);
@@ -103,6 +110,46 @@ fn build_index() -> TestIndex {
     // partial 的第二部分：同一个符号的第二个定义处。
     let (line, col) = find_word(WRITES2_CS, "Box", 0);
     t.def(box_t, writes2, line, col);
+    // 泛型类型参数 `T`：声明处与 `public T Item;` 里的引用。
+    for nth in 0..2 {
+        let (line, col) = find_word(WRITES_CS, "T", nth);
+        if nth == 0 {
+            t.def(item_t, writes, line, col);
+        } else {
+            t.reference(item_t, writes, line, col);
+        }
+    }
+    // 验收点名的五种写法各一个符号，定义处就是声明处的名字。
+    let members = [
+        (
+            t.symbol("Game|F:Game.Box`1.Item", "Item", KIND_FIELD, None),
+            "Item",
+        ),
+        (
+            t.symbol("Game|F:Game.Writes.field", "field", KIND_FIELD, None),
+            "field",
+        ),
+        (
+            t.symbol(
+                "Game|P:Game.Writes.Property",
+                "Property",
+                KIND_PROPERTY,
+                None,
+            ),
+            "Property",
+        ),
+        (
+            t.symbol("Game|F:Game.Writes.count", "count", KIND_FIELD, None),
+            "count",
+        ),
+        (t.local("parameter", KIND_PARAMETER, writes, 0), "parameter"),
+        (t.local("local", KIND_LOCAL, writes, 1), "local"),
+        (t.local("box", KIND_LOCAL, writes, 2), "box"),
+    ];
+    for (symbol, name) in members {
+        let (line, col) = find_word(WRITES_CS, name, 0);
+        t.def(symbol, writes, line, col);
+    }
     t
 }
 
@@ -349,29 +396,52 @@ fn type_definition_provider_key_is_only_published_for_csharp(cx: &mut TestAppCon
     assert!(view.read_with(cx, |v, _| v.peek_widget(v.editor.focused, false).is_none()));
 }
 
-/// 验收点名的五种写法各一例。#38 的索引不记录符号的声明类型，所以光标落在变量 / 字段 / 参数 /
-/// 属性 / 泛型实参的**名字**上时按 UX_SPEC §6.3 给空状态提示；落在写出来的**类型名**上时跳转。
-/// （数据层的这个限制已另开跟进 issue #177，用例同时补进 #39 的测试集。）
+/// 验收点名的五种写法各一例：光标落在 `var` 变量 / 字段 / 属性 / 参数 / 泛型类型参数所声明的
+/// 那个**名字**上（不是写出来的类型名上），跳到它**声明类型**的定义处。
 #[gpui::test]
 fn type_definition_covers_var_field_parameter_property_and_type_argument(cx: &mut TestAppContext) {
     let project = Project::new("{}");
     let (view, cx) = project.open(cx);
+    let player = ("Assets/Player.cs", word(PLAYER_CS, "Player", 0));
+    // `public T Item;`：字段的声明类型是泛型类型参数 `T`，跳到 `Box<T>` 里的 `T`。
+    let type_parameter = ("Assets/Writes.cs", word(WRITES_CS, "T", 0));
+    for (name, expected) in [
+        ("local", player),        // var 变量（从 `new Player()` 推断）
+        ("field", player),        // 字段
+        ("Property", player),     // 属性
+        ("parameter", player),    // 参数
+        ("Item", type_parameter), // 泛型类型参数
+    ] {
+        open_file(&view, "Assets/Writes.cs", cx);
+        caret(&view, word(WRITES_CS, name, 0), cx);
+        run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
+        assert_eq!(cursor_hint(&view, cx), None, "{name}");
+        let (path, at) = location(&view, cx);
+        assert_eq!((path.as_str(), at), (expected.0, expected.1), "{name}");
+    }
+    // 光标落在写出来的类型名上时也跳到同一处（和 F12 一样，#40 已有）。
     open_file(&view, "Assets/Writes.cs", cx);
-    // 写出来的类型名：字段、属性、参数、`new Player()`、泛型实参 —— 逐例跳到 Player 的定义。
     for nth in 0..5 {
         caret(&view, word(WRITES_CS, "Player", nth), cx);
         run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
         let (path, at) = location(&view, cx);
-        assert_eq!(path, "Assets/Player.cs", "第 {nth} 例");
-        assert_eq!(at, word(PLAYER_CS, "Player", 0), "第 {nth} 例");
+        assert_eq!((path.as_str(), at), player, "第 {nth} 例");
         open_file(&view, "Assets/Writes.cs", cx);
     }
-    // `var` 变量名上：数据层给不出声明类型 → 光标处提示（不是“语义索引构建中”，索引是就绪的）。
-    caret(&view, word(WRITES_CS, "local", 0), cx);
+}
+
+/// 声明类型读不出来（`int` 这类预定义类型、推断不出的 `var`）：按 UX_SPEC §6.3 在光标处提示，
+/// 而且是“确实没有”——索引就绪时不写“（语义索引构建中）”。
+#[gpui::test]
+fn type_definition_without_a_declared_type_shows_the_empty_state(cx: &mut TestAppContext) {
+    let project = Project::new("{}");
+    let (view, cx) = project.open(cx);
+    open_file(&view, "Assets/Writes.cs", cx);
+    caret(&view, word(WRITES_CS, "count", 0), cx);
     run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
     assert_eq!(
         cursor_hint(&view, cx).as_deref(),
-        Some("未找到 `local` 的类型定义")
+        Some("未找到 `count` 的类型定义")
     );
 }
 
@@ -390,12 +460,17 @@ fn type_definition_empty_state_mentions_the_index_when_approximate(cx: &mut Test
         )
     });
     cx.run_until_parked();
-    caret(&view, word(WRITES_CS, "local", 0), cx);
+    caret(&view, word(WRITES_CS, "count", 0), cx);
     run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
     assert_eq!(
         cursor_hint(&view, cx).as_deref(),
-        Some("未找到 `local` 的类型定义（语义索引构建中）")
+        Some("未找到 `count` 的类型定义（语义索引构建中）")
     );
+    assert_eq!(location(&view, cx).0, "Assets/Writes.cs", "没有跳转");
+    // 索引没就绪也不是什么都做不了：声明处写出的类型名交给 L1 解析（近似结果）。
+    caret(&view, word(WRITES_CS, "local", 0), cx);
+    run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
+    assert_eq!(location(&view, cx).0, "Assets/Player.cs");
 }
 
 /// `editor.gotoLocation.multipleTypeDefinitions` 的取值生效：

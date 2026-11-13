@@ -557,11 +557,16 @@ impl CsRouter {
         let symbols: Vec<u32> = match kind {
             NavigationKind::Definition => vec![symbol],
             NavigationKind::TypeDefinition => {
-                // 索引不记录符号的类型：只有类型本身能回答（= 定义）。
-                if index.kind(symbol) != Some(KIND_NAMED_TYPE) {
-                    return Err(Error::Unsupported);
+                // 类型本身的类型定义就是它的定义；其余符号（变量、字段、属性、参数、方法）
+                // 索引里不记录声明类型，去声明处把写出来的类型名读回来（[`Self::declared_types`]）。
+                if matches!(
+                    index.kind(symbol),
+                    Some(KIND_NAMED_TYPE | KIND_TYPE_PARAMETER)
+                ) {
+                    vec![symbol]
+                } else {
+                    self.declared_types(index, symbol, cancel)?
                 }
-                vec![symbol]
             }
             NavigationKind::References => Vec::new(),
             NavigationKind::Implementations => {
@@ -647,6 +652,69 @@ impl CsRouter {
         Ok(batch(out, cap, version, snap.generation))
     }
 
+    /// #60 转到类型定义：一个非类型符号（变量、字段、属性、参数、方法……）的声明类型。
+    ///
+    /// 索引不记录符号的类型（#38 的格式里没有这一项），但声明处的源码里写着它：到符号的定义处
+    /// 把写出来的类型名读出来（L0 语法树，`var` 从初始化器推断），再用索引里那个位置上的出现
+    /// 位置换回类型符号 —— 名字到符号这一步仍然是 L2 的精确答案，不猜同名。
+    ///
+    /// 读不出来（预定义类型 `int`、元组、推断不出的 `var`、声明处的文本与索引不一致）就返回空，
+    /// 由上层按 UX_SPEC §6.3 给空状态提示。
+    fn declared_types(
+        &self,
+        index: L2View<'_>,
+        symbol: u32,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u32>> {
+        let mut out = Vec::new();
+        for decl in index.definitions(symbol) {
+            cancel.check()?;
+            let Some((file, state)) = self.indexed_file(index, decl.file) else {
+                continue;
+            };
+            let at = Position {
+                line: Line(u64::from(decl.line)),
+                column: decl.col,
+            };
+            // 声明处在索引坐标里，文本在当前坐标里：两边各映射一次。
+            let Some(at) = map_position(&state, at, true) else {
+                continue;
+            };
+            let Some(name) = file
+                .offset(at)
+                .and_then(|offset| file.declared_type_name(offset))
+            else {
+                continue;
+            };
+            let Some(name) = map_position(&state, file.position(name.start), false) else {
+                continue;
+            };
+            let Some(line) = u32::try_from(name.line.0).ok() else {
+                continue;
+            };
+            match index.occurrence_at(decl.file, line, name.column) {
+                Some(o) if o.symbol != symbol && !out.contains(&o.symbol) => out.push(o.symbol),
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// 某个索引内文件的当前文本，以及它相对索引版本的状态（位置要按它映射）。内容与索引
+    /// 对不上又没有编辑记录时返回 `None`：那时候索引里的位置落在哪儿都说不准。
+    fn indexed_file(&self, index: L2View<'_>, file: u32) -> Option<(Arc<L0File>, FileState)> {
+        let rel = index.file_path(file)?;
+        let doc = self.buffers.get(rel);
+        let has_stale = doc.is_none() && self.semantic.has_stale();
+        let state = self.file_state(index, file, rel, doc.as_ref(), has_stale);
+        if matches!(state, FileState::Diverged) {
+            return None;
+        }
+        let version = doc.as_ref().map_or_else(Version::default, |d| d.version);
+        let file = self.l0_file(rel, doc.as_ref(), version)?;
+        Some((file, state))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn fallback_navigate(
         &self,
@@ -670,8 +738,24 @@ impl CsRouter {
         };
         cancel.check()?;
         let offset = file.offset(point.position);
-        // L0：局部变量与参数。
-        if let Some(decl) = offset.and_then(|o| file.resolve(o)) {
+        // #60 转到类型定义问的是“声明的类型”，不是声明本身：把查询点挪到声明处写出的类型名上，
+        // 再按类型名解析（光标在局部变量 / 参数的用处上时，先经 L0 找到它的声明）。光标本来就在
+        // 类型名上、或者读不出类型名时保持原样。
+        let (offset, position) = match matches!(kind, NavigationKind::TypeDefinition)
+            .then(|| {
+                let decl = offset.and_then(|o| file.resolve(o)).map(|d| d.name.start);
+                decl.or(offset).and_then(|o| file.declared_type_name(o))
+            })
+            .flatten()
+        {
+            Some(name) => (Some(name.start), file.position(name.start)),
+            None => (offset, point.position),
+        };
+        // L0：局部变量与参数（转到类型定义要的是类型名，不在这一层回答）。
+        if let Some(decl) = offset
+            .filter(|_| !matches!(kind, NavigationKind::TypeDefinition))
+            .and_then(|o| file.resolve(o))
+        {
             let resource = point.resource.clone();
             let syntax = |range: &std::ops::Range<usize>, role| {
                 let r = file.range(range);
@@ -724,7 +808,7 @@ impl CsRouter {
             return Ok(empty(Precision::Approximate));
         };
         let path = WorkspacePath::new(rel)?;
-        let mut candidates = match l1.resolve_type(&path, point.position, &type_text, cancel) {
+        let mut candidates = match l1.resolve_type(&path, position, &type_text, cancel) {
             Ok(r) => r.value.to_vec(),
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(_) => Vec::new(),
@@ -904,6 +988,8 @@ impl CsRouter {
 }
 
 const KIND_NAMED_TYPE: u8 = 11;
+/// Roslyn `SymbolKind.TypeParameter`：`Box<T>` 里的 `T`，转到类型定义时也算类型。
+const KIND_TYPE_PARAMETER: u8 = 17;
 
 /// 沿关系做传递闭包（不含起点），按发现顺序。
 fn closure(start: u32, cancel: &Cancellation, next: impl Fn(u32) -> Vec<u32>) -> Result<Vec<u32>> {
@@ -938,6 +1024,21 @@ fn shifted(p: Position, len: u32) -> Position {
 
 fn empty_range(p: Position) -> TextRange {
     Span::new(p, p).expect("empty range")
+}
+
+/// 索引坐标与当前文本坐标之间的换算（`to_text` 为真时索引 → 文本）。位置落在改过的行上
+/// 就没有答案：那一行的内容两边不一样。
+fn map_position(state: &FileState, p: Position, to_text: bool) -> Option<Position> {
+    let mapped = match state {
+        FileState::Clean => return Some(p),
+        FileState::Diverged => return None,
+        FileState::Mapped(map) if to_text => map.old_to_new_clean(p),
+        FileState::Mapped(map) => map.new_to_old_clean(p),
+    };
+    match mapped {
+        Mapped::At(p) => Some(p),
+        Mapped::Modified => None,
+    }
 }
 
 /// 逐条结果合成批级结果：批级精确度取最弱。

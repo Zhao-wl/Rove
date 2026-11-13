@@ -1,7 +1,7 @@
 //! 路由的单元测试：构造的索引（真实读取端打开）+ 真实的 RopeText 缓冲区。
 use super::testing::{
-    find_word, sample_index, SampleSymbols, HERO_CS, HERO_PATH, KIND_METHOD, KIND_TYPE, PLAYER_CS,
-    PLAYER_PATH,
+    find_word, sample_index, SampleSymbols, HERO_CS, HERO_PATH, KIND_FIELD, KIND_LOCAL,
+    KIND_METHOD, KIND_PARAMETER, KIND_PROPERTY, KIND_TYPE, PLAYER_CS, PLAYER_PATH,
 };
 use super::*;
 use rove_base::{ByteOffset, ByteRange, TextEdit};
@@ -19,12 +19,24 @@ fn fixture() -> Fixture {
 }
 
 fn fixture_with(adjust: impl FnOnce(&mut testing::TestIndex)) -> Fixture {
+    fixture_files(&[], |index, _| adjust(index))
+}
+
+/// 示例项目 + 额外的文件（路径要排在 `Assets/Player.cs` 之后，文件号从 2 开始）。
+fn fixture_files(
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut testing::TestIndex, &SampleSymbols),
+) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("Assets")).unwrap();
     std::fs::write(dir.path().join(PLAYER_PATH), PLAYER_CS).unwrap();
     std::fs::write(dir.path().join(HERO_PATH), HERO_CS).unwrap();
     let (mut index, s) = sample_index(PLAYER_CS, HERO_CS);
-    adjust(&mut index);
+    for (path, text) in extra {
+        std::fs::write(dir.path().join(path), text).unwrap();
+        index.file(path, hash_bytes(text.as_bytes()));
+    }
+    adjust(&mut index, &s);
     let path = dir.path().join("sample.idx");
     index.write(&path).unwrap();
     let index: Arc<dyn IndexHolder> = Arc::new(CsIndex::open(&path).unwrap());
@@ -531,22 +543,145 @@ fn relations_and_external_symbols() {
         Some("mscorlib|M:System.Object.ToString")
     );
     assert_eq!(r.value[0].precision, Precision::Exact);
-    // 类型定义：类型本身可以，局部变量不支持。
+    // 类型定义：类型本身指向自己的定义；`var step = speed * 2` 推不出类型 → 确实没有结果。
     let r = nav(
         &f,
         NavigationKind::TypeDefinition,
         &point(HERO_PATH, word(HERO_CS, "Player", 0)),
     );
     assert_eq!(r.value.len(), 1);
-    assert!(matches!(
-        f.router.navigate_detailed(
-            NavigationKind::TypeDefinition,
-            &point(PLAYER_PATH, word(PLAYER_CS, "step", 1)),
-            &Cancellation::default()
-        ),
-        Err(Error::Unsupported)
-    ));
+    let r = nav(
+        &f,
+        NavigationKind::TypeDefinition,
+        &point(PLAYER_PATH, word(PLAYER_CS, "step", 1)),
+    );
+    assert!(r.value.is_empty());
+    assert_eq!(r.precision, Precision::Exact);
     let _ = f.s;
+}
+
+/// #60 转到类型定义的语义：光标在变量 / 字段 / 属性 / 参数 / 泛型实参上时跳到它**声明类型**的
+/// 定义处。索引不记录声明类型，所以是“到声明处把写出来的类型名读回来，再用索引换成类型符号”。
+const WRITES_PATH: &str = "Assets/Writes.cs";
+const WRITES_CS: &str = "namespace Game
+{
+    public class Writes
+    {
+        private Player field;
+        public Player Property { get; set; }
+
+        void Use(Player parameter)
+        {
+            var local = new Player();
+            Take(field, Property, parameter, local, count);
+        }
+
+        private int count;
+    }
+}
+";
+
+#[test]
+fn type_definition_follows_the_declared_type() {
+    let f = fixture_files(&[(WRITES_PATH, WRITES_CS)], |t, s| {
+        let w = 2;
+        // 写出来的类型名（字段、属性、参数、`new Player()`）都是 Player 的引用。
+        for nth in 0..4 {
+            let (line, col) = find_word(WRITES_CS, "Player", nth);
+            t.reference(s.player, w, line, col);
+        }
+        let count = t.symbol("Game|F:Game.Writes.count", "count", KIND_FIELD, None);
+        let members = [
+            (
+                t.symbol("Game|F:Game.Writes.field", "field", KIND_FIELD, None),
+                "field",
+            ),
+            (
+                t.symbol(
+                    "Game|P:Game.Writes.Property",
+                    "Property",
+                    KIND_PROPERTY,
+                    None,
+                ),
+                "Property",
+            ),
+            (t.local("parameter", KIND_PARAMETER, w, 0), "parameter"),
+            (t.local("local", KIND_LOCAL, w, 1), "local"),
+            (count, "count"),
+        ];
+        for (symbol, word) in members {
+            // `count` 的声明写在使用之后：定义处是第二次出现。
+            let (defs, uses) = if word == "count" { (1, 0) } else { (0, 1) };
+            let (line, col) = find_word(WRITES_CS, word, defs);
+            t.def(symbol, w, line, col);
+            let (line, col) = find_word(WRITES_CS, word, uses);
+            t.reference(symbol, w, line, col);
+        }
+    });
+    let player = word(PLAYER_CS, "Player", 0);
+    let expected = vec![(
+        PLAYER_PATH.to_owned(),
+        u64::from(player.0),
+        u64::from(player.1),
+        EXACT,
+    )];
+    // 光标在用处（不是声明处）上：字段、属性、参数、`var` 局部变量各一例。
+    for word in ["field", "Property", "parameter", "local"] {
+        let at = find_word(WRITES_CS, word, if word == "local" { 1 } else { 0 });
+        let r = nav(&f, NavigationKind::TypeDefinition, &point(WRITES_PATH, at));
+        assert_eq!(starts(&r), expected, "{word} 的声明类型");
+    }
+    // 光标在声明处的名字上，答案一样。
+    for word in ["field", "Property", "parameter"] {
+        let at = find_word(WRITES_CS, word, 0);
+        let r = nav(&f, NavigationKind::TypeDefinition, &point(WRITES_PATH, at));
+        assert_eq!(starts(&r), expected, "{word} 的声明");
+    }
+    // `int` 没有可跳的定义：空结果，而且是“确实没有”。
+    let r = nav(
+        &f,
+        NavigationKind::TypeDefinition,
+        &point(WRITES_PATH, find_word(WRITES_CS, "count", 0)),
+    );
+    assert!(r.value.is_empty());
+    assert_eq!(r.precision, Precision::Exact);
+}
+
+/// 声明处的那一行被改过时位置映射不回去：不猜，给近似的空结果（声明在别处的符号不受影响）。
+#[test]
+fn type_definition_maps_the_declaration_through_unsaved_edits() {
+    let f = fixture_files(&[(WRITES_PATH, WRITES_CS)], |t, s| {
+        for nth in 0..4 {
+            let (line, col) = find_word(WRITES_CS, "Player", nth);
+            t.reference(s.player, 2, line, col);
+        }
+        let field = t.symbol("Game|F:Game.Writes.field", "field", KIND_FIELD, None);
+        let (line, col) = find_word(WRITES_CS, "field", 0);
+        t.def(field, 2, line, col);
+        let (line, col) = find_word(WRITES_CS, "field", 1);
+        t.reference(field, 2, line, col);
+    });
+    let rope = open(&f, WRITES_PATH, WRITES_CS);
+    // 在声明之前插入一行：声明整体下移，映射后仍然读得到类型名。
+    let head = WRITES_CS.find("        private Player field;").unwrap();
+    let rope = edit(&f, WRITES_PATH, &rope, head, head, "        // note\n");
+    let text = buffers::read_all(&*rope).unwrap();
+    let at = find_word(&text, "field", 1);
+    let r = nav(
+        &f,
+        NavigationKind::TypeDefinition,
+        &point_in(WRITES_PATH, &*rope, at),
+    );
+    let player = word(PLAYER_CS, "Player", 0);
+    assert_eq!(
+        starts(&r),
+        [(
+            PLAYER_PATH.to_owned(),
+            u64::from(player.0),
+            u64::from(player.1),
+            EXACT
+        )]
+    );
 }
 
 #[test]
