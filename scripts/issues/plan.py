@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from issues_data import ISSUES  # noqa: E402
+from issues_data import ISSUES, V01  # noqa: E402
 
 MILESTONES = {"M1": "M1 只读阅读器", "M2": "M2 C# 导航", "M3": "M3 轻编辑", "M4": "M4 体验补全", "M5": "M5 发布"}
 DIFF = {1: "1 简单", 2: "2 中等", 3: "3 困难", 4: "4 专家"}
@@ -97,8 +97,16 @@ def render(ids, by, batch, errors):
     L.append(f"- **接口先行**：{ids['contracts']}（接口契约）与 {ids['skeleton']}（行走骨架）必须串行完成并合并，建议交给最强的模型。"
              f"在此期间可以并行的是第 1 批中的其他条目（{'、'.join(ids[k] for k in early)}），以及只依赖它们的条目，"
              f"例如 C# 索引进程（{ids['idx-perf']}–{ids['idx-incr']}）。")
-    L.append("- 批次只反映依赖关系。M4 中有些条目依赖很少、批次靠前，但建议优先推进 M1–M3，有空闲会话时再认领 M4。")
+    L.append("- 批次只反映依赖关系。优先推进 v0.1 首发范围内的条目（见下一节），其余 M4 条目放到 v0.1 之后。")
     L.append("- 每个里程碑最后的【集成验收】由一个会话负责，它的前置依赖就是该里程碑的全部条目。\n")
+    L.append("## v0.1 首发范围\n")
+    L.append("2026-11-13 起，首个可发布版本 v0.1 包含 M1–M3 全部条目、下表中的 M4 / M5 条目，以及 GitHub 里程碑「v0.1 首发」中的跟进 issue；"
+             "范围与发布门槛见 [MILESTONE_v0.1.md](../MILESTONE_v0.1.md)。其余 M4 条目在 v0.1 之后通过自动更新推送。\n")
+    L.append("| ID | 标题 | 里程碑 |\n|---|---|---|")
+    for k, (mm, d, a, t, deps) in by.items():
+        if k in V01 and mm not in ("M1", "M2", "M3"):
+            L.append(f"| {ids[k]} | {t} | {MILESTONES[mm]} |")
+    L.append("")
 
     for m, name in MILESTONES.items():
         L.append(f"## {name}\n")
