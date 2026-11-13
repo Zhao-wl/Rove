@@ -329,3 +329,48 @@ fn token_colors_use_the_most_specific_matching_selector() {
         Some(rove_theme::Color(0x44, 0x55, 0x66, 0xff))
     );
 }
+
+/// #118：打开 C# 文件后，代码视图的可折叠区间来自语法快照（`SyntaxSnapshot::folds`）而不是缩进；
+/// `editor.foldingStrategy` 默认 auto 时语法区间优先。
+#[gpui::test]
+fn opening_a_csharp_file_shows_syntax_folds(cx: &mut TestAppContext) {
+    use crate::code_view::folding::FoldSource;
+
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("Widget.cs"),
+        "class Widget\n{\n    void Resize()\n    {\n        if (true)\n        {\n        }\n    }\n}\n",
+    )
+    .unwrap();
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Workbench::new(folder.path().into(), Instant::now(), cx));
+    cx.run_until_parked();
+    open(&view, cx, "Widget.cs", OpenTarget::Active);
+    cx.run_until_parked();
+
+    let opened = current(&view, cx);
+    let folds = opened.syntax.as_ref().expect("语法快照").folds();
+    assert_eq!(
+        folds
+            .iter()
+            .map(|f| (f.lines.start().0, f.lines.end().0))
+            .collect::<Vec<_>>(),
+        [(1, 9), (3, 8), (5, 7)]
+    );
+    view.read_with(cx, |v, cx| {
+        let code = v.code_view().read(cx);
+        assert!(code.folding_ready(), "区间已在后台算好");
+        assert_eq!(
+            code.fold_ranges()
+                .iter()
+                .map(|r| (r.start, r.end, r.source))
+                .collect::<Vec<_>>(),
+            [
+                (1, 9, FoldSource::Syntax),
+                (3, 8, FoldSource::Syntax),
+                (5, 7, FoldSource::Syntax),
+            ],
+            "语法区间取代缩进区间"
+        );
+    });
+}

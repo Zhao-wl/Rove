@@ -359,6 +359,40 @@ pub(super) fn capture(
     Ok(())
 }
 
+/// 折叠查询命中的节点（#118）：逐个与 `scan` 相交的分区查询。头尾里的节点（例如把所有成员括起来的
+/// 类体）在每个分区的树里都在，范围完全相同，由调用方按行区间去重，所以这里不按分区过滤——
+/// 增量时只重扫一个分区，外层区间也要跟着出来。
+pub(super) fn fold_nodes(
+    parts: &Parts,
+    pool: Option<&WorkerPool>,
+    source: &Source,
+    scan: Range<usize>,
+    output: &mut Vec<Range<usize>>,
+    work: &Work<'_>,
+) -> Result<()> {
+    let relevant: Vec<_> = parts
+        .parts
+        .iter()
+        .filter(|part| part.span.start < scan.end && scan.start < part.span.end)
+        .collect();
+    let read = |part: &&Part| {
+        let mut nodes = Vec::new();
+        Grammar::Csharp.fold_nodes(&part.tree, source, scan.clone(), &mut nodes, work)?;
+        Ok(nodes)
+    };
+    // 全量构建时每个分区都要走一遍自己的树，与高亮查询一样摊到工作线程上。
+    let permit = (relevant.len() > 1)
+        .then(|| pool.and_then(|pool| pool.acquire(relevant.len())))
+        .flatten();
+    let nodes = match &permit {
+        Some(permit) => parallel_map(&relevant, permit.workers, read)?,
+        None => relevant.iter().map(read).collect::<Result<Vec<_>>>()?,
+    };
+    output.reserve(nodes.iter().map(Vec::len).sum());
+    output.extend(nodes.into_iter().flatten());
+    Ok(())
+}
+
 /// Text of a panic payload, for diagnostics.
 fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload

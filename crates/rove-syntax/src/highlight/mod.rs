@@ -3,6 +3,7 @@
 mod csharp_parts;
 mod csharp_walk;
 mod documents;
+mod folds;
 mod grammar;
 mod rows;
 mod settings;
@@ -187,6 +188,7 @@ impl SyntaxService for DocumentSyntax {
                         grammar,
                         old: compatible,
                         complete: same_text.and_then(|s| s.parsed.as_ref()),
+                        folds: same_text.map(|s| s.folds.clone()),
                         edit: service.edit.as_ref(),
                         visible: service.visible,
                         pool: service.syntax.pool.as_deref(),
@@ -200,6 +202,7 @@ impl SyntaxService for DocumentSyntax {
                         language,
                         line_limit,
                         parsed: None,
+                        folds: Arc::from([]),
                         partial: false,
                     },
                     None,
@@ -246,6 +249,8 @@ struct Snapshot {
     language: Arc<str>,
     line_limit: usize,
     parsed: Option<Parsed>,
+    /// 语法折叠区间（#118），按首行升序、外层在前。
+    folds: Arc<[Fold]>,
     /// Only the requested visible lines carry tokens.
     partial: bool,
 }
@@ -326,7 +331,7 @@ impl SyntaxSnapshot for Snapshot {
     }
 
     fn folds(&self) -> Arc<[Fold]> {
-        Arc::from([])
+        self.folds.clone()
     }
 
     fn symbols(&self) -> Arc<[Symbol]> {
@@ -345,6 +350,8 @@ struct Request<'a> {
     old: Option<&'a Snapshot>,
     /// Parse of a partial snapshot of this very text, to be completed.
     complete: Option<&'a Parsed>,
+    /// 该 partial 快照已经算好的折叠区间：文本和解析都没变，直接沿用（#118）。
+    folds: Option<Arc<[Fold]>>,
     edit: Option<&'a TextEdit>,
     visible: Option<LineRange>,
     pool: Option<&'a WorkerPool>,
@@ -358,6 +365,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         grammar,
         old,
         complete,
+        folds,
         edit,
         visible,
         pool,
@@ -399,6 +407,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
                 parsed.trees.clone(),
                 parsed.ranges.clone(),
                 lines,
+                folds.unwrap_or_default(),
                 false,
             ),
             None,
@@ -510,6 +519,29 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         }
         _ => scan,
     };
+    // 语法折叠区间（#118）：按重扫范围查询，与它无关的旧区间平移后复用；没有基线时查整篇。
+    let fold_scan = match &incremental {
+        Some(update) if !scan_all => update.scan.clone(),
+        _ => all.clone(),
+    };
+    let mut nodes = Vec::new();
+    let fold_bytes = folds::row_bytes(&ranges, &fold_scan, source.len());
+    match &trees {
+        ParseTrees::Whole(tree) => {
+            grammar.fold_nodes(tree, &source, fold_bytes, &mut nodes, work)?
+        }
+        ParseTrees::Csharp(parts) => {
+            csharp_parts::fold_nodes(parts, pool, &source, fold_bytes, &mut nodes, work)?
+        }
+    }
+    let mut fold_rows = folds::rows_of(nodes, &source, &ranges);
+    if let Some(update) = incremental.as_ref().filter(|_| fold_scan != all) {
+        let previous = old.map_or(&[][..], |old| &old.folds[..]);
+        folds::reusable(previous, &fold_scan, update.shift(), &mut fold_rows);
+    }
+    let fold_list = folds::finish(fold_rows);
+    trace.mark("folds");
+
     let partial = incremental.is_none() && scan != all;
     let scanned = ranges.bytes(scan.clone());
     let captured = captured.and_then(|(captures, covered)| {
@@ -532,7 +564,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
     trace.finish(if baseline.is_some() { "edit" } else { "full" });
     Ok((
         snapshot(
-            text, language, line_limit, source, trees, ranges, lines, partial,
+            text, language, line_limit, source, trees, ranges, lines, fold_list, partial,
         ),
         changed_lines.filter(|_| !partial),
     ))
@@ -645,12 +677,14 @@ fn snapshot(
     trees: ParseTrees,
     ranges: RowRanges,
     lines: Vec<LineTokens>,
+    folds: Arc<[Fold]>,
     partial: bool,
 ) -> Snapshot {
     Snapshot {
         text,
         language,
         line_limit,
+        folds,
         partial,
         parsed: Some(Parsed {
             source,

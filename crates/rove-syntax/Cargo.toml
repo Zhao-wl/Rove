@@ -28,4 +28,5 @@ rove-theme.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 # #117 的遍历/查询比对会在设置了 ROVE_TEST_UNITY_MEDIUM 时跑真实 C# 源文件。
+# #118 折叠区间在真实 Unity 项目的 C# 文件上的自检（路径走环境变量，未设置时跳过）。
 rove-test-support.workspace = true

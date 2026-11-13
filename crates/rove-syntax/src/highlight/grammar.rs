@@ -129,6 +129,24 @@ impl HighlightQuery {
     }
 }
 
+/// 折叠查询（#118）：查询里每个 capture 的节点都是一个候选折叠区间，capture 名字不参与判定。
+macro_rules! fold_queries {
+    ($($variant:ident => $path:literal),+ $(,)?) => {
+        fn fold_query(self) -> Option<&'static Query> {
+            match self {
+                $(Self::$variant => {
+                    static QUERY: LazyLock<Query> = LazyLock::new(|| {
+                        Query::new(&Grammar::$variant.language(), include_str!($path))
+                            .expect("valid bundled fold query")
+                    });
+                    Some(&QUERY)
+                })+
+                _ => None,
+            }
+        }
+    };
+}
+
 macro_rules! highlight_queries {
     ($($variant:ident => $path:literal),+ $(,)?) => {
         fn highlight_query(self) -> &'static HighlightQuery {
@@ -202,6 +220,13 @@ impl Grammar {
         Xml => "queries/xml/highlights.scm",
         Markdown => "queries/markdown/highlights.scm",
         MarkdownInline => "queries/markdown/inline.scm",
+    }
+
+    fold_queries! {
+        Csharp => "queries/csharp/folds.scm",
+        Json => "queries/json/folds.scm",
+        Markdown => "queries/markdown/folds.scm",
+        Xml => "queries/xml/folds.scm",
     }
 
     fn parser(self) -> Parser {
@@ -311,6 +336,36 @@ impl Grammar {
             cursor: QueryCursor::new(),
         };
         highlighter.highlight(self, tree.root_node(), scan, &[], 0, output)
+    }
+
+    /// 折叠查询命中的节点字节范围（#118）。`scan` 限定字节范围，tree-sitter 返回与它**相交**的
+    /// 全部匹配，所以把编辑括起来的外层节点也在内；没有折叠查询的语言（YAML）不产出区间，
+    /// 由 #12 的缩进折叠负责。结果追加到 `output`，顺序与去重交给调用方。
+    pub fn fold_nodes(
+        self,
+        tree: &Tree,
+        source: &Source,
+        scan: Range<usize>,
+        output: &mut Vec<Range<usize>>,
+        work: &Work<'_>,
+    ) -> Result<()> {
+        let Some(query) = self.fold_query() else {
+            return Ok(());
+        };
+        if scan.is_empty() {
+            return Ok(());
+        }
+        work.check()?;
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(scan);
+        let mut stop = |_: &_| work.cancelled();
+        let options = QueryCursorOptions::new().progress_callback(&mut stop);
+        let mut captures = cursor.captures_with_options(query, tree.root_node(), source, options);
+        while let Some((m, index)) = captures.next() {
+            output.push(m.captures[*index].node.byte_range());
+        }
+        drop(captures);
+        work.check()
     }
 }
 

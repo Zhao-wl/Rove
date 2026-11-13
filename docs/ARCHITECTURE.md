@@ -213,7 +213,7 @@ cargo test --workspace
 | 标记 | 最简实现与位置（相对 skeleton/） | 替换 issue |
 |---|---|---|
 | `buffer` | 已由 `rove-buffer` 实现：编码识别（BOM/自动/候选）、换行符、rope 快照与坐标转换；`text.rs` 只保留文档缓存与打开策略 | #7（已完成） |
-| `syntax` | 已迁入 `rove-syntax::highlight`：五种语言、增量解析和逐行 scope | #9 |
+| `syntax` | 已迁入 `rove-syntax::highlight`：五种语言、增量解析和逐行 scope，以及 #118 的语法折叠区间（见 §50） | #9 |
 | `theme` | 已由 `rove-theme::ThemeService` 实现：VS Code 主题 JSON（include 链）、vscode-textmate scope 匹配、颜色默认值表与用户覆盖；`workbench.rs` 直接装配该服务 | #10（已完成） |
 | `commands` | 已由 `rove-commands` 实现：命令登记与分发、keybindings.json、键表达式、when、和弦；`commands.rs` 只保留窗口的命令装配，`workbench.rs` 的 `on_key_down` 接 `rove_ui::keys` | #14（已完成） |
 | `workspace` | 已由 #15 替换为 `rove-workspace`：流式并行扫描（不读 `.gitignore`）、`files.exclude`/`rove.files.extraExclude` 合并、只读规则真值表、文件监听（溢出重扫、重命名还原） | #15 |
@@ -516,7 +516,7 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
   否则用 #12 的 `fold_ranges` 缩进 + 标记区间；块注释另算），`editor.foldingMaximumRegions` 保留层级浅的。折叠状态按
   `(首行, 末行)` 记录，区间重算后按首行重新对应；变化时发出 `CodeViewEvent::FoldsChanged`，宿主写回标签的
   `ViewState::folds`，切换回来时先 `set_folds` 再恢复滚动（滚动坐标是屏幕行）。滚动模型、嵌入区域、命中测试、预取都按
-  屏幕行计算，行缓存与装饰按文档行。语法区间目前由快照的 `folds()` 提供（`rove-syntax` 尚未产出，见 #118）。
+  屏幕行计算，行缓存与装饰按文档行。语法区间由快照的 `folds()` 提供，数据来自 #118 的 tree-sitter 折叠查询（见 §50）。
 - **只读**：宿主按文档计算只读原因（`presented_read_only`：超大文件、元数据视图、磁盘只读属性、`readonlyInclude` /
   `rove.files.extraReadonlyInclude`；加载器默认的 `Session` 不算），加上“在会话中切换只读模式”的按文档覆盖（超大文件除外），
   经 `set_read_only` 交给视图。视图发布 `editorReadonly`，在只读时输入字符发出 `CodeViewEvent::EditBlocked`，工作台按
@@ -690,6 +690,7 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 | `source.rs` | 解析输入：从 `TextSource::visit_chunks` 读一次，存成至多 64 KiB 的共享分片；tree-sitter 的读取回调和查询的 `TextProvider` 直接读分片。编辑只重建受影响的分片，其余分片与上一版共享，增量路径不再复制全文 |
 | `csharp_parts.rs` | C# 分区并行：词法扫描识别注释、普通/逐字/插值字符串（含嵌套插值洞）、字符、`@标识符` 与条件指令（`#if/#elif/#else/#endif` 必须在同一花括号深度配对），只在没有括号、方括号和条件块未闭合的成员边界切分。容器取“唯一的一对花括号”逐层下探（`namespace N { class C { … } }`），多顶层类型时取编译单元。每个分区带真实的头尾作为 included ranges 解析，校验无错误且直接成员都是独立声明后，在同一个工作线程里取 capture 并排序。可见区域优先时（#117）只给与可见字节区间相交的分区取 capture，并把覆盖到的字节区间一起返回，调用方据此决定能否复用。线程来自 `WorkerPool`：默认是进程共享池（硬件线程数，最多 16），并发文档按剩余线程分配；`TreeSitterSyntax::with_parallelism(n)` 用私有池（测试据此与其他分析隔离）。工作线程 panic 转成 `NotReady`，panic 信息写到 stderr（前缀 `rove-syntax:`） |
 | `csharp_walk.rs` | C# 高亮不走查询引擎（#117）：按 tree-sitter 的 kind id 建规则表，一次前序遍历按「节点 kind + 字段 + 祖先 kind」判定 capture。规则与顺序和 `queries/csharp/highlights.scm` 一一对应（只有相对顺序影响装配）；查询实现保留为 `Grammar::capture_with_query`，单元测试逐 capture 比对两者（覆盖每条规则的 fixture、黄金着色 fixture、残缺输入、子区间，以及设了 `ROVE_TEST_UNITY_MEDIUM` 时真实项目里抽样的 400 个 .cs）。带 scan 区间时用 `goto_first_child_for_byte` 入场，不逐个跨过前面的兄弟节点 |
+| `folds.rs` | 语法折叠区间（#118，见 §50）：折叠查询命中的节点换算成行区间、去重排序，增量时复用与重扫范围无关的旧区间 |
 | `rows.rs` | 行表：一次扫描按 LF/CRLF/单独 CR 切分，再与 `TextSource::line_range` 核对行数和 64 个抽样行，不一致时逐行读取；编辑时只重读编辑附近的行，其后的行按字节差平移 |
 | `documents.rs` | `DocumentHighlighter`（编辑器持有的接缝：`analyze(document, text, language, edit, visible, cancel)` 与 `close(document)`）；`SyntaxDocuments` 按 `DocumentId` 各自保存基线，`Stateless` 把任意 `SyntaxService`（如 `EmptySyntaxService`）包装成同一接口 |
 | `mod.rs` | 编辑：只核对编辑区及前后 256 字节和总长度（`EDIT_CONTEXT`），编辑点的 tree-sitter 坐标从旧树就近节点推算，不再从头扫描。整树基线做常规增量解析；分区基线只重解析包含编辑的那个分区（编辑落在头尾或分区边界时整文件重建），变化行取该分区新旧树的 changed ranges。Markdown 把扫描行扩到完整的行内区域（`inline`、表格单元格）和代码围栏，只重新注入这些区域。`DocumentSyntax::with_visible(lines)` 在没有基线时只给可见行生成 token（结果标为 partial，不作为编辑基线）；对同一文本再分析一次时复用其解析结果补全其余行。`ROVE_SYNTAX_TRACE=1` 时每次分析在 stderr 打印读取、解析、行表、查询、token 生成的分段耗时 |
@@ -1893,3 +1894,47 @@ ZWJ / 肤色 emoji、组合字符、连字、折叠组合、增量更新、30 �
 转到类型定义的五种写法、上下文键与空状态；`Ctrl+T` 与 `#` 返回相同序列、近似说明只有一行且在顶部、
 `.md` 打开源码）。性能：`cargo xtask bench --filter workspace_symbols/`
 （预算 `workspace_symbols_keystroke_large`：大型 Unity 项目每次按键到列表刷新 < 30 ms，p99）。
+
+## 50. 语法折叠区间（#118）
+
+位置：`crates/rove-syntax/src/highlight/folds.rs` 与各语言的 `highlight/queries/<语言>/folds.scm`，
+查询执行在 `highlight/grammar.rs::fold_nodes`（分区 C# 在 `highlight/csharp_parts.rs::fold_nodes`）。
+填的是 #1 冻结契约里的 `SyntaxSnapshot::folds()`，**契约本身没有改动**，界面侧（#20）不用改接线。
+本 issue 不登记命令、设置项、颜色键或界面字符串，也没有对应的 `SKELETON(...)` 标记。
+
+**区间口径**：`Fold::lines` 是 `首行 .. 末行 + 1`——首行折叠后仍可见，末行（含）被隐藏，与 #12 的
+`#region` 标记折叠、缩进折叠以及 #20 的块注释区间同一口径，所以三类区间重叠时 #20 的
+`(首行, 末行)` 去重能直接生效。至少隐藏一行，只占一行的节点不产出区间。
+
+**查询**：每份 `folds.scm` 里被 capture 的节点就是一个候选区间，capture 的名字不参与判定。
+
+| 语言 | 节点 |
+|---|---|
+| C# | `declaration_list`（namespace / class / struct / interface / record 的体）、`enum_member_declaration_list`、`block`、`accessor_list`、`switch_body`、`initializer_expression`、跨行 `comment` |
+| JSON / JSONC | `object`、`array`、跨行 `comment` |
+| Markdown | `section`、`fenced_code_block`、`html_block` |
+| XML | `element`、`Comment`、`CDSect`、`doctypedecl` |
+| YAML | 没有折叠查询：off-side 语言的折叠交给 #12 的缩进折叠，与 VS Code 一致 |
+
+取的是带花括号的「体」而不是声明节点本身：Allman 风格下折叠箭头落在 `{` 行，与缩进折叠给出的首行一致；
+K&R 风格下两者同在声明行。`#region` 不在查询里（由 #12 的 `folding.markers` 产出）；连续的单行注释
+（`//`、`///`）不合并成一段，与 VS Code 内置的 C# 支持一致。区间末尾的空白行会被裁掉，Markdown 的分节
+不会把下一个标题前的空行一起藏起来。
+
+**增量**：重扫行范围取 #94 的 `rows::Incremental::scan`（已经覆盖编辑行与新旧树的 changed ranges），
+折叠查询只在这些行的字节范围上执行。tree-sitter 返回与该范围**相交**的全部匹配，所以把编辑整个括起来的
+外层节点（类体、命名空间体）也会重新算出正确的末行；上一版快照里与重扫范围完全无关的区间才复用——
+之前的原样保留，之后的整体平移。分区 C# 的每个分区树都带着真实的头尾，外层区间在每个分区里都在，
+按 `(首行, 末行)` 去重；全量构建时各分区的折叠查询与高亮查询一样摊到 `WorkerPool` 的工作线程上。
+可见区域优先（partial）的快照照样带全文的折叠区间，补全同一文本时直接沿用。
+
+验证：`cargo test -p rove-syntax --test folds`（四种语言的区间、CRLF、K&R 与 Allman、单行结构不折叠、
+分区解析与整文件解析一致、增量编辑逐次与全量分析比对、可见区域优先的快照；真实 Unity 项目的 C# 文件
+形状自检与 150 次随机编辑的增量一致性，未设 `ROVE_TEST_UNITY_MEDIUM` 时跳过）、
+`cargo test -p rove-ui syntax_tests`（真实窗口里打开 `.cs` 文件，代码视图的可折叠区间来自语法快照）。
+
+性能（`cargo bench -p xtask --bench syntax`，开发机负载较高，数值只作前后对比）：5,000 行 C# 单字符编辑
+147 µs → 173 µs（统计上无变化，预算 2 ms）；1 MB Unity 特征 C# 首次全量分析 97 ms → 123 ms，其中折叠
+查询（`ROVE_SYNTAX_TRACE` 的 `folds` 段）约 12 ms——整篇查询本身约 85 ms 的 CPU 摊在工作线程上。
+首开大文件还想再省这 12 ms 的话，下一步是把折叠查询并进 `parse_parts` 里各分区解析完就地做，
+省掉再取一次线程的开销。
