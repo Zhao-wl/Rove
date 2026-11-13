@@ -49,6 +49,8 @@ pub fn is_source_path(rel_path: &str) -> bool {
 }
 
 fn extension_is(name: &str, ext: &str) -> bool {
+    let name = name.as_bytes();
+    let ext = ext.as_bytes();
     name.len() > ext.len() && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext)
 }
 
