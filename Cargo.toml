@@ -6,7 +6,7 @@ exclude = ["spikes"]
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-license = "UNLICENSED"
+license = "MIT"
 
 [workspace.dependencies]
 rove-buffer = { path = "crates/rove-buffer" }

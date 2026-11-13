@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from issues_data import ISSUES  # noqa: E402
+from issues_data import ISSUES, V01  # noqa: E402
 
 # (FEATURES 行首单元格中的唯一片段, [负责的 issue 键（第一个为主负责）])
 MAP = [
@@ -82,6 +82,7 @@ MAP = [
     ("设置（`settings.json`）", ["settings"]),
     ("设置界面（preferences）", ["settings-ui"]),
     ("键位（keybindings）", ["keys"]),
+    ("自动更新（update）", ["updater"]),
     ("界面语言（localization）", ["i18n", "contracts"]),
     ("Markdown 预览", ["markdown"]),
     ("Markdown 大纲、链接跳转", ["outline", "links", "markdown"]),
@@ -123,14 +124,17 @@ def main():
             if k not in ids:
                 errors.append(f"「{name}」引用了不存在的 issue 键 {k}")
         owners = "、".join(f"{ids[k]} {titles[k]}（{ms[k]}）" for k in ks if k in ids)
-        out.append(f"| §{sec} | {name} | {pr} | {owners} |")
+        v01 = "是" if ks and ks[0] in V01 else "之后"
+        out.append(f"| §{sec} | {name} | {pr} | {v01} | {owners} |")
     for f, _ in MAP:
         if f not in used:
             errors.append(f"映射「{f}」在 FEATURES.md 中找不到对应的行")
     L = ["# 功能覆盖表：FEATURES.md 的 P0/P1 → 负责 issue\n",
          "> 由 `scripts/issues/coverage.py` 生成，请勿直接修改。FEATURES.md 的 P0/P1 行每一行都必须有负责 issue；"
-         "第一个为主负责，其余为参与方。M4 集成验收（R74）按本表逐行核对，未完成的 P1 一律是里程碑阻塞，除非 FEATURES.md 已正式改判。\n",
-         "| 章节 | 功能 | 优先级 | 负责 issue |\n|---|---|---|---|", *out, ""]
+         "第一个为主负责，其余为参与方。「v0.1」列看主负责 issue 是否在 v0.1 首发范围内（`issues_data.V01`）："
+         "v0.1 集成验收（R77）核对该列为「是」的行，M4 集成验收（R74）核对其余的行；"
+         "未完成的一律是对应里程碑的阻塞，除非 FEATURES.md 已正式改判。\n",
+         "| 章节 | 功能 | 优先级 | v0.1 | 负责 issue |\n|---|---|---|---|---|", *out, ""]
     if errors:
         L.append("> ⚠ 校验错误：\n" + "\n".join(f"> - {e}" for e in errors))
     (ROOT / "docs" / "issues" / "COVERAGE.md").write_text("\n".join(L), encoding="utf-8")

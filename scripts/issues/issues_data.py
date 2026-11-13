@@ -94,6 +94,19 @@ ISSUES = [
      ["multicursor", "autoedit", "smartselect", "sticky", "minimap", "brackets", "wrap", "semantic", "nav-extra", "structure",
       "replace-all", "fileops", "image", "langs-extra", "basket", "tail", "i18n", "ext-themes", "zen",
       "settings-ui", "links", "langdetect", "nonet", "integ-m1", "integ-m2", "integ-m3"]),
+    # 注：v0.1 首发时 R77（integ-v01，M5）实际先于本条完成；骨架不允许依赖更晚的里程碑，所以这里不列它，见正文的范围调整说明。
     # ───────────── M5 发布 ─────────────
-    ("release", "M5", 2, "release", "Windows 发布流水线、安装包、体积守护、第三方许可声明", ["shell", "idx-pack", "integ-m4"]),
+    ("release", "M5", 2, "release", "Windows 发布流水线、安装包、体积守护、第三方许可声明", ["shell", "idx-pack"]),
+    # ───────────── 2026-11-13 追加：v0.1 首发（见 docs/MILESTONE_v0.1.md） ─────────────
+    ("updater", "M5", 3, "release", "自动更新：GitHub Releases 更新清单、ed25519 校验、后台下载、重启时静默安装、索引组件更新（唯一的网络出口）",
+     ["release", "hotexit", "nonet", "settings", "shell"]),
+    ("integ-v01", "M5", 3, "infra", "【集成验收】v0.1 发布候选：干净机器安装、自动更新升级、M1–M3 与提前条目的回归、性能预算全部 enforced",
+     ["integ-m1", "integ-m2", "integ-m3", "multicursor", "autoedit", "sticky", "wrap", "nav-extra", "nonet",
+      "release", "updater"]),
 ]
+
+# v0.1 首发包含的条目（GitHub 里程碑「v0.1 首发」）。已关闭的条目也列在这里，方便核对范围；
+# 跟进 bug 与性能 issue 不在本骨架中，直接在 GitHub 里程碑里维护（见 docs/MILESTONE_v0.1.md §3.4）。
+V01 = {k for k, m, *_ in ISSUES if m in ("M1", "M2", "M3")} | {
+    "multicursor", "autoedit", "sticky", "wrap", "nav-extra", "nonet", "release", "updater", "integ-v01",
+}
