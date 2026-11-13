@@ -93,6 +93,7 @@ const STRINGS: &[(&str, &str)] = &[
         "正在建立行索引，完成后跳转（{percent}%）",
     ),
     (super::goto::CANCEL_KEY, "取消"),
+    (super::goto::CANCEL_HINT_KEY, "按 {key} 取消等待"),
     // --- 超长行 ---
     (
         super::long_line::MARK_KEY,

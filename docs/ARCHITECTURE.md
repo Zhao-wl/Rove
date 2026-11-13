@@ -1332,12 +1332,22 @@ WebView2 的回调只往通道里送 `BackendEvent`，由窗口的前台任务�
 （内容高度、滚动条滑块、滚到底的位置），**不改变任何一行的行号、也不改变视口顶端的行**，所以估计值随索引
 推进变化时看到的内容不动。估计值永远不小于已知行数，滚动范围只扩不缩；索引建完时外推项归零、估计值等于真实
 行数，不存在“完成时一次性切换”。未索引区域的行读不出来时 #19 不会无限重排（`prepare_slice` 的既有保护）。
+两条与 #20 折叠相关的规矩：工作台**只在索引未建完时下发估计值**（建完后估计值等于文档总行数，继续下发就等于
+把折叠隐藏的行算回内容高度）；`metrics()` 里估计值与已知行数都是**文档行**，一起经折叠映射（`FoldMap::view_count`）
+换成屏幕行，所以收起折叠后滚动范围、滑块与拖动定位仍然按屏幕行算。回归测试：
+`tests/code_view_features.rs::folding_shrinks_the_scroll_range_even_with_a_line_estimate`。
 
 **转到行的等待（§3.2、§6.2）**：#24 的快速输入框把目标行交给 `Workbench::goto_line_or_wait`。已索引返回真
 （照常打开）；未索引时登记一个 `PendingGoto` 并在后台执行器上轮询行索引（`goto::POLL_INTERVAL`，16 ms），
-索引到达后自动按位置打开。输入框下方的提示文案与进度来自 `goto::WAIT_HINT_KEY`；`Workbench::cancel_pending_goto`
-取消等待（Esc、关闭快速输入框、换一个目标行都会调用）。用轮询而不是 #8 的 `wait_for_lines`：代码视图拿到的是
-`Arc<dyn TextSource>`，没有向下转型的接口，轮询对任何文本源都成立。
+索引到达后自动按位置打开。等待**在界面上一直可见、随时可以取消**（§6.2）：回车时快速输入框会自己关掉，
+所以 `quick_access_host` 的每帧装配 `sync_goto_wait` 在等待期间把它重新打开（`quick.goto_wait` 记住输入文本与
+上一次显示的进度），列表里只有一条“转到第 N 行 + `goto::WAIT_HINT_KEY`（含百分比）”，描述是
+`goto::CANCEL_HINT_KEY`（“按 Esc 取消等待”，键位取自 #14 对 `quickInput.hide` 的登记，不写死）；索引推进时
+只刷新这一条的文案，跳转完成后关掉浮层并把焦点还给编辑器。`Workbench::cancel_pending_goto` 取消等待，
+三条路径都会调用：Esc / `quickInput.hide`（浮层关闭事件 `QuickInputViewEvent::Closed`）、失焦关闭
+（`workbench.quickOpen.closeOnFocusLost`）、在输入框里换一个目标行（`cancel_goto_wait_if_retargeted`）。
+用轮询而不是 #8 的 `wait_for_lines`：代码视图拿到的是 `Arc<dyn TextSource>`，没有向下转型的接口，
+轮询对任何文本源都成立。
 
 **流式查找（§3.2）**：见 §27 的“给 #22 / #48 的扩展点”。要点：进度回调带上这一块新找到的匹配，
 `FindModel::publish_partial` 逐步接上；装饰层仍然只为可见行生成（#19 按行调用提供方），不会一次性铺满全部匹配；
@@ -1358,7 +1368,8 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 > 来断行，所以从临时标签复制出来的文本会带换行。#57 合并后改成对这个标签开启软换行、去掉 `wrap_fixed`。
 
 验证：`cargo test -p rove-ui large_file`（各子模块单元测试 + `skeleton/workbench/large_file_tests.rs` 的入口集成测试：
-超大文件打开 → 提示条与状态栏（没有任何通知）→ “不再提示”→ 索引进度与滚动估计 → 转到行的等待与取消 →
+超大文件打开 → 提示条与状态栏（没有任何通知）→ “不再提示”→ 索引进度与滚动估计 → 转到行的等待（浮层里的
+提示与进度）与取消 →
 流式查找且没有替换 → 超长行截断标记与只读临时标签 → `editor.stopRenderingLineAfter` 改值 → 末尾追加后滚动位置保持）。
 入口测试把 `rove.largeFile.threshold` 调到 4 KB，用小文件走**同一条**超大文件路径；1 GB / 单行 50 MB 的真实数据
 由 `cargo xtask gen-testdata` + `cargo xtask bench --filter "scroll/|huge/|find/"` 在本机复跑（见 PR 的对比数据）。

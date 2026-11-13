@@ -12,7 +12,7 @@ use rove_syntax::{Fold, FoldKind, Symbol, SyntaxSnapshot, Token};
 use rove_theme::{Color, ColorRegistry, DefaultTheme, Theme, ThemeKind, TokenStyle};
 use rove_ui::code_view::{
     self, folding::FoldSource, selection::pos, CodeView, CodeViewEvent, CodeViewServices, Feature,
-    Selection,
+    ScrollPosition, Selection,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -840,5 +840,65 @@ fn large_and_huge_levels(cx: &mut TestAppContext) {
     assert!(
         style_at(&view, cx, 5, 0..5).is_none_or(|s| s.bold.is_none()),
         "超大文件不着色"
+    );
+}
+
+// ------------------------------------------------------------------ 折叠与滚动范围
+
+/// 请求滚到很远处再读回被钳住的位置：就是代码视图当前认为的最大滚动量（`Metrics::max_top`，
+/// 滚动条滑块与拖动定位都用同一份度量）。
+fn max_top(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> f64 {
+    let top = view.update(cx, |v, cx| {
+        v.set_scroll_position(ScrollPosition { top: 1e12, x: 0.0 }, false, cx);
+        v.scroll_position().top
+    });
+    view.update(cx, |v, cx| {
+        v.set_scroll_position(ScrollPosition::default(), false, cx)
+    });
+    settle(cx);
+    top
+}
+
+/// #22 的滚动行数估计不得抵消 #20 的折叠：滚动范围永远按**屏幕行**算。
+///
+/// 回归：工作台曾对所有文档（包括索引已建完的普通文件）无条件下发估计值，而估计值在索引建完时
+/// 等于文档总行数，于是只要有折叠收起，内容高度就被抬回未折叠的行数——能滚过最后一行、
+/// 滑块偏小、拖动滚动条定位的行与屏幕行对不上。
+#[gpui::test]
+fn folding_shrinks_the_scroll_range_even_with_a_line_estimate(cx: &mut TestAppContext) {
+    let mut text = String::from("root\n");
+    for i in 0..300 {
+        text.push_str(&format!("    line {i}\n"));
+    }
+    let (view, cx) = open(cx, &text, None, vec![]);
+    settle(cx);
+    let doc_lines = view.read_with(cx, |v, _| v.text().unwrap().lines().known);
+
+    let unfolded = max_top(&view, cx);
+    assert!(unfolded > 0.0, "内容比视口高");
+
+    run(&view, cx, "editor.foldAll");
+    settle(cx);
+    assert!(!folds(&view, cx).is_empty(), "缩进折叠已收起");
+    let folded = max_top(&view, cx);
+    assert!(folded < unfolded, "折叠后内容变短：{folded} < {unfolded}");
+
+    // 索引建完后工作台不再下发估计值；即便下发，估计值也要经折叠映射，不能把隐藏行算回来。
+    view.update(cx, |v, cx| v.set_scroll_line_estimate(Some(doc_lines), cx));
+    settle(cx);
+    assert_eq!(
+        max_top(&view, cx),
+        folded,
+        "估计值不得把折叠隐藏的行算回滚动范围"
+    );
+
+    // 索引未建完：估计值超出已知行数的部分仍然扩大滚动范围（可以滚到未索引区域）。
+    view.update(cx, |v, cx| {
+        v.set_scroll_line_estimate(Some(doc_lines * 3), cx)
+    });
+    settle(cx);
+    assert!(
+        max_top(&view, cx) > folded,
+        "未索引部分仍然按估计值扩大滚动范围"
     );
 }
