@@ -6,7 +6,8 @@
 //!   搜索自己遍历而不是读工作区快照，是因为 `search.followSymlinks`（默认 true）与“不使用排除设置”都需要
 //!   快照之外的文件；被剪掉的目录顺带回答“是否只因 Rove 的附加排除而被排除”（空状态的提示用）。
 //! - **并行**：`ignore` 的并行 walker 在每个工作线程里直接搜索遍历到的文件（ripgrep 的做法）；
-//!   线程数取 `search.ripgrep.maxThreads`，0 为自动。
+//!   线程数取 `search.ripgrep.maxThreads`，0 为自动（[`auto_threads`]：按核数超订，瓶颈是内核里的
+//!   `CreateFile` 而不是 CPU）。
 //! - **流式**：每个有匹配的文件整体经通道送回调用线程，调用线程按批（第一批立即，之后约 30 ms 一批）交给回调。
 //! - **取消**：取消令牌传到每个工作线程的内层循环——每个目录项、每个文件、每 256 KiB 的块、每一处匹配都检查，
 //!   所以取消后几毫秒内所有线程退出；[`search`] 返回时工作线程已全部结束。
@@ -317,6 +318,21 @@ fn searcher(multi_line: bool) -> Searcher {
         .build()
 }
 
+/// `search.ripgrep.maxThreads` 为 0（自动）时的工作线程数。
+///
+/// `ignore` 自己的默认是 `min(逻辑核数, 12)`（照搬 ripgrep）。全量搜索的瓶颈不在 CPU：#133 在
+/// 16 万个文件的大型 Unity 项目上逐段测过，热缓存下只遍历目录约 0.17 s，加上「每个文件 open +
+/// 读开头 8 KiB」就涨到约 1.1 s，再把 2.8 GB 正文全读进来并扫一遍字面量只多约 0.3 s——时间几乎
+/// 都花在内核里的 `CreateFile`（Windows 上还要过一遍文件系统筛选器），工作线程大半时间是阻塞的。
+/// 所以按核数超订，让一部分线程阻塞时另一部分还在干活：逻辑核数的 1.5 倍、上限 32。
+/// 16 核机器上实测 `search/full_large`：12 线程（改前）约 2.0 s，24 线程 1.56 s，32 线程 1.70 s。
+/// 再往上只有噪声级的收益，多出来的线程创建开销却会抬高首批延迟
+/// （`search/first_batch_synthetic` 24 线程 3.5 ms、32 线程 4.2 ms）。
+fn auto_threads() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    cores.saturating_mul(3).div_euclid(2).clamp(1, 32)
+}
+
 fn build_walker(
     root: &Path,
     query: &SearchQuery,
@@ -337,9 +353,11 @@ fn build_walker(
         .git_exclude(false)
         .require_git(false)
         .follow_links(config.follow_symlinks);
-    if config.threads > 0 {
-        builder.threads(config.threads);
-    }
+    builder.threads(if config.threads > 0 {
+        config.threads
+    } else {
+        auto_threads()
+    });
     let settings = query.use_exclude_settings.then(|| {
         (
             config.files_exclude.clone(),
@@ -460,54 +478,64 @@ fn visit(
 }
 
 /// 读取并解码一个文件，然后分块搜索。二进制文件返回 `Unsupported`（计入跳过）。
+///
+/// 读取顺序（#133 的测量结论）：**先读开头一段，再决定要不要问文件大小**。Unity 大型项目里
+/// 七成以上的文件读不满 8 KiB，这些文件一次 `read` 就已经拿到全部内容，`metadata`（Windows 上的
+/// `GetFileInformationByHandle`）纯属多余；每个文件省掉一次系统调用，16 万个文件的全量搜索快约 9%。
+/// 顺带不再按文件大小预分配：判成二进制的文件（本机 2.7 万个）不会为了只读 8 KiB 先申请十几 MB。
 fn search_file(
     path: &Path,
     shared: &Shared,
     searcher: &mut Searcher,
     out: &mut Vec<LineMatch>,
 ) -> Result<()> {
-    let file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    if len == 0 {
-        return Ok(());
-    }
-    if len > mmap_threshold() {
-        // SAFETY: 只读映射；文件在搜索期间被别人截断属于外部竞争，最坏结果是这次读到的内容不完整，
-        // 与 ripgrep 的取舍相同。
-        let map = unsafe { memmap2::Mmap::map(&file)? };
-        // 顺序与小文件一致，二进制判定必须在字面量扫描之前：Unity 项目里几百 MB 的贴图、模型、
-        // 程序集只看开头 8 KiB 就跳过（并计入摘要的 `skipped`），不会为了一次“多半没有”的
-        // 字面量扫描把整个映射全部换页进来。
-        let utf16 = map.starts_with(b"\xFF\xFE") || map.starts_with(b"\xFE\xFF");
-        if !utf16 && memchr::memchr(0, &map[..map.len().min(BINARY_PROBE)]).is_some() {
-            return Err(Error::Unsupported);
-        }
-        if shared.ascii_literal && !utf16 && shared.matcher.find(&map).ok().flatten().is_none() {
-            // 与小文件同样的快速路径：ASCII 字面量在原始字节里都没有，解码后也不会有。
-            return Ok(());
-        }
-        // 大文件也做 UTF-8 校验与编码识别（#145）：校验只是一次顺序扫描，真的不是 UTF-8 才解码。
-        let text = decode(&map, shared)?;
-        return search_text(&text, shared, searcher, out);
-    }
-    // 先只读开头一段做二进制判定：Unity 项目里贴图、模型、程序集占了绝大多数字节，
-    // 判成二进制的文件不再读剩下的内容（ripgrep 同样边读边判定）。
     use std::io::Read;
-    let mut file = file;
-    let mut bytes = Vec::with_capacity(len as usize + 1);
+    let mut file = std::fs::File::open(path)?;
+    // 二进制判定必须在字面量扫描与读取正文之前：Unity 项目里贴图、模型、程序集占了绝大多数字节，
+    // 只看开头 8 KiB 就跳过（并计入摘要的 `skipped`），不会为了一次“多半没有”的字面量扫描把
+    // 几百 MB 读进来或换页进来（ripgrep 同样边读边判定）。
+    let mut bytes = Vec::with_capacity(BINARY_PROBE);
     (&mut file)
         .take(BINARY_PROBE as u64)
         .read_to_end(&mut bytes)?;
+    if bytes.is_empty() {
+        return Ok(());
+    }
     let utf16 = bytes.starts_with(b"\xFF\xFE") || bytes.starts_with(b"\xFE\xFF");
     if !utf16 && memchr::memchr(0, &bytes).is_some() {
         return Err(Error::Unsupported);
     }
+    if bytes.len() < BINARY_PROBE {
+        // 读不满探测块 = 已经到文件末尾，内容全在手里，不必再问大小。
+        return search_bytes(&bytes, utf16, shared, searcher, out);
+    }
+    // 还有剩下的内容：现在才需要知道文件有多大（决定走内存映射还是读进内存、预留多少容量）。
+    let len = file.metadata()?.len();
+    if len > mmap_threshold() {
+        // SAFETY: 只读映射；文件在搜索期间被别人截断属于外部竞争，最坏结果是这次读到的内容不完整，
+        // 与 ripgrep 的取舍相同。映射从文件开头起，与上面读过探测块无关。
+        let map = unsafe { memmap2::Mmap::map(&file)? };
+        // 大文件也做 UTF-8 校验与编码识别（#145）：校验只是一次顺序扫描，真的不是 UTF-8 才解码。
+        return search_bytes(&map, utf16, shared, searcher, out);
+    }
+    bytes.reserve_exact((len as usize + 1).saturating_sub(bytes.len()));
     file.read_to_end(&mut bytes)?;
-    if shared.ascii_literal && !utf16 && shared.matcher.find(&bytes).ok().flatten().is_none() {
+    search_bytes(&bytes, utf16, shared, searcher, out)
+}
+
+/// 已经读进来（或映射好）的一个文件：ASCII 字面量的快速路径 → 解码 → 分块搜索。
+fn search_bytes(
+    bytes: &[u8],
+    utf16: bool,
+    shared: &Shared,
+    searcher: &mut Searcher,
+    out: &mut Vec<LineMatch>,
+) -> Result<()> {
+    if shared.ascii_literal && !utf16 && shared.matcher.find(bytes).ok().flatten().is_none() {
         // 绝大多数文件没有匹配：一次 memchr 级别的扫描就结束，不校验、不解码、不分行。
         return Ok(());
     }
-    let text = decode(&bytes, shared)?;
+    let text = decode(bytes, shared)?;
     search_text(&text, shared, searcher, out)
 }
 
@@ -775,6 +803,15 @@ mod tests {
         assert_eq!(&m.preview[r], "NEEDLE");
     }
 
+    /// 自动线程数（#133）：按核数超订但有上限，而且不会少于逻辑核数。
+    #[test]
+    fn auto_threads_oversubscribes_within_a_cap() {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let n = auto_threads();
+        assert!((1..=32).contains(&n), "{n}");
+        assert!(n >= cores.min(32), "{n} 不应少于逻辑核数 {cores}");
+    }
+
     #[test]
     fn line_end_strips_crlf() {
         assert_eq!(line_end(b"ab\r\ncd", 0), 2);
@@ -809,9 +846,15 @@ mod tests {
         }
     }
 
-    /// 以下几条都走内存映射分支（#145）：阈值调低到几个字节，免得造 17 MiB 的样本。
+    /// 以下几条都走内存映射分支（#145）：阈值调低到一个探测块，免得造 17 MiB 的样本。
+    /// 样本必须**大于** [`BINARY_PROBE`]，否则 [`search_file`] 一次探测读就到了文件末尾，
+    /// 根本不会问文件大小、也就走不到内存映射分支（#133）。
     fn search_mmapped(path: &Path, pattern: &str) -> (Result<()>, Vec<LineMatch>) {
-        let _guard = MmapThresholdGuard::new(8);
+        assert!(
+            std::fs::metadata(path).unwrap().len() > BINARY_PROBE as u64,
+            "样本要大于探测块，否则走不到内存映射分支"
+        );
+        let _guard = MmapThresholdGuard::new(BINARY_PROBE as u64);
         let mut out = Vec::new();
         let result = search_file(
             path,
@@ -827,9 +870,11 @@ mod tests {
     fn mmapped_files_still_detect_encoding() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Gbk.cs");
-        let (gbk, _, _) = encoding_rs::GBK.encode("// 玩家移动的速度\nfloat 速度 = 1;\n");
+        let mut text = "// 玩家移动的速度\nfloat 速度 = 1;\n".to_string();
+        // 填到探测块之后：只有这样才会走内存映射分支（后面的行不含「速度」，不影响断言）。
+        text.push_str(&"// 这里是一行无关的中文注释，只用来把样本撑大。\n".repeat(200));
+        let (gbk, _, _) = encoding_rs::GBK.encode(&text);
         std::fs::write(&path, &gbk).unwrap();
-        assert!(gbk.len() > 8, "样本要大于调低后的阈值");
 
         let (result, out) = search_mmapped(&path, "速度");
         result.expect("GBK 文件能搜索");
@@ -843,7 +888,9 @@ mod tests {
     fn mmapped_ascii_literal_fast_path_keeps_real_matches() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Player.cs");
-        std::fs::write(&path, "class Player {\n    void Move() {}\n}\n").unwrap();
+        let mut text = "class Player {\n    void Move() {}\n}\n".to_string();
+        text.push_str(&"// filler line, no identifier of interest here\n".repeat(300));
+        std::fs::write(&path, &text).unwrap();
 
         let (result, out) = search_mmapped(&path, "Move");
         result.expect("可以搜索");
@@ -862,8 +909,10 @@ mod tests {
     fn mmapped_utf16_files_are_transcoded_before_matching() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Utf16.cs");
+        let mut text = "float speed = 1;\n".to_string();
+        text.push_str(&"// filler line without the needle\n".repeat(300));
         let mut bytes = vec![0xFF, 0xFE];
-        for unit in "float speed = 1;\n".encode_utf16() {
+        for unit in text.encode_utf16() {
             bytes.extend_from_slice(&unit.to_le_bytes());
         }
         std::fs::write(&path, &bytes).unwrap();
@@ -882,7 +931,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Texture.psd");
         let mut bytes = b"8BPS\x00\x01\x00\x00Move".to_vec();
-        bytes.resize(4096, b'x');
+        bytes.resize(16 << 10, b'x');
         std::fs::write(&path, &bytes).unwrap();
 
         for pattern in ["Move", "Jump"] {

@@ -1107,12 +1107,14 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 之外的文件；剪枝时顺带记录“是否有目录只因 `rove.files.extraExclude` 被排除”（`SearchSummary::excluded_by_rove_defaults`），
 空状态据此显示“已排除 Unity 生成的目录。”与“包含排除的文件再搜索一次”（关闭“使用排除设置”重搜）。
 
-**并行、流式与取消**：`ignore` 的并行 walker 在工作线程里直接搜索（`search.ripgrep.maxThreads`，0 自动）；每个有匹配的文件整体
+**并行、流式与取消**：`ignore` 的并行 walker 在工作线程里直接搜索（`search.ripgrep.maxThreads`，0 自动 = 逻辑核数的
+1.5 倍、上限 32，见下面的「全量耗时」）；每个有匹配的文件整体
 送回调用线程，第一批立即交出、之后约 30 ms 一批；视图经通道收到后按代次丢弃过期批次。取消令牌检查点：每个目录项、每个文件、
 每 256 KiB 块、每处匹配，`search` 返回时线程已全部结束（`std::thread::scope`），测试断言取消到返回 < 50 ms。
 `search.maxResults` 按匹配处数原子扣减，恰好截断并报告 `limit_hit`。
 
-**编码与二进制**：先读开头 8 KiB，含 NUL（且无 UTF-16 BOM）即按二进制跳过、不读剩余内容；UTF-8 BOM 去掉、UTF-16 BOM 转码；
+**编码与二进制**：先读开头 8 KiB，含 NUL（且无 UTF-16 BOM）即按二进制跳过、不读剩余内容；读不满这 8 KiB 就说明已经到了
+文件末尾，内容全在手里，不再问文件大小（#133，见下面的「全量耗时」）；UTF-8 BOM 去掉、UTF-16 BOM 转码；
 纯 ASCII 字面量查询先在原始字节上判定有无匹配（ASCII 兼容编码解码后不会凭空出现 ASCII 匹配），没有就结束；
 否则合法 UTF-8 原样搜索，非 UTF-8 交给 #7 的编码识别（`files.autoGuessEncoding`、候选 GBK），识别失败按原始字节搜索。
 大于 16 MiB 的文件内存映射、不做 UTF-8 校验。结果的行号从 0 开始，区间是解码后该行的 UTF-8 字节列（与编辑器坐标一致）；
@@ -1125,13 +1127,23 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 `matchFocus`、`firstMatchFocus`、`fileMatchOrFolderMatchWithResourceFocus`、`folderMatchWithResourceFocus`（列表模式没有文件夹节点，
 文件行上也发布，`shift+alt+f` 限制到它所在的文件夹）。
 
+**全量耗时（#133）**：大型 Unity 项目（16 万个文件、16 GB，其中 2.7 万个二进制文件）上逐段测过热缓存的耗时分布——
+只遍历目录约 0.17 s，加上「每个文件 `open` + 读开头 8 KiB」涨到约 1.1 s，再把 2.8 GB 正文全读进来并扫一遍字面量只多约 0.3 s。
+也就是说**时间几乎都花在每个文件的 `CreateFile` 上**（Windows 上还要过一遍文件系统筛选器），不是读、不是匹配：正文读多读少
+几乎不影响总时间，少一次系统调用才有效。据此做了两件事：① 自动线程数不再用 `ignore` 照搬 ripgrep 的 `min(核数, 12)`，
+改成核数的 1.5 倍（上限 32）——线程大半时间阻塞在内核里，超订才能把核喂饱；② 读不满探测块的文件（本机七成以上）
+省掉一次 `metadata`，顺带不再按文件大小预分配缓冲（判成二进制的文件不会为了只读 8 KiB 先申请十几 MB）。
+同一台机器背靠背测 `cargo xtask bench --filter search/`：`search/full_large` 1.98 s → 1.56 s，`search/full_synthetic`
+95.3 ms → 93.1 ms，`search/first_batch_large` 4.58 ms → 4.71 ms；合成用例的首批 3.32 ms → 4.08 ms（多出来的是多开
+十几个线程的创建开销，相对首批预算 100 ms 可以忽略）。预算 `search_full_large` 随之从 `pending` 改为 `enforced`。
+
 **有意的差异与未做**：替换（R61）、搜索编辑器（P2）、`searchWithAI` 不登记；“查看排除设置”打开共用的 `settings.json`
 （Rove 没有设置界面）；`search.sortOrder = modified` 按 `default` 排（结果不带修改时间）；`search.decorations.colors` 没有
 可着色的来源（没有 SCM / 问题装饰）；包含 / 排除输入框总是显示（VS Code 默认收在 `…` 后）；多行匹配只在起始行显示与选中。
 
 验证：`cargo test -p rove-search`（`tests/search_it.rs`：分组与列、正则 / 全词 / 大小写、`search.smartCase`、包含 / 排除 glob、
 排除设置合并与“只因 Rove 默认排除”、`.gitignore` / `.git/info/exclude` / `.ignore` 不生效、`search.maxResults` 截断、GBK / UTF-16 /
-BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（release））与 `tests/cancellation.rs`（独立二进制，取消到全部线程结束 < 50 ms）；`cargo test -p rove-ui search`（模型、登记、
+BOM / 二进制、8 KiB 探测块两侧的匹配（#133）、分块行号、多行正则、大型 Unity 项目计时（release））与 `tests/cancellation.rs`（独立二进制，取消到全部线程结束 < 50 ms）；`cargo test -p rove-ui search`（模型、登记、
 `skeleton/workbench/search_tests.rs` 真实 GPUI 窗口：`Ctrl+Shift+F` → 输入 → 回车 → 分组与首条位置、`f4` 打开并选中、`.md` 打开源码、
 `alt+c/w/r`、`delete`、空状态与再搜索一次）。性能：`cargo xtask bench --filter search/`（预算 `search_*`）。
 

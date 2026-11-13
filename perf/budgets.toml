@@ -414,10 +414,10 @@ id = "search_full_large"
 metric = "全局搜索：大型 Unity 项目，常见标识符的全量搜索"
 value = 2000
 unit = "ms"
-owner = "#25"
-status = "pending"
+owner = "#133"
+status = "enforced"
 bench = "search/full_large"
-reason = "issue #25 验收：全部完成 < 2 s（热缓存）。本机大型项目约 16 万个文件、16 GB（其中 2.7 万个二进制文件）；单独运行 1.8–2.5 s，与其他会话并行编译时的 criterion 均值 3.1 s；同一棵树上 ripgrep 14.1（-uu，同样的排除）热缓存约 4.6 s。负载下测不出可信的达标数据，先记录、不设门槛，安静机器上复测后再改为 enforced"
+reason = "issue #25 验收：全部完成 < 2 s（热缓存）。本机大型项目约 16 万个文件、16 GB（其中 2.7 万个二进制文件）。#133 把自动线程数从 ignore 的 min(核数,12) 改成核数的 1.5 倍（瓶颈是内核里的 CreateFile，不是 CPU），并让读不满 8 KiB 探测块的文件不再多问一次 metadata：同一台机器背靠背测，criterion 均值 1.98 s → 1.56 s。机器负载较高（开着 Unity、另有会话在编译），空闲机器只会更快；未设置 ROVE_TEST_UNITY_LARGE 时该用例跳过，check-budgets 显示「未测量」、不算失败"
 
 [[budget]]
 id = "search_full_synthetic"
