@@ -854,3 +854,52 @@ fn overlay_limit_triggers_background_rebuild() {
         !cache.overlay_path(generation).exists()
     });
 }
+
+/// #141：首次全量构建期间的变化不丢——发布之后先保持过期，再转发给常驻进程，
+/// 覆盖层写入后才不再过期。
+#[test]
+fn changes_during_the_first_build_are_forwarded_after_publish() {
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Game");
+    fs::create_dir_all(root.join("Assets")).unwrap();
+    fs::write(root.join("Game.csproj"), "<Project/>").unwrap();
+    for f in fake::FILES {
+        fs::write(root.join(f), format!("class {} {{}}", &f[7..9])).unwrap();
+    }
+    let builder = Arc::new(fake::Builder::default());
+    builder.block.store(true, Ordering::SeqCst);
+    let config = LifecycleConfig::new(true, Ok(dir.path().join("cache")));
+    let lifecycle = IndexLifecycle::start(root.clone(), config, builder.clone());
+    let status = lifecycle.wait_until(WAIT, |s| matches!(s.state, IndexState::Building { .. }));
+    assert!(
+        matches!(
+            status.state,
+            IndexState::Building {
+                rebuilding: false,
+                ..
+            }
+        ),
+        "{status:?}"
+    );
+    assert!(lifecycle.snapshot().is_none(), "首次构建期间还没有快照");
+
+    // 构建期间改文件：没有快照也要记下来，构建完成后转发给常驻进程。
+    fs::write(root.join("Assets/S0.cs"), "class S0 { int x; }").unwrap();
+    lifecycle.files_changed(&[SourceChange::Changed("Assets/S0.cs".into())]);
+    assert!(lifecycle.is_stale("Assets/S0.cs"));
+
+    builder.block.store(false, Ordering::SeqCst);
+    wait_for("overlay for the change made during the build", || {
+        lifecycle
+            .snapshot()
+            .is_some_and(|s| s.overlay().is_some_and(|o| o.file_count() == 1))
+            && !lifecycle.is_stale("Assets/S0.cs")
+    });
+    assert_eq!(lifecycle.status().info.stale_files, 0);
+    assert_eq!(builder.builds.load(Ordering::SeqCst), 1);
+    let snap = lifecycle.snapshot().unwrap();
+    let view = snap.view();
+    let s0 = view.file_id("Assets/S0.cs").unwrap();
+    assert_eq!(view.file_hash(s0), Some(0xfeed), "增量更新已经修正这个文件");
+}

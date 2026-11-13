@@ -24,7 +24,7 @@ use super::encode::{self, EncodeError, Unencodable};
 use super::settings::{ConflictResolution, SaveOptions};
 use super::stamp::DiskStamp;
 use super::transforms::{self, InStringOrRegex};
-use super::write::{write_atomic, WriteError, WriteOptions, Written};
+use super::write::{write_atomic_with, WriteError, WriteOptions, Written};
 use crate::contracts::{Encoding, Eol, LineEndings, ReadOnlyReason, TextSource};
 use crate::edit::{AppliedEdit, EditBuffer, EditOptions, EditSession};
 use crate::open::{open_bytes, LoadOptions, LoadedText};
@@ -116,6 +116,12 @@ enum SaveFailure {
     Write(WriteError),
 }
 
+impl From<WriteError> for SaveFailure {
+    fn from(error: WriteError) -> Self {
+        SaveFailure::Write(error)
+    }
+}
+
 impl SaveJob {
     pub fn path(&self) -> &Path {
         &self.path
@@ -127,9 +133,13 @@ impl SaveJob {
     }
 
     /// 冲突检测 + 原子写入。在后台线程调用。
+    ///
+    /// 冲突检测在**每次**替换目标之前重做（#139）：目标被占用时写入会等几百毫秒再重试，期间占用
+    /// 文件的程序（Unity 导入、Git 检出）可能写入新内容并释放，只检测一次会把这份新内容悄悄覆盖掉。
+    /// 检测与替换之间仍有很短的竞争窗口，见 [`write`](super::write) 的模块文档。
     pub fn run(self) -> SaveResult {
-        let result = self.check_conflict().and_then(|()| {
-            write_atomic(&self.path, &self.bytes, &self.write).map_err(SaveFailure::Write)
+        let result = write_atomic_with(&self.path, &self.bytes, &self.write, &|| {
+            self.check_conflict()
         });
         SaveResult { job: self, result }
     }

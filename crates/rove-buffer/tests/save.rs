@@ -605,6 +605,35 @@ fn read_only_attribute_then_overwrite_clears_it() {
     assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
 }
 
+#[test]
+fn conflict_on_a_read_only_target_keeps_the_attribute() {
+    // 冲突检测要先于清除只读属性：选了“覆盖（清除只读）”但磁盘已被外部改写时，报冲突且属性不变。
+    let dir = tempfile::tempdir().unwrap();
+    let (target, mut file) = conflicted(dir.path());
+    let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&target, permissions).unwrap();
+    let request = SaveRequest {
+        clear_read_only: true,
+        ..SaveRequest::default()
+    };
+    let outcome = file.save(
+        &request,
+        &SaveOptions::default(),
+        None,
+        &WriteOptions::default(),
+        Instant::now(),
+    );
+    assert_eq!(outcome, SaveOutcome::Conflict);
+    assert_eq!(std::fs::read(&target).unwrap(), b"base external");
+    let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+    assert!(permissions.readonly());
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&target, permissions).unwrap();
+    assert!(tmp_files(dir.path()).is_empty());
+}
+
 fn conflicted(dir: &Path) -> (PathBuf, TextFile) {
     let target = dir.join("Player.cs");
     std::fs::write(&target, b"base").unwrap();
@@ -677,6 +706,99 @@ fn overwrite_file_on_disk_setting_skips_the_prompt() {
         ),
         SaveOutcome::Saved { .. }
     ));
+    assert_eq!(std::fs::read(&target).unwrap(), b"base local");
+}
+
+/// 模拟“第一次替换时目标被占用，等待重试期间外部程序写入新内容并释放”（#139）：
+/// 替换故障注入点在第一次尝试时写入 `content` 并报占用。
+fn busy_once_then_external_write(target: &Path, content: &'static [u8]) -> WriteOptions {
+    let target = target.to_path_buf();
+    WriteOptions {
+        busy_retry_delay: Duration::from_millis(1),
+        replace_fail_point: Some(save::ReplaceFailPoint(Arc::new(move |attempt| {
+            (attempt == 1).then(|| {
+                std::fs::write(&target, content).unwrap();
+                save::WriteError::Busy { attempts: 1 }
+            })
+        }))),
+        ..WriteOptions::default()
+    }
+}
+
+#[test]
+fn external_write_during_the_busy_retry_is_reported_as_a_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("Player.cs");
+    std::fs::write(&target, b"base").unwrap();
+    let settings = defaults();
+    let mut file = load(&target, &settings);
+    type_at(&mut file, 4, " local", Instant::now());
+    let write = busy_once_then_external_write(&target, b"base external");
+    let outcome = file.save(
+        &SaveRequest::default(),
+        &SaveOptions::default(),
+        None,
+        &write,
+        Instant::now(),
+    );
+    // 重试之前重新做了冲突检测：外部内容保住，没有静悄悄覆盖。
+    assert_eq!(outcome, SaveOutcome::Conflict);
+    assert_eq!(std::fs::read(&target).unwrap(), b"base external");
+    assert!(file.is_dirty());
+    assert!(tmp_files(dir.path()).is_empty());
+}
+
+#[test]
+fn overwrite_conflict_still_writes_on_the_busy_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("Player.cs");
+    std::fs::write(&target, b"base").unwrap();
+    let settings = defaults();
+    let mut file = load(&target, &settings);
+    type_at(&mut file, 4, " local", Instant::now());
+    let write = busy_once_then_external_write(&target, b"base external");
+    let request = SaveRequest {
+        overwrite_conflict: true,
+        ..SaveRequest::default()
+    };
+    let outcome = file.save(
+        &request,
+        &SaveOptions::default(),
+        None,
+        &write,
+        Instant::now(),
+    );
+    assert!(
+        matches!(outcome, SaveOutcome::Saved { attempts: 2, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"base local");
+    assert!(tmp_files(dir.path()).is_empty());
+}
+
+#[test]
+fn overwrite_file_on_disk_setting_still_writes_on_the_busy_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("Player.cs");
+    std::fs::write(&target, b"base").unwrap();
+    let settings = TestSettings::new(&[(
+        "files.saveConflictResolution",
+        Value::String("overwriteFileOnDisk".into()),
+    )]);
+    let mut file = load(&target, &settings);
+    type_at(&mut file, 4, " local", Instant::now());
+    let write = busy_once_then_external_write(&target, b"base external");
+    let outcome = file.save(
+        &SaveRequest::default(),
+        &SaveOptions::read(&settings, "csharp"),
+        None,
+        &write,
+        Instant::now(),
+    );
+    assert!(
+        matches!(outcome, SaveOutcome::Saved { attempts: 2, .. }),
+        "{outcome:?}"
+    );
     assert_eq!(std::fs::read(&target).unwrap(), b"base local");
 }
 
