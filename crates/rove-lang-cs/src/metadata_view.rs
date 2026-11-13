@@ -80,12 +80,15 @@ pub struct ViewLocation {
     pub len: u32,
 }
 
+/// 类型名 → 同名的外部类型符号。
+type NameMap = HashMap<String, Vec<u32>>;
+
 /// 元数据视图的内容来源：语义来源（#36 的快照）+ `rove.metadataView.showDocs`。
 pub struct MetadataViews {
     semantic: Arc<dyn SemanticSource>,
     show_docs: AtomicBool,
     /// 按快照代次缓存的“类型名 → 有视图的外部类型符号”（视图内按名字解析类型用）。
-    names: Mutex<Option<(u64, Arc<HashMap<String, Vec<u32>>>)>>,
+    names: Mutex<Option<(u64, Arc<NameMap>)>>,
 }
 
 impl MetadataViews {

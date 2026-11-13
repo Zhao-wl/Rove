@@ -388,7 +388,7 @@ fn metadata_missing_symbol_shows_a_status_hint_and_no_empty_tab(cx: &mut TestApp
     };
     view.update(cx, |v, cx| {
         let group = v.editor.focused;
-        v.open_metadata_targets(group, "Missing", &[missing.clone()], false, cx);
+        v.open_metadata_targets(group, "Missing", std::slice::from_ref(&missing), false, cx);
     });
     cx.run_until_parked();
     settle(cx);
