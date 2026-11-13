@@ -176,7 +176,6 @@ impl FileDocuments {
         Ok(reopened)
     }
 
-
     /// 追加一个虚拟文档的内容来源（#42 的元数据视图、#28 的欢迎页）。先登记的先被询问。
     pub fn with_virtual_source(mut self, source: Arc<dyn VirtualSource>) -> Self {
         self.virtual_sources.push(source);

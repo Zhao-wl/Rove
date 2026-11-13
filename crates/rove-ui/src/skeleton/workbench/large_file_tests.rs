@@ -7,6 +7,8 @@ use super::*;
 use crate::large_file::{
     goto, long_line, notice, progress::IndexProgress, registry as lf, status_entry,
 };
+// #27 删掉了骨架的固定状态栏内容，`workbench.rs` 不再导入 `StatusEntry`。
+use crate::shell::status::StatusEntry;
 use gpui::{TestAppContext, VisualTestContext};
 use rove_config::{SettingsOptions, SettingsService};
 
