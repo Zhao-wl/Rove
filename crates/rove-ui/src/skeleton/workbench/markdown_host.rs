@@ -554,14 +554,12 @@ impl Workbench {
         if let Value::Array(items) = style_list {
             for item in items.iter() {
                 let Value::String(style) = item else { continue };
-                match render::classify(style, Some(&self.root)) {
-                    Target::Local(path, _) => {
-                        if let Some((drive, url)) = render::file_url(&path) {
-                            drives.insert(drive);
-                            styles.push(url);
-                        }
-                    }
-                    _ => {}
+                let Target::Local(path, _) = render::classify(style, Some(&self.root)) else {
+                    continue;
+                };
+                if let Some((drive, url)) = render::file_url(&path) {
+                    drives.insert(drive);
+                    styles.push(url);
                 }
             }
         }
