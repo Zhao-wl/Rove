@@ -2060,4 +2060,32 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 「关于」里的更新状态行、不加状态栏条目）、
 `cargo test -p rove-app --test workbench_registration`（命令 / 字符串 / 菜单 / 设置项全部走登记机制）、
 `cargo test -p xtask deps`（只有 `rove-update` 打开网络 feature）。
+## 53. 高 DPI 与多显示器（#30）
+
+位置：`crates/rove-ui/src/dpi.rs`（物理像素对齐的换算，`lib.rs` 只追加 `pub mod dpi;`）、
+`code_view/view.rs` 的 `note_scale_factor` / `watch_window_bounds`、`code_view/element.rs` 的绘制。
+这是**验证 + 修复**型 issue：不新增命令、设置项、颜色键与界面字符串，也没有 `SKELETON(...)` 标记。
+
+**模型**：GPUI 的几何量一律是逻辑像素，提交渲染时统一乘窗口的 `scale_factor`。文字布局
+（`layout_line`）在逻辑像素里完成、与缩放无关（Windows 下 DirectWrite 按 DIP 出 advance），
+受缩放影响的只有**光栅化**与**四边形边界**。所以：
+
+| 关注点 | 做法 |
+|---|---|
+| 整形缓存 | 键是「显示文本 + 粗斜体分段 + 字体代次」，字体代次覆盖缩放；缩放一变就 `invalidate_shapes` |
+| 失效时机 | `CodeView` 首帧登记 `observe_window_bounds`，**缩放变更事件到达时当场**作废（不是等下一帧）；帧开始与每个空闲准备切片开始各再检查一次，空闲整形不会用旧缩放补缓存 |
+| 滚动与选区 | 都是与缩放无关的量（f64 虚拟行、文档位置），跨屏拖动后原样保留 |
+| 细线 | `dpi::{hairline, vline, hline}`：缩进参考线、Tab 横线、下划线 / 删除线、组合串下划线的厚度取整数个物理像素，边界对齐到物理像素网格 |
+| 插入符 | x 对齐到物理像素网格，竖线宽度与下划线高度取整数个物理像素（150% 下不再被抗锯齿摊成两列） |
+| 输入法 | 缩放变更时 `invalidate_character_coordinates()`：逻辑坐标没变但物理客户区坐标变了 |
+| Markdown 预览 | 宿主把 `window.scale_factor()` 传给后端（`RasterizationScale`，并关掉 WebView2 自己的显示器缩放检测），网页缩放只来自 `window.zoomLevel`，两者不叠加 |
+
+`div` 的 `border_1()` 一类边框仍然是 1 **逻辑**像素（与 VS Code 的 CSS `1px` 同口径），不在本 issue 的
+改动范围内。
+
+验证：`cargo test -p rove-ui --test code_view_dpi`（四档缩放的参数化测试：布局不变、命中测试精确往返、
+缩放变更当场清缓存、跨屏来回拖动、字体缩放叠加）、`cargo test -p rove-ui dpi::`（换算单元测试）、
+`cargo test -p rove-ui quick_input_overlay`（浮层）、`cargo test -p rove-ui preview_scale`（Markdown 预览）。
+测试窗口的缩放系数由 vendor 补丁提供（`vendor/gpui/ROVE_PATCHES.md` 的 R30 条目）。
+截图与真正的双显示器混合 DPI 走人工清单 [DPI_CHECKLIST](DPI_CHECKLIST.md)。
 

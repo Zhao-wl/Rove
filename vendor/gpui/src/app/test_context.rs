@@ -331,6 +331,18 @@ impl TestAppContext {
         self.test_window(window_handle).simulate_resize(size);
     }
 
+    /// ROVE R30: simulates the window moving to a display with a different scale factor
+    /// (100% / 125% / 150% / 200%, or a mixed-DPI multi-monitor drag). The logical size is kept,
+    /// matching the per-monitor-DPI-aware behaviour of the Windows backend.
+    pub fn simulate_window_scale_factor_change(
+        &self,
+        window_handle: AnyWindowHandle,
+        scale_factor: f32,
+    ) {
+        self.test_window(window_handle)
+            .simulate_scale_factor_change(scale_factor);
+    }
+
     /// Causes the given sources to be returned if the application queries for screen
     /// capture sources.
     pub fn set_screen_capture_sources(&self, sources: Vec<TestScreenCaptureSource>) {
@@ -803,6 +815,11 @@ impl VisualTestContext {
     /// Simulates the user resizing the window to the new size.
     pub fn simulate_resize(&self, size: Size<Pixels>) {
         self.simulate_window_resize(self.window, size)
+    }
+
+    /// ROVE R30: simulates this window moving to a display with a different scale factor.
+    pub fn simulate_scale_factor_change(&self, scale_factor: f32) {
+        self.simulate_window_scale_factor_change(self.window, scale_factor)
     }
 
     /// debug_bounds returns the bounds of the element with the given selector.

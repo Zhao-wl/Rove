@@ -11,6 +11,7 @@ use super::scroll::{self, Metrics, ScrollPosition};
 use super::view::{
     hsla, CodeView, CodeViewEvent, Drag, FrameLayout, FrameStats, LineEntry, Shaped, Viewport,
 };
+use crate::dpi;
 use gpui::{
     fill, outline, point, px, quad, size, App, BorderStyle, Bounds, ContentMask,
     CursorStyle as MouseCursor, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
@@ -166,6 +167,8 @@ impl CodeView {
         self.frame_started = Some(Instant::now());
         let focused = self.focus.is_focused(window);
         self.focus_changed(focused, window, cx);
+        // #30：跨显示器拖动 / 系统缩放改变时作废整形结果（首帧登记订阅）。
+        self.watch_window_bounds(window, cx);
         self.line_number_ready(window);
         let lh = self.font.line_height;
         let digit_w = self
@@ -505,6 +508,8 @@ impl CodeView {
         let o = &self.options;
         let lay = &frame.layout;
         let lh = self.font.line_height;
+        // #30：细线与插入符按物理像素网格对齐（125% / 150% 下 1 逻辑像素会落在半个物理像素上）。
+        let scale = window.scale_factor();
         let text = lay.text;
         let left = text.origin.x - px(self.scroll.x as f32);
         let sel = self.cursor.selection;
@@ -691,16 +696,22 @@ impl CodeView {
                                 entry.display.stop_index_for_display(range.end),
                             );
                             if let Some(u) = style.underline {
-                                let r = Bounds::new(
-                                    point(left + px(a), y + px(lh - 2.0)),
-                                    size(px(b - a), px(1.)),
+                                let r = dpi::hline(
+                                    f32::from(left) + a,
+                                    f32::from(y) + lh - 2.0,
+                                    b - a,
+                                    1.0,
+                                    scale,
                                 );
                                 window.paint_quad(fill(r, hsla(u)));
                             }
                             if let Some(s) = style.strikethrough {
-                                let r = Bounds::new(
-                                    point(left + px(a), y + px(lh / 2.0)),
-                                    size(px(b - a), px(1.)),
+                                let r = dpi::hline(
+                                    f32::from(left) + a,
+                                    f32::from(y) + lh / 2.0,
+                                    b - a,
+                                    1.0,
+                                    scale,
                                 );
                                 window.paint_quad(fill(r, hsla(s)));
                             }
@@ -711,9 +722,12 @@ impl CodeView {
                                 let a = entry.display.x_for_source(&xs, cols.start);
                                 let b = entry.display.x_for_source(&xs, cols.end);
                                 let color = p.composition_border.unwrap_or(p.foreground);
-                                let r = Bounds::new(
-                                    point(left + px(a), y + px(lh - 2.0)),
-                                    size(px((b - a).max(1.0)), px(1.)),
+                                let r = dpi::hline(
+                                    f32::from(left) + a,
+                                    f32::from(y) + lh - 2.0,
+                                    (b - a).max(1.0),
+                                    1.0,
+                                    scale,
                                 );
                                 window.paint_quad(fill(r, hsla(color)));
                             }
@@ -795,6 +809,8 @@ impl CodeView {
                     } else {
                         o.cursor_style
                     };
+                    // #30：插入符的竖线宽度与下划线高度取整数个物理像素，x / y 对齐到物理像素
+                    // 网格——否则 125% / 150% 下竖线被抗锯齿摊成两列半透明像素（看起来是虚线）。
                     let r = match style {
                         CursorStyle::Line | CursorStyle::LineThin => {
                             let h = if o.cursor_height > 0.0 {
@@ -803,20 +819,32 @@ impl CodeView {
                                 lh
                             };
                             Bounds::new(
-                                point(left + px(x), y + px((lh - h) / 2.0)),
-                                size(px(o.caret_width() as f32), px(h)),
+                                point(
+                                    px(dpi::snap(f32::from(left) + x, scale)),
+                                    y + px((lh - h) / 2.0),
+                                ),
+                                size(
+                                    px(dpi::device_thickness(o.caret_width() as f32, scale)),
+                                    px(h),
+                                ),
                             )
                         }
                         CursorStyle::Block | CursorStyle::BlockOutline => {
                             Bounds::new(point(left + px(x), y), size(px(cell), px(lh)))
                         }
-                        CursorStyle::Underline => Bounds::new(
-                            point(left + px(x), y + px(lh - 2.0)),
-                            size(px(cell), px(2.)),
+                        CursorStyle::Underline => dpi::hline(
+                            f32::from(left) + x,
+                            f32::from(y) + lh - 2.0,
+                            cell,
+                            2.0,
+                            scale,
                         ),
-                        CursorStyle::UnderlineThin => Bounds::new(
-                            point(left + px(x), y + px(lh - 1.0)),
-                            size(px(cell), px(1.)),
+                        CursorStyle::UnderlineThin => dpi::hline(
+                            f32::from(left) + x,
+                            f32::from(y) + lh - 1.0,
+                            cell,
+                            1.0,
+                            scale,
                         ),
                     };
                     if style == CursorStyle::BlockOutline {
@@ -963,6 +991,7 @@ impl CodeView {
         };
         let _ = frame;
         let stops = entry.display.stops();
+        let scale = window.scale_factor();
         for level in 0..levels {
             let Some(color) = self.palette.indent_guides[level as usize % 6] else {
                 continue;
@@ -973,9 +1002,12 @@ impl CodeView {
                 .position(|s| s.col == col)
                 .filter(|&i| i < xs.len())
                 .map_or(col as f32 * self.font.cell_width, |i| xs[i]);
-            let r = Bounds::new(
-                point(left + px(x.round()), y),
-                size(px(1.0), px(self.font.line_height)),
+            // #30：宽度恰好 1 个物理像素，x 对齐到物理像素网格（不消失、不发虚、不变成 2 px）。
+            let r = dpi::vline(
+                f32::from(left) + x,
+                f32::from(y),
+                self.font.line_height,
+                scale,
             );
             window.paint_quad(fill(r, hsla(color)));
         }
@@ -1017,6 +1049,7 @@ impl CodeView {
             });
         let lh = self.font.line_height;
         let c = hsla(color);
+        let scale = window.scale_factor();
         // #58：只画落在本段里的空白标记（续行不重扫整行）。
         let stops = entry.display.stops();
         for (i, tab) in guides::whitespace_marks(&entry.source, &entry.display, mode, selection) {
@@ -1028,9 +1061,13 @@ impl CodeView {
             }
             let (a, b) = (DisplayLine::x_at(xs, i), DisplayLine::x_at(xs, i + 1));
             let r = if tab {
-                Bounds::new(
-                    point(left + px(a + 2.0), y + px((lh / 2.0).round())),
-                    size(px((b - a - 4.0).max(1.0)), px(1.0)),
+                // #30：Tab 的横线是 1 物理像素的细线。
+                dpi::hline(
+                    f32::from(left) + a + 2.0,
+                    f32::from(y) + (lh / 2.0).round(),
+                    (b - a - 4.0).max(1.0),
+                    1.0,
+                    scale,
                 )
             } else {
                 let d = 2.0;

@@ -357,6 +357,8 @@ impl Render for QuickInputView {
         let text = |m: &Message| SharedString::from(self.strings.text(m).unwrap_or_default());
         let mut root = div()
             .id("quick-input")
+            // #30：浮层位置在各缩放下的回归保护（`VisualTestContext::debug_bounds`；release 下是空操作）。
+            .debug_selector(|| "quick-input".into())
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .w(px(WIDTH))

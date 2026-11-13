@@ -14,6 +14,9 @@ use std::{
 
 pub(crate) struct TestWindowState {
     pub(crate) bounds: Bounds<Pixels>,
+    /// ROVE R30: the window's scale factor, so tests can cover high-DPI and mixed-DPI monitors.
+    /// Defaults to 2.0, which is the value this backend returned unconditionally before.
+    pub(crate) scale_factor: f32,
     pub(crate) handle: AnyWindowHandle,
     display: Rc<dyn PlatformDisplay>,
     pub(crate) title: Option<String>,
@@ -59,6 +62,7 @@ impl TestWindow {
     ) -> Self {
         Self(Rc::new(Mutex::new(TestWindowState {
             bounds: params.bounds,
+            scale_factor: 2.0,
             display,
             platform,
             handle,
@@ -84,6 +88,24 @@ impl TestWindow {
             return;
         };
         lock.bounds.size = size;
+        drop(lock);
+        callback(size, scale_factor);
+        self.0.lock().resize_callback = Some(callback);
+    }
+
+    /// ROVE R30: simulates the window moving to a display with a different scale factor
+    /// (`WM_DPICHANGED` on Windows), keeping the logical size unchanged. The resize callback is
+    /// what drives `Window::bounds_changed`, which re-reads the scale factor and refreshes.
+    pub fn simulate_scale_factor_change(&mut self, scale_factor: f32) {
+        let size = {
+            let mut lock = self.0.lock();
+            lock.scale_factor = scale_factor;
+            lock.bounds.size
+        };
+        let mut lock = self.0.lock();
+        let Some(mut callback) = lock.resize_callback.take() else {
+            return;
+        };
         drop(lock);
         callback(size, scale_factor);
         self.0.lock().resize_callback = Some(callback);
@@ -134,7 +156,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn scale_factor(&self) -> f32 {
-        2.0
+        self.0.lock().scale_factor
     }
 
     fn appearance(&self) -> WindowAppearance {
