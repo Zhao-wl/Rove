@@ -73,6 +73,24 @@
 | 浮层（快速打开 / 命令面板）在四档缩放下位置尺寸不变、不越界不被裁切 | `cargo test -p rove-ui quick_input_overlay` |
 | Markdown 预览的 `RasterizationScale` 跟随窗口、网页缩放只来自 `window.zoomLevel`（不叠加） | `cargo test -p rove-ui preview_scale` |
 
+### 性能影响（#30 的改动落在绘制路径上，附前后对比）
+
+`cargo xtask bench`（同一台机器连续两次：先 `origin/main`，再本改动；**机器负载较高**，同时开着 Unity 与
+其他构建，所以只看相对关系）：
+
+| 用例 | main | #30 | 变化 |
+|---|---:|---:|---:|
+| `scroll/frame_cpu_cache_miss` | 555.25 µs | 532.81 µs | −4.0% |
+| `scroll/highlighted_frame_cpu_cache_hit` | 385.96 µs | 378.38 µs | −2.0% |
+| `scroll/highlighted_frame_cpu_cache_miss` | 451.86 µs | 429.19 µs | −5.0% |
+| `typing/frame_cpu` | 224.72 µs | 243.21 µs | +8.2% |
+| `scroll/*_frame_interval_*`（帧间隔，垂直同步限制） | 8.33 ms | 8.33–8.37 ms | ≤ +0.5% |
+| `peek/tree_scroll_frame_47k`（**本改动没碰**） | 1.26 ms | 1.43 ms | +13.3% |
+| `lists/scroll_frame_100k`（**本改动没碰**） | 1.36 µs | 1.44 µs | +5.9% |
+
+没碰的用例同样有 ±6–13% 的漂移，说明这台机器上的噪声带比这些差值还大：代码视图自己的绘制 CPU
+（`scroll/*_frame_cpu_*`）没有系统性退化。空闲机器上的复测留给 #31 集成验收。
+
 GPUI 测试窗口的缩放系数由 `VisualTestContext::simulate_scale_factor_change` 驱动（vendor 补丁，见
 [`vendor/gpui/ROVE_PATCHES.md`](../vendor/gpui/ROVE_PATCHES.md) 的 R30 条目）。它模拟的是
 `WM_DPICHANGED` 之后窗口逻辑尺寸不变、缩放系数改变这一路径；**真实的混合 DPI 多显示器仍然必须人工验证**。
