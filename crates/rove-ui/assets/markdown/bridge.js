@@ -404,6 +404,13 @@
           markSelection(message.line);
         }
         break;
+      // 测量用（examples/markdown_probe.rs）：读回当前顶部对应的源码行；模拟用户滚动。
+      case 'where':
+        post({ type: 'position', documentId: documentId, line: lineForOffset(window.scrollY) });
+        break;
+      case 'userScroll':
+        window.scrollTo(0, Math.max(0, offsetForLine(message.line)));
+        break;
       case 'fragment':
         if (message.documentId === documentId) {
           scrollToFragment(message.fragment);

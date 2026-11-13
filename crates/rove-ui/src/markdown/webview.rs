@@ -59,7 +59,9 @@ struct Inner {
     zoom: f64,
     focused: bool,
     allow_remote: bool,
+    /// 已建立映射的盘符（资源请求按它放行）与需要映射的盘符（实例创建前也会记下）。
     drives: BTreeSet<char>,
+    wanted: BTreeSet<char>,
     background: Option<COREWEBVIEW2_COLOR>,
     nonce: String,
 }
@@ -381,6 +383,7 @@ impl Backend for WebView2Backend {
             inner.suspended = false;
             inner.focused = false;
             inner.drives.clear();
+            inner.wanted.clear();
             (inner.controller.take(), inner.environment.take())
         };
         if let Some(controller) = controller {
@@ -393,28 +396,11 @@ impl Backend for WebView2Backend {
     }
 
     fn map_drives(&mut self, drives: &BTreeSet<char>) {
-        let (webview, missing) = {
-            let mut inner = self.inner.borrow_mut();
-            let missing: Vec<char> = drives.difference(&inner.drives).copied().collect();
-            if inner.webview.is_some() {
-                inner.drives.extend(missing.iter().copied());
-            }
-            (inner.webview.clone(), missing)
-        };
-        let Some(webview) = webview.and_then(|w| w.cast::<ICoreWebView2_3>().ok()) else {
-            return;
-        };
-        for drive in missing {
-            let host = HSTRING::from(format!("{drive}{}", super::render::FILE_HOST_SUFFIX));
-            let folder = HSTRING::from(format!("{}:\\", drive.to_ascii_uppercase()));
-            unsafe {
-                let _ = webview.SetVirtualHostNameToFolderMapping(
-                    &host,
-                    &folder,
-                    COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
-                );
-            }
-        }
+        self.inner
+            .borrow_mut()
+            .wanted
+            .extend(drives.iter().copied());
+        apply_drives(&self.inner);
     }
 
     fn set_allow_remote(&mut self, allow: bool) {
@@ -530,6 +516,33 @@ fn create_controller(
     if let Err(error) = unsafe { environment.CreateCoreWebView2Controller(hwnd, &handler) } {
         inner.borrow_mut().creating = false;
         send(events, BackendEvent::Failed(error.to_string()));
+    }
+}
+
+/// 为需要的盘符建立 `https://<盘符>.rove-file.local/` → `<盘符>:\` 映射（DENY_CORS：页面脚本不能读取）。
+fn apply_drives(inner: &Rc<RefCell<Inner>>) {
+    let (webview, missing) = {
+        let mut state = inner.borrow_mut();
+        let Some(webview) = state.webview.clone() else {
+            return;
+        };
+        let missing: Vec<char> = state.wanted.difference(&state.drives).copied().collect();
+        state.drives.extend(missing.iter().copied());
+        (webview, missing)
+    };
+    let Ok(webview) = webview.cast::<ICoreWebView2_3>() else {
+        return;
+    };
+    for drive in missing {
+        let host = HSTRING::from(format!("{drive}{}", super::render::FILE_HOST_SUFFIX));
+        let folder = HSTRING::from(format!("{}:\\", drive.to_ascii_uppercase()));
+        unsafe {
+            let _ = webview.SetVirtualHostNameToFolderMapping(
+                &host,
+                &folder,
+                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
+            );
+        }
     }
 }
 
@@ -870,6 +883,7 @@ unsafe fn configure(
         state.creating = false;
         state.suspended = false;
     }
+    apply_drives(inner);
     web.Navigate(&HSTRING::from(page::INDEX_URL))?;
     Ok(())
 }

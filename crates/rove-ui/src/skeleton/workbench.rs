@@ -87,6 +87,7 @@ mod search_tests;
 mod markdown_host;
 #[cfg(test)]
 mod markdown_tests;
+pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
 mod syntax_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -1815,6 +1816,8 @@ impl Render for Workbench {
 /// `settings` 是应用唯一的设置服务实例（`crate::app_settings::open`），窗口设置、工作台、主题、
 /// 代码视图、打开服务与工作区扫描都用它。
 pub fn launch(root: PathBuf, settings: Arc<dyn Settings>, started: Instant) {
+    // #29：Markdown 预览按 #6 报告的 Hwnd 方式嵌入 WebView2（不创建任何实例，只选渲染路径）。
+    crate::markdown::prepare_hwnd_hosting();
     Application::new().run(move |cx: &mut App| {
         if let Err(e) = cx
             .text_system()

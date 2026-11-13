@@ -57,6 +57,8 @@ pub struct MarkdownSnapshot {
     pub runtime_missing: bool,
     pub idle_pending: bool,
     pub process_ids: Vec<u32>,
+    /// 最近一次 [`Workbench::markdown_probe`] 读回的预览顶部源码行。
+    pub position: Option<f64>,
 }
 
 pub(super) struct MarkdownPreview {
@@ -91,6 +93,7 @@ pub(super) struct MarkdownPreview {
     first_open_ms: Option<f64>,
     created_ms: Option<f64>,
     external: Option<String>,
+    position: Option<f64>,
     trace: bool,
     #[cfg(test)]
     pub(super) fake: Rc<RefCell<crate::markdown::backend::FakeLog>>,
@@ -155,6 +158,7 @@ impl Default for MarkdownPreview {
             first_open_ms: None,
             created_ms: None,
             external: None,
+            position: None,
             trace: std::env::var_os("ROVE_MARKDOWN_TRACE").is_some(),
             #[cfg(test)]
             fake,
@@ -207,7 +211,18 @@ impl Workbench {
             runtime_missing: m.runtime_missing,
             idle_pending: m.idle_pending,
             process_ids: backend.process_ids(),
+            position: m.position,
         }
+    }
+
+    /// 测量用（`examples/markdown_probe.rs`）：`where` 读回预览顶部对应的源码行（结果在
+    /// [`MarkdownSnapshot::position`]）；`userScroll` 像用户一样把预览滚到某一行。
+    pub fn markdown_probe(&mut self, kind: &str, line: f64) {
+        self.markdown.position = None;
+        let document = self.markdown.requested.map(|k| k.document.0);
+        self.markdown_post(json!({
+            "version": 1, "type": kind, "documentId": document, "line": line,
+        }));
     }
 
     fn preview_tab(&self, group: EditorGroupId) -> Option<&Tab> {
@@ -769,6 +784,14 @@ impl Workbench {
         match message["type"].as_str() {
             Some("ready") => {
                 self.markdown.ready = true;
+                if self.markdown.trace {
+                    if let Some(start) = self.markdown.open_started {
+                        println!(
+                            "MARKDOWN_PAGE_READY_MS {:.1}",
+                            start.elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
+                }
                 self.markdown_send_theme();
                 let pending = std::mem::take(&mut self.markdown.pending);
                 let mut backend = self.markdown.backend.borrow_mut();
@@ -821,6 +844,9 @@ impl Workbench {
                     let href = href.to_string();
                     self.markdown_link(&href, cx);
                 }
+            }
+            Some("position") => {
+                self.markdown.position = message["line"].as_f64();
             }
             Some("focusExit") => {
                 self.markdown.backend.borrow_mut().release_focus();
