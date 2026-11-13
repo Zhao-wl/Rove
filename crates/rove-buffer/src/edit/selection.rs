@@ -188,6 +188,13 @@ impl Selections {
         self.items = sorted.into_iter().map(|(_, s)| s).collect();
     }
 
+    /// 对每个选区做同样的变换（保持创建顺序），变换不会失败时用它。
+    pub(crate) fn map_each(&self, f: impl FnMut(&Selection) -> Selection) -> Self {
+        Self {
+            items: self.items.iter().map(f).collect(),
+        }
+    }
+
     /// 对每个选区做同样的变换（保持创建顺序）。
     pub fn map(&self, mut f: impl FnMut(&Selection) -> Result<Selection>) -> Result<Self> {
         Ok(Self {

@@ -238,3 +238,19 @@ GPUI 测试窗口没有 HWND，入口测试用假后端；真实 WebView2 的首
 $env:ROVE_MARKDOWN_TRACE=1; cargo run -p rove-ui --example markdown_probe
 ```
 
+<!-- #11 追加：着色黄金测试 -->
+
+### 8.6 着色黄金测试（#11，`golden_colors`）
+
+用 VS Code `vscode-colorize-tests` 的数据逐字符比对颜色：fixture → #9 的高亮 → #10 的主题 → 与
+`colorize-results` 的期望颜色比较。**比颜色不比 scope**。数据在 `tests/golden/`（原样复制，见那里的
+`README.md`），阈值在 `tests/golden/thresholds.toml`，口径与差异原因见
+[docs/GOLDEN_COLORS.md](docs/GOLDEN_COLORS.md)。
+
+- 判定进 CI：`cargo test -p rove-syntax --test golden_colors`（顺带把报告写到 `out/golden/`，已 gitignore）。
+- 本地排查：`cargo run -p rove-syntax --example golden_colors`，可加 `--language` / `--fixture` /
+  `--theme` 过滤，`--chars` 逐字符打印期望颜色与实际颜色。
+- **改高亮查询前后都跑一遍**：`out/golden/report.md` 里有按语言与主题的一致率、差异成因分类和逐条差异。
+- 加一种语言只需要在 `thresholds.toml` 的 `[languages]` 下加一行（省略 `threshold` 表示只统计）。
+  **低于 0.98 的阈值必须带 `reason`**，否则测试失败；为了让测试通过而调低阈值是不允许的。
+

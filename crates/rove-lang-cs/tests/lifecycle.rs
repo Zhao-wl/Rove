@@ -29,6 +29,8 @@ const WAIT: Duration = Duration::from_secs(20);
 struct FakeIndexer {
     builds: AtomicUsize,
     delay_ms: AtomicUsize,
+    /// true 时构建停在原地，直到测试放行（模拟一次很慢的构建）。
+    block: AtomicBool,
     failures: Mutex<Vec<BuildFailure>>,
 }
 
@@ -71,6 +73,12 @@ impl IndexBuilder for FakeIndexer {
             files: Some(2),
         });
         for _ in 0..self.delay_ms.load(Ordering::SeqCst) / 10 {
+            if cancel.check().is_err() {
+                return Err(BuildFailure::Cancelled);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        while self.block.load(Ordering::SeqCst) {
             if cancel.check().is_err() {
                 return Err(BuildFailure::Cancelled);
             }
@@ -173,6 +181,55 @@ fn open_check_prefetch_ready_then_mark_stale() {
     assert!(!second.is_stale("Assets/Scripts/C0.cs"));
     assert_eq!(second.status().info.stale_files, 1);
     assert_eq!(builder.builds.load(Ordering::SeqCst), 1);
+}
+
+/// #141：首次全量构建期间（还没有快照）的变化不能丢。索引器可能已经读过旧内容，
+/// 发布之后这些文件仍然是过期的，#38 据此把它们的结果降级为近似。
+#[test]
+fn changes_during_the_first_build_stay_stale() {
+    let p = project(3);
+    let builder = Arc::new(FakeIndexer::default());
+    builder.block.store(true, Ordering::SeqCst);
+    let lifecycle = p.start(&builder);
+    let status = lifecycle.wait_until(WAIT, |s| matches!(s.state, IndexState::Building { .. }));
+    assert!(
+        matches!(
+            status.state,
+            IndexState::Building {
+                rebuilding: false,
+                ..
+            }
+        ),
+        "{status:?}"
+    );
+    assert!(lifecycle.snapshot().is_none(), "首次构建期间还没有快照");
+
+    // 构建期间改文件：立刻标记过期（没有快照也要记下来）。
+    fs::write(p.root.join("Assets/Scripts/C1.cs"), "class C1 { int x; }").unwrap();
+    lifecycle.files_changed(&[SourceChange::Changed("Assets/Scripts/C1.cs".into())]);
+    assert!(lifecycle.is_stale("Assets/Scripts/C1.cs"));
+    assert_eq!(lifecycle.status().info.stale_files, 1);
+
+    // 发布之后仍然过期：没有常驻进程（测试替身），等下一次全量重建。
+    builder.block.store(false, Ordering::SeqCst);
+    let status = lifecycle.wait_until(WAIT, ready);
+    assert_eq!(status.state, IndexState::Ready, "{status:?}");
+    assert!(
+        lifecycle.is_stale("Assets/Scripts/C1.cs"),
+        "构建期间的变化被 adopt 清掉了：{status:?}"
+    );
+    assert!(!lifecycle.is_stale("Assets/Scripts/C0.cs"));
+    assert_eq!(status.info.stale_files, 1);
+    assert_eq!(lifecycle.status().info.stale_files, 1);
+    assert_eq!(builder.builds.load(Ordering::SeqCst), 1);
+
+    // 重建把它们一起收走：重建开始前的过期标记由新索引覆盖。
+    let generation = status.info.generation;
+    lifecycle.rebuild();
+    let status = lifecycle.wait_until(WAIT, |s| ready(s) && s.info.generation != generation);
+    assert!(ready(&status), "{status:?}");
+    assert_eq!(status.info.stale_files, 0);
+    assert!(!lifecycle.is_stale("Assets/Scripts/C1.cs"));
 }
 
 fn rewrite_cached(p: &Project, f: impl FnOnce(&mut FixtureIndex)) {

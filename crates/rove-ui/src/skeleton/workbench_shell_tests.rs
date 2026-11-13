@@ -256,6 +256,10 @@ fn menus_only_show_implemented_commands(cx: &mut TestAppContext) {
                 || crate::quick_access::registry::COMMANDS
                     .iter()
                     .any(|(cmd, _, _)| *cmd == id)
+                // #28：齿轮菜单的设置、键盘快捷方式、颜色主题。
+                || crate::welcome::registry::COMMANDS
+                    .iter()
+                    .any(|(cmd, _, _)| *cmd == id)
         };
         let mut shown = 0;
         let mut expected = 0;

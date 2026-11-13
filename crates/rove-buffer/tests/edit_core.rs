@@ -11,8 +11,8 @@ use rove_buffer::edit::clipboard::{self, ClipboardData, MultiCursorPaste};
 use rove_buffer::edit::rewrite;
 use rove_buffer::edit::selection::{self, column_from_visible, grapheme_left, grapheme_right};
 use rove_buffer::edit::{
-    settings as edit_settings, CursorPlacement, EditBuffer, EditKind, EditOptions, EditSession,
-    InputEdit, LineChange, Replacement, Selection, Selections, Transaction,
+    settings as edit_settings, Bias, CursorPlacement, EditBuffer, EditKind, EditOptions,
+    EditSession, InputEdit, LineChange, Replacement, Selection, Selections, Transaction,
 };
 use rove_buffer::{
     open_bytes, DocumentMetadata, Encoding, Eol, LineEndings, LoadOptions, ReadOnlyReason,
@@ -245,6 +245,134 @@ fn invalid_offsets_leave_text_untouched() {
     }
     assert_eq!(buffer.version(), version);
     assert_eq!(buffer.contents(), "a中\r\nb");
+}
+
+#[test]
+fn editing_never_leaves_the_cursor_inside_a_crlf() {
+    // "\rX\n" 删掉 "X" 后 \r 与 \n 并成一个换行，光标不能停在中间，否则下一次输入被拒绝。
+    for left in [true, false] {
+        let mut session = EditSession::new(
+            EditBuffer::new("\rX\n", LineEndings::Uniform(Eol::Lf)),
+            EditOptions::default(),
+        );
+        cursor(&mut session, if left { 2 } else { 1 });
+        if left {
+            session.delete_left(Instant::now()).unwrap().unwrap();
+        } else {
+            session.delete_right(Instant::now()).unwrap().unwrap();
+        }
+        assert_eq!(session.contents(), "\r\n");
+        assert_eq!(offsets(&session), vec![(2, 2)]);
+        session.type_text("a", Instant::now()).unwrap().unwrap();
+        assert_eq!(session.contents(), "\r\na");
+        assert_eq!(offsets(&session), vec![(3, 3)]);
+    }
+}
+
+#[test]
+fn map_offset_after_skips_every_touching_range() {
+    let mut buffer = EditBuffer::new("ab", LineEndings::Uniform(Eol::Lf));
+    // 同一位置的两个插入：Bias::After 落在第二个插入之后，Bias::Before 落在第一个插入之前。
+    let applied = buffer
+        .apply(
+            &Transaction::new(vec![
+                Replacement::insert(ByteOffset(1), "X"),
+                Replacement::insert(ByteOffset(1), "Y"),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(buffer.contents(), "aXYb");
+    assert_eq!(applied.inserted_ranges(), &[span(1, 2), span(2, 3)]);
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::After),
+        ByteOffset(3)
+    );
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::Before),
+        ByteOffset(1)
+    );
+    assert_eq!(
+        applied.map_offset(ByteOffset(2), Bias::After),
+        ByteOffset(4)
+    );
+
+    // 替换区间的终点上又接一个插入：同样要映射到最后一段之后。
+    let mut buffer = EditBuffer::new("ab", LineEndings::Uniform(Eol::Lf));
+    let applied = buffer
+        .apply(
+            &Transaction::new(vec![
+                Replacement::new(span(0, 1), "ZZ"),
+                Replacement::insert(ByteOffset(1), "Y"),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(buffer.contents(), "ZZYb");
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::After),
+        ByteOffset(3)
+    );
+
+    // 但首尾相接的两个**非空**替换之间的偏移仍停在接缝处，不会被后一段插入的文本越过。
+    let mut buffer = EditBuffer::new("ab", LineEndings::Uniform(Eol::Lf));
+    let applied = buffer
+        .apply(
+            &Transaction::new(vec![
+                Replacement::new(span(0, 1), "XX"),
+                Replacement::new(span(1, 2), "YY"),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(buffer.contents(), "XXYY");
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::After),
+        ByteOffset(2)
+    );
+    assert_eq!(
+        applied.map_offset(ByteOffset(1), Bias::Before),
+        ByteOffset(0)
+    );
+}
+
+#[test]
+fn whole_document_rewrites_keep_the_cursor_at_the_seam() {
+    // 连续空行换行尾：每个行尾一个替换，区间首尾相接，光标不能被带到下一行。
+    let mut session = lf_session("a\n\n\nb");
+    cursor(&mut session, 2);
+    session.change_eol(Eol::CrLf, Instant::now()).unwrap();
+    assert_eq!(session.contents(), "a\r\n\r\n\r\nb");
+    assert_eq!(offsets(&session), vec![(3, 3)]);
+
+    // 全部替换（#47）同理：光标停在两个匹配之间时只跟着前一个匹配走。
+    let mut session = lf_session("abab");
+    cursor(&mut session, 2);
+    session
+        .edit(
+            Transaction::new(vec![
+                Replacement::new(span(0, 2), "xyz"),
+                Replacement::new(span(2, 4), "xyz"),
+            ])
+            .unwrap(),
+            Instant::now(),
+        )
+        .unwrap();
+    assert_eq!(session.contents(), "xyzxyz");
+    assert_eq!(offsets(&session), vec![(3, 3)]);
+}
+
+#[test]
+fn set_selections_never_parks_a_cursor_inside_a_crlf() {
+    // 点击 / 转到定义（R51、R40）直接给出的偏移也可能落在 CRLF 中间，同样要规整。
+    let mut session = EditSession::new(
+        EditBuffer::new("a\r\nb", LineEndings::Uniform(Eol::CrLf)),
+        EditOptions::default(),
+    );
+    cursor(&mut session, 2);
+    assert_eq!(offsets(&session), vec![(3, 3)]);
+    session.type_text("X", Instant::now()).unwrap().unwrap();
+    assert_eq!(session.contents(), "a\r\nXb");
 }
 
 #[test]

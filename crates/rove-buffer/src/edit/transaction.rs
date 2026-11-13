@@ -181,21 +181,33 @@ impl AppliedEdit {
     }
 
     /// 把事务前的偏移映射到事务后的文本。
+    ///
+    /// 同一个偏移可能被多个区间碰到（同一位置的多个插入、替换的终点上又接一个插入）：
+    /// [`Bias::Before`] 取第一个区间之前；[`Bias::After`] 取第一个区间之后，但会继续**跳过
+    /// 紧接着的空区间（纯插入）**，这样在同一位置连续插入 `X`、`Y` 时光标停在 `Y` 之后而不是
+    /// 夹在两段之间。
+    ///
+    /// 只跳过空区间：两个首尾相接的非空替换（例如 `change_eol` 在连续空行上逐个换行尾生成的
+    /// 区间）之间的偏移仍然落在接缝处，不会被第二个替换插入的文本越过。
     pub fn map_offset(&self, offset: ByteOffset, bias: Bias) -> ByteOffset {
         let mut delta: i64 = 0;
+        let mut after: Option<ByteOffset> = None;
         for (old, new) in self.old_ranges.iter().zip(&self.new_ranges) {
             if offset < old.start() {
                 break;
             }
             if offset <= old.end() {
-                return match bias {
-                    Bias::Before => new.start(),
-                    Bias::After => new.end(),
-                };
+                match bias {
+                    Bias::Before => return new.start(),
+                    Bias::After if after.is_none() || old.start() == old.end() => {
+                        after = Some(new.end())
+                    }
+                    Bias::After => {}
+                }
             }
             delta = new.end().0 as i64 - old.end().0 as i64;
         }
-        ByteOffset((offset.0 as i64 + delta) as u64)
+        after.unwrap_or(ByteOffset((offset.0 as i64 + delta) as u64))
     }
 
     /// 把整个事务合并成一个 [`TextEdit`]（覆盖第一个区间起点到最后一个区间终点），
@@ -368,6 +380,18 @@ impl EditBuffer {
     /// 全文（测试与保存路径使用；复制一次）。
     pub fn contents(&self) -> String {
         self.text.rope().to_string()
+    }
+
+    /// 把落在 `\r\n` 中间的偏移规整到换行之后；其余偏移原样返回。
+    ///
+    /// 一次编辑可能把原本分开的 `\r` 与 `\n` 并成一个换行（例如 `\rX\n` 删掉 `X`），
+    /// 光标正好停在中间，下一次普通输入会被 [`EditBuffer::apply`] 判为 [`Error::OutOfBounds`]。
+    /// 规整到换行之后（而不是之前）让光标留在被编辑的那一行上。
+    pub(crate) fn normalize_crlf(&self, offset: ByteOffset) -> ByteOffset {
+        match to_usize(offset) {
+            Ok(byte) if inside_crlf(self.text.rope(), byte) => ByteOffset(offset.0 + 1),
+            _ => offset,
+        }
     }
 
     /// 原子执行一个事务。区间越界、不在 Unicode scalar 边界、或（规范化模式下）落在 CRLF

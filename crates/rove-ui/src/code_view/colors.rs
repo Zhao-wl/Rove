@@ -174,6 +174,8 @@ pub fn theme_registry() -> ColorRegistry {
     crate::peek::registry::register_colors(&mut registry).expect("peek colors");
     // #29：Markdown 预览样式里的颜色变量（含 markdownAlert.*）。
     crate::markdown::registry::register_colors(&mut registry).expect("markdown colors");
+    // #28：欢迎页的三个 welcomePage.* 键。
+    crate::welcome::registry::register_colors(&mut registry).expect("welcome colors");
     registry
 }
 

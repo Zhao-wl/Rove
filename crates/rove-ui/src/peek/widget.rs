@@ -894,8 +894,9 @@ impl PeekWidget {
                     let document = task.await;
                     let _ = this.update_in(cx, |w, _, cx| {
                         if w.preview_generation == generation {
-                            if let Ok(d) = document {
-                                w.set_preview_document(d, cx);
+                            match document {
+                                Ok(d) => w.set_preview_document(d, cx),
+                                Err(_) => w.fail_preview(file, cx),
                             }
                         }
                     });
@@ -938,6 +939,32 @@ impl PeekWidget {
         self.document = Some(document);
         self.set_preview_text(text, language, cx);
         self.reveal_current(cx);
+    }
+
+    /// 预览文档打开失败（文件已删除、读不出来等）。
+    ///
+    /// [`Self::show`] 在打开之前就把 `shown` 换成了新文件，这里必须把它退回去：否则窗口会停在
+    /// “预览里是上一个文件的正文、叠加的却是新文件的命中区间”的状态，双击预览打开的也是上一个
+    /// 文件，而且再次选中新文件时会命中 `shown` 的缓存直接返回、不再尝试打开。退回 `shown` 并清掉
+    /// 文档与命中区间后，预览显示错误占位，再次选中该文件会重新打开一次。
+    fn fail_preview(&mut self, file: usize, cx: &mut Context<Self>) {
+        self.shown = None;
+        self.document = None;
+        self.matches.ranges.borrow_mut().clear();
+        let label = self
+            .results
+            .as_ref()
+            .and_then(|r| r.files.get(file))
+            .map(|g| g.label.clone())
+            .unwrap_or_else(|| Arc::from(""));
+        let text = self.services.text(&Message {
+            key: "peek.openFailed".into(),
+            args: Arc::from([("file".into(), label)]),
+        });
+        let source: Arc<dyn TextSource> = Arc::new(RopeText::new(text));
+        // `set_text` 会重置装饰与选区，占位文本上不会再留着上一个文件的命中高亮。
+        self.set_preview_text(source, Arc::from("plaintext"), cx);
+        cx.notify();
     }
 
     fn set_preview_external(&mut self, resolved: Resolved, cx: &mut Context<Self>) {

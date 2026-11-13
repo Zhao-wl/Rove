@@ -23,3 +23,7 @@ memchr.workspace = true
 [dev-dependencies]
 futures-lite = "2"
 tempfile = "3"
+# #11 着色黄金测试：用 #10 的主题引擎算颜色，阈值读 tests/golden/thresholds.toml。
+rove-theme.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

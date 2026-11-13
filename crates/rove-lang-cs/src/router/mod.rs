@@ -801,17 +801,10 @@ impl CsRouter {
                 query_state,
             } => {
                 let view = snap.holder.view();
-                let index = view.base;
-                let text_of = |list: &[crate::index::SymbolText]| {
-                    let i = list.partition_point(|t| t.symbol < o.symbol);
-                    list.get(i)
-                        .filter(|t| t.symbol == o.symbol)
-                        .and_then(|t| index.str(t.text).ok())
-                        .map(str::to_owned)
-                };
                 let display = view.display(o.symbol).unwrap_or_default().to_owned();
-                let signature = text_of(index.signatures()).unwrap_or(display);
-                let documentation = text_of(index.xml_docs()).unwrap_or_default();
+                let signature = view.signature(o.symbol).map_or(display, str::to_owned);
+                // 走 `xml_doc`：生产索引不写段 12，文档只在元数据视图正文里（#34）。
+                let documentation = view.xml_doc(o.symbol).unwrap_or_default();
                 let start = position(o.line, o.col.0);
                 let start = match &query_state {
                     FileState::Mapped(map) => map.old_to_new_nearest(start),

@@ -8,10 +8,6 @@ pub fn strings() -> Result<StringTable> {
     for (k, v) in [
         ("app.title", "Rove"),
         (
-            "app.usage",
-            "用法：rove [--vscode-user-dir <VS Code 用户目录>] <文件夹路径>",
-        ),
-        (
             "app.noUserDir",
             "找不到 VS Code 用户目录，请用 --vscode-user-dir 指定。",
         ),
@@ -41,10 +37,6 @@ pub fn strings() -> Result<StringTable> {
         ("editors.dirty", "●"),
         ("editors.errorBadge", "!"),
         ("editors.index", "{index}"),
-        (
-            "editors.watermark",
-            "快速打开 Ctrl+P　　命令面板 Ctrl+Shift+P",
-        ),
         ("editors.markdown", "Markdown 预览"),
         ("editors.fileMissing", "无法打开编辑器：找不到文件。"),
         ("editors.fileDenied", "无法打开编辑器：没有读取权限。"),
@@ -91,6 +83,8 @@ pub fn strings() -> Result<StringTable> {
     crate::explorer::registry::register_strings(&mut t)?;
     // #29：Markdown 预览。
     crate::markdown::registry::register_strings(&mut t)?;
+    // #28：欢迎页、最近打开、水印与首选项入口。
+    crate::welcome::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
