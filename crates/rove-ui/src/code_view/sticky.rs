@@ -291,7 +291,16 @@ fn outline_lines(symbols: &DocumentSymbols, first: u64, hint: &mut Vec<SymbolId>
             .node(*id)
             .map_or(u64::MAX, |n| n.symbol.range.start().line.0)
     };
-    let idx = children.partition_point(|id| start_line(id) <= first);
+    // 口径必须和 `path_from` 的下降一致：按完整 `Position`（首行的第 0 列）比较，而不是只比行号。
+    // 符号的 `range` 起点可能带列（C# 的成员从修饰符/特性算起，缩进后列 > 0），
+    // 只比行号会把“声明行正好等于首行、却还没进入路径”的子符号当成已越过的兄弟，
+    // 于是 `next` 取到再下一个兄弟、`hi` 被放宽到整个符号体，粘性区在体内丢失这一级。
+    let starts_before = |id: &SymbolId| {
+        symbols
+            .node(*id)
+            .is_some_and(|n| n.symbol.range.start() <= at)
+    };
+    let idx = children.partition_point(starts_before);
     if let Some(next) = children.get(idx) {
         hi = hi.min(start_line(next).saturating_add(1));
     }
@@ -414,6 +423,22 @@ mod tests {
         DocumentSymbols::new(Version(1), "csharp".into(), Arc::from([ns]))
     }
 
+    /// 与 [`symbols`] 同构，但成员带缩进：`range` 起点的列 > 0（C# 的成员从修饰符 / 特性算起）。
+    fn indented_symbols() -> DocumentSymbols {
+        let member = |name: &str, decl: u64, end: u64| Symbol {
+            name: name.into(),
+            kind: SymbolKind::Method,
+            range: range((decl, 8), (end, 9)),
+            selection: range((decl, 20), (decl, 24)),
+            children: Vec::new().into(),
+        };
+        let mut class = symbol("C", SymbolKind::Class, 2, 98, vec![]);
+        class.range = range((2, 4), (98, 5));
+        class.children = vec![member("A", 10, 30), member("B", 40, 60)].into();
+        let ns = symbol("N", SymbolKind::Namespace, 0, 99, vec![class]);
+        DocumentSymbols::new(Version(1), "csharp".into(), Arc::from([ns]))
+    }
+
     fn folds(spans: &[(u64, u64)]) -> Vec<FoldRange> {
         let mut v: Vec<FoldRange> = spans
             .iter()
@@ -487,6 +512,35 @@ mod tests {
         assert_eq!(lines(&r), vec![0, 2]);
         assert!(r.valid.contains(&10));
         assert!(!r.valid.contains(&11));
+    }
+
+    /// 缩进成员的声明行正好是首行：这一级还不显示（声明行自己还在视口里），
+    /// 但有效区间只能到下一行——放宽到整个方法体的话，滚进体内就再也补不上方法签名。
+    #[test]
+    fn declaration_line_of_an_indented_member_keeps_the_range_tight() {
+        let symbols = indented_symbols();
+        let mut hint = Vec::new();
+        let r = outline_lines(&symbols, 10, &mut hint);
+        assert_eq!(lines(&r), vec![0, 2]);
+        assert!(r.valid.contains(&10));
+        assert!(!r.valid.contains(&11), "下一行方法声明就要进粘性区");
+        let r = outline_lines(&symbols, 11, &mut hint);
+        assert_eq!(lines(&r), vec![0, 2, 10]);
+
+        // 丢缓存时首行恰好停在声明行（符号树到达、折叠开合、换设置都会这样），
+        // 之后往下滚进方法体仍要显示方法。
+        let mut sticky = StickyScroll::default();
+        let sources = StickySources {
+            symbols: Some(&symbols),
+            ..Default::default()
+        };
+        sticky.invalidate();
+        sticky.update(10, 5, StickyModel::Outline, sources);
+        sticky.update(12, 5, StickyModel::Outline, sources);
+        assert_eq!(
+            sticky.lines().iter().map(|l| l.line).collect::<Vec<_>>(),
+            vec![0, 2, 10]
+        );
     }
 
     #[test]

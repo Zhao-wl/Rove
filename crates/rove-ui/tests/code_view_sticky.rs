@@ -244,6 +244,30 @@ fn outline_model_shows_namespace_type_and_method(cx: &mut TestAppContext) {
     assert!(sticky(&view, cx).is_empty());
 }
 
+/// 回归（#55）：视口首行停在方法声明行上时（符号树到达等会丢缓存的时机同理），
+/// 缓存的有效首行区间不能覆盖整个方法体——否则继续往下滚，粘性区会一直缺方法签名。
+#[gpui::test]
+fn outline_model_keeps_the_method_after_stopping_on_its_declaration(cx: &mut TestAppContext) {
+    let text = csharp_5000();
+    let symbols = symbols_of(&text, "csharp");
+    let (view, cx, _) = open(cx, &text, Some("csharp"), vec![]);
+    view.update(cx, |v, cx| v.set_symbols(Some(symbols.clone()), cx));
+    settle(cx);
+
+    let namespace = line_of(&text, "namespace Game.Generated");
+    let class = line_of(&text, "class Component7");
+    let method = line_after(&text, class, "void Method5(");
+    // 先停在声明行：声明行被粘性区盖住，收敛后它自己就要钉上去。
+    scroll_to(&view, cx, method);
+    assert_eq!(sticky(&view, cx), vec![namespace, class, method]);
+    // 再让符号树重新到达（丢缓存），首行仍在声明行上。
+    view.update(cx, |v, cx| v.set_symbols(Some(symbols), cx));
+    settle(cx);
+    // 往下滚进方法体：方法签名必须出现。
+    scroll_to(&view, cx, method + 3);
+    assert_eq!(sticky(&view, cx), vec![namespace, class, method]);
+}
+
 /// `editor.stickyScroll.maxLineCount` 为 1 / 3 / 5 时保留最内层的 1 / 3 / 5 级。
 #[gpui::test]
 fn max_line_count_keeps_the_innermost_levels(cx: &mut TestAppContext) {
