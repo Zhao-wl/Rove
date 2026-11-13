@@ -25,7 +25,10 @@ namespace Rove.Indexer;
 
 static class Server
 {
+    /// 本进程能说的最高协议版本。协议只在不兼容变更时加一，向后兼容的扩展（新字段、新方法）不改。
     public const int Protocol = 1;
+    /// 本进程仍然能说的最低协议版本。握手规则见 docs/CS_INDEX_FORMAT.md「组件、协议与索引格式的版本」。
+    public const int ProtocolMin = 1;
     static readonly object WriteLock = new();
     static readonly Stream Out = Console.OpenStandardOutput();
 
@@ -43,7 +46,7 @@ static class Server
         var idleExit = TimeSpan.FromSeconds(double.Parse(Value("--idle-exit-seconds") ?? "600"));
         var trimAfter = TimeSpan.FromSeconds(double.Parse(Value("--trim-seconds") ?? "120"));
         string version = typeof(Server).Assembly.GetName().Version!.ToString();
-        Notify("hello", new JsonObject { ["protocol"] = Protocol, ["indexer_version"] = version, ["pid"] = Environment.ProcessId });
+        Notify("hello", new JsonObject { ["protocol"] = Protocol, ["protocol_min"] = ProtocolMin, ["indexer_version"] = version, ["pid"] = Environment.ProcessId });
 
         var inbox = new BlockingCollection<Request>();
         var shuttingDown = new CancellationTokenSource();
@@ -140,9 +143,11 @@ static class Server
                         {
                             engine?.Dispose();
                             var p = request.Params;
-                            if ((int?)p["protocol"] is { } protocol && protocol != Protocol)
+                            // Rove 在 initialize 里给出它从双方区间里选定的协议版本；不在本进程区间内就拒绝，不硬跑。
+                            int protocol = (int?)p["protocol"] ?? Protocol;
+                            if (protocol < ProtocolMin || protocol > Protocol)
                             {
-                                Error(request.Id, -32001, $"unsupported protocol {protocol} (indexer speaks {Protocol})");
+                                Error(request.Id, -32001, $"unsupported protocol {protocol} (indexer speaks {ProtocolMin}..{Protocol})");
                                 break;
                             }
                             if ((double?)p["idle_exit_seconds"] is { } ie) idleExit = TimeSpan.FromSeconds(ie);
@@ -154,7 +159,7 @@ static class Server
                             engine = new Engine((string)p["project"]!, (string)p["base"]!, (string)p["journal"]!, options);
                             Reply(request.Id, new JsonObject
                             {
-                                ["protocol"] = Protocol, ["indexer_version"] = version,
+                                ["protocol"] = protocol, ["indexer_version"] = version,
                                 ["segments"] = engine.Segments, ["journal_bytes"] = engine.JournalBytes, ["overlay_files"] = engine.OverlayFiles,
                             });
                         }

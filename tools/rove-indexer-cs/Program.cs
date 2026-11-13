@@ -1,6 +1,7 @@
 // rove-indexer-cs：不走 MSBuild，直接解析 Unity 生成的 .csproj 构造 Roslyn 编译，
 // 生成预计算的语义索引（定义/引用/关系），供 Rove 主进程内存映射查询。
-// 用法: rove-indexer-cs <unity-project-dir> <out.idx> [--generators] [--report <report.json>]
+// 用法: rove-indexer-cs --version（打印组件版本、协议区间与索引格式版本）
+//       rove-indexer-cs <unity-project-dir> <out.idx> [--generators] [--report <report.json>]
 //       [--io-concurrency N] [--max-active-files N] [--prefetch-mb N] [--bind-concurrency N] [--gc-every-files N]
 //       [--soft-memory-mb N]
 //       [--no-reconcile] [--diag <AssemblyName>] [--profile]
@@ -29,6 +30,8 @@ static class Program
         // #35 常驻模式：stdin/stdout 上逐行的 JSON-RPC，见 Server.cs 与 docs/CS_INDEX_FORMAT.md「常驻模式与覆盖层」。
         if (args.Length > 0 && args[0] == "--serve") return Server.Run(args[1..]);
         if (args.Length > 0 && args[0] == "--self-test") return SelfTest.Run();
+        // 组件自述：安装包的 component.json 由它生成（scripts/components/package-indexer.ps1），也方便手工排查。
+        if (args.Length > 0 && args[0] == "--version") { Console.Out.WriteLine(ComponentInfo.Json()); return 0; }
         if (args.Length < 2) { Console.Error.WriteLine(Usage); return 2; }
         var root = Path.GetFullPath(args[0]);
         var outPath = Path.GetFullPath(args[1]);
@@ -42,6 +45,12 @@ static class Program
             if (Value(name) is not { } v) return null;
             if (int.TryParse(v, out int n) && n > 0) return n;
             throw new ArgumentException($"{name} expects a positive integer, got '{v}'");
+        }
+        if (args.Contains("--generators") && ComponentInfo.Trimmed)
+        {
+            // 默认不开启；trim 版里第三方生成器会因缺少 BCL 成员静默失败（生成 0 个文件），所以明确拒绝而不是悄悄少结果。
+            Console.Error.WriteLine("--generators is not supported by the trimmed component package; use the untrimmed package (scripts/components/package-indexer.ps1 -NoTrim).");
+            return 2;
         }
         var options = new IndexOptions
         {

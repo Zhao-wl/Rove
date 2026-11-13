@@ -11,7 +11,19 @@
     <TieredPGO>true</TieredPGO>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- 发布（组件包）用：Roslyn 带 13 种界面语言的资源目录，索引进程不需要；不发 pdb 与 XML 文档 -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- trim 下 System.Text.Json 默认关闭反射序列化：报告与协议里用到匿名/记录类型的序列化，需要打开 -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- trim 时保留本程序集的全部成员（序列化的类型靠反射读属性） -->
+    <TrimmerRootAssembly Include="rove-indexer-cs" />
+    <!-- trim 版不支持 Source Generator 选项：第三方生成器（netstandard2.0）按名字调用被剪掉的 BCL 成员。组件运行时靠这个标记拒绝该选项 -->
+    <RuntimeHostConfigurationOption Include="Rove.Trimmed" Value="true" Condition="'$(PublishTrimmed)' == 'true'" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     <PackageReference Include="System.IO.Hashing" Version="10.0.14" />

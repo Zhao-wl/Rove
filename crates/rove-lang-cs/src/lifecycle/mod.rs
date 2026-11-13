@@ -3,6 +3,7 @@
 //!
 //! 本模块不依赖 GPUI；状态栏条目、通知与详情视图在 `rove-ui::index_status`，只订阅
 //! [`IndexLifecycle::changes`]。缓存目录布局见 [`layout`] 与 `docs/ARCHITECTURE.md`。
+pub mod component;
 pub mod evict;
 pub mod hash;
 pub mod inputs;
@@ -18,10 +19,13 @@ pub mod state;
 pub mod testing;
 pub mod validity;
 
+pub use component::{Aspect, Direction, Discovery, Incompatible, Manifest, Roots};
 pub use evict::CachePolicy;
 pub use layout::ProjectCache;
 pub use prefetch::PrefetchMode;
-pub use process::{locate_indexer, BuildFailure, IndexBuilder, ProcessBuilder, Progress};
+pub use process::{
+    locate_in, locate_indexer, BuildFailure, IndexBuilder, ProcessBuilder, Progress,
+};
 pub use resident::{
     IncrementalIndexer, ProcessResident, ResidentEvent, ResidentOptions, ResidentSession,
     SessionRequest,

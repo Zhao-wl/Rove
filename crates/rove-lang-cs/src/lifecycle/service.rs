@@ -555,6 +555,12 @@ impl Worker {
                 self.incremental = None;
                 false
             }
+            Err(BuildFailure::Incompatible(why)) => {
+                self.log(&format!("resident indexer unusable: {why}"));
+                self.incremental = None;
+                self.shared.update(|s| s.info.component_issue = Some(why));
+                false
+            }
             Err(e) => {
                 self.log(&format!("resident indexer failed to start: {e}"));
                 false
@@ -604,6 +610,18 @@ impl Worker {
                 ));
                 let done = self.pending.completed(&files);
                 self.reload_overlay(&done)
+            }
+            ResidentEvent::Incompatible(why) => {
+                self.log(&format!("resident indexer incompatible: {why}"));
+                self.stop_resident("incompatible protocol");
+                self.incremental = None;
+                self.shared.update(|s| {
+                    s.info.component_issue = Some(why);
+                    if matches!(s.state, IndexState::Updating { .. }) {
+                        s.state = IndexState::Ready;
+                    }
+                });
+                false
             }
             ResidentEvent::Failed { id, message } => {
                 self.log(&format!("resident request {id:?} failed: {message}"));
@@ -754,6 +772,13 @@ impl Worker {
         self.shared.update(|s| s.state = state);
     }
 
+    /// 缓存索引头部应有的索引进程版本：已安装组件的版本，未知时用编译期常量。
+    fn expected_version(&self) -> [u16; 4] {
+        self.builder
+            .component_version()
+            .unwrap_or(EXPECTED_INDEXER_VERSION)
+    }
+
     fn fail(&self, kind: FailureKind, detail: String) {
         self.log(&format!("failed ({}): {detail}", kind.id()));
         self.set_state(IndexState::Failed(Failure { kind, detail }));
@@ -845,7 +870,12 @@ impl Worker {
             .build
             .clone()
             .filter(|b| b.generation == generation);
-        match open_checked(&path, record.as_ref(), &self.inputs) {
+        match open_checked(
+            &path,
+            record.as_ref(),
+            &self.inputs,
+            self.expected_version(),
+        ) {
             Ok(index) => {
                 self.log(&format!("cached index {generation:016x} is valid"));
                 self.publish(generation, path.clone(), index, true, record.as_ref());
@@ -1085,6 +1115,9 @@ impl Worker {
                     self.log(&format!("build attempt {attempt} failed: {f}"));
                     let _ = fs::remove_file(&output);
                     failure = f;
+                    if matches!(failure, BuildFailure::Incompatible(_)) {
+                        break; // 重试也一样：不兼容的组件不会变兼容
+                    }
                 }
             }
         }
@@ -1099,6 +1132,23 @@ impl Worker {
             } else {
                 lock(&self.shared.snapshot).take();
                 self.set_state(IndexState::NotInstalled);
+            }
+            return;
+        }
+        if let BuildFailure::Incompatible(why) = &failure {
+            self.log("semantic component incompatible: falling back to L1/L0");
+            let trusted = lock(&self.shared.snapshot)
+                .as_ref()
+                .is_some_and(|s| s.trusted);
+            if trusted {
+                let why = why.clone();
+                self.shared.update(|s| {
+                    s.info.component_issue = Some(why);
+                    s.state = IndexState::Ready;
+                });
+            } else {
+                lock(&self.shared.snapshot).take();
+                self.set_state(IndexState::Incompatible(why.clone()));
             }
             return;
         }
@@ -1121,9 +1171,10 @@ impl Worker {
     ) -> Result<(), BuildFailure> {
         let index =
             CsIndex::open(output).map_err(|e| BuildFailure::InvalidOutput(e.to_string()))?;
-        if index.header().indexer_version != EXPECTED_INDEXER_VERSION {
+        let expected = self.expected_version();
+        if index.header().indexer_version != expected {
             return Err(BuildFailure::InvalidOutput(format!(
-                "indexer version {:?}",
+                "indexer version {:?}, expected {expected:?}",
                 index.header().indexer_version
             )));
         }
@@ -1152,6 +1203,7 @@ impl Worker {
             self.clean_l2(&cache, Some(generation));
         }
         self.shared.update(|s| {
+            s.info.component_issue = None;
             s.info.stale_files = 0;
             // 刚写完的文件就在系统缓存里。
             s.info.prefetch = PrefetchState::Skipped;

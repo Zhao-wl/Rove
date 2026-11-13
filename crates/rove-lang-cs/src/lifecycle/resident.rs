@@ -1,12 +1,14 @@
 //! #35 常驻索引进程：拉起 `rove-indexer-cs --serve`，转发文件变化，把它的回复与通知交给生命周期。
 //!
 //! 协议是 stdin / stdout 上逐行的 JSON-RPC 2.0（说明见 `docs/CS_INDEX_FORMAT.md`「常驻模式与覆盖层」）。
-//! 本模块只管“消息内容”：何时拉起、何时关闭由 `service`（#36）决定，版本如何协商由 #43 定稿——
-//! 这里只检查第一条消息 `hello` 里的协议版本与本端一致。
+//! 本模块只管“消息内容”：何时拉起、何时关闭由 `service`（#36）决定。版本协商（#43）：第一条消息
+//! `hello` 带组件的协议区间，按 `component::negotiate_protocol` 取交集；交集为空就报告
+//! [`ResidentEvent::Incompatible`] 并放弃这个进程，不硬跑。
 //!
 //! 重绑结果不经过管道：进程把覆盖层段追加到与基础索引配套的日志里，回复只说明段已写入，
 //! 生命周期再从日志读出新段、合并、发布新的快照。
 use super::{
+    component::{negotiate_protocol, Incompatible},
     log::IndexLog,
     process::{BuildFailure, IndexerComponent},
 };
@@ -20,8 +22,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 本端实现的协议版本（与 `tools/rove-indexer-cs/Server.cs` 的 `Protocol` 一致）。
-pub const PROTOCOL: u64 = 1;
+/// 本端能说的最高协议版本（`tools/rove-indexer-cs/Server.cs` 的 `Protocol` 与它同步演进）。
+pub const PROTOCOL: u32 = 1;
+/// 本端还能说的最低协议版本。
+pub const PROTOCOL_MIN: u32 = 1;
+
+/// 进程第一条消息 `hello` 的内容。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hello {
+    pub protocol: u32,
+    pub protocol_min: u32,
+    pub indexer_version: String,
+}
 
 /// 常驻进程的策略参数。
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +77,8 @@ pub struct SessionRequest {
 pub enum ResidentEvent {
     /// `initialize` 成功。
     Ready { indexer_version: String },
+    /// `hello` 里的协议区间与本端没有交集（#43）：组件太旧或太新，进程已被放弃。
+    Incompatible(Incompatible),
     /// 一次 `changed` 请求处理完：`files` 已写入覆盖层；`locked` 暂时读不到（被独占），稍后由后台重试；
     /// `rebuild_required`：项目结构文件变了，需要全量重建。
     Applied {
@@ -103,11 +117,13 @@ pub trait IncrementalIndexer: Send + Sync {
 
 /// 用索引进程的 `--serve` 模式。
 pub struct ProcessResident {
-    locate: Box<dyn Fn() -> Option<IndexerComponent> + Send + Sync>,
+    locate: Box<dyn Fn() -> Result<IndexerComponent, BuildFailure> + Send + Sync>,
 }
 
 impl ProcessResident {
-    pub fn new(locate: impl Fn() -> Option<IndexerComponent> + Send + Sync + 'static) -> Self {
+    pub fn new(
+        locate: impl Fn() -> Result<IndexerComponent, BuildFailure> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             locate: Box::new(locate),
         }
@@ -135,13 +151,24 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 /// 解析一行进程输出成事件。`initialize` 的 id 固定为 0。
-pub fn parse_message(line: &str, hello: &mut Option<u64>) -> Option<ResidentEvent> {
+pub fn parse_message(line: &str, hello: &mut Option<Hello>) -> Option<ResidentEvent> {
     let msg: Value = serde_json::from_str(line).ok()?;
     if let Some(method) = msg.get("method").and_then(Value::as_str) {
         let params = &msg["params"];
         return match method {
             "hello" => {
-                *hello = params["protocol"].as_u64();
+                let protocol = params["protocol"]
+                    .as_u64()
+                    .and_then(|p| u32::try_from(p).ok())
+                    .unwrap_or(0);
+                *hello = Some(Hello {
+                    protocol,
+                    protocol_min: params["protocol_min"]
+                        .as_u64()
+                        .and_then(|p| u32::try_from(p).ok())
+                        .unwrap_or(protocol),
+                    indexer_version: params["indexer_version"].as_str().unwrap_or("").to_owned(),
+                });
                 None
             }
             "overlay" => Some(ResidentEvent::Overlay {
@@ -185,7 +212,7 @@ impl IncrementalIndexer for ProcessResident {
         events: Box<dyn Fn(ResidentEvent) + Send + Sync>,
         log: Arc<IndexLog>,
     ) -> Result<Box<dyn ResidentSession>, BuildFailure> {
-        let component = (self.locate)().ok_or(BuildFailure::Missing)?;
+        let component = (self.locate)()?;
         let mut command = Command::new(&component.program);
         command
             .args(&component.prefix)
@@ -232,11 +259,13 @@ impl IncrementalIndexer for ProcessResident {
                     let had_hello = hello.is_some();
                     let event = parse_message(&line, &mut hello);
                     if !had_hello {
-                        if let Some(protocol) = hello.filter(|&p| p != PROTOCOL) {
-                            out_log.line(&format!(
-                                "resident: protocol {protocol} not supported (expected {PROTOCOL})"
-                            ));
-                            break;
+                        if let Some(h) = &hello {
+                            if let Err(mut why) = negotiate_protocol(h.protocol, h.protocol_min) {
+                                why.component_version = Some(h.indexer_version.clone());
+                                out_log.line(&format!("resident: {why}"));
+                                events(ResidentEvent::Incompatible(why));
+                                break;
+                            }
                         }
                     }
                     if let Some(event) = event {
@@ -253,7 +282,7 @@ impl IncrementalIndexer for ProcessResident {
         let init = json!({
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": {
-                "protocol": PROTOCOL,
+                "protocol": component.protocol.unwrap_or(PROTOCOL),
                 "project": request.project_root,
                 "base": request.base,
                 "journal": request.journal,
@@ -375,7 +404,7 @@ mod tests {
     #[test]
     fn messages_from_the_indexer() {
         let events = parse_lines(&[
-            r#"{"jsonrpc":"2.0","method":"hello","params":{"protocol":1,"indexer_version":"1.2.0.0"}}"#,
+            r#"{"jsonrpc":"2.0","method":"hello","params":{"protocol":1,"protocol_min":1,"indexer_version":"1.2.0.0"}}"#,
             r#"{"jsonrpc":"2.0","id":0,"result":{"protocol":1,"indexer_version":"1.2.0.0"}}"#,
             r#"{"jsonrpc":"2.0","id":7,"result":{"files":["Assets/A.cs"],"locked":["Assets/L.cs"],"rebuild_required":false,"impact":{"queued":3},"elapsed_ms":12.5}}"#,
             r#"{"jsonrpc":"2.0","method":"overlay","params":{"files":["Assets/B.cs"],"impact":{"queued":2}}}"#,
