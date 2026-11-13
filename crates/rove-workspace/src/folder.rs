@@ -426,6 +426,15 @@ impl Folder {
         self.config.exclude.is_excluded(path.as_str())
     }
 
+    /// True when the snapshot currently records this path as a file. Used while planning to spot
+    /// a file that turned into a same-named directory within one debounce window.
+    fn snapshot_kind_is_file(&self, path: &WorkspacePath) -> bool {
+        matches!(
+            self.read().kind(path),
+            Some(crate::contracts::EntryKind::File)
+        )
+    }
+
     /// Read-only attribute of a file, or `None` when `files.readonlyFromPermissions` is off.
     fn permission_flag(&self, absolute: &Path) -> Option<bool> {
         self.config
@@ -555,7 +564,22 @@ impl Folder {
                         continue;
                     }
                     match std::fs::symlink_metadata(&absolute) {
-                        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {}
+                        Ok(metadata) if metadata.file_type().is_symlink() => {}
+                        Ok(metadata) if metadata.is_dir() => {
+                            // A delete + create of the same name inside one debounce window is
+                            // merged into `Changed`. When the snapshot still holds a *file*
+                            // there, the name became a directory: handle it as a creation so the
+                            // subtree is scanned and the directory gets a watcher. Any other
+                            // `Changed` on a directory is metadata noise.
+                            if self.snapshot_kind_is_file(&path) {
+                                let (entries, subdirectories) = scan::subtree(self, &absolute);
+                                plans.push(Plan::CreateDir {
+                                    path,
+                                    entries,
+                                    subdirectories,
+                                });
+                            }
+                        }
                         Ok(_) => plans.push(Plan::Changed {
                             path,
                             read_only: self.permission_flag(&absolute),
@@ -653,9 +677,27 @@ impl Folder {
                 _ => None,
             })
             .collect();
+        // A file and a same-named directory that swapped places inside one window reach us as a
+        // plain creation/change: the key is still in the snapshot, but with the stale kind.
+        // `add` would ignore it, so the old entry (for a directory, its whole subtree) has to go
+        // first; the plan below then rebuilds the name with the kind the disk reports.
+        let kind_swapped: Vec<WorkspacePath> = plans
+            .iter()
+            .filter_map(|plan| {
+                let (path, kind) = match plan {
+                    Plan::CreateFile { path, .. } => (path, crate::contracts::EntryKind::File),
+                    Plan::CreateDir { path, .. } => (path, crate::contracts::EntryKind::Directory),
+                    Plan::Changed {
+                        path, exists: true, ..
+                    } => (path, crate::contracts::EntryKind::File),
+                    _ => return None,
+                };
+                snapshot.kind_differs(path, &kind).then(|| path.clone())
+            })
+            .collect();
         // Resolve the kinds *before* removing: after `remove_many` the snapshot no longer knows
         // them. Directories that disappeared must be watchable again if re-created later.
-        let removed_directories: Vec<PathBuf> = plans
+        let mut removed_directories: Vec<PathBuf> = plans
             .iter()
             .filter_map(|plan| match plan {
                 Plan::Removed { path } => matches!(
@@ -667,8 +709,20 @@ impl Folder {
                 _ => None,
             })
             .collect();
+        removed_directories.extend(
+            kind_swapped
+                .iter()
+                .filter(|path| {
+                    matches!(
+                        snapshot.kind(path),
+                        Some(crate::contracts::EntryKind::Directory)
+                    )
+                })
+                .map(|path| self.absolute(path)),
+        );
         let removed_plain = snapshot.remove_many(&plain_removals);
         let removed_by_rename = snapshot.remove_many(&rename_sources);
+        let removed_by_kind_swap = snapshot.remove_many(&kind_swapped);
         let rename_source_keys: BTreeSet<String> = rename_sources
             .iter()
             .map(|path| identity_key(path.as_str()))
@@ -719,6 +773,11 @@ impl Folder {
             emitted.push(FileEvent::Removed(removed));
         }
         for removed in removed_plain {
+            emitted.push(FileEvent::Removed(removed));
+        }
+        // The stale entries of a file <-> directory swap, reported before the name is re-created
+        // below with its new kind.
+        for removed in removed_by_kind_swap {
             emitted.push(FileEvent::Removed(removed));
         }
 
@@ -847,14 +906,22 @@ impl Folder {
         // Phase 2: one read pass to learn which children are known and which directories are new.
         let mut known: Vec<ChildIndex> = Vec::with_capacity(listings.len());
         let mut new_directories: Vec<WorkspacePath> = Vec::new();
+        // Children whose key is still known but whose kind changed (a file and a same-named
+        // directory swapped places). Comparing keys alone would keep the stale kind forever and
+        // never scan the new directory's subtree, so they are removed and created again.
+        let mut kind_swapped: Vec<WorkspacePath> = Vec::new();
         {
             let snapshot = self.read();
             for (relative, listing) in &listings {
                 let children = snapshot.children_keys(&identity_key(relative));
                 let keys: BTreeSet<String> = children.iter().map(|(key, _)| key.clone()).collect();
                 for (path, kind, _) in listing {
+                    let swapped = snapshot.kind_differs(path, kind);
+                    if swapped {
+                        kind_swapped.push(path.clone());
+                    }
                     if matches!(kind, crate::contracts::EntryKind::Directory)
-                        && !keys.contains(&identity_key(path.as_str()))
+                        && (swapped || !keys.contains(&identity_key(path.as_str())))
                     {
                         new_directories.push(path.clone());
                     }
@@ -887,6 +954,7 @@ impl Folder {
                         .map(|(_, display)| display.clone())
                         .collect::<Vec<_>>()
                 })
+                .chain(kind_swapped)
                 .collect();
             // Resolve kinds before removing: a directory that only the reconcile saw disappear
             // must be forgotten so that re-creating it is watched again.
@@ -1357,5 +1425,144 @@ mod tests {
             .expect("long-path file is in the snapshot");
         assert!(entry.path.as_str().len() > 260, "{}", entry.path.as_str());
         assert_eq!(folder.read_file(&entry.path).unwrap(), b"class Deep {}\n");
+    }
+
+    fn file_names(folder: &Arc<Folder>) -> Vec<String> {
+        folder
+            .files(0..100)
+            .unwrap()
+            .items
+            .iter()
+            .map(|entry| entry.path.as_str().to_string())
+            .collect()
+    }
+
+    /// Remove + create of the same name inside one debounce window is merged into `Changed`
+    /// (see `watch::parse`); the kind must still follow the disk.
+    fn swap_events(folder: &Arc<Folder>, name: &str) -> Vec<notify::Event> {
+        vec![
+            notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Any))
+                .add_path(folder.root().join(name)),
+            notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any))
+                .add_path(folder.root().join(name)),
+        ]
+    }
+
+    #[test]
+    fn a_file_becoming_a_directory_in_one_window_is_rescanned_and_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Assets"), "not a directory\n").unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        assert!(matches!(
+            folder.children(None, 0..16).unwrap().items[0].kind,
+            EntryKind::File
+        ));
+
+        std::fs::remove_file(dir.path().join("Assets")).unwrap();
+        std::fs::create_dir(dir.path().join("Assets")).unwrap();
+        std::fs::write(dir.path().join("Assets/Player.cs"), "class Player {}\n").unwrap();
+        let (log, _subscription) = collect(&folder);
+        let to_watch = folder.apply_watch_events(swap_events(&folder, "Assets"), false);
+
+        let root = folder.children(None, 0..16).unwrap();
+        assert_eq!(root.items.len(), 1);
+        assert!(
+            matches!(root.items[0].kind, EntryKind::Directory),
+            "the snapshot must follow the disk: {:?}",
+            root.items
+        );
+        let assets = WorkspacePath::new("Assets").unwrap();
+        let children = folder.children(Some(&assets), 0..16).unwrap();
+        let names: Vec<&str> = children.items.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, ["Assets/Player.cs"], "the subtree must be scanned");
+        assert!(
+            to_watch.iter().any(|path| path.ends_with("Assets")),
+            "the new directory must be reported for registration: {to_watch:?}"
+        );
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.iter().any(
+                |event| matches!(event, FileEvent::Removed(path) if path.as_str() == "Assets")
+            ),
+            "the stale file entry must be reported as removed: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_directory_becoming_a_file_in_one_window_drops_the_old_subtree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Assets/Sub")).unwrap();
+        std::fs::write(dir.path().join("Assets/Sub/Deep.cs"), "class D {}\n").unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        let assets_dir = folder.absolute(&WorkspacePath::new("Assets").unwrap());
+        folder.mark_registered(std::slice::from_ref(&assets_dir));
+
+        std::fs::remove_dir_all(dir.path().join("Assets")).unwrap();
+        std::fs::write(dir.path().join("Assets"), "now a file\n").unwrap();
+        folder.apply_watch_events(swap_events(&folder, "Assets"), false);
+
+        let names = file_names(&folder);
+        assert_eq!(names, ["Assets"], "the old subtree must be gone");
+        assert!(matches!(
+            folder.children(None, 0..16).unwrap().items[0].kind,
+            EntryKind::File
+        ));
+        assert!(folder
+            .children(Some(&WorkspacePath::new("Assets").unwrap()), 0..16)
+            .is_err());
+        assert_eq!(
+            folder.new_watch_dirs(vec![assets_dir.clone()]),
+            vec![assets_dir],
+            "the stale directory registration must be forgotten"
+        );
+    }
+
+    #[test]
+    fn reconcile_replaces_a_file_that_became_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Assets"), "not a directory\n").unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+
+        // Every event for the swap was lost; only the reconcile of the parent sees it.
+        std::fs::remove_file(dir.path().join("Assets")).unwrap();
+        std::fs::create_dir(dir.path().join("Assets")).unwrap();
+        std::fs::write(dir.path().join("Assets/Player.cs"), "class Player {}\n").unwrap();
+        let discovered = folder.reconcile_dirs(BTreeSet::from([folder.root().to_path_buf()]));
+
+        assert!(matches!(
+            folder.children(None, 0..16).unwrap().items[0].kind,
+            EntryKind::Directory
+        ));
+        let names = file_names(&folder);
+        assert_eq!(names, ["Assets/Player.cs"]);
+        assert!(
+            discovered.iter().any(|path| path.ends_with("Assets")),
+            "the new directory must be reported for registration: {discovered:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_replaces_a_directory_that_became_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Assets/Sub")).unwrap();
+        std::fs::write(dir.path().join("Assets/Sub/Deep.cs"), "class D {}\n").unwrap();
+        let folder = Folder::scan_root(dir.path(), config().without_watching()).unwrap();
+        let assets_dir = folder.absolute(&WorkspacePath::new("Assets").unwrap());
+        folder.mark_registered(std::slice::from_ref(&assets_dir));
+
+        std::fs::remove_dir_all(dir.path().join("Assets")).unwrap();
+        std::fs::write(dir.path().join("Assets"), "now a file\n").unwrap();
+        folder.reconcile_dirs(BTreeSet::from([folder.root().to_path_buf()]));
+
+        let names = file_names(&folder);
+        assert_eq!(names, ["Assets"], "the old subtree must be gone");
+        assert!(folder
+            .children(Some(&WorkspacePath::new("Assets").unwrap()), 0..16)
+            .is_err());
+        assert_eq!(
+            folder.new_watch_dirs(vec![assets_dir.clone()]),
+            vec![assets_dir],
+            "the stale directory registration must be forgotten"
+        );
     }
 }
