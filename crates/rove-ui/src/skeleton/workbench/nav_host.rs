@@ -675,6 +675,16 @@ impl Workbench {
                 false,
                 cx,
             ),
+            // #60：转到类型定义（无默认键位，从命令面板或用户自定义键位进来）。
+            nav_registry::GOTO_TYPE_DEFINITION => self.navigate(
+                NavKind::TypeDefinition,
+                group,
+                secondary,
+                None,
+                false,
+                false,
+                cx,
+            ),
             nav_registry::NEXT_SYMBOL => self.next_symbol(cx),
             nav_registry::NEXT_SYMBOL_CANCEL => self.cancel_symbol_navigation(cx),
             nav_registry::SHOW_HOVER => self.show_hover_command(group, secondary, window, cx),
@@ -796,10 +806,11 @@ impl Workbench {
         let result = match result {
             Ok(r) => r,
             Err(Error::Cancelled) => return,
-            // 未就绪、版本过期、不支持的资源：不能确定，按“近似的空结果”提示。
-            Err(_) => QueryResult {
+            // 未就绪、版本过期：不能确定，按“近似的空结果”提示；不支持的位置（#60 的类型定义
+            // 在非类型上就是这一类）按“确实没有”。口径与速览共用 `source::error_precision`。
+            Err(e) => QueryResult {
                 value: Arc::from([]),
-                precision: Precision::Approximate,
+                precision: crate::peek::source::error_precision(&e),
                 reason: None,
                 version: None,
                 index_generation: 0,
@@ -998,7 +1009,10 @@ impl Workbench {
         }
         let request = pending.request;
         let kind = match request.kind {
-            NavKind::Definition | NavKind::Declaration => crate::peek::PeekKind::Definition,
+            // #60：类型定义的多候选沿用“定义”的速览标题（结果也是类型的定义处）。
+            NavKind::Definition | NavKind::Declaration | NavKind::TypeDefinition => {
+                crate::peek::PeekKind::Definition
+            }
             NavKind::Implementation => crate::peek::PeekKind::Implementation,
         };
         let approximate = request.annotation.is_some();

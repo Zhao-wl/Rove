@@ -19,10 +19,12 @@ use crate::{
         registry::{self as reg, QuickAccessAction, QuickOpenSettings},
         Picks,
     },
+    workspace_symbols::{self, SymbolLabels},
 };
 use gpui::deferred;
 use rove_base::{Line, Position, Utf16Column, Utf8Column};
 use rove_buffer::Document;
+use rove_lang_cs::query::{CsQueries, WorkspaceSymbol};
 
 /// 最近打开的文件最多记多少个。
 const HISTORY_LIMIT: usize = 100;
@@ -58,12 +60,40 @@ pub(super) struct QuickAccess {
     pub(super) goto_wait: Option<(String, u8)>,
     pub(super) run: Option<Arc<str>>,
     pub(super) seen_focus: bool,
+    /// #60：工作区符号搜索（`Ctrl+T` 与 `#` 共用这一份状态）。
+    pub(super) symbols: SymbolSearch,
     pub(super) placeholder: &'static str,
     /// 打开时的活动文档（`:` 与 `@` 的目标）。
     pub(super) document: Option<DocumentId>,
     pub(super) matcher: Option<Arc<FuzzyMatcher>>,
     pub(super) subscriptions: Vec<gpui::Subscription>,
     pub(super) pick_events: Option<rove_base::Subscription>,
+}
+
+/// #60：工作区符号搜索的状态（`Ctrl+T` 与 `#` 共用）。
+#[derive(Default)]
+pub(super) struct SymbolSearch {
+    /// 已经有结果的查询（trim 过）。
+    query: Option<String>,
+    results: Arc<[WorkspaceSymbol]>,
+    /// 结果来自 L1（语法级）或其他不精确来源：列表顶部加一行说明。
+    approximate: bool,
+    /// 正在后台跑的查询（同一个查询不重复发起）。
+    running: Option<String>,
+    /// 查询代次：输入变化后旧结果作废。
+    epoch: u64,
+    /// 测试替身；`None` 时用 #40 装配的 `CsRouter`。
+    queries: Option<Arc<dyn CsQueries>>,
+}
+
+impl SymbolSearch {
+    fn reset(&mut self) {
+        self.query = None;
+        self.results = Arc::from([]);
+        self.approximate = false;
+        self.running = None;
+        self.epoch += 1;
+    }
 }
 
 /// 一次计算的结果。
@@ -273,25 +303,127 @@ impl Workbench {
 
     // ------------------------------------------------------------------ 计算
 
-    fn quick_compute(&mut self, text: &str, cx: &App) -> Output {
+    fn quick_compute(&mut self, text: &str, cx: &mut Context<Self>) -> Output {
         match parse::parse(text) {
             Mode::Files { query, .. } => self.quick_files(query),
             Mode::Commands(filter) => self.quick_commands(filter, cx),
             Mode::Line(rest) => self.quick_line(rest, cx),
             Mode::Symbols(rest) => self.quick_symbols(rest),
-            Mode::WorkspaceSymbols(_) => {
-                let key = crate::keys::key_label(reg::QUICK_OPEN, cx)
-                    .unwrap_or_else(|| "Ctrl+P".to_string());
-                Output {
-                    picks: Picks::default(),
-                    placeholder: "quickAccess.workspaceSymbols.placeholder",
-                    empty: Some(msg(
-                        "quickAccess.workspaceSymbols.unavailable",
-                        &[("key", key)],
-                    )),
-                    loading: false,
+            Mode::WorkspaceSymbols(rest) => self.quick_workspace_symbols(rest, cx),
+        }
+    }
+
+    /// #60：`#` 前缀与 `Ctrl+T` 的候选列表（**同一个实现**）。
+    ///
+    /// 查询经 #1 的 C# 导航查询接口在后台跑（契约要求所有查询都在后台线程），这一帧先用上一次的
+    /// 结果绘制并在列表底部显示“正在加载…”；结果到达后 `quick_refresh_current` 重算。
+    /// 顺序一律是查询返回的顺序（#37 的打分与排序），这里不再打分。
+    fn quick_workspace_symbols(&mut self, rest: &str, cx: &mut Context<Self>) -> Output {
+        let placeholder = "quickAccess.workspaceSymbols.placeholder";
+        let query = rest.trim().to_owned();
+        if query.is_empty() {
+            self.quick.symbols.reset();
+            return Output {
+                picks: Picks::default(),
+                placeholder,
+                empty: None,
+                loading: false,
+            };
+        }
+        let fresh = self.quick.symbols.query.as_deref() == Some(query.as_str());
+        if !fresh && self.quick.symbols.running.as_deref() != Some(query.as_str()) {
+            self.start_symbol_search(query, cx);
+        }
+        let symbols = self.quick.symbols.results.clone();
+        let shown = self.quick.symbols.query.clone().unwrap_or_default();
+        let approximate = self.quick.symbols.approximate;
+        let details: Vec<Arc<str>> = symbols.iter().map(|s| self.symbol_detail(s)).collect();
+        let labels = SymbolLabels {
+            approximate: approximate
+                .then(|| Arc::from(self.label("workspaceSymbols.approximate", &[]))),
+        };
+        let matcher = self
+            .quick
+            .matcher
+            .get_or_insert_with(|| Arc::new(FuzzyMatcher::default()))
+            .clone();
+        let picks = workspace_symbols::picks(&symbols, &details, &shown, matcher.as_ref(), &labels);
+        Output {
+            picks,
+            placeholder,
+            empty: Some(Message::key("workspaceSymbols.noResults")),
+            loading: !fresh,
+        }
+    }
+
+    /// 列表项右侧：容器名 + 文件相对路径（模板登记在字符串表里）。
+    fn symbol_detail(&self, symbol: &WorkspaceSymbol) -> Arc<str> {
+        let path = workspace_symbols::path_of(&symbol.target.resource);
+        let text = if symbol.container.is_empty() {
+            self.label("workspaceSymbols.detail.path", &[("path", path)])
+        } else {
+            self.label(
+                "workspaceSymbols.detail",
+                &[("container", symbol.container.to_string()), ("path", path)],
+            )
+        };
+        Arc::from(text)
+    }
+
+    /// 测试替身：换掉工作区符号搜索用的查询服务；`None` 时用 #40 装配的 `CsRouter`。
+    pub fn set_workspace_symbol_queries(&mut self, queries: Option<Arc<dyn CsQueries>>) {
+        self.quick.symbols.queries = queries;
+        self.quick.symbols.reset();
+    }
+
+    fn symbol_queries(&self) -> Arc<dyn CsQueries> {
+        self.quick
+            .symbols
+            .queries
+            .clone()
+            .unwrap_or_else(|| self.cs_router().clone() as Arc<dyn CsQueries>)
+    }
+
+    fn start_symbol_search(&mut self, query: String, cx: &mut Context<Self>) {
+        self.quick.symbols.epoch += 1;
+        let epoch = self.quick.symbols.epoch;
+        self.quick.symbols.running = Some(query.clone());
+        let queries = self.symbol_queries();
+        let task = cx.background_executor().spawn({
+            let query = query.clone();
+            async move { queries.workspace_symbols(&query, &Cancellation::default()) }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                if v.quick.symbols.epoch != epoch {
+                    return;
                 }
-            }
+                v.quick.symbols.running = None;
+                // 工作区里没有 C# 代码、索引还没建好或查询不支持：空结果，不报错。
+                let (results, approximate) = match result {
+                    Ok(r) => (r.value, workspace_symbols::is_approximate(r.precision)),
+                    Err(_) => (Arc::from([]), false),
+                };
+                v.quick.symbols.query = Some(query);
+                v.quick.symbols.results = results;
+                v.quick.symbols.approximate = approximate;
+                v.quick_refresh_current(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// `Ctrl+T`（`workbench.action.showAllSymbols`）：把快速打开的输入预置成 `#`。
+    /// **两个入口因此是同一份数据、同一套排序、同一个实现**（VS Code 里也是同一个 provider）。
+    pub(super) fn workspace_symbols_command(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if id == crate::workspace_symbols::SHOW_ALL_SYMBOLS {
+            self.show_quick_access(crate::workspace_symbols::PREFIX.into(), window, cx);
         }
     }
 
@@ -574,11 +706,48 @@ impl Workbench {
                     self.reveal_key(document, &key, false, OpenSource::Other, target, cx);
                 }
             }
-            Mode::WorkspaceSymbols(_) => {}
+            Mode::WorkspaceSymbols(_) => {
+                if let Some(symbol) = item
+                    .and_then(|id| workspace_symbols::index_of(&id))
+                    .and_then(|i| self.quick.symbols.results.get(i).cloned())
+                {
+                    self.quick_open_symbol(&symbol, beside, cx);
+                }
+            }
         }
         // #22：转到行进入等待时输入框下一帧还要重新打开，焦点不回编辑器。
         if self.quick.goto_wait.is_none() {
             self.quick.focus_editor = true;
+        }
+        cx.notify();
+    }
+
+    /// #60：选中一个工作区符号 → 经 #17 的打开文档服务打开并定位（带选区，所以 `.md` 也打开源码）。
+    fn quick_open_symbol(
+        &mut self,
+        symbol: &WorkspaceSymbol,
+        beside: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Resource::Workspace(path) = &symbol.target.resource {
+            self.record_history(path);
+        }
+        let options = OpenOptions {
+            source: OpenSource::QuickOpen,
+            target: if beside {
+                OpenTarget::Beside
+            } else {
+                OpenTarget::Active
+            },
+            selection: Some(symbol.target.selection.clone()),
+            ..OpenOptions::default()
+        };
+        if let Err(e) = self.open_documents().open(
+            symbol.target.resource.clone(),
+            options,
+            Cancellation::default(),
+        ) {
+            eprintln!("workspaceSymbols: {e}");
         }
         cx.notify();
     }

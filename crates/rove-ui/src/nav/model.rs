@@ -42,6 +42,8 @@ pub enum NavKind {
     Declaration,
     /// `goToImplementation`（`ctrl+f12`）：接口、虚方法、抽象方法的实现 / 重写，类型的派生类型。
     Implementation,
+    /// #60 `goToTypeDefinition`（无默认键位）：跳到表达式 / 变量 / 参数**声明类型**的定义处。
+    TypeDefinition,
 }
 
 impl NavKind {
@@ -49,6 +51,7 @@ impl NavKind {
         match self {
             NavKind::Definition | NavKind::Declaration => NavigationKind::Definition,
             NavKind::Implementation => NavigationKind::Implementations,
+            NavKind::TypeDefinition => NavigationKind::TypeDefinition,
         }
     }
 
@@ -61,6 +64,8 @@ impl NavKind {
             (NavKind::Declaration, true) => "nav.noDeclaration.approximate",
             (NavKind::Implementation, false) => "nav.noImplementation",
             (NavKind::Implementation, true) => "nav.noImplementation.approximate",
+            (NavKind::TypeDefinition, false) => "nav.noTypeDefinition",
+            (NavKind::TypeDefinition, true) => "nav.noTypeDefinition.approximate",
         }
     }
 
@@ -69,6 +74,7 @@ impl NavKind {
             NavKind::Definition => s.multiple_definitions,
             NavKind::Declaration => s.multiple_declarations,
             NavKind::Implementation => s.multiple_implementations,
+            NavKind::TypeDefinition => s.multiple_type_definitions,
         }
     }
 }

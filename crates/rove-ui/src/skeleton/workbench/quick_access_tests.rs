@@ -311,18 +311,28 @@ fn at_lists_symbols_and_degrades_without_an_outline(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
 }
 
+/// #60：`#` 前缀改成真正的工作区符号搜索，M1 的“尚不可用”降级提示已删除。
+/// （与 `Ctrl+T` 同一份数据、同一套排序的断言在 `nav_extra_tests` 里。）
 #[gpui::test]
-fn hash_is_unavailable_in_m1_and_points_to_ctrl_p(cx: &mut TestAppContext) {
+fn hash_searches_workspace_symbols_and_the_unavailable_hint_is_gone(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);
     cx.simulate_keystrokes("ctrl-p");
-    cx.simulate_input("#Player");
+    cx.simulate_input("#zzzznotasymbol");
+    cx.run_until_parked();
+    refresh(cx);
     cx.run_until_parked();
     assert!(rows(&view, cx).is_empty());
-    let text = empty_message(&view, cx).unwrap();
+    assert_eq!(
+        empty_message(&view, cx).as_deref(),
+        Some("未找到匹配的符号")
+    );
     assert!(
-        text.contains("工作区符号搜索尚不可用") && text.contains("Ctrl+P"),
-        "{text}"
+        view.read_with(cx, |v, _| v
+            .strings
+            .get("quickAccess.workspaceSymbols.unavailable")
+            .is_none()),
+        "降级提示的字符串不应再登记"
     );
 }
 

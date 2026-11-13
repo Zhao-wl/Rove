@@ -10,7 +10,7 @@
 //! | [`files`] | 文件候选（工作区文件列表的增量索引）、按键间前缀剪枝、历史文件加权 | 否 |
 //! | [`commands`] | 命令面板：已实现的命令、最近使用、VS Code 的 `WORD_FILTER` | 否 |
 //! | [`lines`] | 转到行/列的文本解析与提示 | 否 |
-//! | [`matcher`] | 把 `scoreFuzzy2` 包成 #18 的 [`Matcher`](crate::list_widget::matcher::Matcher)（`@` 符号用） | 否 |
+//! | [`matcher`] | 把 `scoreFuzzy2` 包成 #18 的 [`Matcher`](crate::list_widget::matcher::Matcher)（`@` 符号与 `#` 工作区符号的高亮用） | 否 |
 //! | [`registry`] | 命令（VS Code ID）、界面字符串、GPUI action | 仅 action |
 //!
 //! 宿主（骨架 `Workbench`，见 `skeleton/workbench/quick_access_host.rs`）负责：取工作区文件列表与事件、

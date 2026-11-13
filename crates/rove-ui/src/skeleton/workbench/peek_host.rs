@@ -59,7 +59,8 @@ impl Workbench {
     }
 
     /// 本次速览用的查询服务：替身，否则 #40 当前的路由（每次现取，路由被换掉后自然是新的）。
-    fn peek_queries(&self) -> Arc<dyn PeekQueries> {
+    /// #60 的引用视图用同一个服务（同一条后台流水线），所以对 `workbench` 子树可见。
+    pub(super) fn peek_queries(&self) -> Arc<dyn PeekQueries> {
         self.peek
             .queries
             .clone()
@@ -136,6 +137,13 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // #60：`references.preferredLocation` 的**唯一一处判定**在引用视图模块里
+        // （`references::registry::opens_in_view`），这里只调用它：为 `"view"` 时
+        // `editor.action.goToReferences` 改在侧边「引用」视图中展示。
+        if id == peek_reg::GO_TO_REFERENCES && self.references_prefer_view() {
+            self.find_references(crate::peek::PeekKind::References, window, cx);
+            return;
+        }
         if let Some(kind) = kind_of(id) {
             self.open_peek_at(group, secondary, kind, window, cx);
             return;

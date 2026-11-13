@@ -106,6 +106,10 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::welcome::registry::register_commands(&mut registry)?;
     // #27：状态栏条目的选择器命令（更改缩进 / 编码 / 语言模式）。
     crate::status_items::registry::register_commands(&mut registry)?;
+    // #60：侧边「引用」视图（16 条实现的 + 6 条只登记的层级命令）。
+    crate::references::registry::register_commands(&mut registry)?;
+    // #60：转到工作区中的符号（`Ctrl+T`）。
+    crate::workspace_symbols::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -116,7 +120,7 @@ pub fn default_commands() -> Result<CommandCenter> {
 
 /// Default rules contributed by modules on top of the generated VS Code table, in VS Code
 /// keybindings.json syntax. Users override or remove them like any default.
-fn module_defaults() -> Vec<RawRule> {
+pub(crate) fn module_defaults() -> Vec<RawRule> {
     crate::list_widget::keys::EXTRA_DEFAULTS
         .iter()
         // #41：预览里 `alt+f12` 嵌套速览。
@@ -157,6 +161,9 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::welcome::registry::action_for(id))
         // #27：状态栏条目的选择器（窗口在 `status_host` 里处理）。
         .or_else(|| crate::status_items::registry::action_for(id))
+        // #60：引用视图（层级相关的 6 条没有 action，因此不出现在命令面板里）。
+        .or_else(|| crate::references::registry::action_for(id))
+        .or_else(|| crate::workspace_symbols::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

@@ -52,6 +52,8 @@ pub struct NavSettings {
     pub multiple_definitions: GotoMode,
     pub multiple_declarations: GotoMode,
     pub multiple_implementations: GotoMode,
+    /// #60：`editor.gotoLocation.multipleTypeDefinitions`（转到类型定义的多候选呈现方式）。
+    pub multiple_type_definitions: GotoMode,
     pub multiple_references: GotoMode,
     pub definition_link_opens_in_peek: bool,
     pub hover_enabled: HoverEnabled,
@@ -74,6 +76,7 @@ impl Default for NavSettings {
             multiple_definitions: GotoMode::Peek,
             multiple_declarations: GotoMode::Peek,
             multiple_implementations: GotoMode::Peek,
+            multiple_type_definitions: GotoMode::Peek,
             multiple_references: GotoMode::Peek,
             definition_link_opens_in_peek: false,
             hover_enabled: HoverEnabled::On,
@@ -96,6 +99,7 @@ pub const KEYS: &[&str] = &[
     "editor.gotoLocation.multipleDefinitions",
     "editor.gotoLocation.multipleDeclarations",
     "editor.gotoLocation.multipleImplementations",
+    "editor.gotoLocation.multipleTypeDefinitions",
     "editor.gotoLocation.multipleReferences",
     "editor.definitionLinkOpensInPeek",
     "editor.hover.enabled",
@@ -149,6 +153,7 @@ impl NavSettings {
             multiple_definitions: mode("editor.gotoLocation.multipleDefinitions"),
             multiple_declarations: mode("editor.gotoLocation.multipleDeclarations"),
             multiple_implementations: mode("editor.gotoLocation.multipleImplementations"),
+            multiple_type_definitions: mode("editor.gotoLocation.multipleTypeDefinitions"),
             multiple_references: mode("editor.gotoLocation.multipleReferences"),
             definition_link_opens_in_peek: boolean(
                 "editor.definitionLinkOpensInPeek",
