@@ -79,6 +79,15 @@ pub struct OpenBuffers {
 }
 
 impl OpenBuffers {
+    /// #47：编辑事务已经交给 `BufferStates::edited`：记下新版本，下一次比较不再把它当成重新载入。
+    pub fn note_edited(&mut self, path: &WorkspacePath, document: DocumentId, version: Version) {
+        if let Some(known) = self.known.get_mut(path.as_str()) {
+            if known.0 == document {
+                known.1 = version;
+            }
+        }
+    }
+
     /// 与当前集合比较，返回需要的调用（按路径排序，确定性）。每帧调用也只是比较几十个条目。
     pub fn diff(&mut self, current: Vec<OpenBuffer>) -> Vec<BufferChange> {
         let mut out = Vec::new();

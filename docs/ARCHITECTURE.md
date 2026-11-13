@@ -225,11 +225,12 @@ cargo test --workspace
 | `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史；`workbench.rs` 只给每个代码视图包一层 `FindHost`，替换由 #48 接入 | #21（已完成） |
 | `nav` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::nav` 与 `skeleton/workbench/nav_host.rs` 实现（见 §31）：转到定义 / 声明 / 实现、`Ctrl+悬停` 与 `Ctrl+点击`、悬停卡片、符号导航模式、语义同名高亮、近似结果提示，以及 #38 `CsRouter` 的装配（语义来源、L1、`BufferStates` 的打开 / 重新载入 / 关闭） | #40（已完成） |
 | `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
-| `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；命令与字符串已登记，窗口装配（`ctrl+s` → `SaveController`、重载后刷新视图）随 #47 的可编辑代码视图接入 | #49 |
+| `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；窗口装配（`ctrl+s` / 另存为 / 全部保存 → `SaveController`、`ctrl+n`、重载后刷新视图、脏点与“已删除”、窗口关闭确认）由 #47 在 `workbench/edit_host.rs` 完成（见 §34） | #49（已完成） |
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
 | `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
+| `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §34）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
 
 数据链路：后台扫描返回 `Arc<dyn Workspace>`，文件树通过列表契约激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -1132,3 +1133,65 @@ BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（rele
 - **查询路由**：每次打开速览时取 #40 装配的 `Workbench::cs_router()`（带 L1、同步打开中的缓冲区，未保存修改的位置经映射；#40 换掉路由后下一次速览自然是新的，打开期间的嵌套速览沿用打开时那个）。测试可用 `Workbench::set_peek_queries` 换成替身。外部调用方要在已有结果上直接打开速览时走 `Workbench::open_peek_with`（`PeekRequest::preset` 带结果、`marker` 带文案）。
 
 验证：`cargo test -p rove-ui peek`（数据层单元测试 + `skeleton/workbench/peek_tests.rs` 的 16 个真实 GPUI 窗口入口测试（只经键位驱动）与 1 个键位表核对：三个入口、分组与计数、100 / 101 展开规则、`↑↓` / `Enter` / `Ctrl+Enter` / `F4` / `Shift+F4` / `F12` / `Ctrl+K F2` / `Esc` / `Shift+Esc`、`editor.stablePeek`、`editor.peekWidgetDefaultFocus` 两个取值、嵌套速览逐层返回与上下文键、近似标记、外部符号保底与注册提供方、空结果与实现不可用的提示、`.md` 打开源码、加载提示、反复开关 100 次后结果与预览全部释放、经 #40 的正式路由速览时未保存修改的位置经映射、键位表逐条一致）。性能：`cargo xtask bench --filter peek/`（真实窗口：28,671 处引用打开到结果树首次绘制，预算 `peek_open_to_first_paint_28k`；4.7 万条全部展开后结果树每帧 CPU，预算 `peek_tree_scroll_frame_47k`；开关 100 次前后的工作集 / 私有字节打印在 stdout）。
+
+## 34. 代码视图的编辑交互与输入法（#47）
+
+位置：`crates/rove-ui/src/code_view/edit.rs`（`code_view/mod.rs` 只追加 `pub mod edit;`）与窗口装配
+`crates/rove-ui/src/skeleton/workbench/edit_host.rs`。只用 #1 的冻结契约、#46 的 `EditSession`、#49 的 `TextFile` /
+`SaveController`；不修改契约。GPUI 类型只在 `rove-ui`。`rove-ui` 新增 Windows 目标依赖 `windows-sys`
+（`Win32_UI_Input_Ime`、`Win32_UI_Input_KeyboardAndMouse`、`Win32_Globalization`：`ImmNotifyIME`）。
+
+| 文件 | 内容 |
+|---|---|
+| `code_view/edit.rs` | `EditHost`（宿主借出会话）、`CodeViewEvent::Edited` / `EditNotice`（事务、合成的 `TextEdit`）、编辑命令、`EntityInputHandler`、`Composition`、行号映射（`old_to_new` / `new_to_old`）、`combine_edits` / `combine_spans` |
+| `code_view/{view,element}.rs` | 追加：编辑入口与组合串字段、回车、组合行内嵌渲染与 `editor.compositionBorder` 下划线、改写模式插入符、`window.handle_input`、插入符变化时 `invalidate_character_coordinates` |
+| `code_view/{cache,decorations,highlight}.rs` | 追加：编辑后按行平移（`Lru::rekey` / `remove`、`DecorationStore::remap`、`SyntaxLayer::pending`：新快照到达前用旧 token 画新文本） |
+| `editors/{mod,syntax}.rs` | 追加：`replace_document`（编辑后的新快照换进标签，身份不变）、`set_dirty`、`open_ready`（未命名文档）、`force_close_document`；`Highlights::edited` / `resume`（分析进行中不取消，完成后按累积编辑合成一个增量编辑再分析） |
+| `skeleton/workbench/edit_host.rs` | 窗口装配：每个可编辑文档后台建 `TextFile` 挂到 `SaveController`、编辑事件同步（其他视图、语法、`FileDocuments` 缓存、`BufferStates::edited`、脏点）、保存命令、`Effect` 反映、外部修改读盘、关闭确认、`ctrl+n` |
+
+**编辑链路**：视图不持有文本模型。命令先把视图选区写进会话（`set_selections`，光标撤销与撤销分组以会话为准），执行
+会话的事务，再用新快照增量更新本视图：行缓存与装饰按 `LineChanges` 平移，只有被改的行重建并在事件处理里立即整形
+（下一帧不画占位，行高不变）；语法旧结果经 `SyntaxLayer::pending` 映射到新行号继续着色，新快照到达后按变化行替换
+（不闪烁）。`Edited` 的宿主处理：新快照换进打开文档服务（所有标签与 `FileDocuments` 缓存，文档身份不变）→ 同一文档
+的其他视图 `apply_edits`（选区按事务映射）→ #94 `DocumentHighlighter::analyze(edit)` 后台增量解析（**不在输入的
+同一帧里调用 tree-sitter**）→ #38 `BufferStates::edited`（C# 文档；`OpenBuffers::note_edited` 让每帧的比较不把编辑
+当成重载）→ 标签脏点（撤销回保存点即干净）。
+
+**输入法**（GPUI Windows 后端的调用路径见 `vendor/gpui/src/platform/windows/events.rs`）：所有范围参数为 `None`，
+偏移是 UTF-16；视图把“组合串（或选区）所在的行”作为输入法看到的文档（`ImeRegion`），组合内光标按组合串自身换算
+（ROVE_PATCHES 的第二轮评审要求）。组合串**不写进缓冲区**：没有事务、不进撤销栈、不触发重解析；提交时
+`push_undo_stop` 前后各一次，整串是一个撤销单元。取消（空组合串、空提交）不删选区；点击别处与失焦先在原位置提交，
+再 `ImmNotifyIME(CPS_CANCEL)` 让输入法丢掉自己的组合状态（不留残片、不重复提交）；组合中按到的 `undo` 只取消组合。
+只读文档上不进入组合态（组合开始时在光标处提示一次原因）。改写模式下组合串按整串覆盖其后同样多的字素簇。
+
+**命令**（`code_view::commands::COMMANDS` 追加，默认键位来自 #14 的 VS Code 表）：`lineBreakInsert`、`tab` / `outdent`、
+`editor.action.indentLines` / `outdentLines`、`deleteLeft` / `deleteRight`、`deleteWord*`（含 `Start` / `End` / `Part`）、
+`deleteAllLeft` / `deleteAllRight`、`cursorWord*` 与 `*Select`（含 `Part`、`PartStart`、无障碍版本）、`cursorLineStart` /
+`cursorLineEnd` 与 `*Select`、`undo` / `redo` / `cursorUndo` / `cursorRedo`、选择定位点四个命令（上下文键
+`selectionAnchorSet`）、`insertLineBefore` / `insertLineAfter`、剪切 / 粘贴（无选区整行剪切经剪贴板元数据
+`rove.wholeLine` 粘贴到当前行之上）、`toggleOvertypeInsertMode`、`indentationToSpaces` / `indentationToTabs`、`type` /
+`default:type`（带参数，经命令桥 → 窗口 → 聚焦的视图）。回车没有键位：视图在 `on_key_down` 里换行并保持当前行缩进
+（自动缩进规则属于 R52），`editor.trimAutoWhitespace` 时只有空白的行在再次回车时清空。设置项追加 `editor.insertSpaces`、
+`useTabStops`、`stickyTabStops`、`trimAutoWhitespace`、`overtypeCursorStyle`、`overtypeOnPaste`；颜色键追加
+`editor.compositionBorder`。单词导航与 `cursorLineStart/End` 在只读文档上同样可用。
+
+**保存装配**（§30“装配”一段的清单）：`SaveAction` 经 `keys::action_for` 分发到窗口（`changeEOL` 带参数，走命令桥）；
+保存的变换与编码在 UI 线程（`begin_save`），冲突检测与原子写入在后台（`SaveJob::run`），变换改了文本时先把新快照交给
+视图；`Effect::Saved` 清脏点并调用 `BufferStates::saved`；`Effect::Reloaded` / 还原 / 换行符统一把会话的新快照换进文档与
+所有视图（`set_text(keep_view_state)`：滚动位置不变，选区取会话映射后的位置）；`Effect::Deleted` 在标签上显示
+“已删除”（`save.label.deleted`）；工作区 `FileEvent` → `note_change` → 安静期后后台 `DiskStamp::read` → `apply_disk`。
+关闭有未保存修改的标签（标签上的按钮、`closeActiveEditor`）与窗口关闭按钮（`edit_host::attach_close_confirmation`，
+替换 `Shell::attach_window` 登记的回调并先做它原来的布局记录）走 #49 的“保存 / 不保存 / 取消”。`ctrl+n`
+（`workbench.action.files.newUntitledFile`）新建 `Untitled-N`（`files.encoding` / `files.eol`），首次保存走另存为
+（`prompt_for_new_path`）。#50 的热退出仍经 `SaveController::set_hot_exit` 接管关闭确认。
+
+尚未完成（见 PR）：状态栏 `changeEditorIndentation` 选择器属于 #27（条目尚未合并），两个缩进转换命令已登记、可从命令
+面板执行；按键到上屏的 p99 基准与输入法实机验收见 PR 描述。
+
+验证：`cargo test -p rove-ui --test code_view_edit`（入口：输入一个字符 → 缓冲内容、编辑事件与 `InputEdit`、插入符、
+撤销重做；编辑基础命令参数化；CJK / 驼峰 / 下划线 / emoji（ZWJ）混排行的单词导航与 #46 逐步一致；光标撤销与选择定位点；
+混合换行的剪切粘贴字节级比对；改写模式（输入、行尾、粘贴、输入法整串覆盖）；组合串不进缓冲区、一次撤销整串、取消不删
+选区、组合中途点击在原位置提交、组合中的撤销；只读拒绝且不进入组合态）、`cargo test -p rove-ui code_view::edit`
+（行号映射、增量编辑合成、UTF-16 区域换算）、`cargo test -p rove-ui edit_tests`（真实窗口：编辑 → `ctrl+s` → 外部修改
+静默重载且滚动不变 → 本地有修改时提示条 → 删除后“已删除”；C# 编辑与保存登记到 `BufferStates`；`ctrl+n`；标签与窗口的
+关闭确认）。

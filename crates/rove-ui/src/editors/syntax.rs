@@ -6,7 +6,7 @@
 //! show that document at that version. Releasing the last tab of a document cancels its
 //! running analysis and drops its baseline in the [`DocumentHighlighter`].
 
-use rove_base::{Cancellation, DocumentId, Line, LineRange, Span, Task, Version};
+use rove_base::{Cancellation, DocumentId, Line, LineRange, Span, Task, TextEdit, Version};
 use rove_buffer::{Document, SizeClass};
 use rove_syntax::{highlight::DocumentHighlighter, SyntaxUpdate};
 use std::{collections::BTreeMap, sync::Arc};
@@ -34,6 +34,9 @@ pub(crate) struct Highlights {
     pub(crate) service: Arc<dyn DocumentHighlighter>,
     running: BTreeMap<DocumentId, Running>,
     serial: u64,
+    /// #47：分析进行中又来了编辑：不取消它（它完成后基线前进到它的版本），先记下最新文档与
+    /// 之后的编辑，完成时合成一个增量编辑再分析。`None` 表示中间有无法增量的变化（整篇重来）。
+    pending: BTreeMap<DocumentId, (Arc<Document>, Option<Vec<TextEdit>>)>,
 }
 
 /// Highlighting is skipped for huge documents, which open read-only and unparsed.
@@ -57,6 +60,75 @@ impl Highlights {
             service,
             running: BTreeMap::new(),
             serial: 0,
+            pending: BTreeMap::new(),
+        }
+    }
+
+    /// #47：文档被编辑（新快照、相对上一版本的增量编辑）。返回要在后台运行的分析；正在分析时
+    /// 记下编辑，等它完成后由 [`Self::resume`] 接着做。
+    pub(crate) fn edited(
+        &mut self,
+        document: &Arc<Document>,
+        edit: Option<TextEdit>,
+    ) -> Option<SyntaxJob> {
+        if !highlighted(document) {
+            return None;
+        }
+        if self.running.contains_key(&document.id) {
+            let entry = self
+                .pending
+                .entry(document.id)
+                .or_insert_with(|| (document.clone(), Some(Vec::new())));
+            entry.0 = document.clone();
+            match (&mut entry.1, edit) {
+                (Some(edits), Some(edit)) => edits.push(edit),
+                (slot, _) => *slot = None,
+            }
+            return None;
+        }
+        Some(self.launch(document, edit, None))
+    }
+
+    /// #47：`finished` 版本的分析完成后，接着分析期间累积的编辑。
+    pub(crate) fn resume(&mut self, document: DocumentId, finished: Version) -> Option<SyntaxJob> {
+        let (latest, edits) = self.pending.remove(&document)?;
+        let edit = edits
+            .filter(|e| e.first().is_some_and(|e| e.version == finished))
+            .and_then(|e| combine_text_edits(&e, &*latest.text));
+        Some(self.launch(&latest, edit, None))
+    }
+
+    fn launch(
+        &mut self,
+        document: &Document,
+        edit: Option<TextEdit>,
+        visible: Option<LineRange>,
+    ) -> SyntaxJob {
+        if let Some(running) = self.running.get(&document.id) {
+            running.cancel.cancel();
+        }
+        self.serial += 1;
+        let cancel = Cancellation::default();
+        self.running.insert(
+            document.id,
+            Running {
+                cancel: cancel.clone(),
+                generation: self.serial,
+                version: document.text.version(),
+                partial: visible.is_some(),
+            },
+        );
+        SyntaxJob {
+            document: document.id,
+            generation: self.serial,
+            task: self.service.analyze(
+                document.id,
+                document.text.clone(),
+                document.metadata.language.clone(),
+                edit,
+                visible,
+                cancel,
+            ),
         }
     }
 
@@ -113,6 +185,7 @@ impl Highlights {
 
     /// The last tab of `document` closed: cancel its analysis and drop its baseline.
     pub(crate) fn release(&mut self, document: DocumentId) {
+        self.pending.remove(&document);
         if let Some(running) = self.running.remove(&document) {
             running.cancel.cancel();
         }
@@ -123,4 +196,16 @@ impl Highlights {
     pub(crate) fn is_running(&self, document: DocumentId) -> bool {
         self.running.contains_key(&document)
     }
+}
+
+/// #47：依次发生的若干替换合成一个相对第一个版本的替换（覆盖全部改动，`after` 是最后的文本）。
+pub(crate) fn combine_text_edits(
+    edits: &[TextEdit],
+    after: &dyn rove_buffer::TextSource,
+) -> Option<TextEdit> {
+    let spans = edits.iter().map(|e| {
+        let a = e.range.start().0 as i64;
+        (a, e.range.end().0 as i64, a + e.inserted.len() as i64)
+    });
+    crate::code_view::edit::combine_spans(spans, edits.first()?.version, after)
 }

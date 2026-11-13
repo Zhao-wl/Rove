@@ -130,7 +130,7 @@ pub(super) struct Nav {
     /// #37 的 L1 快速声明索引（应用入口在工作区扫描后建立；测试按需注入）。
     l1: Option<Arc<L1Index>>,
     pub(super) semantic: Arc<LiveSemantic>,
-    buffers: OpenBuffers,
+    pub(super) buffers: OpenBuffers,
     pub(super) settings: NavSettings,
     colors: NavColors,
     epoch: u64,

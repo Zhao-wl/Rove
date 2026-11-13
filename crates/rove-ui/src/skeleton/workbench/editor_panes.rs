@@ -488,7 +488,8 @@ impl Workbench {
                 {
                     view.editor.pin(group, tab_id, false);
                 } else {
-                    view.editor.close_tab(group, tab_id);
+                    // #47：有未保存的修改时先确认。
+                    view.close_tab_checked(group, tab_id, cx);
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -506,6 +507,16 @@ impl Workbench {
             header = header.child(self.label("editors.index", &[("index", index.to_string())]));
         }
         header = header.child(text);
+        // #47：磁盘上已被删除的文档（#49 的 `save.label.deleted`），内容仍在编辑器里。
+        if self.tab_deleted(tab) {
+            header = header.child(
+                div()
+                    .id(id("tab-deleted", group, tab_id))
+                    .flex_shrink_0()
+                    .text_color(self.ui_color("tab.inactiveForeground"))
+                    .child(self.label("save.label.deleted", &[])),
+            );
+        }
         // #20：只读文档的标签（单标签模式下即编辑器标题）显示锁形图标（UX_SPEC §3.4）。
         if self.tab_read_only(tab) {
             header = header.child(
