@@ -661,6 +661,29 @@ impl EditorService {
         self.highlights = syntax::Highlights::new(syntax);
     }
 
+    /// A new snapshot of an open document (same identity, new text): every tab showing it switches to
+    /// the new snapshot in place, keeping scroll and selection (#42: the metadata view re-renders when
+    /// `rove.metadataView.showDocs` or the index changes). Highlighting restarts for the new version.
+    /// Returns whether any tab changed.
+    pub(crate) fn replace_document(&mut self, document: Arc<Document>) -> bool {
+        let mut changed = Vec::new();
+        for (&group, pane) in &mut self.groups {
+            for tab in &mut pane.tabs {
+                if let Content::Ready(opened) = &mut tab.content {
+                    if opened.document.id == document.id {
+                        opened.document = document.clone();
+                        opened.syntax = None;
+                        changed.push((group, tab.id));
+                    }
+                }
+            }
+        }
+        for &(group, tab) in &changed {
+            self.start_highlight(group, tab);
+        }
+        !changed.is_empty()
+    }
+
     pub(crate) fn close_tabs(&mut self, group: Option<EditorGroupId>, preserve_pinned: bool) {
         let ids: Vec<_> = self
             .groups

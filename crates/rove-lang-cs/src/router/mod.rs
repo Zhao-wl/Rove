@@ -26,6 +26,7 @@
 pub mod buffers;
 pub mod l0;
 pub mod mapping;
+mod metadata;
 #[doc(hidden)]
 pub mod testing;
 #[cfg(test)]
@@ -326,6 +327,8 @@ pub struct CsRouter {
     buffers: Arc<BufferStates>,
     l1: Option<Arc<L1Index>>,
     root: Option<PathBuf>,
+    /// #42：元数据视图的内容来源（视图内的查询点由它翻译）；没有时视图内的查询 `Unsupported`。
+    views: Option<Arc<crate::metadata_view::MetadataViews>>,
     /// 最近一次 L0 解析（按路径与版本）。
     l0_cache: Mutex<Option<(String, Version, Arc<L0File>)>>,
     /// 已经请求过重建的（文件, 当前内容哈希），避免每次查询都请求。
@@ -339,6 +342,7 @@ impl CsRouter {
             buffers,
             l1: None,
             root: None,
+            views: None,
             l0_cache: Mutex::default(),
             requested: Mutex::default(),
         }
@@ -354,6 +358,16 @@ impl CsRouter {
     pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = Some(root.into());
         self
+    }
+
+    /// 元数据视图（#42）：视图文档内的位置 → 符号。路由重建时沿用同一个实例（`showDocs` 状态在里面）。
+    pub fn with_metadata(mut self, views: Arc<crate::metadata_view::MetadataViews>) -> Self {
+        self.views = Some(views);
+        self
+    }
+
+    pub fn metadata_views(&self) -> Option<&Arc<crate::metadata_view::MetadataViews>> {
+        self.views.as_ref()
     }
 
     pub fn buffers(&self) -> &Arc<BufferStates> {
@@ -373,6 +387,9 @@ impl CsRouter {
         cancel: &Cancellation,
     ) -> Result<QueryResult<Arc<[RoutedTarget]>>> {
         cancel.check()?;
+        if crate::metadata_view::view_key(&point.resource).is_some() {
+            return self.metadata_navigate(kind, point, cancel);
+        }
         let (rel, doc) = self.open_point(point)?;
         match self.locate(&rel, doc.as_ref(), point.position) {
             Located::Symbol {

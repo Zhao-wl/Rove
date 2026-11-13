@@ -368,7 +368,11 @@ impl Workbench {
         } else {
             "tab.inactiveForeground"
         };
-        let name = settings.tab_label(&tab.resource);
+        // #42：元数据视图的标签标题是 `Transform [元数据]`，悬停显示 DLL 完整路径。
+        let name = self
+            .metadata_tab_title(&tab.resource)
+            .unwrap_or_else(|| settings.tab_label(&tab.resource));
+        let tooltip = self.metadata_tab_tooltip(&tab.resource);
         let drag = TabDrag {
             group,
             tab: tab_id,
@@ -426,6 +430,14 @@ impl Workbench {
                 }
                 cx.notify();
             }));
+        if let Some(text) = tooltip {
+            header = header.tooltip(crate::metadata::tooltip::tab_tooltip(
+                text,
+                self.ui_color("editorHoverWidget.background"),
+                self.ui_color("editorHoverWidget.foreground"),
+                self.ui_color("editorHoverWidget.border"),
+            ));
+        }
         let top = if tab.dirty && settings.highlight_modified {
             Some(if selected {
                 "tab.activeModifiedBorder"

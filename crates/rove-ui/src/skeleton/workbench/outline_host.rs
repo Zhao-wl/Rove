@@ -598,7 +598,7 @@ impl Workbench {
     }
 
     /// 选择器的条目：符号段列出同级符号（`breadcrumbs.symbolSortOrder`），文件段列出所在目录。
-    fn picker_items(
+    pub(super) fn picker_items(
         &self,
         segment: &Segment,
         symbols: Option<&DocumentSymbols>,

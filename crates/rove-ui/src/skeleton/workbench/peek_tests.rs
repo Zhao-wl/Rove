@@ -719,8 +719,8 @@ fn peek_external_symbol_shows_fallback_then_registered_snippet(cx: &mut TestAppC
         cx,
     );
     caret(&view, pos(0, 7), cx);
-    // 保底：#42 未注册时显示 `外部符号：<签名>`。
-    assert!(view.read_with(cx, |v, _| v.peek_external_snippets().is_fallback()));
+    // #42 已注册元数据视图的提供方；索引里没有这个符号时提供方返回 `None`，仍显示保底的 `外部符号：<签名>`。
+    assert!(!view.read_with(cx, |v, _| v.peek_external_snippets().is_fallback()));
     press("alt-f12", cx);
     let w = widget(&view, cx);
     assert_eq!(

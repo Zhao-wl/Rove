@@ -29,6 +29,7 @@ use gpui::{anchored, deferred, Corner, EntityId, Pixels, Point};
 use rove_base::{Line, Position};
 use rove_buffer::SizeClass;
 use rove_lang_cs::l1::{L1Change, L1Index, L1Options};
+use rove_lang_cs::metadata_view::MetadataViews;
 use rove_lang_cs::query::{NavigationKind, Precision, QueryPoint, QueryResult, Target};
 use rove_lang_cs::router::{hash_bytes, CsRouter, RoutedTarget, SemanticSource};
 use std::cell::RefCell;
@@ -130,6 +131,10 @@ pub(super) struct Nav {
     /// #37 的 L1 快速声明索引（应用入口在工作区扫描后建立；测试按需注入）。
     l1: Option<Arc<L1Index>>,
     pub(super) semantic: Arc<LiveSemantic>,
+    /// #42：元数据视图的内容来源（路由重建时沿用同一个实例，`showDocs` 状态在里面）。
+    pub(super) views: Arc<MetadataViews>,
+    /// #134：等下一帧（有窗口句柄时）打开的速览请求。
+    pending_peek: Option<PendingPeek>,
     buffers: OpenBuffers,
     pub(super) settings: NavSettings,
     colors: NavColors,
@@ -157,13 +162,21 @@ impl Nav {
     ) -> Self {
         let semantic = Arc::new(LiveSemantic::default());
         let buffers = Arc::new(rove_lang_cs::router::BufferStates::new());
+        let views = Arc::new(MetadataViews::new(
+            semantic.clone() as Arc<dyn SemanticSource>,
+            Workbench::read_show_docs(settings),
+        ));
         let router = Arc::new(
-            CsRouter::new(semantic.clone() as Arc<dyn SemanticSource>, buffers).with_root(root),
+            CsRouter::new(semantic.clone() as Arc<dyn SemanticSource>, buffers)
+                .with_root(root)
+                .with_metadata(views.clone()),
         );
         Self {
             router,
             l1: None,
             semantic,
+            views,
+            pending_peek: None,
             buffers: OpenBuffers::default(),
             settings: NavSettings::read(settings, Some("csharp")),
             colors: NavColors::resolve(theme, kind),
@@ -265,9 +278,22 @@ fn kind_index(k: HighlightKind) -> usize {
     }
 }
 
+/// #134：等窗口句柄的速览请求（`PeekRequest` 要在有 `Window` 的地方才能建窗口，所以登记后在下一帧的
+/// [`Workbench::sync_nav`] 里打开）。
+struct PendingPeek {
+    request: PeekRequest,
+    group: EditorGroupId,
+    secondary: bool,
+    /// `gotoAndPeek`：先跳转，等目标已经显示、插入符在目标位置后再在那里开速览。
+    wait: Option<(Resource, Position)>,
+    /// 发起时的导航代次；新的跳转作废它。
+    epoch: u64,
+}
+
 /// 一次跳转的发起点。
 pub(super) struct Origin {
     group: EditorGroupId,
+    secondary: bool,
     document: Arc<Document>,
     position: Position,
     name: String,
@@ -294,7 +320,8 @@ impl Workbench {
             self.nav.semantic.clone() as Arc<dyn SemanticSource>,
             buffers,
         )
-        .with_root(self.root.clone());
+        .with_root(self.root.clone())
+        .with_metadata(self.nav.views.clone());
         if let Some(l1) = &l1 {
             router = router.with_l1(l1.clone());
         }
@@ -475,6 +502,9 @@ impl Workbench {
             self.apply_buffer_change(change, cx);
         }
         self.trace_paint(window, cx);
+        self.flush_pending_peek(window, cx);
+        // #42：索引原子替换后重新渲染打开着的元数据视图。
+        self.sync_metadata(cx);
     }
 
     fn apply_buffer_change(&mut self, change: BufferChange, cx: &mut Context<Self>) {
@@ -698,6 +728,7 @@ impl Workbench {
             .unwrap_or_default();
         Some(Origin {
             group,
+            secondary,
             document,
             position,
             name,
@@ -797,7 +828,7 @@ impl Workbench {
                     cx,
                 );
             }
-            Plan::Metadata { targets } => self.open_metadata(&origin, &targets, cx),
+            Plan::Metadata { targets } => self.open_metadata(&origin, &targets, aside, cx),
             Plan::Jump {
                 target,
                 approximate,
@@ -806,10 +837,11 @@ impl Workbench {
                     let request = PeekRequest {
                         kind,
                         origin: (origin.document.resource.clone(), origin.position),
+                        symbol: origin.name.as_str().into(),
                         targets: Arc::from([target.clone()]),
                         annotation: peek_annotation(approximate, 1),
                     };
-                    if self.open_peek(request, cx) {
+                    if self.open_peek(request, &origin, None, cx) {
                         return;
                     }
                 }
@@ -826,14 +858,16 @@ impl Workbench {
                 let request = PeekRequest {
                     kind,
                     origin: (origin.document.resource.clone(), origin.position),
+                    symbol: origin.name.as_str().into(),
                     targets: targets.clone(),
                     annotation: peek_annotation(approximate, targets.len()),
                 };
                 let peeked = match mode {
-                    GotoMode::Peek => self.open_peek(request, cx),
+                    GotoMode::Peek => self.open_peek(request, &origin, None, cx),
                     GotoMode::GotoAndPeek => {
                         self.jump(&targets[0], aside, origin.group, Some((started, query_ms)));
-                        self.open_peek(request, cx);
+                        let at = (targets[0].resource.clone(), targets[0].selection.start());
+                        self.open_peek(request, &origin, Some(at), cx);
                         return;
                     }
                     GotoMode::Goto => false,
@@ -905,38 +939,120 @@ impl Workbench {
         );
     }
 
-    /// 多候选交给速览窗口（#41）。返回 true 表示窗口已打开。
+    /// 多候选（或 `Ctrl+点击` 且 `editor.definitionLinkOpensInPeek`）交给速览窗口（#41）。返回 true 表示速览已经接手
+    /// （调用方不再跳转）。
     ///
-    /// **#41 的接入点**：速览窗口合并后在这里打开窗口（标题标记见 `request.annotation`：精确结果为
-    /// `None`，近似为“近似 · N 个候选”），并返回 true。在那之前只记录请求，返回 false，调用方按 `goto`
-    /// 处理（跳到第一个并进入符号导航模式）。
-    pub(super) fn open_peek(&mut self, request: PeekRequest, _cx: &mut Context<Self>) -> bool {
-        self.nav.last_peek = Some(request);
-        false
+    /// 建速览窗口需要 `Window`，而查询结果是在后台任务回到窗口时处理的，手里没有它：这里只登记请求，
+    /// 下一帧的 [`Workbench::sync_nav`] 在有窗口句柄的地方打开（[`Workbench::flush_pending_peek`]）。
+    /// `wait`：`gotoAndPeek` 先跳转，等目标已经显示、插入符到位后才在那里开速览。
+    pub(super) fn open_peek(
+        &mut self,
+        request: PeekRequest,
+        origin: &Origin,
+        wait: Option<(Resource, Position)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.nav.last_peek = Some(request.clone());
+        self.nav.pending_peek = Some(PendingPeek {
+            request,
+            group: origin.group,
+            secondary: origin.secondary,
+            wait,
+            epoch: self.nav.epoch,
+        });
+        cx.notify();
+        true
     }
 
-    /// 只有外部符号的目标。
-    ///
-    /// **#42 的接入点**：元数据视图界面合并后在这里打开元数据视图文档。在那之前按 UX_SPEC §4.1 末行
-    /// 在状态栏临时提示“未找到 `X` 的元数据”，不打开空标签。
+    /// 打开登记的速览：#40 的 `PeekRequest`（多候选的目标列表与近似标记）→ #41 的 `PeekRequest`（带现成结果，
+    /// 不再查询）。目标文档已经换掉、窗口已关闭、又发起了新的跳转时放弃。
+    fn flush_pending_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.nav.pending_peek.take() else {
+            return;
+        };
+        if pending.epoch != self.nav.epoch {
+            return;
+        }
+        let (group, secondary, at) = match &pending.wait {
+            None => (pending.group, pending.secondary, pending.request.origin.1),
+            Some((resource, position)) => {
+                // gotoAndPeek：焦点组的活动文档是目标、插入符在目标位置才开；否则下一帧再看。
+                let group = self.editor.focused;
+                let ready = self.shown_document(group, false).is_some_and(|d| {
+                    model::resource_key(&d.resource) == model::resource_key(resource)
+                }) && self
+                    .group_code(group, false)
+                    .is_some_and(|c| c.read(cx).selection().active == *position);
+                if !ready {
+                    self.nav.pending_peek = Some(pending);
+                    return;
+                }
+                (group, false, *position)
+            }
+        };
+        let Some(document) = self.shown_document(group, secondary) else {
+            return;
+        };
+        if pending.wait.is_none() && document.resource != pending.request.origin.0 {
+            return;
+        }
+        let request = pending.request;
+        let kind = match request.kind {
+            NavKind::Definition | NavKind::Declaration => crate::peek::PeekKind::Definition,
+            NavKind::Implementation => crate::peek::PeekKind::Implementation,
+        };
+        let approximate = request.annotation.is_some();
+        let routed: Vec<RoutedTarget> = request
+            .targets
+            .iter()
+            .map(|target| RoutedTarget {
+                target: target.clone(),
+                precision: if approximate {
+                    Precision::Approximate
+                } else {
+                    Precision::Exact
+                },
+                reason: None,
+                role: rove_lang_cs::router::TargetRole::Definition,
+            })
+            .collect();
+        let marker = crate::peek::Marker::Custom(request.annotation.map(|(key, args)| {
+            Message {
+                key: key.into(),
+                args: args
+                    .iter()
+                    .map(|(k, v)| ((*k).into(), v.as_str().into()))
+                    .collect(),
+            }
+        }));
+        let symbol: Arc<str> = if request.symbol.is_empty() {
+            self.label("peek.symbolHere", &[]).into()
+        } else {
+            request.symbol
+        };
+        let peek = crate::peek::PeekRequest {
+            kind,
+            point: QueryPoint {
+                resource: document.resource.clone(),
+                position: at,
+                version: document.text.version(),
+            },
+            symbol,
+            marker,
+            preset: Some(Arc::new(crate::peek::PeekResults::group(&routed))),
+        };
+        self.show_peek(group, secondary, &document, peek, window, cx);
+    }
+
+    /// 只有外部符号的目标：打开元数据视图（#42，见 `metadata_host.rs`）。
     pub(super) fn open_metadata(
         &mut self,
         origin: &Origin,
-        _targets: &[Target],
+        targets: &[Target],
+        aside: bool,
         cx: &mut Context<Self>,
     ) {
-        let message = Message {
-            key: "nav.noMetadata".into(),
-            args: Arc::from([("name".into(), origin.name.as_str().into())]),
-        };
-        let _ = shell::view::report(
-            self,
-            STATUS_KEY,
-            Reason::Receipt,
-            message,
-            Arc::from([]),
-            cx,
-        );
+        self.open_metadata_targets(origin.group, &origin.name, targets, aside, cx);
     }
 
     // ------------------------------------------------------------------ 符号导航模式
@@ -1181,7 +1297,10 @@ impl Workbench {
     ) {
         let document = self.shown_document(group, secondary);
         let semantic = document.as_ref().is_some_and(|d| {
-            is_csharp(&d.metadata.language) && d.metadata.size == SizeClass::Normal
+            is_csharp(&d.metadata.language)
+                && d.metadata.size == SizeClass::Normal
+                // 元数据视图（#42）的“引用”是整个工作区的使用位置，不做本文件的语义同名高亮。
+                && rove_lang_cs::metadata_view::view_key(&d.resource).is_none()
         });
         if !semantic {
             // 只在曾经接管过的视图上还原（非 C# 视图不必登记装饰层）。
