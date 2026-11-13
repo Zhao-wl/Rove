@@ -793,7 +793,7 @@ impl EditorService {
     /// the new snapshot in place, keeping scroll and selection (#42: the metadata view re-renders when
     /// `rove.metadataView.showDocs` or the index changes). Highlighting restarts for the new version.
     /// Returns whether any tab changed.
-    pub(crate) fn replace_document(&mut self, document: Arc<Document>) -> bool {
+    pub(crate) fn reload_document(&mut self, document: Arc<Document>) -> bool {
         let mut changed = Vec::new();
         for (&group, pane) in &mut self.groups {
             for tab in &mut pane.tabs {
