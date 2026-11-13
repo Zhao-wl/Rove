@@ -1,6 +1,9 @@
 //! 索引状态（UX_SPEC §2.1）。界面只订阅 [`IndexStatus`] 的变化；所有迁移集中在 `service` 的
 //! 后台线程里一处完成。
-use super::process::{BuildFailure, Progress};
+use super::{
+    component::Incompatible,
+    process::{BuildFailure, Progress},
+};
 use std::{path::PathBuf, time::Duration};
 
 /// 显式状态机。“未安装 / 首次构建中 / 就绪 / 增量更新中 / 失败”是 §2.1 的五种状态，另有
@@ -15,6 +18,8 @@ pub enum IndexState {
     Disabled,
     /// 没有安装语义组件：C# 导航停留在 L0/L1。
     NotInstalled,
+    /// 组件已安装，但版本与本 Rove 不兼容（#43）：提示更新组件或 Rove，C# 导航停留在 L0/L1。
+    Incompatible(Incompatible),
     /// 构建中。`rebuilding` 为 true 时旧索引仍然可以查询。
     Building {
         progress: Progress,
@@ -105,6 +110,9 @@ pub struct IndexInfo {
     pub prefetch: PrefetchState,
     /// 没有 csproj，按 asmdef 推断项目结构。
     pub inferred_project: bool,
+    /// 索引仍然可用，但组件无法使用（#43）：常驻进程握手失败，源文件变化只标记过期，
+    /// 全量重建也不会进行。界面在提示里说明要更新哪一边。
+    pub component_issue: Option<Incompatible>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

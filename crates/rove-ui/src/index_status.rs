@@ -17,7 +17,8 @@ use crate::{
 use rove_base::{Result, Subscription};
 use rove_i18n::{Message, StringTable, Strings};
 use rove_lang_cs::lifecycle::{
-    Failure, FailureKind, IndexLifecycle, IndexState, IndexStatus, PrefetchState,
+    Direction, Failure, FailureKind, Incompatible, IndexLifecycle, IndexState, IndexStatus,
+    PrefetchState,
 };
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -80,6 +81,7 @@ const STRINGS: &[(&str, &str)] = &[
     ("index.status.name", "C# 索引状态"),
     ("index.status.checking", "$(sync~spin) C#"),
     ("index.status.notInstalled", "$(info) C# 基础导航"),
+    ("index.status.incompatible", "$(warning) C# 组件需更新"),
     ("index.status.disabled", "$(circle-slash) C# 基础导航"),
     ("index.status.building", "$(sync~spin) C# 索引 {percent}%"),
     ("index.status.ready", "$(check) C#"),
@@ -89,6 +91,22 @@ const STRINGS: &[(&str, &str)] = &[
     (
         "index.tooltip.notInstalled",
         "跳转和引用是近似结果。安装语义组件后可以获得精确结果。",
+    ),
+    (
+        "index.tooltip.incompatible.old",
+        "已安装的 C# 语义组件（{version}）版本过旧，Rove 无法使用它。请安装更新的语义组件。跳转和引用暂时是近似结果。",
+    ),
+    (
+        "index.tooltip.incompatible.new",
+        "已安装的 C# 语义组件（{version}）比当前 Rove 新，Rove 无法使用它。请更新 Rove，或安装与之配套的语义组件。跳转和引用暂时是近似结果。",
+    ),
+    (
+        "index.tooltip.componentIssue.old",
+        "C# 语义组件版本过旧，无法进行增量更新。请安装更新的语义组件。",
+    ),
+    (
+        "index.tooltip.componentIssue.new",
+        "C# 语义组件比当前 Rove 新，无法进行增量更新。请更新 Rove，或安装与之配套的语义组件。",
     ),
     (
         "index.tooltip.disabled",
@@ -131,9 +149,18 @@ const STRINGS: &[(&str, &str)] = &[
     ("index.action.rebuild", "重建索引"),
     ("index.action.openLog", "打开索引日志"),
     ("index.details.title", "C# 索引"),
+    ("index.hint.install", "安装语义组件以获得精确导航"),
     (
         "index.details.notInstalled",
-        "没有找到 C# 语义组件（rove-indexer-cs）。跳转和引用来自快速索引与语法分析，是近似结果。\n安装方法：把语义组件放在 rove.exe 同目录的 rove-indexer-cs 文件夹中，或者用环境变量 ROVE_INDEXER_CS 指向 rove-indexer-cs.exe，然后执行“重建 C# 语义索引”。",
+        "没有找到 C# 语义组件（rove-indexer-cs）。跳转和引用来自快速索引与语法分析，是近似结果。\n安装方法：\n1. 从 Rove 的发布页面下载 C# 语义组件包（rove-indexer-cs-<版本>-win-x64.zip）。Rove 不会自己联网下载。\n2. 把压缩包解压到 %LOCALAPPDATA%\\Rove\\components\\indexer-cs\\（压缩包里已带版本文件夹，解压后应得到 %LOCALAPPDATA%\\Rove\\components\\indexer-cs\\<版本>\\rove-indexer-cs.exe）；便携版也可以解压到 rove.exe 同目录的 components\\indexer-cs\\。\n3. 执行“重建 C# 语义索引”，不需要安装 .NET。\n同时存在多个版本时使用版本最高的兼容版本。",
+    ),
+    (
+        "index.details.incompatible.old",
+        "已安装的 C# 语义组件（{version}）版本过旧，与当前 Rove 的协议或索引格式对不上。跳转和引用是近似结果。\n请安装更新的语义组件（解压到 %LOCALAPPDATA%\\Rove\\components\\indexer-cs\\，旧版本可以保留或删除）。",
+    ),
+    (
+        "index.details.incompatible.new",
+        "已安装的 C# 语义组件（{version}）比当前 Rove 新，与当前 Rove 的协议或索引格式对不上。跳转和引用是近似结果。\n请更新 Rove，或安装与当前 Rove 配套的语义组件版本（可与新版本并存）。",
     ),
     (
         "index.details.disabled",
@@ -226,6 +253,22 @@ pub fn failure_summary(strings: &dyn Strings, kind: FailureKind) -> String {
     s(strings, &format!("index.failure.{}", kind.id()), &[])
 }
 
+/// 组件不兼容的说明：`prefix` 后接 `.old`（组件太旧）或 `.new`（组件太新）。
+fn incompatible_text(strings: &dyn Strings, why: &Incompatible, prefix: &str) -> String {
+    s(
+        strings,
+        &format!("{prefix}.{}", side(why)),
+        &[("version", why.component_version.clone().unwrap_or_default())],
+    )
+}
+
+fn side(why: &Incompatible) -> &'static str {
+    match why.direction {
+        Direction::ComponentTooOld => "old",
+        Direction::ComponentTooNew => "new",
+    }
+}
+
 fn dir_text(path: Option<&Path>) -> String {
     path.map(|p| p.display().to_string()).unwrap_or_default()
 }
@@ -246,6 +289,10 @@ pub fn status_entry(
         IndexState::NotInstalled => (
             s(strings, "index.status.notInstalled", &[]),
             s(strings, "index.tooltip.notInstalled", &[]),
+        ),
+        IndexState::Incompatible(why) => (
+            s(strings, "index.status.incompatible", &[]),
+            incompatible_text(strings, why, "index.tooltip.incompatible"),
         ),
         IndexState::Disabled => (
             s(strings, "index.status.disabled", &[]),
@@ -327,6 +374,14 @@ pub fn status_entry(
             &[("count", info.stale_files.to_string())],
         ));
     }
+    if let Some(why) = &info.component_issue {
+        tooltip.push('\n');
+        tooltip.push_str(&incompatible_text(
+            strings,
+            why,
+            "index.tooltip.componentIssue",
+        ));
+    }
     if info.inferred_project {
         tooltip.push('\n');
         tooltip.push_str(&s(strings, "index.tooltip.inferred", &[]));
@@ -348,11 +403,30 @@ pub fn details_lines(status: &IndexStatus, strings: &dyn Strings, now_ms: u64) -
     lines.push(icons::strip_icons(&entry.text).trim().to_owned());
     let info = &status.info;
     match &status.state {
-        IndexState::NotInstalled => lines.extend(
-            s(strings, "index.details.notInstalled", &[])
+        IndexState::NotInstalled => {
+            lines.push(s(strings, "index.hint.install", &[]));
+            lines.extend(
+                s(strings, "index.details.notInstalled", &[])
+                    .lines()
+                    .map(str::to_owned),
+            );
+        }
+        IndexState::Incompatible(why) => {
+            lines.extend(
+                s(
+                    strings,
+                    &format!("index.details.incompatible.{}", side(why)),
+                    &[("version", why.component_version.clone().unwrap_or_default())],
+                )
                 .lines()
                 .map(str::to_owned),
-        ),
+            );
+            lines.push(s(
+                strings,
+                "index.details.reason",
+                &[("detail", why.detail.clone())],
+            ));
+        }
         IndexState::Disabled => {
             lines.extend(
                 s(strings, "index.details.disabled", &[])
@@ -613,6 +687,71 @@ mod tests {
             .unwrap(),
             "$(error) C# 索引失败"
         );
+    }
+
+    #[test]
+    fn missing_and_incompatible_components_explain_how_to_fix_it() {
+        use rove_lang_cs::lifecycle::Aspect;
+        let t = table();
+        let status = |state, info| IndexStatus {
+            state,
+            info,
+            revision: 1,
+        };
+        // 未安装：说明页面含提示语与安装方法（位置、不联网、不需要 .NET）
+        let lines = details_lines(
+            &status(IndexState::NotInstalled, IndexInfo::default()),
+            &t,
+            0,
+        );
+        let page = lines.join(
+            "
+",
+        );
+        assert!(page.contains("安装语义组件以获得精确导航"), "{page}");
+        assert!(
+            page.contains(r"%LOCALAPPDATA%\Rove\components\indexer-cs"),
+            "{page}"
+        );
+        assert!(page.contains("不会自己联网下载") && page.contains("不需要安装 .NET"));
+        // 不兼容：区分组件太旧与太新，说明要更新哪一边
+        let why = |direction| Incompatible {
+            direction,
+            aspect: Aspect::Protocol,
+            component_version: Some("9.0.0.0".into()),
+            detail: "protocol 8..9, Rove speaks 1..1".into(),
+        };
+        let new = status(
+            IndexState::Incompatible(why(Direction::ComponentTooNew)),
+            IndexInfo::default(),
+        );
+        let entry = status_entry(&new, &t, 0).unwrap();
+        assert_eq!(entry.text, "$(warning) C# 组件需更新");
+        let tip = entry.tooltip.unwrap();
+        assert!(
+            tip.contains("9.0.0.0") && tip.contains("更新 Rove"),
+            "{tip}"
+        );
+        let old = status(
+            IndexState::Incompatible(why(Direction::ComponentTooOld)),
+            IndexInfo::default(),
+        );
+        assert!(details_lines(&old, &t, 0)
+            .join(
+                "
+"
+            )
+            .contains("安装更新的语义组件"));
+        assert!(details_lines(&new, &t, 0)
+            .iter()
+            .any(|l| l.contains("protocol 8..9")));
+        // 索引仍然可用，但常驻组件握手失败：就绪状态的提示里附带说明
+        let info = IndexInfo {
+            component_issue: Some(why(Direction::ComponentTooOld)),
+            ..Default::default()
+        };
+        let ready = status_entry(&status(IndexState::Ready, info), &t, 0).unwrap();
+        assert!(ready.tooltip.unwrap().contains("无法进行增量更新"));
     }
 
     #[test]

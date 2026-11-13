@@ -318,6 +318,8 @@ fn cmd(args: &[&str]) -> Option<IndexerComponent> {
     Some(IndexerComponent {
         program: PathBuf::from(std::env::var_os("ComSpec").unwrap_or("cmd.exe".into())),
         prefix: args.iter().map(Into::into).collect(),
+        version: None,
+        protocol: None,
     })
 }
 
@@ -342,6 +344,8 @@ fn indexer_missing_failing_or_crashing_degrades_after_one_retry() {
             Some(IndexerComponent {
                 program: PathBuf::from(r"Z:\no\such\rove-indexer-cs.exe"),
                 prefix: vec![],
+                version: None,
+                protocol: None,
             }),
             FailureKind::SpawnFailed,
             "failed to start indexer",

@@ -210,3 +210,12 @@ CI 上不做绝对性能判定（托管机器波动大）；相对比较与预�
 cargo run --release -p rove-lang-cs --example incr_check -- --project large --latency 50 --edits 0
 cargo run --release -p rove-lang-cs --example incr_check -- --project large --edits 1000 --checkpoint 100 --seed 42
 ```
+
+<!-- #43 追加：索引组件打包与发现 -->
+
+### 8.4 C# 索引组件的打包、发现与验证（#43）
+
+- 打包：`powershell -NoProfile -File scripts/components/package-indexer.ps1`（trim 版，约 32 MB / zip 14 MB；`-NoTrim` 出支持 `--generators` 的未 trim 包）。产物 `target/components/<版本>/` 与 zip，约定见 [docs/CS_INDEX_FORMAT.md](docs/CS_INDEX_FORMAT.md)「组件包与安装约定」（发布流水线 #76 照此执行）。
+- 发现：开发时用环境变量 `ROVE_INDEXER_CS` 指向 `rove-indexer-cs.exe` / `.dll`（`tools/.../bin` 的开发路径已移除）；正式规则是 `%LOCALAPPDATA%\Rove\components\indexer-cs\<版本>\`，测试里用 `ROVE_COMPONENTS_DIR` 或 `component::Roots` 替换位置。
+- 对打包产物跑 `incremental` 测试：`ROVE_INDEXER_CS=<exe> cargo test -p rove-lang-cs --test incremental -j 1`。
+- 干净 Windows（Sandbox）验证步骤与 `scripts/components/smoke-indexer.ps1` 见同一份文档，发版时重跑。

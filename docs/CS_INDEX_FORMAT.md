@@ -156,8 +156,8 @@
 
 | 方向 | 消息 | 内容 |
 |---|---|---|
-| 进程 → Rove | `hello`（通知，第一行） | `protocol`（当前 1）、`indexer_version`、`pid`。**版本字段在第一条消息里**；握手的规则与版本协商由 #43 定稿 |
-| Rove → 进程 | `initialize` | `protocol`、`project`、`base`、`journal`，可选 `idle_exit_seconds`、`trim_seconds`、`background_duty`、`max_warm_files`、`background_batch`。回复已有段数、日志字节数、覆盖层文件数 |
+| 进程 → Rove | `hello`（通知，第一行） | `protocol`（进程能说的最高协议，当前 1）、`protocol_min`（最低协议，当前 1；缺省等于 `protocol`）、`indexer_version`、`pid`。**版本字段在第一条消息里**；协商规则见下文「组件、协议与索引格式的版本」（#43） |
+| Rove → 进程 | `initialize` | `protocol`（Rove 按协商规则选定的版本；不在进程支持的区间内则回复错误 -32001 而不是硬跑）、`project`、`base`、`journal`，可选 `idle_exit_seconds`、`trim_seconds`、`background_duty`、`max_warm_files`、`background_batch`。回复已有段数、日志字节数、覆盖层文件数 |
 | Rove → 进程 | `changed` | `changes: [{ path, kind }]`（项目相对路径；变更 / 新增 / 删除由进程按磁盘判断，重命名发两条）。前台重绑后回复 `files`、`segment`（序号、偏移、长度）、`impact`（变化的键、新名字、队列长度）、`locked`（被独占、稍后重试的文件）、`rebuild_required`（`.csproj` / `.asmdef` / `.asmref` 变化，不做增量）、`elapsed_ms` |
 | Rove → 进程 | `index` | `project`、`output`，可选 `rebase` 与 `journal`：全量索引，期间发 `progress { done, total }` 通知；`rebase` 时完成后切换到新的基础索引 |
 | Rove → 进程 | `status` | 回复正在更新的文件、队列长度、被独占的文件数、覆盖层文件数与段数、日志字节数、预热的项目、工作集 |
@@ -171,3 +171,122 @@
 - 空闲 `trim_seconds`（默认 120 s）后丢掉预热的编译，只保留项目模型与依赖镜像；空闲 `idle_exit_seconds`（Rove 默认 600 s，依据见 `ResidentOptions::idle_exit`）后刷盘退出，下一次文件变化时由 #36 重新拉起。
 - 重绑：文件按所属项目的 `DefineConstants` 重新解析（与全量索引同一份解析选项），用 Roslyn 的 `ReplaceSyntaxTree` / `AddSyntaxTrees` / `RemoveSyntaxTrees` 更新该项目的编译，依赖项目以元数据镜像引用（与全量流水线相同）。读文件用共享模式并重试；仍被独占时放进重试列表（退避至多 15 s），不中断进程。
 - 影响分析（`Impact.Diff`，规则可单独测试，`--self-test`）：声明的键消失或指纹变化 → 按“基础索引 + 覆盖层”的引用表反查引用它的文件，以及指向它的实现 / 重写关系所在的声明文件；新出现的键 → 在能看到该项目的项目（本项目与传递下游）里按标识符文本查找它的名字（覆盖之前解析不到或绑定到别处的同名标识符）；文件里声明、被其他文件引用的局部键（命名实参指向的参数、partial 类型的类型参数）→ 引用它们的文件。受影响的文件进后台队列：前台请求优先、批之间可取消，线程降为低于正常并按占空比（默认 0.5）休眠。声明变化的项目在下游重绑前重新输出元数据镜像。
+
+## 组件、协议与索引格式的版本（#43）
+
+三个版本号各管一件事，Rove 在三个时刻核对它们：不启动进程时读组件清单、拉起常驻进程时读 `hello`、打开缓存索引时读头部。
+
+| 版本 | 含义 | 来源（单一事实） | Rove 侧 |
+|---|---|---|---|
+| 组件版本 | 索引进程的发布版本，也是写进索引头部的“索引进程版本” | `RoveIndexer.csproj` 的 `<Version>`（当前 1.2.0） | 缓存索引头部版本必须等于**已安装组件的版本**，否则重建；任意组件版本都可以使用，只要下面两项兼容 |
+| 协议版本 | `--serve` 常驻协议的消息约定 | `Server.cs` 的 `Protocol`（最高）与 `ProtocolMin`（最低），当前 1..1 | `resident::PROTOCOL` 与 `PROTOCOL_MIN`，当前 1..1 |
+| 索引格式版本 | `.rvcsidx` 的二进制布局 | `IndexWriter.Version`（当前 2） | `validity::EXPECTED_FORMAT`，只读这一个版本 |
+
+对应关系（发版时在这里加一行；`component.json` 由 `rove-indexer-cs --version` 生成，不手写）：
+
+| Rove | 组件 | 协议区间 | 索引格式 |
+|---|---|---|---|
+| 当前开发版（M2） | 1.2.x | 1..1 | 2 |
+
+### 兼容规则
+
+1. **格式必须相等。** 组件写的索引格式不是 Rove 读得懂的那一个 → 不兼容。格式更低 → 组件太旧；更高 → 组件太新。Rove 不读旧格式，也不猜新格式。
+2. **协议区间必须有交集。** Rove 支持 `PROTOCOL_MIN..=PROTOCOL`，组件支持 `protocol_min..=protocol`；取 `min(PROTOCOL, 组件 protocol)` 作为本次使用的协议，它不低于双方的最低值才算兼容，`initialize` 里就发这个版本。组件最高协议低于 Rove 的最低协议 → 组件太旧；组件最低协议高于 Rove 的最高协议 → 组件太新。**两个方向都覆盖**：用户装了新组件、Rove 还是旧的，与反过来的情形，都会得到明确的“更新哪一边”的提示。
+3. **组件版本不参与兼容判定**，只用来决定缓存索引是否要重建（头部版本 = 当前组件版本）。所以补丁与小版本更新不需要改 Rove；组件换版本后首次打开项目会重建一次索引。
+4. **判定两次**：发现组件时读 `component.json`（`protocol`、`protocol_min`、`index_format`，不启动进程）；拉起常驻进程后再用第一条消息 `hello` 的协议区间核对一次（环境变量覆盖的组件没有清单，只靠这一次）。全量构建不走协议，靠清单与索引头部（格式 + 组件版本）把关。
+5. 协议或格式有不兼容改动时：协议 +1（需要时同时抬高 `ProtocolMin`）、`IndexWriter.Version` +1，同一个 PR 里同步 `PROTOCOL` / `PROTOCOL_MIN` / `EXPECTED_FORMAT` 与上面的对应表；向后兼容的扩展（新字段、新方法）不动协议号。
+
+### 不兼容与缺失时的处理
+
+| 情形 | Rove 的状态 | 导航 | 提示 |
+|---|---|---|---|
+| 没有安装组件 | `NotInstalled`，状态栏 `$(info) C# 基础导航` | L1/L0，近似结果 | 点击打开说明页：含安装方法 |
+| 已安装，格式或协议不兼容（组件太旧 / 太新） | `Incompatible`，状态栏 `$(warning) C# 组件需更新`，不重试 | L1/L0 | 悬停与说明页指出更新组件还是更新 Rove，并写出组件版本 |
+| 缓存索引有效，但常驻进程 `hello` 协议对不上 | 保持 `Ready`，`component_issue` 记录原因；该进程被放弃 | 索引照常可用，源文件变化只标记过期（近似） | 悬停追加“无法进行增量更新”及更新哪一边 |
+| 缓存索引的头部版本 ≠ 当前组件版本 / 格式不是 2 | 重建（有旧索引时重建期间继续使用它） | — | 状态栏显示构建进度 |
+
+不会出现“用不兼容的协议硬跑”：协议对不上的进程不会收到 `initialize`，收到不在区间内的 `initialize` 的进程回复错误 -32001。
+
+## 组件包与安装约定（#43，发布流水线 #76 照此执行）
+
+**包。** `scripts/components/package-indexer.ps1` 产出 `rove-indexer-cs-<版本>-win-x64.zip`（与 `.sha256`）。压缩包顶层目录就是版本号（如 `1.2.0.0`），里面是 `rove-indexer-cs.exe`（self-contained，内置 .NET 9 运行时，**用户不需要安装 .NET**）、运行时与 Roslyn 的 DLL、`component.json`、`THIRD_PARTY_NOTICES.txt`。`component.json` 是 `rove-indexer-cs --version` 的输出原样：`{ component, version, protocol, protocol_min, index_format, trimmed }`。流水线（#76）直接调用该脚本，并把 zip 与 sha256 作为**独立于主安装包的可选组件**发布；主安装包不含它。
+
+**位置与发现规则**（`lifecycle/component.rs`，与 #76 的安装器约定一致）：
+
+```text
+%LOCALAPPDATA%\Rove\components\indexer-cs\<版本>\      用户级安装（默认；ROVE_COMPONENTS_DIR 可替换 components 目录）
+<rove.exe 所在目录>\components\indexer-cs\<版本>\       便携版 / 随包放置，布局相同
+    rove-indexer-cs.exe   component.json   …
+```
+
+1. 环境变量 `ROVE_INDEXER_CS`（开发覆盖，指向 `.exe` 或 `.dll`）：设置了就只用它，不读清单；指向的文件不存在 → 视为未安装，不回退到别处（免得悄悄用错组件）。
+2. 否则两个目录下的每个版本子目录是一个候选（要有 `rove-indexer-cs.exe` 与 `component.json`），按清单判定兼容；**选版本最高的兼容候选**，版本相同时用户目录优先。
+3. 有候选但都不兼容 → “不兼容”（报告其中版本最高者）；没有候选 → “未安装”。
+4. 多个版本可以并存；安装新版本就是解压出一个新的版本目录，卸载就是删除目录。安装器的“可选组件”项只需把 zip 解压到 `%LOCALAPPDATA%\Rove\components\indexer-cs\`（用户级，不需要管理员权限，不写 `HKLM`）。#36 里原先的“开发路径”（`tools/.../bin`）已移除；开发时用 `ROVE_INDEXER_CS` 指向构建产物。
+
+**获取与更新。** Rove 运行期不联网、不下载组件，组件由用户从发布页面下载并解压（说明页的“安装方法”就是这一段）。**首版不做自动更新**，这是有意的决定：自动更新需要联网与签名校验，违背“运行期不发起任何网络请求”的硬约束；版本握手保证旧 Rove 配新组件、新 Rove 配旧组件都能得到明确提示。
+
+**与 #76 的对齐结论。** #76 尚未开工，所以这里把约定一次定死，#76 照做：安装位置与发现规则如上；包的形态是 zip（含版本目录）而不是自带安装器；`component.json` 是兼容判定的唯一依据；版本号单一来源是 `RoveIndexer.csproj`。“关于”对话框（#76）显示组件状态时调用 `rove_lang_cs::lifecycle::component::discover(&Roots::current())`：`Found` 里有版本，`Incompatible` 里有方向与组件版本。
+
+## 发布配置：trim 与 ReadyToRun 的结论（#43）
+
+配置写在 `RoveIndexer.csproj`（`SatelliteResourceLanguages=en`、`DebugType=none`、`JsonSerializerIsReflectionEnabledByDefault`、`TrimmerRootAssembly`、`Rove.Trimmed` 标记），发布参数由 `package-indexer.ps1` 传入：`dotnet publish -r win-x64 --self-contained -p:PublishTrimmed=true`。
+
+**结论：默认开启 trim，不开 ReadyToRun。** trim 版不支持 `--generators`（见下），需要生成器时用 `-NoTrim` 打未 trim 的包。
+
+体积（发布目录解压后 / zip 压缩后；机器：Windows 11，.NET SDK 9.0.100）：
+
+| 变体 | 解压后 | zip | 与 60–90 MB 预算 |
+|---|---|---|---|
+| 不 trim | 83.9 MB | 36.6 MB | 在预算内 |
+| 不 trim + ReadyToRun | 101.5 MB | 44.5 MB | 略超 |
+| **trim（默认）** | **31.8 MB** | **13.6 MB** | 远低于 |
+| trim + ReadyToRun | 54.4 MB | 24.3 MB | 低于 |
+
+构成（trim 版）：Roslyn 的 `Microsoft.CodeAnalysis.CSharp.dll` 6.1 MB + `Microsoft.CodeAnalysis.dll` 1.8 MB，.NET 运行时的原生部分（`coreclr`、`clrjit`、GC、`CoreLib` 等）约 12 MB，其余是被剪过的框架库与 `Microsoft.DiaSymReader.Native` 2.2 MB。不 trim 时多出的部分基本是完整的 BCL。已用 `SatelliteResourceLanguages=en` 去掉 Roslyn 的 13 种界面语言资源；Roslyn 的 VB 支持本来就没有引用，没有更便宜的优化了。
+
+**trim 验证**（两个真实测试项目，默认选项，用 `--report` 的统计逐项对照；“不 trim”是同一次构建的 self-contained 发布）：
+
+| 项目 | 变体 | 耗时 | 峰值工作集 | 名称数 | 未解析名称 | 占比 | 符号 | 出现位置 | 关系 |
+|---|---|---|---|---|---|---|---|---|---|
+| 中型（7,718 文件） | 不 trim | 46.1 s | 1558 MB | 1,626,282 | 574 | 0.0353% | 320,349 | 1,925,603 | 18,027 |
+| 中型 | trim | 44.5 s | 1558 MB | 1,626,282 | 574 | 0.0353% | 320,349 | 1,925,603 | 18,027 |
+| 大型（21,677 文件） | 不 trim | 108.8 s | 2753 MB | 5,084,364 | 3,107 | 0.0611% | 992,875 | 6,048,654 | 68,331 |
+| 大型 | trim | 92.2 s | 2765 MB | 5,084,364 | 3,107 | 0.0611% | 992,875 | 6,048,654 | 68,331 |
+
+中型项目两种变体产出的索引**逐字节相同**；大型项目的统计逐项相同，文件字节不同（并行绑定时符号的排布顺序不固定，不是内容差异；未另做“同一变体两次运行”的字节比对）。耗时是开着 Unity 等程序的机器上的单次数字，只说明 trim 没有变慢。除全量索引外，`cargo test -p rove-lang-cs --test incremental`（常驻协议、单文件重绑、被独占文件重试、空闲修剪与退出、影响分析、覆盖层上限）用 `ROVE_INDEXER_CS=<trim 版 exe>` 全部通过。
+
+**验证过的反射路径：** Roslyn 的符号显示与文档注释 ID、`MetadataReference` 读取（72 / 212 个程序集镜像）、`System.Text.Json` 的协议消息（`JsonNode`）与报告序列化（匿名类型 / 记录类型）、XML 文档读取、增量重绑（`ReplaceSyntaxTree` 等）。**第一次 trim 实际踩到的坑**是报告序列化：trim 后反射序列化默认关闭，索引写完后写报告时崩溃（退出码 127，索引文件已写出）；已用 `JsonSerializerIsReflectionEnabledByDefault` 与把本程序集整体设为 trim 根修复。这也是验收要求“比对统计”而不只是“能启动”的原因。
+
+**trim 版不支持 `--generators`。** 在大型项目上开启生成器：不 trim 的版本生成 17 个文件（`generated_trees: 17`），trim 版生成 0 个。第三方生成器（netstandard2.0 程序集，如 Unity.Entities 的 `SystemGenerator` / `AspectGenerator`）运行时按名字调用被剪掉的 BCL 成员，日志里是 `MissingMethodException: Stopwatch.Stop()`、`TypeLoadException: Enumerator`；把 Roslyn 程序集设为 trim 根、改用 `TrimMode=partial` 都试过，结果仍是 0。因为 Rove 默认不开生成器（`--generators` 默认关闭，当前没有任何设置项把它传给索引进程），而静默少结果比报错更糟，所以 trim 版进程收到 `--generators` 时直接报错退出（退出码 2；`component.json` 里 `trimmed: true`）。将来要把生成器做成设置项时，那个选项必须同时要求未 trim 的组件包（83.9 MB / zip 36.6 MB，仍在预算内）。
+
+**ReadyToRun 不采用：** 体积 +17.6 MB（不 trim）或 +22.6 MB（trim），而全量索引是分钟级任务，收益只在进程冷启动；常驻进程冷启动加第一次重绑在微型项目上约 1.4 s（`incremental` 测试输出），没有进一步压缩的必要。`-ReadyToRun` 开关保留给以后需要时使用。
+
+## 在干净的 Windows 上验证组件（每次发版重跑）
+
+self-contained 的唯一有效验证是在没有 .NET 的机器上跑（开发机装着 SDK 看不出问题）。用 Windows Sandbox（每次启动都是全新环境；需要在“启用或关闭 Windows 功能”里开启，家庭版没有）或干净的虚拟机：
+
+1. 在主机上打包：`powershell -NoProfile -File scripts\components\package-indexer.ps1`，得到 `target\components\<版本>\` 与 zip。
+2. 准备一个中型项目的**副本**（验收标准要求中型项目；用副本是因为冒烟脚本会往一个源文件追加一行注释）。
+3. 新建 `indexer.wsb`（路径换成本机的），双击启动。**`Networking` 设为 `Disable`，同时验证“运行期不联网”**：断网下能跑完说明没有硬依赖网络；要抓包验证时把它改成 `Enable`，在主机上用 Wireshark / `pktmon` 观察沙盒的出站流量，应当没有来自 `rove-indexer-cs.exe` 的连接。
+
+```xml
+<Configuration>
+  <Networking>Disable</Networking>
+  <MappedFolders>
+    <MappedFolder><HostFolder>D:\path\to\rove\target\components</HostFolder><SandboxFolder>C:\comp</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>D:\path\to\rove\scripts\components</HostFolder><SandboxFolder>C:\scripts</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>D:\path\to\medium-project-copy</HostFolder><SandboxFolder>C:\proj</SandboxFolder></MappedFolder>
+    <MappedFolder><HostFolder>D:\path\to\out</HostFolder><SandboxFolder>C:\out</SandboxFolder></MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command "&amp; { Get-Command dotnet -ErrorAction SilentlyContinue | Out-String | Set-Content C:\out\dotnet-check.txt; &amp; C:\scripts\smoke-indexer.ps1 -Component C:\comp\1.2.0.0 -Project C:\proj } *&gt; C:\out\smoke.txt"</Command>
+  </LogonCommand>
+</Configuration>
+```
+
+4. 看 `out\smoke.txt`：应依次出现 `version: {…}`、`full index: …`、`hello: protocol=1 min=1 …`、`changed: files=…`、最后一行 `SMOKE OK`；`dotnet-check.txt` 应为空（确认沙盒里没有 .NET）。
+
+`smoke-indexer.ps1` 做三件事：`--version`、全量索引、`--serve` 里读 `hello` → `initialize` → `changed`（改一个源文件）→ `shutdown`。不带 `-Project` 时它自己生成一个最小项目，适合快速冒烟。
+
+**本次验证状态：** 本机没有启用 Windows Sandbox，也没有虚拟机，所以**干净机器与断网验证没有在 #43 的 PR 里实跑**。已经做的：在开发机上用同一个脚本对打包产物（trim 版）跑通了 `SMOKE OK`；两个真实项目的全量索引与 `incremental` 测试套件对打包产物通过；Rove 与组件之间没有任何网络代码（索引进程源码里没有 `System.Net` / `HttpClient` / `Socket`，Rust 侧的组件发现只读本地目录）。干净机器与断网验证需要有 Sandbox 的机器按上面的步骤跑一次。

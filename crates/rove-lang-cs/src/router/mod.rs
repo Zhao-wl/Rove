@@ -159,7 +159,8 @@ impl SemanticSource for IndexLifecycle {
             IndexState::Building { progress, .. } => SemanticStatus::Building {
                 percent: Some(progress.percent),
             },
-            IndexState::NotInstalled => SemanticStatus::NotInstalled,
+            // 组件版本不兼容对查询来说和没有组件一样：近似结果，原因 ComponentUnavailable（#43）
+            IndexState::NotInstalled | IndexState::Incompatible(_) => SemanticStatus::NotInstalled,
             IndexState::Disabled => SemanticStatus::Disabled,
             IndexState::Failed(_) => SemanticStatus::Failed,
             IndexState::NoCSharp => SemanticStatus::NoCSharp,

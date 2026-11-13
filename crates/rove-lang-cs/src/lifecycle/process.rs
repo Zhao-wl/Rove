@@ -1,12 +1,12 @@
 //! 拉起与监控索引进程（#36 目标 5）。
 //!
-//! - 组件位置只在 [`locate_indexer`] 里查找：#43 合并前用环境变量或开发路径，合并后把这一个函数
-//!   换成 #43 定义的安装位置即可。
+//! - 组件位置只在 [`locate_indexer`] 里查找，规则（安装目录、版本目录、兼容判定）在 `component`（#43）。
 //! - 进程的 stdout/stderr 逐行写进索引日志，同时解析进度（见 [`Progress::parse`]）。
 //! - 取消（关项目、重建）时结束进程；崩溃、非零退出码由调用方（`service`）重试一次再降级。
 //! - #35 的常驻进程用同一个组件（`--serve`，见 `resident`）：空闲退出由进程自己决定，`service` 在
 //!   有文件变化时重新拉起。
 use super::{
+    component::{discover, Discovery, Incompatible, Roots},
     log::IndexLog,
     resident::{IncrementalIndexer, ProcessResident},
 };
@@ -29,6 +29,10 @@ pub struct IndexerComponent {
     pub program: PathBuf,
     /// 放在项目参数之前的参数（用 `dotnet` 运行 `.dll` 时是 dll 路径）。
     pub prefix: Vec<OsString>,
+    /// 清单里的组件版本（环境变量覆盖的组件没有清单，为 `None`）。
+    pub version: Option<[u16; 4]>,
+    /// 按清单协商出的协议版本；`None` 时 `initialize` 用 `PROTOCOL`，以 `hello` 为准（#43）。
+    pub protocol: Option<u32>,
 }
 
 impl IndexerComponent {
@@ -43,37 +47,33 @@ impl IndexerComponent {
             Self {
                 program: PathBuf::from("dotnet"),
                 prefix: vec![path.as_os_str().to_owned()],
+                version: None,
+                protocol: None,
             }
         } else {
             Self {
                 program: path.to_owned(),
                 prefix: Vec::new(),
+                version: None,
+                protocol: None,
             }
         })
     }
 }
 
-/// 查找索引组件（#43 合并后替换为它定义的安装位置）。依次是：
-/// 1. 环境变量 [`INDEXER_ENV`]；
-/// 2. `rove.exe` 同目录的 `rove-indexer-cs\rove-indexer-cs.exe`；
-/// 3. 开发路径 `tools/rove-indexer-cs/bin/{Release,Debug}/net9.0/rove-indexer-cs.exe`（相对本仓库）。
-pub fn locate_indexer() -> Option<IndexerComponent> {
-    if let Some(path) = std::env::var_os(INDEXER_ENV).filter(|v| !v.is_empty()) {
-        return IndexerComponent::from_path(Path::new(&path));
+/// 查找索引组件：规则见 `component` 模块（环境变量覆盖 → 用户级安装目录 → `rove.exe` 旁的 `components`，
+/// 选版本最高的兼容版本）。没有组件 → `Missing`，有但不兼容 → `Incompatible`。
+pub fn locate_indexer() -> Result<IndexerComponent, BuildFailure> {
+    locate_in(&Roots::current())
+}
+
+/// 同 [`locate_indexer`]，查找位置由调用方给出（测试与 #76 的安装验证用）。
+pub fn locate_in(roots: &Roots) -> Result<IndexerComponent, BuildFailure> {
+    match discover(roots) {
+        Discovery::Found(c) => Ok(c),
+        Discovery::NotInstalled => Err(BuildFailure::Missing),
+        Discovery::Incompatible(why) => Err(BuildFailure::Incompatible(why)),
     }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_owned));
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/rove-indexer-cs/bin");
-    exe_dir
-        .map(|d| d.join("rove-indexer-cs").join("rove-indexer-cs.exe"))
-        .into_iter()
-        .chain(
-            ["Release", "Debug"]
-                .iter()
-                .map(|c| dev.join(c).join("net9.0").join("rove-indexer-cs.exe")),
-        )
-        .find_map(|p| IndexerComponent::from_path(&p))
 }
 
 /// 一次构建要做的事。
@@ -140,6 +140,8 @@ impl Progress {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildFailure {
     Missing,
+    /// 组件已安装但版本与本 Rove 不兼容（#43）：提示更新，降级到 L1/L0，不重试。
+    Incompatible(Incompatible),
     SpawnFailed(String),
     /// 进程异常终止（Windows NTSTATUS 退出码，例如 0xC0000005）。
     Crashed(u32),
@@ -153,6 +155,7 @@ impl std::fmt::Display for BuildFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Missing => write!(f, "indexer component not found"),
+            Self::Incompatible(why) => write!(f, "indexer component incompatible: {why}"),
             Self::SpawnFailed(e) => write!(f, "failed to start indexer: {e}"),
             Self::Crashed(code) => write!(f, "indexer crashed (0x{code:08X})"),
             Self::ExitCode(code) => write!(f, "indexer exited with code {code}"),
@@ -177,24 +180,46 @@ pub trait IndexBuilder: Send + Sync {
     fn incremental(&self) -> Option<Arc<dyn IncrementalIndexer>> {
         None
     }
+
+    /// 已安装组件的版本：缓存索引头部的索引进程版本必须与它一致，否则重建（#43）。
+    /// `None`（默认或未知）时按 `EXPECTED_INDEXER_VERSION`。
+    fn component_version(&self) -> Option<[u16; 4]> {
+        None
+    }
 }
+
+/// 查找组件的函数：正式装配用 [`locate_indexer`]，测试替换成任意命令。
+pub type Locate = Arc<dyn Fn() -> Result<IndexerComponent, BuildFailure> + Send + Sync>;
 
 /// 用索引进程构建。
 pub struct ProcessBuilder {
-    locate: Arc<dyn Fn() -> Option<IndexerComponent> + Send + Sync>,
+    locate: Locate,
     resident: bool,
 }
 
 impl Default for ProcessBuilder {
     /// 正式装配：全量构建与增量更新（常驻模式，#35）都用 [`locate_indexer`] 找到的组件。
     fn default() -> Self {
-        Self::new(locate_indexer).with_resident(true)
+        Self {
+            locate: Arc::new(locate_indexer),
+            resident: true,
+        }
     }
 }
 
 impl ProcessBuilder {
     /// 只做全量构建（测试用任意命令模拟索引进程时，不会被当成常驻进程拉起）。
     pub fn new(locate: impl Fn() -> Option<IndexerComponent> + Send + Sync + 'static) -> Self {
+        Self {
+            locate: Arc::new(move || locate().ok_or(BuildFailure::Missing)),
+            resident: false,
+        }
+    }
+
+    /// 用任意查找函数（区分“未安装”与“不兼容”）构建，同样只做全量构建。
+    pub fn with_locate(
+        locate: impl Fn() -> Result<IndexerComponent, BuildFailure> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             locate: Arc::new(locate),
             resident: false,
@@ -227,7 +252,7 @@ impl IndexBuilder for ProcessBuilder {
         log: &IndexLog,
         cancel: &Cancellation,
     ) -> Result<(), BuildFailure> {
-        let component = (self.locate)().ok_or(BuildFailure::Missing)?;
+        let component = (self.locate)()?;
         let mut command = Command::new(&component.program);
         command
             .args(&component.prefix)
@@ -326,6 +351,10 @@ impl IndexBuilder for ProcessBuilder {
             Arc::new(ProcessResident::new(move || locate())) as Arc<dyn IncrementalIndexer>
         })
     }
+
+    fn component_version(&self) -> Option<[u16; 4]> {
+        (self.locate)().ok().and_then(|c| c.version)
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +405,8 @@ mod tests {
             Some(IndexerComponent {
                 program: PathBuf::from(r"Z:\no\such\indexer.exe"),
                 prefix: vec![],
+                version: None,
+                protocol: None,
             })
         });
         assert!(matches!(

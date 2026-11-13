@@ -18,8 +18,10 @@ use std::{
 };
 
 pub const EXPECTED_FORMAT: u32 = 2;
-/// 与 `tools/rove-indexer-cs/RoveIndexer.csproj` 的 `<Version>` 一致（测试对照该文件，改版本时
-/// 会提醒同步这里）。#43 合并后改为与安装的组件握手得到的版本。
+/// 本 Rove 构建时对应的索引进程版本，与 `tools/rove-indexer-cs/RoveIndexer.csproj` 的 `<Version>` 一致
+/// （测试对照该文件，改版本时会提醒同步这里）。找到已安装的组件时以组件清单里的版本为准
+/// （`IndexBuilder::component_version`）：缓存索引的头部版本必须等于当前组件版本，组件更新后重建；
+/// 本常量只在版本未知（环境变量覆盖、测试替身）时作为期望值。
 pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 2, 0, 0];
 const GENERATED_PREFIX: &str = "rove-generated://";
 
@@ -29,7 +31,7 @@ pub enum Invalid {
     Unreadable(String),
     Format { found: Option<u32> },
     Corrupt(String),
-    IndexerVersion { found: [u16; 4] },
+    IndexerVersion { found: [u16; 4], expected: [u16; 4] },
     ProjectConfig,
     SampledFiles { matched: usize, sampled: usize },
 }
@@ -43,10 +45,9 @@ impl std::fmt::Display for Invalid {
             }
             Self::Format { found: None } => write!(f, "not a Rove C# index"),
             Self::Corrupt(e) => write!(f, "index corrupt: {e}"),
-            Self::IndexerVersion { found } => write!(
-                f,
-                "indexer version {found:?}, expected {EXPECTED_INDEXER_VERSION:?}"
-            ),
+            Self::IndexerVersion { found, expected } => {
+                write!(f, "indexer version {found:?}, expected {expected:?}")
+            }
             Self::ProjectConfig => write!(f, "project configuration changed"),
             Self::SampledFiles { matched, sampled } => {
                 write!(f, "sampled file hashes: {matched}/{sampled} match")
@@ -90,6 +91,7 @@ pub fn open_checked(
     path: &Path,
     record: Option<&BuildRecord>,
     inputs: &ProjectInputs,
+    expected_version: [u16; 4],
 ) -> Result<CsIndex, Invalid> {
     let mut head = [0u8; 12];
     let mut file = fs::File::open(path).map_err(|e| Invalid::Unreadable(e.to_string()))?;
@@ -105,9 +107,10 @@ pub fn open_checked(
     }
     let index = CsIndex::open(path).map_err(|e| Invalid::Corrupt(e.to_string()))?;
     let header = index.header();
-    if header.indexer_version != EXPECTED_INDEXER_VERSION {
+    if header.indexer_version != expected_version {
         return Err(Invalid::IndexerVersion {
             found: header.indexer_version,
+            expected: expected_version,
         });
     }
     match record {

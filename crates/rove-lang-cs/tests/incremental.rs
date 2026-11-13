@@ -28,7 +28,12 @@ use std::{
 
 const WAIT: Duration = Duration::from_secs(120);
 
+/// 被测的索引进程：环境变量 `ROVE_INDEXER_CS`（`.exe` 或 `.dll`，例如打包后的 trim 版，#43）优先，
+/// 否则是 `dotnet build` 的产物。
 fn indexer_dll() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ROVE_INDEXER_CS").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
     let dll = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tools/rove-indexer-cs/bin/Release/net9.0/rove-indexer-cs.dll");
     if dll.is_file() {
@@ -39,6 +44,20 @@ fn indexer_dll() -> Option<PathBuf> {
             dll.display()
         );
         None
+    }
+}
+
+/// 启动索引进程的命令：`.dll` 用 `dotnet` 运行，`.exe`（self-contained 发布）直接运行。
+fn indexer_command(path: &Path) -> Command {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("dll"))
+    {
+        let mut c = Command::new("dotnet");
+        c.arg(path);
+        c
+    } else {
+        Command::new(path)
     }
 }
 
@@ -357,8 +376,7 @@ struct Resident {
 
 impl Resident {
     fn start(dll: &Path, args: &[&str]) -> Self {
-        let mut child = Command::new("dotnet")
-            .arg(dll)
+        let mut child = indexer_command(dll)
             .arg("--serve")
             .args(args)
             .stdin(Stdio::piped())
@@ -391,6 +409,8 @@ impl Resident {
             .as_str()
             .unwrap()
             .starts_with("1.2."));
+        // #43：hello 同时带协议区间，Rove 据此协商
+        assert_eq!(hello["params"]["protocol_min"], 1);
         r
     }
 
@@ -451,6 +471,40 @@ fn serve(dir: &Path, dll: &Path, args: &[&str]) -> (Resident, PathBuf) {
     );
     assert_eq!(init["segments"], 0);
     (r, root)
+}
+
+/// #43：`--version` 与 `component.json` 同源；`initialize` 里的协议版本超出进程支持的区间时被拒绝，
+/// 而不是硬跑。
+#[cfg(windows)]
+#[test]
+fn protocol_version_negotiation_and_component_info() {
+    let Some(dll) = indexer_dll() else { return };
+    let about = indexer_command(&dll).arg("--version").output().unwrap();
+    assert!(about.status.success());
+    let info: Value = serde_json::from_slice(&about.stdout).unwrap();
+    assert_eq!(info["component"], "indexer-cs");
+    assert_eq!(info["protocol"], 1);
+    assert_eq!(info["protocol_min"], 1);
+    assert_eq!(info["index_format"], 2);
+    assert!(info["version"].as_str().unwrap().starts_with("1.2."));
+    // Rove 侧对同一份自述的判定
+    let manifest = rove_lang_cs::lifecycle::Manifest::parse(&info.to_string()).unwrap();
+    assert_eq!(
+        rove_lang_cs::lifecycle::component::check(&manifest),
+        Ok(rove_lang_cs::lifecycle::resident::PROTOCOL)
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = Resident::start(&dll, &[]);
+    for bad in [0, 2, 99] {
+        let id = r.send(
+            "initialize",
+            json!({ "protocol": bad, "project": dir.path(), "base": dir.path().join("b"), "journal": dir.path().join("j") }),
+        );
+        let reply = r.recv(|m| m["id"] == id);
+        assert_eq!(reply["error"]["code"], -32001, "protocol {bad}: {reply}");
+    }
+    r.child.kill().ok();
 }
 
 #[cfg(windows)]
@@ -578,11 +632,7 @@ fn protocol_idle_trim_and_exit() {
 #[test]
 fn self_test() {
     let Some(dll) = indexer_dll() else { return };
-    let out = Command::new("dotnet")
-        .arg(dll)
-        .arg("--self-test")
-        .output()
-        .unwrap();
+    let out = indexer_command(&dll).arg("--self-test").output().unwrap();
     assert!(
         out.status.success(),
         "{}",

@@ -648,7 +648,7 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 | 打开 | `rove.index.enabled = false` → `Disabled`；扫描项目输入（根目录 `*.csproj`，`Assets/`、`Packages/` 下的 `*.asmdef`/`*.asmref` 内容与 `*.cs` 路径），没有 C# → `NoCSharp`（条目不显示）；创建缓存目录、写 `project.json`（同时验证可写，失败 → `Failed(CacheDir)`）、淘汰 |
 | 有效性检查 | ① magic 与格式版本 ② 索引进程版本（`validity::EXPECTED_INDEXER_VERSION`，测试对照 `RoveIndexer.csproj`）③ 项目配置：头部配置哈希与构建记录一致且输入指纹与磁盘一致 ④ 抽样文件哈希：`max(200, 2%)` 个文件比对 xxHash64，命中率 < 90% 重建，否则只把不一致的文件标记过期。①–③ 同步完成后立即发布索引（`Ready`），④ 在预读之后的后台进行 |
 | 预读 | `prefetch::prefetch`：`FILE_FLAG_SEQUENTIAL_SCAN` 全速顺序读整个文件、普通 I/O 优先级、可取消（关项目即停）；刚构建的索引跳过。限速与低优先级两种策略保留给基准，实测在 HDD 上都更差（数据见 `prefetch.rs` 注释与 #36 的 PR） |
-| 构建 | `process::locate_indexer`（唯一的组件查找函数，#43 合并后替换）→ `ProcessBuilder` 拉起 `rove-indexer-cs <项目> <新世代路径>`，stdout/stderr 逐行写日志并解析进度（阶段行与 `files: N`；将来的 `progress <done> <total>` 直接采用）；失败重试一次，组件缺失 → `NotInstalled`，其余 → `Failed`；已知对不上的旧索引不再提供（降级到 L1/L0） |
+| 构建 | `process::locate_indexer`（唯一的组件查找函数，规则见 §34）→ `ProcessBuilder` 拉起 `rove-indexer-cs <项目> <新世代路径>`，stdout/stderr 逐行写日志并解析进度（阶段行与 `files: N`；将来的 `progress <done> <total>` 直接采用）；失败重试一次，组件缺失 → `NotInstalled`，组件不兼容 → `Incompatible`（不重试，见 §34），其余 → `Failed`；已知对不上的旧索引不再提供（降级到 L1/L0） |
 | 文件变化 | `files_changed(&[SourceChange])`（界面从 #15 的 `FileEvent` 转换）：源文件先标记过期（`is_stale` 供 #38 降级为近似），再转发给常驻索引进程增量更新（#35，状态 `Updating`，覆盖层写入后清除过期标记；没有常驻组件时停留在过期），项目配置文件变化全量重建，监听溢出重新检查。见 §29 |
 | 淘汰 | `CachePolicy` 默认 10 个项目、总量 5 GiB（依据见 `evict.rs`），按 `project.json` 的最近打开时间从旧到新删除，当前项目永远保留，只删除带 `project.json` 的项目目录 |
 
@@ -963,7 +963,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 位置：索引进程 `tools/rove-indexer-cs/`（`Server.cs` 协议与调度、`Incremental.cs` 引擎、`Impact.cs` 影响分析与声明指纹、`Overlay.cs` 覆盖层段与日志、`BaseIndex.cs` 读基础索引、`SelfTest.cs`）；Rust 侧 `crates/rove-lang-cs/src/overlay.rs`（日志读取、合并视图 `L2View`，`lib.rs` 只追加 `pub mod overlay;`）与 `lifecycle/resident.rs`（拉起常驻进程、消息解析）。格式与协议见 [CS_INDEX_FORMAT](CS_INDEX_FORMAT.md)「覆盖层」「常驻模式与协议」。`query.rs` 的冻结契约未改动；本 issue 没有 `SKELETON(...)` 标记。
 
-三方边界（issue #35 的约定）：本 issue 定消息内容；#36 定何时启停（`IndexLifecycle` 在第一次源文件变化时拉起，项目关闭、全量重建、索引不可信时关闭，进程空闲自行退出）；#43 定版本如何协商（第一条消息 `hello` 带 `protocol` 与 `indexer_version`，本端只检查协议号一致）。
+三方边界（issue #35 的约定）：本 issue 定消息内容；#36 定何时启停（`IndexLifecycle` 在第一次源文件变化时拉起，项目关闭、全量重建、索引不可信时关闭，进程空闲自行退出）；#43 定版本如何协商（第一条消息 `hello` 带 `protocol`、`protocol_min` 与 `indexer_version`，按协议区间取交集，规则见 §34）。
 
 | 环节 | 内容 |
 |---|---|
@@ -1132,3 +1132,17 @@ BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（rele
 - **查询路由**：每次打开速览时取 #40 装配的 `Workbench::cs_router()`（带 L1、同步打开中的缓冲区，未保存修改的位置经映射；#40 换掉路由后下一次速览自然是新的，打开期间的嵌套速览沿用打开时那个）。测试可用 `Workbench::set_peek_queries` 换成替身。外部调用方要在已有结果上直接打开速览时走 `Workbench::open_peek_with`（`PeekRequest::preset` 带结果、`marker` 带文案）。
 
 验证：`cargo test -p rove-ui peek`（数据层单元测试 + `skeleton/workbench/peek_tests.rs` 的 16 个真实 GPUI 窗口入口测试（只经键位驱动）与 1 个键位表核对：三个入口、分组与计数、100 / 101 展开规则、`↑↓` / `Enter` / `Ctrl+Enter` / `F4` / `Shift+F4` / `F12` / `Ctrl+K F2` / `Esc` / `Shift+Esc`、`editor.stablePeek`、`editor.peekWidgetDefaultFocus` 两个取值、嵌套速览逐层返回与上下文键、近似标记、外部符号保底与注册提供方、空结果与实现不可用的提示、`.md` 打开源码、加载提示、反复开关 100 次后结果与预览全部释放、经 #40 的正式路由速览时未保存修改的位置经映射、键位表逐条一致）。性能：`cargo xtask bench --filter peek/`（真实窗口：28,671 处引用打开到结果树首次绘制，预算 `peek_open_to_first_paint_28k`；4.7 万条全部展开后结果树每帧 CPU，预算 `peek_tree_scroll_frame_47k`；开关 100 次前后的工作集 / 私有字节打印在 stdout）。
+
+## 34. 索引组件打包与版本握手（#43）
+
+位置：`crates/rove-lang-cs/src/lifecycle/component.rs`（安装位置、发现规则、兼容判定，`lifecycle/mod.rs` 只追加 `pub mod component;`）；握手在 `lifecycle/resident.rs`（`hello` 的协议区间）；索引进程侧是 `tools/rove-indexer-cs/ComponentInfo.cs`（`--version`）与 `Server.cs`（协议区间）；打包脚本在 `scripts/components/`。`query.rs` 的冻结契约未改动。#43 没有对应的 `SKELETON(...)` 标记：它替换的是 #36 里 `locate_indexer` 的“环境变量或开发路径”临时查找。规则与版本对应表写在 [CS_INDEX_FORMAT](CS_INDEX_FORMAT.md)「组件、协议与索引格式的版本」「组件包与安装约定」，这里只记代码如何接缝。
+
+| 环节 | 内容 |
+|---|---|
+| 发现 | `component::discover(&Roots)`：环境变量 `ROVE_INDEXER_CS`（开发覆盖，不看清单）→ `%LOCALAPPDATA%\Rove\components\indexer-cs\<版本>\`（`ROVE_COMPONENTS_DIR` 可替换 `components` 目录）→ `<rove.exe 目录>\components\indexer-cs\<版本>\`；每个版本目录要有 `rove-indexer-cs.exe` 与 `component.json`；在兼容的候选里选版本最高者，版本相同时靠前的目录优先。不启动任何进程。`process::locate_indexer` 只是 `locate_in(&Roots::current())` |
+| 兼容判定 | `component::check(&Manifest)`：索引格式必须等于 `validity::EXPECTED_FORMAT`，协议区间与 `resident::PROTOCOL_MIN..=PROTOCOL` 必须有交集（`negotiate_protocol`）；不兼容时 `Incompatible { direction: ComponentTooOld / ComponentTooNew, aspect, component_version, detail }` |
+| 状态与降级 | 没有组件 → `IndexState::NotInstalled`（状态栏“C# 基础导航”，不是失败通知）；有组件但都不兼容 → `IndexState::Incompatible(..)`（状态栏“C# 组件需更新”，不重试）；两者对路由都是 `SemanticStatus::NotInstalled`（近似结果，原因 `ComponentUnavailable`），导航降级到 L1/L0。已有的有效缓存索引不丢：构建时发现不兼容而缓存仍可信 → `Ready` + `IndexInfo::component_issue`；常驻进程 `hello` 协议对不上 → `ResidentEvent::Incompatible`，放弃该进程（源文件变化只标过期），同样记在 `component_issue` |
+| 索引头部版本 | `IndexBuilder::component_version()`（`ProcessBuilder` 取已安装组件的清单版本）与缓存索引头部的索引进程版本必须相等，否则重建；版本未知（环境变量覆盖、测试替身）时用 `validity::EXPECTED_INDEXER_VERSION` |
+| 界面 | `rove-ui::index_status`：状态栏条目、悬停与详情页（未安装时的安装方法、不兼容时更新哪一边）全部是 `index.*` 字符串，在 `STRINGS` 里登记；点击仍走 `rove.index.showDetails` |
+
+验证：`cargo test -p rove-lang-cs --test component`（发现与选择、未安装、三种不兼容方向且不重试、`hello` 协议区间不相交被拒绝与相交被接受、缓存索引在常驻握手失败时保持可用）；`cargo test -p rove-lang-cs --lib lifecycle::component`（清单解析、协议协商、候选选择的单元测试）；`cargo test -p rove-lang-cs --test incremental protocol_version_negotiation_and_component_info`（真实进程的 `--version`、`hello` 区间与不支持协议的 `initialize` 被拒绝，需先 `dotnet build`）；`cargo test -p rove-ui index_status`（未安装、不兼容的状态栏文字、悬停、详情页内容）。组件包的打包与干净机器验证见 `scripts/components/` 与 [CS_INDEX_FORMAT](CS_INDEX_FORMAT.md)。
