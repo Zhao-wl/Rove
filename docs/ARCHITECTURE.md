@@ -1021,7 +1021,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 `SaveController`；`SaveAction` 分发给控制器；`Effect::Saved` 时清除标签脏标记并调用 #38 的
 `BufferStates::saved(path, hash)`（保存事件的唯一出口，#40 负责装配）；`Effect::Reloaded` 时把新快照交给代码视图与
 语法（`BufferStates::reloaded`）；工作区 `FileEvent` 经 `note_change` → `due` → 后台读盘 → `apply_disk`。
-#50（热退出）用 `set_hot_exit` 跳过关闭确认，`SaveJob::bytes` 可用于备份；#52、#62 经 `TextFile::session_mut`
+#50（热退出）用 `set_hot_exit` 跳过关闭确认（已接上，见 §43）；#52、#62 经 `TextFile::session_mut`
 编辑、经 `write_atomic` / `TextFile::save` 写盘。
 
 验证：`cargo test -p rove-buffer --test save`（入口集成测试：五类文件编码往返字节级比对、混合换行与统一换行一次撤销、
@@ -1245,7 +1245,7 @@ BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（rele
 关闭有未保存修改的标签（标签上的按钮、`closeActiveEditor`）与窗口关闭按钮（`edit_host::attach_close_confirmation`，
 替换 `Shell::attach_window` 登记的回调并先做它原来的布局记录）走 #49 的“保存 / 不保存 / 取消”。`ctrl+n`
 （`workbench.action.files.newUntitledFile`）新建 `Untitled-N`（`files.encoding` / `files.eol`），首次保存走另存为
-（`prompt_for_new_path`）。#50 的热退出仍经 `SaveController::set_hot_exit` 接管关闭确认。
+（`prompt_for_new_path`）。#50 的热退出经 `SaveController::set_hot_exit` 接管关闭确认（已接上，见 §43）。
 
 尚未完成（见 PR）：状态栏 `changeEditorIndentation` 选择器属于 #27（条目尚未合并），两个缩进转换命令已登记、可从命令
 面板执行；按键到上屏的 p99 基准与输入法实机验收见 PR 描述。
@@ -1501,3 +1501,59 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 按编码重新打开后的乱码与恢复、混合换行符且打开再关闭字节不变、超大文件与 `Library/PackageCache/**` 的只读提示、
 切换标签后一次完整重算 < 16 ms、`.asmdef` 的语言模式切换与重新高亮、缩进选择器）。需要真实 Unity 项目的那条
 用例按 AGENTS §8 在未设置 `ROVE_TEST_UNITY_MEDIUM` 时跳过。
+
+## 43. 热退出与崩溃恢复（#50）
+
+核心在 `crates/rove-buffer/src/hotexit/`（不依赖 gpui；`lib.rs` 只追加 `pub mod hotexit;`，不改 #1 的契约），界面登记项在
+`crates/rove-ui/src/hotexit.rs`（`lib.rs` 只追加 `pub mod hotexit;`），窗口装配在
+`crates/rove-ui/src/skeleton/workbench/hotexit_host.rs`。#46 的 `EditSession` 与 #49 的 `TextFile` 都**只追加**方法，没有修改任何
+既有签名或行为：`EditSession::undo_snapshot` / `restore_undo_snapshot`（撤销栈的可持久化快照），`TextFile::to_backup` /
+`from_backup` / `saved_marker`。#2 里没有本 issue 对应的 `SKELETON(...)` 标记。
+
+| 模块 | 内容 |
+|---|---|
+| `hotexit/settings.rs` | `files.hotExit`（`off` / `onExit` / `onExitAndWindowClose`）与 `files.restoreUndoStack` 的登记与读取；`HotExitMode::skips_close_confirmation(last_window)` 是三种取值的唯一判定点 |
+| `hotexit/record.rs` | 一份备份的内容：原始路径、编码 + BOM、主换行符与“是否混合”、文档版本、缓冲内容、保存点与脏位、最后一次已知的磁盘标记、“已删除”状态、撤销栈、标签序号与是否活动标签 |
+| `hotexit/codec.rs` | 长度前缀的二进制编解码（内容按原始 UTF-8 写出，不做 JSON 转义）；魔数 + 版本号，越界 / 长度撒谎 / 非 UTF-8 / 尾部多余字节一律 `DecodeError` |
+| `hotexit/store.rs` | `%LOCALAPPDATA%\Rove\backups\<工作区哈希>\` 的布局（与 #36 的 `index\<项目路径哈希>\` 同一套哈希与目录约定）、会话状态（退出标记 + 连续恢复失败次数）、隔离到 `backups-failed\`、工作区消失时整组清理 |
+| `hotexit/schedule.rs` | 按编辑去抖的持续备份：安静期 500 ms、最长等待 2 s（连续输入时靠最长等待封顶） |
+| `hotexit/service.rs` | `BackupService`：窗口拥有的服务，启动时给出 `Restore` 决策（恢复哪些、是不是意外退出、有没有被隔离），`undo_limit` / `note_edit` / `due` / `write` / `discard` / `mark_clean_exit` |
+| `hotexit/crash.rs` | panic 钩子与致命错误日志写 `%LOCALAPPDATA%\Rove\logs\crash-<时间戳>.log`，保留最近 10 份；只含时间、版本、OS / 架构、PID、可执行文件路径、panic 消息与调用栈 |
+| `rove-ui/src/hotexit.rs` | 界面字符串（`hotexit.status.restored` / `quarantined`）与反馈键；**没有命令、没有键位**（热退出是行为不是动作） |
+| `skeleton/workbench/hotexit_host.rs` | 窗口装配：启动恢复（标签顺序与活动标签）、按编辑去抖的后台写盘、保存 / 关闭后的清理、`SaveController::set_hot_exit` 的接管、退出时的同步备份与干净退出标记 |
+
+**语义**：
+
+- **三种取值**：`off` 不备份、关标签与关窗口都走 #49 的模态框；`onExit` 持续备份，退出应用（Rove 一个窗口一个文件夹，所以“最后一个窗口”= 退出应用）时跳过询问，关单个标签仍然询问；`onExitAndWindowClose` 关任意窗口都跳过。**关闭单个标签永远询问**（VS Code 相同）。
+- **持续备份**：代码视图每发出一次编辑就 `note_edit`，到期后在后台执行器上用 #49 的原子写入写出一份完整备份。只在退出时备份会让崩溃恢复一条都过不了，所以这里是去抖而不是退出钩子。
+- **恢复**：磁盘上还在的文件走 #17 正常的打开流程（文档身份归加载器，资源管理器之后再点同一个文件会复用这个标签），`load_text_file` 发现这个路径有待恢复的备份就不读盘、直接 `TextFile::from_backup`；**磁盘上已被删除**的文件走 `open_ready` 放一个就绪标签并标成“已删除”（与 #49 第 4 节一致）。备份里记着最后一次已知的磁盘标记，所以备份期间被外部改过的文件在第一次保存时直接落到 #49 的保存冲突路径，本模块不另造提示。
+- **脏标记**：备份里显式记一位 `dirty`，并在保存点被撤销栈上限截断（或根本没备份撤销栈）时把保存点换成一个永远不会被分配出去的标记——否则 `restoreUndoStack = false` 时恢复出来的文档会被当成“未修改”，关窗口不再追问。
+- **退出标记**：启动时立刻写成“未正常退出”（并把连续失败次数 +1），正常退出时才写成“干净”。读不到标记就按意外退出处理，恢复后在状态栏提示一次“已恢复上次未保存的修改”（第 1 级反馈，3 秒，**不弹通知、不弹模态框**，`UX_SPEC` §6.4）。
+- **连续失败**：同一组备份连续两次没能恢复完（没走到 `finish_restore`）时整组搬到 `backups-failed\<组名>[-N]\`，提示一次后不再尝试，不会进入无限恢复循环。
+- **读不到就当没有**：`%LOCALAPPDATA%` 没设置、目录被杀毒软件锁住、备份被清理工具删掉、单份备份被改坏——全部退化成“这个工作区没有备份”，绝不让 Rove 打不开。
+- **不联网**：本模块只用 `std::fs`、`std::backtrace` 与 crate 内的原子写入；崩溃日志只保存在本地，没有上报（`FEATURES.md` §10 遥测不做）。
+
+**固定值**（本 issue 不新增 `rove.*` 设置项，三个常数集中在 `hotexit/mod.rs` 的表里）：去抖安静期 500 ms / 最长等待 2 s
+（`schedule::QUIET_PERIOD` / `MAX_WAIT`）、撤销栈上限 200 个撤销单元（`service::UNDO_LIMIT`）、崩溃日志保留 10 份
+（`crash::KEEP_LOGS`）。
+
+**装配**：设置经 `app_settings` 登记（`rove-buffer-hotexit`）、字符串经 `appearance::strings` 登记；panic 钩子在
+`skeleton::launch` 里装一次；`Workbench::with_settings` 在应用入口调用 `start_hot_exit`（测试显式调用
+`start_hot_exit_in(<临时目录>)`，不碰用户目录，与 `LayoutStore::disabled()` 同一套做法）。窗口关闭按钮经
+`edit_host::request_window_close` 把 #49 的逐个确认与本 issue 的同步备份 + 退出标记串起来。
+
+**I/O 开销**（去抖参数的依据，`cargo test -p rove-buffer --test hotexit -- --nocapture continuous_typing_io_cost` 现场打印）：
+2000 行 / 118 KB 的 C# 文件，连续输入 1 分钟（每 50 ms 一次击键、中间一次不停）共 **29 次写入、合计 4709 KB**（每次约 162 KB：
+全文 + 这一分钟里累积的撤销栈）——安静期永远等不到，全靠最长等待封顶。落在 UI 线程上的只有每次击键 **0.27 µs** 的
+`note_edit` 与每 2 秒一次 **0.29 ms** 的全文快照复制，写盘在后台执行器上；按键到上屏的 8 ms 预算
+（`PROJECT_CHARTER` §6）里绝大多数帧一行代码都不跑。（本机同时开着 Unity 等程序，**机器负载较高**，这里只用于量级判断。）
+
+验证：`cargo test -p rove-buffer --test hotexit`（入口集成测试：**真的用 `Stop-Process -Force` 杀掉子进程**后备份仍可恢复且内容
+逐字节一致、GBK + CRLF / UTF-8 带 BOM / 混合换行三类文件恢复后保存字节完全一致、外部修改落到保存冲突路径、外部删除恢复成
+“已删除”、`restoreUndoStack` 真假两条路径与超限截断、保存 / 关闭 / 恢复消费 / 工作区消失后的清理、`off` 既不备份也不恢复、
+正常退出与意外退出的退出标记、连续两次失败后隔离、损坏或缺失的备份目录不阻塞启动、崩溃日志与整条链路无网络句柄）；
+`cargo test -p rove-buffer --lib hotexit`（编解码、目录布局与 #36 约定一致、会话状态、去抖次数、崩溃日志轮转与时间戳换算）；
+`cargo test -p rove-ui hotexit`（`hotexit::*` 单元测试：字符串登记；`skeleton::workbench::hotexit_tests` 入口测试：真实 GPUI 窗口里
+编辑三个文件 → 意外退出 → 重启后标签顺序与活动标签保持、内容回来、状态栏提示且不弹模态 / 通知；正常退出后不提示；
+`files.hotExit` 三种取值的关闭确认；保存与关闭后备份消失；备份期间文件被删除后恢复成“已删除”标签）。
+
