@@ -100,10 +100,22 @@ impl Element for CodeElement {
         cx: &mut App,
     ) {
         let view = self.view.clone();
+        let focus = self.view.read(cx).focus.clone();
+        // #47：输入法与键盘字符经 `EntityInputHandler` 进入代码视图（只在聚焦时登记）。
+        window.handle_input(
+            &focus,
+            gpui::ElementInputHandler::new(bounds, self.view.clone()),
+            cx,
+        );
         self.view.update(cx, |v, cx| {
-            window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                v.paint_frame(frame, window);
+            let caret = window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                v.paint_frame(frame, window)
             });
+            // 插入符区域变了（输入、滚动、缩放、换行）：让候选框按新布局重新定位（ROVE_PATCHES 的要求）。
+            if caret != v.last_caret {
+                v.last_caret = caret;
+                window.invalidate_character_coordinates();
+            }
             register_mouse(&view, frame, window, v.link_cursor);
             v.finish_frame(window, cx);
         });
@@ -245,6 +257,8 @@ impl CodeView {
         };
         let (first, y0) = pos.first_visible(&metrics, &self.zones);
 
+        // #47：输入法组合行用内嵌了组合串的显示条目。
+        let composed = self.composition_line();
         let mut lines = Vec::with_capacity((viewport_h / lh) as usize + 2);
         let mut y = y0 as f32;
         // `view` 是屏幕行（滚动坐标），`line` 是文档行（缓存与绘制内容）。
@@ -252,7 +266,10 @@ impl CodeView {
         let mut stats = FrameStats::default();
         while view_line < line_count && y < viewport_h {
             let line = self.doc_line(view_line);
-            let entry = self.lines.get(&line).cloned();
+            let entry = match &composed {
+                Some((l, e)) if *l == line => Some(e.clone()),
+                _ => self.lines.get(&line).cloned(),
+            };
             let shaped = entry
                 .as_ref()
                 .and_then(|e| self.shapes.get(&self.shape_key(e)).cloned());
@@ -350,7 +367,8 @@ impl CodeView {
         Some(self.xs_for(entry, l.shaped.as_deref()))
     }
 
-    pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) {
+    /// 绘制一帧；返回插入符的窗口坐标（输入法候选框定位用）。
+    pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) -> Option<Bounds<Pixels>> {
         let p = &self.palette;
         let o = &self.options;
         let lay = &frame.layout;
@@ -358,7 +376,11 @@ impl CodeView {
         let text = lay.text;
         let left = text.origin.x - px(self.scroll.x as f32);
         let sel = self.cursor.selection;
-        let caret_line = sel.active.line.0;
+        // #47：组合中插入符在组合串里（组合行是内嵌了组合串的显示条目）。
+        let composing = self.composition_columns();
+        let comp_line = self.composition.as_ref().map(|c| c.start.line.0);
+        let caret_line = comp_line.unwrap_or(sel.active.line.0);
+        let mut caret_bounds = None;
 
         window.paint_quad(fill(lay.bounds, hsla(p.background)));
         window.paint_quad(fill(lay.gutter, hsla(p.gutter_background)));
@@ -436,7 +458,10 @@ impl CodeView {
                         self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
                     }
                     // 选区。
-                    if !sel.is_empty() && l.line >= sel.start().line.0 && l.line <= sel.end().line.0
+                    if !sel.is_empty()
+                        && composing.is_none()
+                        && l.line >= sel.start().line.0
+                        && l.line <= sel.end().line.0
                     {
                         let a = if l.line == sel.start().line.0 {
                             entry.display.x_for_source(&xs, sel.start().column.0 as u32)
@@ -519,6 +544,19 @@ impl CodeView {
                             window.paint_quad(fill(r, hsla(s)));
                         }
                     }
+                    // #47：组合串下划线（`editor.compositionBorder`）。
+                    if let (Some((cols, _)), Some(cl)) = (&composing, comp_line) {
+                        if cl == l.line {
+                            let a = entry.display.x_for_source(&xs, cols.start);
+                            let b = entry.display.x_for_source(&xs, cols.end);
+                            let color = p.composition_border.unwrap_or(p.foreground);
+                            let r = Bounds::new(
+                                point(left + px(a), y + px(lh - 2.0)),
+                                size(px((b - a).max(1.0)), px(1.)),
+                            );
+                            window.paint_quad(fill(r, hsla(color)));
+                        }
+                    }
                     // 行内覆盖物。
                     if let Some(m) = &entry.merged {
                         for ov in &m.overlays {
@@ -538,21 +576,27 @@ impl CodeView {
                     }
                 }
             });
-            // 插入符。
-            if frame.focused && self.caret_visible {
+            // 插入符（组合期间不闪烁；改写模式用 `editor.overtypeCursorStyle`）。
+            if frame.focused && (self.caret_visible || composing.is_some()) {
                 if let Some(l) = frame.lines.iter().find(|l| l.line == caret_line) {
                     if let (Some(entry), Some(xs)) = (&l.entry, self.line_xs(l)) {
-                        let x = entry.display.x_for_source(&xs, sel.active.column.0 as u32);
+                        let column = composing
+                            .as_ref()
+                            .map_or(sel.active.column.0 as u32, |(_, c)| *c);
+                        let x = entry.display.x_for_source(&xs, column);
                         let next = {
-                            let i = entry
-                                .display
-                                .stop_index_for_source(sel.active.column.0 as u32);
+                            let i = entry.display.stop_index_for_source(column);
                             xs.get(i + 1).copied().unwrap_or(x + self.font.cell_width)
                         };
                         let cell = (next - x).max(self.font.cell_width * 0.5);
                         let y = text.origin.y + px(l.y);
                         let caret = hsla(p.cursor);
-                        let r = match o.cursor_style {
+                        let style = if self.overtype && composing.is_none() {
+                            o.overtype_cursor_style
+                        } else {
+                            o.cursor_style
+                        };
+                        let r = match style {
                             CursorStyle::Line | CursorStyle::LineThin => {
                                 let h = if o.cursor_height > 0.0 {
                                     (o.cursor_height as f32).min(lh)
@@ -576,11 +620,13 @@ impl CodeView {
                                 size(px(cell), px(1.)),
                             ),
                         };
-                        if o.cursor_style == CursorStyle::BlockOutline {
+                        if style == CursorStyle::BlockOutline {
                             window.paint_quad(outline(r, caret, BorderStyle::Solid));
                         } else {
                             window.paint_quad(fill(r, caret));
                         }
+                        caret_bounds =
+                            Some(Bounds::new(point(left + px(x), y), size(px(cell), px(lh))));
                     }
                 }
             }
@@ -588,6 +634,7 @@ impl CodeView {
 
         self.paint_gutter(frame, window);
         self.paint_scrollbars(frame, window);
+        caret_bounds
     }
 
     /// 缩进参考线：每个缩进单位一条 1 px 竖线，颜色按层级取 `editorIndentGuide.background1`–`6`。

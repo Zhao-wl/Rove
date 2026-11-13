@@ -110,6 +110,13 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.guides.indentation", DefaultValue::Bool(true)),
     ("editor.renderWhitespace", DefaultValue::Str("selection")),
     ("editor.largeFileOptimizations", DefaultValue::Bool(true)),
+    // #47：编辑交互（制表位、改写模式、自动空白）。
+    ("editor.insertSpaces", DefaultValue::Bool(true)),
+    ("editor.useTabStops", DefaultValue::Bool(true)),
+    ("editor.stickyTabStops", DefaultValue::Bool(false)),
+    ("editor.trimAutoWhitespace", DefaultValue::Bool(true)),
+    ("editor.overtypeCursorStyle", DefaultValue::Str("block")),
+    ("editor.overtypeOnPaste", DefaultValue::Bool(true)),
 ];
 
 /// 设置项默认值（编译期表）。
@@ -282,6 +289,14 @@ pub struct EditorOptions {
     pub guides_indentation: bool,
     pub render_whitespace: super::guides::RenderWhitespace,
     pub large_file_optimizations: bool,
+    // #47
+    pub insert_spaces: bool,
+    pub use_tab_stops: bool,
+    pub sticky_tab_stops: bool,
+    pub trim_auto_whitespace: bool,
+    /// 改写模式下的插入符样式（`editor.overtypeCursorStyle`）。
+    pub overtype_cursor_style: CursorStyle,
+    pub overtype_on_paste: bool,
 }
 
 impl Default for EditorOptions {
@@ -384,6 +399,17 @@ pub fn parse_font_features(s: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
+fn cursor_style(s: &str) -> CursorStyle {
+    match s {
+        "block" => CursorStyle::Block,
+        "underline" => CursorStyle::Underline,
+        "line-thin" => CursorStyle::LineThin,
+        "block-outline" => CursorStyle::BlockOutline,
+        "underline-thin" => CursorStyle::UnderlineThin,
+        _ => CursorStyle::Line,
+    }
+}
+
 fn parse_weight(s: &str) -> f32 {
     match s.trim() {
         "normal" => 400.0,
@@ -484,14 +510,13 @@ impl EditorOptions {
             },
             line_highlight_only_when_focus: r.bool("editor.renderLineHighlightOnlyWhenFocus"),
             word_separators: r.str("editor.wordSeparators").into(),
-            cursor_style: match r.str("editor.cursorStyle").as_str() {
-                "block" => CursorStyle::Block,
-                "underline" => CursorStyle::Underline,
-                "line-thin" => CursorStyle::LineThin,
-                "block-outline" => CursorStyle::BlockOutline,
-                "underline-thin" => CursorStyle::UnderlineThin,
-                _ => CursorStyle::Line,
-            },
+            cursor_style: cursor_style(&r.str("editor.cursorStyle")),
+            insert_spaces: r.bool("editor.insertSpaces"),
+            use_tab_stops: r.bool("editor.useTabStops"),
+            sticky_tab_stops: r.bool("editor.stickyTabStops"),
+            trim_auto_whitespace: r.bool("editor.trimAutoWhitespace"),
+            overtype_cursor_style: cursor_style(&r.str("editor.overtypeCursorStyle")),
+            overtype_on_paste: r.bool("editor.overtypeOnPaste"),
             cursor_width: r.num("editor.cursorWidth", 0.0, 100.0),
             cursor_height: r.num("editor.cursorHeight", 0.0, 1000.0),
             cursor_blinking: match r.str("editor.cursorBlinking").as_str() {

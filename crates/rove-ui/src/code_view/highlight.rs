@@ -29,6 +29,9 @@ pub struct SyntaxLayer {
     pub max_line_length: Option<usize>,
     /// 级别关闭（超大文件）时为假。
     pub enabled: bool,
+    /// #47：快照之后的编辑（按顺序）。新快照到达前按它把新行号映射回快照的行号，先用旧 token
+    /// 画出新文本（不闪烁、不进入当帧的解析）。
+    pub pending: Vec<rove_buffer::edit::LineChanges>,
 }
 
 impl SyntaxLayer {
@@ -38,6 +41,7 @@ impl SyntaxLayer {
             theme,
             max_line_length: Some(20_000),
             enabled: true,
+            pending: Vec::new(),
         }
     }
 
@@ -51,6 +55,7 @@ impl SyntaxLayer {
     ) -> Option<Vec<Range<u64>>> {
         let had = self.current.is_some();
         self.current = snapshot.zip(text);
+        self.pending.clear();
         match (had, &self.current, changed) {
             // 首次有结果、或结果被撤掉：整体替换。
             (false, _, _) | (_, None, _) | (_, _, None) => None,
@@ -77,6 +82,7 @@ impl SyntaxLayer {
         {
             return;
         }
+        let line = self.snapshot_line(line);
         let (Ok(range), Ok(tokens)) = (text.line_range(Line(line)), snapshot.tokens(Line(line)))
         else {
             return;
@@ -116,11 +122,20 @@ impl SyntaxLayer {
         }
     }
 
+    /// 当前文本的行号 → 快照文本的行号（快照之后的编辑倒序回推）。
+    fn snapshot_line(&self, line: u64) -> u64 {
+        self.pending
+            .iter()
+            .rev()
+            .fold(line, |l, changes| super::edit::new_to_old(changes, l))
+    }
+
     /// 某行某列（UTF-8 字节）所在 token 的 scope 是否属于字符串或注释（括号匹配跳过这些位置）。
     pub fn in_string_or_comment(&self, line: u64, column: u32) -> bool {
         let Some((snapshot, text)) = &self.current else {
             return false;
         };
+        let line = self.snapshot_line(line);
         let (Ok(range), Ok(tokens)) = (text.line_range(Line(line)), snapshot.tokens(Line(line)))
         else {
             return false;

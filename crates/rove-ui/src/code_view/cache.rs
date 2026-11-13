@@ -86,6 +86,30 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         self.bytes = 0;
     }
 
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let (value, tick, cost) = self.map.remove(key)?;
+        self.order.remove(&tick);
+        self.bytes -= cost;
+        Some(value)
+    }
+
+    /// #47：按新键重排（编辑后行号平移）。`f` 返回 `None` 的条目被丢弃；保持原有的最近使用次序。
+    pub fn rekey(&mut self, mut f: impl FnMut(&K) -> Option<K>) {
+        let map = std::mem::take(&mut self.map);
+        self.order.clear();
+        self.bytes = 0;
+        for (key, (value, tick, cost)) in map {
+            if let Some(new) = f(&key) {
+                self.order.insert(tick, new.clone());
+                self.bytes += cost;
+                if let Some(old) = self.map.insert(new, (value, tick, cost)) {
+                    self.order.remove(&old.1);
+                    self.bytes -= old.2;
+                }
+            }
+        }
+    }
+
     pub fn set_capacity(&mut self, capacity_bytes: usize) {
         self.capacity = capacity_bytes;
         while self.bytes > self.capacity && !self.order.is_empty() {

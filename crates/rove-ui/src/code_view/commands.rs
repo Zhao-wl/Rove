@@ -238,6 +238,268 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "codeView.command.toggleReadonlyInSession",
         "在会话中切换只读模式",
     ),
+    // #47：编辑基础（KEYBINDINGS「编辑基础」）、剪切粘贴、改写模式、缩进转换。`type` / `default:type`
+    // 带参数（`{ "text": … }`），没有 GPUI action，经命令桥交给窗口再转给聚焦的代码视图。
+    (
+        "lineBreakInsert",
+        "codeView.command.lineBreakInsert",
+        "插入换行符",
+    ),
+    ("tab", "codeView.command.tab", "Tab 键"),
+    ("outdent", "codeView.command.outdent", "减少缩进"),
+    (
+        "editor.action.indentLines",
+        "codeView.command.indentLines",
+        "行缩进",
+    ),
+    (
+        "editor.action.outdentLines",
+        "codeView.command.outdentLines",
+        "行减少缩进",
+    ),
+    ("deleteLeft", "codeView.command.deleteLeft", "向左删除"),
+    ("deleteRight", "codeView.command.deleteRight", "向右删除"),
+    (
+        "deleteWordLeft",
+        "codeView.command.deleteWordLeft",
+        "向左删除单词",
+    ),
+    (
+        "deleteWordRight",
+        "codeView.command.deleteWordRight",
+        "向右删除单词",
+    ),
+    (
+        "deleteWordStartLeft",
+        "codeView.command.deleteWordStartLeft",
+        "向左删除到单词开头",
+    ),
+    (
+        "deleteWordStartRight",
+        "codeView.command.deleteWordStartRight",
+        "向右删除到单词开头",
+    ),
+    (
+        "deleteWordEndLeft",
+        "codeView.command.deleteWordEndLeft",
+        "向左删除到单词结尾",
+    ),
+    (
+        "deleteWordEndRight",
+        "codeView.command.deleteWordEndRight",
+        "向右删除到单词结尾",
+    ),
+    (
+        "deleteWordPartLeft",
+        "codeView.command.deleteWordPartLeft",
+        "向左删除部分单词",
+    ),
+    (
+        "deleteWordPartRight",
+        "codeView.command.deleteWordPartRight",
+        "向右删除部分单词",
+    ),
+    (
+        "deleteAllLeft",
+        "codeView.command.deleteAllLeft",
+        "删除左侧所有内容",
+    ),
+    (
+        "deleteAllRight",
+        "codeView.command.deleteAllRight",
+        "删除右侧所有内容",
+    ),
+    (
+        "cursorWordLeft",
+        "codeView.command.cursorWordLeft",
+        "光标移到上一个单词",
+    ),
+    (
+        "cursorWordLeftSelect",
+        "codeView.command.cursorWordLeftSelect",
+        "选择到上一个单词",
+    ),
+    (
+        "cursorWordRight",
+        "codeView.command.cursorWordRight",
+        "光标移到下一个单词",
+    ),
+    (
+        "cursorWordRightSelect",
+        "codeView.command.cursorWordRightSelect",
+        "选择到下一个单词",
+    ),
+    (
+        "cursorWordStartLeft",
+        "codeView.command.cursorWordStartLeft",
+        "光标移到上一个单词开头",
+    ),
+    (
+        "cursorWordStartLeftSelect",
+        "codeView.command.cursorWordStartLeftSelect",
+        "选择到上一个单词开头",
+    ),
+    (
+        "cursorWordStartRight",
+        "codeView.command.cursorWordStartRight",
+        "光标移到下一个单词开头",
+    ),
+    (
+        "cursorWordStartRightSelect",
+        "codeView.command.cursorWordStartRightSelect",
+        "选择到下一个单词开头",
+    ),
+    (
+        "cursorWordEndLeft",
+        "codeView.command.cursorWordEndLeft",
+        "光标移到上一个单词结尾",
+    ),
+    (
+        "cursorWordEndLeftSelect",
+        "codeView.command.cursorWordEndLeftSelect",
+        "选择到上一个单词结尾",
+    ),
+    (
+        "cursorWordEndRight",
+        "codeView.command.cursorWordEndRight",
+        "光标移到下一个单词结尾",
+    ),
+    (
+        "cursorWordEndRightSelect",
+        "codeView.command.cursorWordEndRightSelect",
+        "选择到下一个单词结尾",
+    ),
+    (
+        "cursorWordPartLeft",
+        "codeView.command.cursorWordPartLeft",
+        "光标移到上一个单词部分",
+    ),
+    (
+        "cursorWordPartLeftSelect",
+        "codeView.command.cursorWordPartLeftSelect",
+        "选择到上一个单词部分",
+    ),
+    (
+        "cursorWordPartStartLeft",
+        "codeView.command.cursorWordPartStartLeft",
+        "光标移到上一个单词部分开头",
+    ),
+    (
+        "cursorWordPartStartLeftSelect",
+        "codeView.command.cursorWordPartStartLeftSelect",
+        "选择到上一个单词部分开头",
+    ),
+    (
+        "cursorWordPartRight",
+        "codeView.command.cursorWordPartRight",
+        "光标移到下一个单词部分",
+    ),
+    (
+        "cursorWordPartRightSelect",
+        "codeView.command.cursorWordPartRightSelect",
+        "选择到下一个单词部分",
+    ),
+    (
+        "cursorWordAccessibilityLeft",
+        "codeView.command.cursorWordAccessibilityLeft",
+        "光标移到上一个单词（无障碍）",
+    ),
+    (
+        "cursorWordAccessibilityLeftSelect",
+        "codeView.command.cursorWordAccessibilityLeftSelect",
+        "选择到上一个单词（无障碍）",
+    ),
+    (
+        "cursorWordAccessibilityRight",
+        "codeView.command.cursorWordAccessibilityRight",
+        "光标移到下一个单词（无障碍）",
+    ),
+    (
+        "cursorWordAccessibilityRightSelect",
+        "codeView.command.cursorWordAccessibilityRightSelect",
+        "选择到下一个单词（无障碍）",
+    ),
+    (
+        "cursorLineStart",
+        "codeView.command.cursorLineStart",
+        "光标移到行的开头",
+    ),
+    (
+        "cursorLineStartSelect",
+        "codeView.command.cursorLineStartSelect",
+        "选择到行的开头",
+    ),
+    (
+        "cursorLineEnd",
+        "codeView.command.cursorLineEnd",
+        "光标移到行的末尾",
+    ),
+    (
+        "cursorLineEndSelect",
+        "codeView.command.cursorLineEndSelect",
+        "选择到行的末尾",
+    ),
+    ("undo", "codeView.command.undo", "撤消"),
+    ("redo", "codeView.command.redo", "恢复"),
+    ("cursorUndo", "codeView.command.cursorUndo", "光标撤消"),
+    ("cursorRedo", "codeView.command.cursorRedo", "光标恢复"),
+    (
+        "editor.action.setSelectionAnchor",
+        "codeView.command.setSelectionAnchor",
+        "设置选择定位点",
+    ),
+    (
+        "editor.action.selectFromAnchorToCursor",
+        "codeView.command.selectFromAnchorToCursor",
+        "选择从定位点到光标",
+    ),
+    (
+        "editor.action.goToSelectionAnchor",
+        "codeView.command.goToSelectionAnchor",
+        "转到选择定位点",
+    ),
+    (
+        "editor.action.cancelSelectionAnchor",
+        "codeView.command.cancelSelectionAnchor",
+        "取消选择定位点",
+    ),
+    (
+        "editor.action.insertLineBefore",
+        "codeView.command.insertLineBefore",
+        "在上面插入行",
+    ),
+    (
+        "editor.action.insertLineAfter",
+        "codeView.command.insertLineAfter",
+        "在下面插入行",
+    ),
+    (
+        "editor.action.clipboardCutAction",
+        "codeView.command.cut",
+        "剪切",
+    ),
+    (
+        "editor.action.clipboardPasteAction",
+        "codeView.command.paste",
+        "粘贴",
+    ),
+    (
+        "editor.action.toggleOvertypeInsertMode",
+        "codeView.command.toggleOvertypeInsertMode",
+        "切换插入/改写模式",
+    ),
+    (
+        "editor.action.indentationToSpaces",
+        "codeView.command.indentationToSpaces",
+        "将缩进转换为空格",
+    ),
+    (
+        "editor.action.indentationToTabs",
+        "codeView.command.indentationToTabs",
+        "将缩进转换为制表符",
+    ),
+    ("type", "codeView.command.type", "键入"),
+    ("default:type", "codeView.command.defaultType", "键入"),
 ];
 
 /// #20 的界面字符串：只读提示（UX_SPEC §3.4、§6：先说发生了什么，再说可以怎么做）与按级别关闭的功能名。
@@ -400,6 +662,64 @@ command_actions! {
     CreateFoldingRangeFromSelection => "editor.createFoldingRangeFromSelection",
     RemoveManualFoldingRanges => "editor.removeManualFoldingRanges",
     ToggleReadonlyInSession => "workbench.action.files.toggleActiveEditorReadonlyInSession",
+    EditLineBreakInsert => "lineBreakInsert",
+    EditTab => "tab",
+    EditOutdent => "outdent",
+    EditIndentLines => "editor.action.indentLines",
+    EditOutdentLines => "editor.action.outdentLines",
+    EditDeleteLeft => "deleteLeft",
+    EditDeleteRight => "deleteRight",
+    EditDeleteWordLeft => "deleteWordLeft",
+    EditDeleteWordRight => "deleteWordRight",
+    EditDeleteWordStartLeft => "deleteWordStartLeft",
+    EditDeleteWordStartRight => "deleteWordStartRight",
+    EditDeleteWordEndLeft => "deleteWordEndLeft",
+    EditDeleteWordEndRight => "deleteWordEndRight",
+    EditDeleteWordPartLeft => "deleteWordPartLeft",
+    EditDeleteWordPartRight => "deleteWordPartRight",
+    EditDeleteAllLeft => "deleteAllLeft",
+    EditDeleteAllRight => "deleteAllRight",
+    EditCursorWordLeft => "cursorWordLeft",
+    EditCursorWordLeftSelect => "cursorWordLeftSelect",
+    EditCursorWordRight => "cursorWordRight",
+    EditCursorWordRightSelect => "cursorWordRightSelect",
+    EditCursorWordStartLeft => "cursorWordStartLeft",
+    EditCursorWordStartLeftSelect => "cursorWordStartLeftSelect",
+    EditCursorWordStartRight => "cursorWordStartRight",
+    EditCursorWordStartRightSelect => "cursorWordStartRightSelect",
+    EditCursorWordEndLeft => "cursorWordEndLeft",
+    EditCursorWordEndLeftSelect => "cursorWordEndLeftSelect",
+    EditCursorWordEndRight => "cursorWordEndRight",
+    EditCursorWordEndRightSelect => "cursorWordEndRightSelect",
+    EditCursorWordPartLeft => "cursorWordPartLeft",
+    EditCursorWordPartLeftSelect => "cursorWordPartLeftSelect",
+    EditCursorWordPartStartLeft => "cursorWordPartStartLeft",
+    EditCursorWordPartStartLeftSelect => "cursorWordPartStartLeftSelect",
+    EditCursorWordPartRight => "cursorWordPartRight",
+    EditCursorWordPartRightSelect => "cursorWordPartRightSelect",
+    EditCursorWordAccessibilityLeft => "cursorWordAccessibilityLeft",
+    EditCursorWordAccessibilityLeftSelect => "cursorWordAccessibilityLeftSelect",
+    EditCursorWordAccessibilityRight => "cursorWordAccessibilityRight",
+    EditCursorWordAccessibilityRightSelect => "cursorWordAccessibilityRightSelect",
+    EditCursorLineStart => "cursorLineStart",
+    EditCursorLineStartSelect => "cursorLineStartSelect",
+    EditCursorLineEnd => "cursorLineEnd",
+    EditCursorLineEndSelect => "cursorLineEndSelect",
+    EditUndo => "undo",
+    EditRedo => "redo",
+    EditCursorUndo => "cursorUndo",
+    EditCursorRedo => "cursorRedo",
+    EditSetSelectionAnchor => "editor.action.setSelectionAnchor",
+    EditSelectFromAnchorToCursor => "editor.action.selectFromAnchorToCursor",
+    EditGoToSelectionAnchor => "editor.action.goToSelectionAnchor",
+    EditCancelSelectionAnchor => "editor.action.cancelSelectionAnchor",
+    EditInsertLineBefore => "editor.action.insertLineBefore",
+    EditInsertLineAfter => "editor.action.insertLineAfter",
+    EditCut => "editor.action.clipboardCutAction",
+    EditPaste => "editor.action.clipboardPasteAction",
+    EditToggleOvertypeInsertMode => "editor.action.toggleOvertypeInsertMode",
+    EditIndentationToSpaces => "editor.action.indentationToSpaces",
+    EditIndentationToTabs => "editor.action.indentationToTabs",
 }
 
 /// 键位上下文名，以及聚焦时发布的 VS Code 上下文键（只读代码视图）。
@@ -411,6 +731,10 @@ pub const READONLY_CONTEXT_KEY: &str = "editorReadonly";
 pub const FOLDING_CONTEXT_KEY: &str = "foldingEnabled";
 /// 有单词高亮时发布（#40 的 `editor.action.wordHighlight.next/prev` 依赖它）。
 pub const WORD_HIGHLIGHTS_CONTEXT_KEY: &str = "hasWordHighlights";
+/// #47：设置了选择定位点（`editor.action.setSelectionAnchor`）时发布。
+pub const SELECTION_ANCHOR_CONTEXT_KEY: &str = "selectionAnchorSet";
+/// #47：带参数、没有 GPUI action 的命令（命令桥 → 窗口 → 聚焦的代码视图）。
+pub const TYPE_COMMANDS: &[&str] = &["type", "default:type"];
 
 #[cfg(test)]
 mod tests {
@@ -424,7 +748,10 @@ mod tests {
         let mut t = StringTable::default();
         register_strings(&mut t).unwrap();
         for (id, key, _) in COMMANDS {
-            assert!(action_for(id).is_some(), "{id} 缺少 action");
+            assert!(
+                action_for(id).is_some() || TYPE_COMMANDS.contains(id),
+                "{id} 缺少 action"
+            );
             assert_eq!(&*r.get(id).unwrap().title_key, *key);
             assert!(t.get(key).is_some());
         }
