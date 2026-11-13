@@ -159,7 +159,7 @@ pub const FEATURE_COLORS: &[&str] = &[
     "editorWhitespace.foreground",
     // #47：输入法组合串的下边框。
     "editor.compositionBorder",
-    // #51：主光标与次光标（默认都派生自 `editorCursor.*`）。
+    // #52：主光标与次光标（默认都派生自 `editorCursor.*`）。
     "editorMultiCursor.primary.foreground",
     "editorMultiCursor.primary.background",
     "editorMultiCursor.secondary.foreground",
@@ -248,10 +248,10 @@ pub struct Palette {
     pub whitespace: Option<Color>,
     /// #47：`editor.compositionBorder`（输入法组合串下方的线）。
     pub composition_border: Option<Color>,
-    /// #51：主光标（`editorMultiCursor.primary.*`，默认派生自 `editorCursor.*`）。
+    /// #52：主光标（`editorMultiCursor.primary.*`，默认派生自 `editorCursor.*`）。
     pub multi_cursor_primary: Color,
     pub multi_cursor_primary_text: Option<Color>,
-    /// #51：次光标（`editorMultiCursor.secondary.*`）。
+    /// #52：次光标（`editorMultiCursor.secondary.*`）。
     pub multi_cursor_secondary: Color,
     pub multi_cursor_secondary_text: Option<Color>,
 }

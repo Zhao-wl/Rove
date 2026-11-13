@@ -189,7 +189,7 @@ pub fn combine_spans(
     })
 }
 
-/// #51：对会话里的**每个**选区各算一次替换，合成一个事务（一次撤销）。
+/// #52：对会话里的**每个**选区各算一次替换，合成一个事务（一次撤销）。
 fn for_each_selection(
     session: &EditSession,
     text: &dyn TextSource,
@@ -205,7 +205,7 @@ fn for_each_selection(
     Ok(out)
 }
 
-/// #51：事务之后把光标显式放到一组偏移上（`lineBreakInsert`、`insertLine*`）。
+/// #52：事务之后把光标显式放到一组偏移上（`lineBreakInsert`、`insertLine*`）。
 fn place_cursors(session: &mut EditSession, offsets: Vec<ByteOffset>) {
     let placed: Vec<ed::Selection> = offsets.into_iter().map(ed::Selection::cursor).collect();
     if let Ok(selections) = Selections::new(placed) {
@@ -213,7 +213,7 @@ fn place_cursors(session: &mut EditSession, offsets: Vec<ByteOffset>) {
     }
 }
 
-/// #51：把会话读回来的选区列表与命令显式指定的主选区合并成视图的选区列表。
+/// #52：把会话读回来的选区列表与命令显式指定的主选区合并成视图的选区列表。
 fn selections_with_primary(all: &[Selection], primary: Option<Selection>) -> Vec<Selection> {
     let mut out = all.to_vec();
     match (primary, out.first_mut()) {
@@ -509,7 +509,7 @@ impl CodeView {
             let Some(mut session) = host.session() else {
                 return false;
             };
-            // #51：主选区在前，次光标跟在后面；整个命令对所有光标生效。
+            // #52：主选区在前，次光标跟在后面；整个命令对所有光标生效。
             let core: Vec<ed::Selection> = view_selections
                 .iter()
                 .filter_map(|s| to_core(&*snapshot, *s))
@@ -593,7 +593,7 @@ impl CodeView {
         if session.snapshot().version() != text.version() {
             return;
         }
-        // #51：全部光标（主选区在前）。
+        // #52：全部光标（主选区在前）。
         let core: Vec<ed::Selection> = self
             .selections()
             .iter()
@@ -630,7 +630,7 @@ impl CodeView {
         let trim = self.options.trim_auto_whitespace;
         self.run_edit(window, cx, move |s, snap, now| {
             let text: &dyn TextSource = &**snap;
-            // #51：每个光标各自换行、各自保持本行缩进，合成一个事务。
+            // #52：每个光标各自换行、各自保持本行缩进，合成一个事务。
             let edits = for_each_selection(s, text, |sel| {
                 let start = sel.start();
                 let line = line_text(text, start.line.0);
@@ -861,7 +861,7 @@ impl CodeView {
                 let after = id.ends_with("After");
                 self.run_edit(w, cx, move |s, snap, now| {
                     let text: &dyn TextSource = &**snap;
-                    // #51：每个光标各插一行；插入点按偏移排序后与 `inserted_ranges()` 一一对应。
+                    // #52：每个光标各插一行；插入点按偏移排序后与 `inserted_ranges()` 一一对应。
                     let mut indents: Vec<(ByteOffset, usize)> = Vec::new();
                     let edits = for_each_selection(s, text, |sel| {
                         let line = sel.active.line.0;

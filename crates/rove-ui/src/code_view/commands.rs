@@ -502,7 +502,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("default:type", "codeView.command.defaultType", "键入"),
 ];
 
-/// 全部命令：代码视图自己的加上 #51 的多光标 / 列选择 / 行操作。
+/// 全部命令：代码视图自己的加上 #52 的多光标 / 列选择 / 行操作。
 pub fn all_commands() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
     COMMANDS.iter().chain(super::multicursor::COMMANDS)
 }
@@ -725,7 +725,7 @@ command_actions! {
     EditToggleOvertypeInsertMode => "editor.action.toggleOvertypeInsertMode",
     EditIndentationToSpaces => "editor.action.indentationToSpaces",
     EditIndentationToTabs => "editor.action.indentationToTabs",
-    // #51：多光标。
+    // #52：多光标。
     MultiInsertCursorAbove => "editor.action.insertCursorAbove",
     MultiInsertCursorBelow => "editor.action.insertCursorBelow",
     MultiInsertCursorAtEndOfEachLineSelected => "editor.action.insertCursorAtEndOfEachLineSelected",
@@ -736,14 +736,14 @@ command_actions! {
     MultiMoveSelectionToPreviousFindMatch => "editor.action.moveSelectionToPreviousFindMatch",
     MultiSelectHighlights => "editor.action.selectHighlights",
     MultiChangeAll => "editor.action.changeAll",
-    // #51：列选择。
+    // #52：列选择。
     MultiColumnSelectUp => "cursorColumnSelectUp",
     MultiColumnSelectDown => "cursorColumnSelectDown",
     MultiColumnSelectLeft => "cursorColumnSelectLeft",
     MultiColumnSelectRight => "cursorColumnSelectRight",
     MultiColumnSelectPageUp => "cursorColumnSelectPageUp",
     MultiColumnSelectPageDown => "cursorColumnSelectPageDown",
-    // #51：行操作。
+    // #52：行操作。
     LineCopyUp => "editor.action.copyLinesUpAction",
     LineCopyDown => "editor.action.copyLinesDownAction",
     LineMoveUp => "editor.action.moveLinesUpAction",

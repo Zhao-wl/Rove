@@ -1,4 +1,4 @@
-//! 多光标、列选择与行操作的入口集成测试（#51）。只用 `rove_ui::code_view` 的公开接口，在 GPUI
+//! 多光标、列选择与行操作的入口集成测试（#52）。只用 `rove_ui::code_view` 的公开接口，在 GPUI
 //! 测试窗口里驱动；编辑入口是一个 `RefCell<EditSession>`（窗口里的宿主借出 #49 的 `TextFile`）。
 //!
 //! 运行：`cargo test -p rove-ui --test code_view_multicursor`

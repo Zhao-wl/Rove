@@ -479,7 +479,7 @@ fn find_with_selection_and_no_cross_file_replace_commands(cx: &mut TestAppContex
     assert_eq!(input(&view, cx), "baz");
 }
 
-// #51：`alt+enter`（查找条可见时）把全部匹配变成多光标。
+// #52：`alt+enter`（查找条可见时）把全部匹配变成多光标。
 #[gpui::test]
 fn alt_enter_selects_all_matches_as_cursors(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");

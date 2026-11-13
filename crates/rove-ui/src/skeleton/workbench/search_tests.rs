@@ -262,7 +262,7 @@ fn toggles_remove_and_the_unity_exclusion_empty_state(cx: &mut TestAppContext) {
     assert_eq!(search.read_with(cx, |s, _| s.state().clone()), State::Idle);
 }
 
-// #51：搜索视图里的 `Ctrl+Shift+L`（`addCursorsAtSearchResults`）：打开聚焦的那个文件，
+// #52：搜索视图里的 `Ctrl+Shift+L`（`addCursorsAtSearchResults`）：打开聚焦的那个文件，
 // 并在它的每一处匹配上放一个光标。
 #[gpui::test]
 fn add_cursors_at_search_results_opens_the_file_with_one_cursor_per_match(cx: &mut TestAppContext) {

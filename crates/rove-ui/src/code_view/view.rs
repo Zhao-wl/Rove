@@ -280,11 +280,11 @@ pub(crate) enum Drag {
         granularity: Granularity,
         origin: (Position, Position),
     },
-    /// #51：按住多光标修饰键拖动添加的那一段选区（它是主选区，`origin` 是按下时的位置）。
+    /// #52：按住多光标修饰键拖动添加的那一段选区（它是主选区，`origin` 是按下时的位置）。
     AddedText {
         origin: Position,
     },
-    /// #51：`Shift+Alt+拖动`的列选择。
+    /// #52：`Shift+Alt+拖动`的列选择。
     Column {
         origin: Position,
     },
@@ -379,13 +379,13 @@ pub struct CodeView {
     pub(crate) selection_anchor: Option<Position>,
     /// #47：上一帧插入符的窗口坐标；变化时让输入法候选框重新定位。
     pub(crate) last_caret: Option<Bounds<Pixels>>,
-    /// #51：次光标（主选区仍然是 `cursor`）。
+    /// #52：次光标（主选区仍然是 `cursor`）。
     pub(crate) secondary: Vec<Cursor>,
-    /// #51：列选择状态（`Shift+Alt+拖动`与 `cursorColumnSelect*`）。
+    /// #52：列选择状态（`Shift+Alt+拖动`与 `cursorColumnSelect*`）。
     pub(crate) column_select: Option<super::multicursor::ColumnSelect>,
-    /// #51：`Ctrl+D` 会话（在找什么、是否整词）。
+    /// #52：`Ctrl+D` 会话（在找什么、是否整词）。
     pub(crate) match_session: Option<super::multicursor::MatchSession>,
-    /// #51：查找条可见时它的当前选项（`Ctrl+D` 是否区分大小写取这里）。
+    /// #52：查找条可见时它的当前选项（`Ctrl+D` 是否区分大小写取这里）。
     pub(crate) find_match_options: Option<crate::find::engine::FindOptions>,
 }
 
@@ -406,11 +406,11 @@ impl Render for CodeView {
         if !self.cursor.selection.is_empty() {
             context.add("editorHasSelection");
         }
-        // #51：次光标存在时 `escape` / `shift+escape` 才解析成 `removeSecondaryCursors`。
+        // #52：次光标存在时 `escape` / `shift+escape` 才解析成 `removeSecondaryCursors`。
         if self.has_multiple_selections() {
             context.add(super::multicursor::HAS_MULTIPLE_SELECTIONS_KEY);
         }
-        // #51：`editor.columnSelection` 为真时 `shift+方向键` 直接进入列选择。
+        // #52：`editor.columnSelection` 为真时 `shift+方向键` 直接进入列选择。
         if self.options.column_selection {
             context.add(super::multicursor::COLUMN_SELECTION_KEY);
         }
@@ -432,7 +432,7 @@ impl Render for CodeView {
             .size_full()
             // #40：按下 / 松开 Ctrl 时在指针处重新判定 `Ctrl+悬停`（不动鼠标也出现 / 收起下划线）。
             .on_modifiers_changed(cx.listener(|v, e: &gpui::ModifiersChangedEvent, _, cx| {
-                // #51：#40 的跳转修饰键取 `editor.multiCursorModifier`（与加光标互换）。
+                // #52：#40 的跳转修饰键取 `editor.multiCursorModifier`（与加光标互换）。
                 let link = v
                     .multi_cursor_modifier()
                     .goes_to_definition(e.modifiers.control, e.modifiers.alt);
@@ -629,7 +629,7 @@ impl CodeView {
         self.text = text;
         self.lines.clear();
         self.content_width = 0.0;
-        // #51：文本换了，`Ctrl+D` 会话与列选择状态都作废。
+        // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
         self.column_select = None;
         if keep_view_state {
@@ -1003,7 +1003,7 @@ impl CodeView {
         let s = self.clamp_selection(selection);
         // 光标落进折叠：展开（VS Code 行为）。
         self.unfold_to_reveal(s.active.line.0, cx);
-        // #51：显式设置单个选区意味着回到单光标。
+        // #52：显式设置单个选区意味着回到单光标。
         self.secondary.clear();
         self.column_select = None;
         self.match_session = None;
@@ -1289,7 +1289,7 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        // #51：多光标、列选择与行操作。
+        // #52：多光标、列选择与行操作。
         if let Some(handled) = self.execute_multicursor(id, window, cx) {
             return handled;
         }
@@ -1333,7 +1333,7 @@ impl CodeView {
             };
             let tab = self.options.tab_size;
             let before = self.cursor.selection.active.line.0;
-            // #51：次光标各自移动，移动后按设置合并。
+            // #52：次光标各自移动，移动后按设置合并。
             let lines = TextLines(&*text);
             for c in &mut self.secondary {
                 c.move_caret(&lines, m, extend, tab, page);
@@ -1368,7 +1368,7 @@ impl CodeView {
             }
             "editor.action.selectAll" => {
                 if let Some(text) = self.text.clone() {
-                    // #51：全选回到单光标。
+                    // #52：全选回到单光标。
                     self.secondary.clear();
                     self.column_select = None;
                     self.cursor.select_all(&TextLines(&*text));
@@ -1476,7 +1476,7 @@ impl CodeView {
         } else {
             unit
         };
-        // #51：普通点击回到单光标。
+        // #52：普通点击回到单光标。
         self.secondary.clear();
         self.column_select = None;
         self.match_session = None;
@@ -1491,7 +1491,7 @@ impl CodeView {
         self.selection_changed(SelectionSource::Mouse, cx);
     }
 
-    /// #51：按住多光标修饰键按下（加光标；拖动则添加一段选区）。
+    /// #52：按住多光标修饰键按下（加光标；拖动则添加一段选区）。
     pub(crate) fn mouse_down_add_cursor(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
         self.commit_composition(None, cx);
         let Some(p) = self.position_for_point(point) else {
@@ -1501,7 +1501,7 @@ impl CodeView {
         self.drag = Some(Drag::AddedText { origin: p });
     }
 
-    /// #51：`Shift+Alt+拖动`按下：开始列选择。
+    /// #52：`Shift+Alt+拖动`按下：开始列选择。
     pub(crate) fn mouse_down_column(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
         self.commit_composition(None, cx);
         let Some(p) = self.position_for_point(point) else {
@@ -1521,7 +1521,7 @@ impl CodeView {
         let Some(p) = self.position_for_point(point) else {
             return;
         };
-        // #51：跳转回到单光标。
+        // #52：跳转回到单光标。
         self.secondary.clear();
         self.column_select = None;
         self.match_session = None;
@@ -1620,7 +1620,7 @@ impl CodeView {
         } else {
             Selection::new(unit.0, unit.1)
         };
-        // #51：行号栏上的整行选择回到单光标。
+        // #52：行号栏上的整行选择回到单光标。
         self.secondary.clear();
         self.column_select = None;
         self.match_session = None;
@@ -1637,7 +1637,7 @@ impl CodeView {
     }
 
     pub(crate) fn mouse_drag_text(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
-        // #51：列选择拖动与“加一段选区”的拖动。
+        // #52：列选择拖动与“加一段选区”的拖动。
         match self.drag {
             Some(Drag::Column { origin }) => {
                 if let Some(p) = self.position_for_point(point) {

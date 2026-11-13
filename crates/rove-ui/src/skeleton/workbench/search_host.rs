@@ -89,7 +89,7 @@ impl Workbench {
     fn search_event(&mut self, event: &SearchViewEvent, cx: &mut Context<Self>) {
         match event {
             SearchViewEvent::Open(request) => self.open_search_result(request, cx),
-            // #51：打开文件后把每一处匹配变成一个光标。
+            // #52：打开文件后把每一处匹配变成一个光标。
             SearchViewEvent::AddCursors(request) => self.add_cursors_at_results(request, cx),
             SearchViewEvent::OpenSettings => {
                 // Rove 没有设置界面：打开共用的 VS Code settings.json（排除规则就在其中）。
@@ -114,7 +114,7 @@ impl Workbench {
         }
     }
 
-    /// #51：`addCursorsAtSearchResults`——打开目标文件，再把全部匹配写成多选区。
+    /// #52：`addCursorsAtSearchResults`——打开目标文件，再把全部匹配写成多选区。
     pub(super) fn add_cursors_at_results(
         &mut self,
         request: &crate::search::view::AddCursorsRequest,

@@ -250,7 +250,7 @@ pub struct Workbench {
     status: status_host::StatusItems,
     /// #50：热退出的备份服务、待恢复的备份与退出标记（见 `hotexit_host.rs`）。
     hotexit: hotexit_host::HotExit,
-    /// #51：`addCursorsAtSearchResults` 要放的多光标；目标文件显示出来之后才写进代码视图
+    /// #52：`addCursorsAtSearchResults` 要放的多光标；目标文件显示出来之后才写进代码视图
     /// （打开本身会先按 #17 的 `OpenOptions::selection` 放一个单选区）。
     pub(super) pending_cursors: Option<(Resource, Vec<rove_base::TextRange>)>,
 }
@@ -1233,13 +1233,13 @@ impl Workbench {
                 revealed |= self.sync_slot(group, true, cx);
             }
         }
-        // #51：打开并定位之后才写 `addCursorsAtSearchResults` 的多光标（见 `search_host.rs`）。
+        // #52：打开并定位之后才写 `addCursorsAtSearchResults` 的多光标（见 `search_host.rs`）。
         if revealed {
             self.apply_pending_cursors(cx);
         }
     }
 
-    /// 把活动标签载入代码视图；返回是否应用了“打开时的定位”（#51 的多光标跟在它后面）。
+    /// 把活动标签载入代码视图；返回是否应用了“打开时的定位”（#52 的多光标跟在它后面）。
     fn sync_slot(&mut self, group: EditorGroupId, secondary: bool, cx: &mut Context<Self>) -> bool {
         let Self {
             editor,

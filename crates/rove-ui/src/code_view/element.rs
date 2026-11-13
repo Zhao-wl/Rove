@@ -376,7 +376,7 @@ impl CodeView {
         let text = lay.text;
         let left = text.origin.x - px(self.scroll.x as f32);
         let sel = self.cursor.selection;
-        // #51：次光标与主选区一起画（主选区在下标 0）。
+        // #52：次光标与主选区一起画（主选区在下标 0）。
         let selections = self.selections();
         // #47：组合中插入符在组合串里（组合行是内嵌了组合串的显示条目）。
         let composing = self.composition_columns();
@@ -459,7 +459,7 @@ impl CodeView {
                     if o.guides_indentation {
                         self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
                     }
-                    // 选区（#51：主选区与每个次选区各画一次）。
+                    // 选区（#52：主选区与每个次选区各画一次）。
                     for sel in &selections {
                         if sel.is_empty()
                             || composing.is_some()
@@ -582,7 +582,7 @@ impl CodeView {
                 }
             });
             // 插入符（组合期间不闪烁；改写模式用 `editor.overtypeCursorStyle`）。
-            // #51：主光标 `editorMultiCursor.primary.foreground`，次光标 `secondary.*`；
+            // #52：主光标 `editorMultiCursor.primary.foreground`，次光标 `secondary.*`；
             // 一批光标是同一组可缓存的装饰，这里只为**可见行**上的光标画一个矩形。
             if frame.focused && (self.caret_visible || composing.is_some()) {
                 for (index, s) in selections.iter().enumerate() {
@@ -1147,14 +1147,14 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
             } else if lay.gutter.contains(&p) {
                 v.mouse_down_gutter(p, e.modifiers.shift, cx);
             } else if e.modifiers.shift && e.modifiers.alt && e.click_count == 1 {
-                // #51：Shift+Alt+拖动是列选择（与多光标修饰键无关）。
+                // #52：Shift+Alt+拖动是列选择（与多光标修饰键无关）。
                 v.mouse_down_column(p, cx);
             } else if e.click_count == 1
                 && !e.modifiers.shift
                 && v.multi_cursor_modifier()
                     .adds_cursor(e.modifiers.control, e.modifiers.alt)
             {
-                // #51：加光标（修饰键取 `editor.multiCursorModifier`）。
+                // #52：加光标（修饰键取 `editor.multiCursorModifier`）。
                 v.mouse_down_add_cursor(p, cx);
             } else if e.click_count == 1
                 && !e.modifiers.shift
@@ -1186,7 +1186,7 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
         if e.pressed_button.is_none() {
             let inside = text_hitbox.is_hovered(window).then_some(e.position);
             v.update(cx, |v, cx| {
-                // #51：跳转的修饰键与加光标互换，取 `editor.multiCursorModifier`。
+                // #52：跳转的修饰键与加光标互换，取 `editor.multiCursorModifier`。
                 let link = v
                     .multi_cursor_modifier()
                     .goes_to_definition(e.modifiers.control, e.modifiers.alt);
@@ -1194,7 +1194,7 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
             });
         }
         v.update(cx, |v, cx| match v.drag {
-            // #51：Drag::Column 是 `Shift+Alt+拖动`的列选择，Drag::AddedText 是按住多光标
+            // #52：Drag::Column 是 `Shift+Alt+拖动`的列选择，Drag::AddedText 是按住多光标
             // 修饰键拖出来的那一段选区；两者都由 `mouse_drag_text` 分流。
             Some(Drag::Text { .. } | Drag::Column { .. } | Drag::AddedText { .. })
                 if e.pressed_button == Some(MouseButton::Left) =>

@@ -117,7 +117,7 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.trimAutoWhitespace", DefaultValue::Bool(true)),
     ("editor.overtypeCursorStyle", DefaultValue::Str("block")),
     ("editor.overtypeOnPaste", DefaultValue::Bool(true)),
-    // #51：多光标与列选择。
+    // #52：多光标与列选择。
     ("editor.multiCursorModifier", DefaultValue::Str("alt")),
     (
         "editor.multiCursorMergeOverlapping",
@@ -306,7 +306,7 @@ pub struct EditorOptions {
     /// 改写模式下的插入符样式（`editor.overtypeCursorStyle`）。
     pub overtype_cursor_style: CursorStyle,
     pub overtype_on_paste: bool,
-    // #51
+    // #52
     /// `editor.multiCursorModifier`：加光标与 #40 的跳转手势共用的修饰键来源。
     pub multi_cursor_modifier: super::multicursor::MultiCursorModifier,
     pub multi_cursor_merge_overlapping: bool,

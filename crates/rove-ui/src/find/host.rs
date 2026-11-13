@@ -555,7 +555,7 @@ impl FindHost {
             reg::REPLACE_ONE => self.replace_one(window, cx),
             reg::REPLACE_ALL => self.replace_all(window, cx),
             reg::TOGGLE_PRESERVE_CASE => self.toggle_preserve_case(cx),
-            // #51：选中全部匹配（查找条可见时的 `alt+enter`），交给代码视图的多选区。
+            // #52：选中全部匹配（查找条可见时的 `alt+enter`），交给代码视图的多选区。
             reg::SELECT_ALL_MATCHES => self.select_all_matches(cx),
             _ => return false,
         }
@@ -585,7 +585,7 @@ impl FindHost {
         cx.notify();
     }
 
-    /// #51：查找条的当前选项交给代码视图（`Ctrl+D` 是否区分大小写取它）；关闭时清掉。
+    /// #52：查找条的当前选项交给代码视图（`Ctrl+D` 是否区分大小写取它）；关闭时清掉。
     fn sync_match_options(&mut self, cx: &mut Context<Self>) {
         let options = self.visible.then(|| self.model.options());
         self.code

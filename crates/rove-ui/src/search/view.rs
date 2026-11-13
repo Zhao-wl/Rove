@@ -42,7 +42,7 @@ pub struct OpenRequest {
     pub pinned: bool,
 }
 
-/// #51：`addCursorsAtSearchResults`——打开这个文件并在每一处匹配上放一个光标。
+/// #52：`addCursorsAtSearchResults`——打开这个文件并在每一处匹配上放一个光标。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddCursorsRequest {
     pub path: WorkspacePath,
@@ -55,7 +55,7 @@ pub enum SearchViewEvent {
     Open(OpenRequest),
     /// “查看排除设置”链接。
     OpenSettings,
-    /// #51：在结果处添加光标。
+    /// #52：在结果处添加光标。
     AddCursors(AddCursorsRequest),
 }
 
@@ -511,7 +511,7 @@ impl SearchView {
         }
     }
 
-    /// #51：`addCursorsAtSearchResults`。聚焦的是文件行还是匹配行都取该文件的全部匹配
+    /// #52：`addCursorsAtSearchResults`。聚焦的是文件行还是匹配行都取该文件的全部匹配
     /// （VS Code 在选中整个文件时也是这个行为）。
     fn add_cursors_at_results(&mut self, cx: &mut Context<Self>) {
         let Some(target) = self.focused_target(cx) else {
@@ -593,7 +593,7 @@ impl SearchView {
                     None => {}
                 }
             }
-            // #51：当前聚焦文件的全部匹配变成多光标。
+            // #52：当前聚焦文件的全部匹配变成多光标。
             reg::ADD_CURSORS => self.add_cursors_at_results(cx),
             reg::NEXT_RESULT => self.step(true, cx),
             reg::PREVIOUS_RESULT => self.step(false, cx),
