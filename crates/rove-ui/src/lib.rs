@@ -36,3 +36,5 @@ pub mod nav;
 pub mod search;
 // #41：速览窗口（速览定义、引用、实现；D3 默认方式）。
 pub mod peek;
+// #29：Markdown 预览（WebView2，按需创建；渲染、净化、预览实例与命令）。
+pub mod markdown;

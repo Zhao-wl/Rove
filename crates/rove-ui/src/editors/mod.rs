@@ -1272,6 +1272,69 @@ impl EditorService {
     }
 }
 
+impl EditorService {
+    /// #29：把一个标签就地换成另一种编辑器（Markdown 预览 ↔ 源码，`markdown.togglePreview`、双击预览）。
+    /// 文档已加载时直接换，不重新读盘；换成源码时可带一个要定位的行（插入符放在行首并居中显示）。
+    /// 标签位置、预览/固定状态不变。返回是否换了。
+    pub(crate) fn reopen_as(
+        &mut self,
+        group: EditorGroupId,
+        tab: TabId,
+        kind: EditorKind,
+        line: Option<u32>,
+    ) -> bool {
+        let Some(pane) = self.groups.get_mut(&group) else {
+            return false;
+        };
+        let rows = pane.rows;
+        let duplicate = pane.tab(tab).and_then(|entry| {
+            pane.tabs
+                .iter()
+                .find(|other| {
+                    other.id != tab && other.kind == kind && other.resource == entry.resource
+                })
+                .map(|other| other.id)
+        });
+        // 同组里已经有另一种表示的标签：激活它（与 VS Code 的“重新打开方式”一致，不制造重复标签）。
+        if let Some(existing) = duplicate {
+            let entry = pane.tab_mut(existing).unwrap();
+            if let (Some(line), Some(opened)) =
+                (line, entry.opened().map(|o| o.document.text.lines()))
+            {
+                let position = Position {
+                    line: rove_base::Line(line as u64),
+                    column: rove_base::Utf8Column(0),
+                };
+                entry.view.reveal(position, None, rows, opened);
+                entry.reveal = true;
+            }
+            self.remove_tab(group, tab, true);
+            self.activate(group, existing, true);
+            self.start_highlight(group, existing);
+            return true;
+        }
+        let Some(entry) = pane.tab_mut(tab) else {
+            return false;
+        };
+        if entry.kind == kind {
+            return false;
+        }
+        entry.kind = kind;
+        entry.reveal = false;
+        if let (Some(line), Some(lines)) = (line, entry.opened().map(|o| o.document.text.lines())) {
+            let position = Position {
+                line: rove_base::Line(line as u64),
+                column: rove_base::Utf8Column(0),
+            };
+            entry.view.reveal(position, None, rows, lines);
+            entry.reveal = true;
+        }
+        self.activate(group, tab, true);
+        self.start_highlight(group, tab);
+        true
+    }
+}
+
 impl OpenDocuments for EditorService {
     fn open(
         &mut self,

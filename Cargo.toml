@@ -58,6 +58,12 @@ memmap2 = "0.9"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
+# #29 Markdown 预览：CommonMark/GFM 解析（自写 HTML 输出以带源码行号）、内嵌 HTML 白名单净化、
+# WebView2（只在第一次打开预览时创建；windows 与 gpui 用同一个 0.61）。
+pulldown-cmark = { version = "0.13", default-features = false }
+ammonia = "4"
+webview2-com = "0.38"
+windows = "0.61"
 
 [profile.release]
 lto = "thin"

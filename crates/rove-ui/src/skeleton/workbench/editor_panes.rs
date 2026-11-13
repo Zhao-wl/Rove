@@ -87,6 +87,8 @@ impl Workbench {
             .flex()
             .flex_shrink_0()
             .h(px(settings.tab_height))
+            // #29：`Placement::EditorTitle` 登记的按钮（显示源码 / 显示预览）。
+            .children(self.markdown_title_actions(group, cx))
             .children(
                 [
                     (
@@ -230,7 +232,8 @@ impl Workbench {
             // #41：代码视图外框挂上速览（上下文键、命令、嵌入区域里的窗口）。
             .children(
                 self.code_viewport(group, false)
-                    .map(|d| self.peek_viewport(group, false, d, cx)),
+                    .map(|d| self.peek_viewport(group, false, d, cx))
+                    .map(|d| self.markdown_code_context(group, false, d)),
             );
         if pane.current().is_some_and(|tab| tab.secondary.is_some()) {
             let vertical = settings.secondary_vertical;
@@ -244,7 +247,8 @@ impl Workbench {
             }
             viewports = viewports.children(
                 self.code_viewport(group, true)
-                    .map(|d| self.peek_viewport(group, true, d, cx)),
+                    .map(|d| self.peek_viewport(group, true, d, cx))
+                    .map(|d| self.markdown_code_context(group, true, d)),
             );
         }
         let text_ready = pane
@@ -259,7 +263,10 @@ impl Workbench {
                 Content::Loading => {}
                 Content::Failed(error) => body = body.child(self.error_page(group, tab, error, cx)),
                 Content::Ready(_) => {
-                    if let EditorKind::Placeholder { label, .. } = &tab.kind {
+                    if crate::editors::settings::is_markdown_preview(&tab.kind) {
+                        // #29：Markdown 预览（WebView2）。
+                        body = body.child(self.markdown_viewport(group, tab.id, cx));
+                    } else if let EditorKind::Placeholder { label, .. } = &tab.kind {
                         body = body.child(self.centered(self.label(label, &[])));
                     }
                 }

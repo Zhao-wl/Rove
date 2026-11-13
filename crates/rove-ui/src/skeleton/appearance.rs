@@ -88,6 +88,8 @@ pub fn strings() -> Result<StringTable> {
     crate::search::registry::register_strings(&mut t)?;
     // #41：速览窗口的命令标题、标题模板与提示。
     crate::peek::registry::register_strings(&mut t)?;
+    // #29：Markdown 预览。
+    crate::markdown::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -122,6 +124,8 @@ pub fn contributions() -> Result<ContributionRegistry> {
     crate::index_status::register_contributions(&mut r)?;
     // #25：搜索视图容器里的结果小节。
     crate::search::registry::register_contributions(&mut r)?;
+    // #29：编辑器标题栏的“显示源码 / 显示预览”按钮。
+    crate::markdown::registry::register_contributions(&mut r)?;
     Ok(r)
 }
 /// SKELETON(status): 骨架的文件状态条目（文件名 / 行数 / 编码），#27 替换。
