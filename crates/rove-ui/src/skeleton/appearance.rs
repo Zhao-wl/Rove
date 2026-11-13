@@ -88,6 +88,8 @@ pub fn strings() -> Result<StringTable> {
     crate::search::registry::register_strings(&mut t)?;
     // #41：速览窗口的命令标题、标题模板与提示。
     crate::peek::registry::register_strings(&mut t)?;
+    // #23：资源管理器的空状态、读取失败提示与命令标题。
+    crate::explorer::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

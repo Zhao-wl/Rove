@@ -36,3 +36,5 @@ pub mod nav;
 pub mod search;
 // #41：速览窗口（速览定义、引用、实现；D3 默认方式）。
 pub mod peek;
+// #23：资源管理器（文件树、紧凑文件夹、定位当前文件、过滤、文件装饰）。
+pub mod explorer;

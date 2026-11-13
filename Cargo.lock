@@ -5047,6 +5047,7 @@ dependencies = [
  "rove-lang-cs",
  "rove-search",
  "rove-syntax",
+ "rove-test-support",
  "rove-theme",
  "rove-workspace",
  "serde_json",

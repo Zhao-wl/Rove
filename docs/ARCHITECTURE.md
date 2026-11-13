@@ -228,10 +228,10 @@ cargo test --workspace
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；命令与字符串已登记，窗口装配（`ctrl+s` → `SaveController`、重载后刷新视图）随 #47 的可编辑代码视图接入 | #49 |
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
-| `explorer` | `workbench.rs`：可展开的文件树消费 Workspace。列表与树组件已完成，等待 #23 接入（`WorkspaceTree` 适配器与固定绘制仍是骨架） | #23 |
+| `explorer` | 已由 `rove-ui::explorer` 实现（见 §34）：`SKELETON(explorer)` 标记与骨架的 `WorkspaceTree` 适配器、固定绘制已删除；“文件夹”小节是 #18 `ListView` 的包装，数据来自流式扫描的 #15 工作区（根目录立即显示）；`skeleton/workbench/explorer_host.rs` 只做窗口装配 | #23（已完成） |
 | `status` | 容器已完成，等待条目：`appearance.rs` 的 `rove.status.file` 与 `workbench.rs` 的文件名/行数/编码内容 | #27 |
 
-数据链路：后台扫描返回 `Arc<dyn Workspace>`，文件树通过列表契约激活资源；
+数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
 应用位置后发出 Ready。代码视图只绘制缓存；帧间空闲切片读取 TextSource、调用装饰提供方（语法着色层
 读 SyntaxSnapshot、Theme）并整形，paint/layout 不读取文件、不解析、不整形（见 §16）。
@@ -1132,3 +1132,27 @@ BOM / 二进制、分块行号、多行正则、大型 Unity 项目计时（rele
 - **查询路由**：每次打开速览时取 #40 装配的 `Workbench::cs_router()`（带 L1、同步打开中的缓冲区，未保存修改的位置经映射；#40 换掉路由后下一次速览自然是新的，打开期间的嵌套速览沿用打开时那个）。测试可用 `Workbench::set_peek_queries` 换成替身。外部调用方要在已有结果上直接打开速览时走 `Workbench::open_peek_with`（`PeekRequest::preset` 带结果、`marker` 带文案）。
 
 验证：`cargo test -p rove-ui peek`（数据层单元测试 + `skeleton/workbench/peek_tests.rs` 的 16 个真实 GPUI 窗口入口测试（只经键位驱动）与 1 个键位表核对：三个入口、分组与计数、100 / 101 展开规则、`↑↓` / `Enter` / `Ctrl+Enter` / `F4` / `Shift+F4` / `F12` / `Ctrl+K F2` / `Esc` / `Shift+Esc`、`editor.stablePeek`、`editor.peekWidgetDefaultFocus` 两个取值、嵌套速览逐层返回与上下文键、近似标记、外部符号保底与注册提供方、空结果与实现不可用的提示、`.md` 打开源码、加载提示、反复开关 100 次后结果与预览全部释放、经 #40 的正式路由速览时未保存修改的位置经映射、键位表逐条一致）。性能：`cargo xtask bench --filter peek/`（真实窗口：28,671 处引用打开到结果树首次绘制，预算 `peek_open_to_first_paint_28k`；4.7 万条全部展开后结果树每帧 CPU，预算 `peek_tree_scroll_frame_47k`；开关 100 次前后的工作集 / 私有字节打印在 stdout）。
+
+## 34. 资源管理器（#23）
+
+位置：`crates/rove-ui/src/explorer/`（`lib.rs` 只追加 `pub mod explorer;`）；窗口装配在 `skeleton/workbench/explorer_host.rs`。不修改 #1 的契约；GPUI 类型只出现在 `view.rs` 与 `registry.rs` 的 action。只读：文件操作（重命名、删除、复制路径、新建、拖放）属于 R62，一律不登记。
+
+| 模块 | 内容 | GPUI |
+|---|---|---|
+| `model.rs` | `ExplorerSettings`（`explorer.compactFolders` / `sortOrder*` / `autoReveal` / `autoRevealExclude`、`workbench.editor.decorations.*`）；VS Code 的自然排序（数字按数值、大小写只在其余相同时决定顺序，`sortOrderLexicographicOptions` 四个取值）；树数据源 `ExplorerSource`（`TreeSource`）：展开时才向 #15 要子项、排序、紧凑文件夹（沿“只有一个子目录”的链压缩成一个节点）、读取失败的提示行；`plan_refresh`（一批文件事件 → 需要刷新的节点）；`reveal_plan`（路径 → 要展开的节点与目标节点） | 否 |
+| `decorations.rs` | 装饰接口 `DecorationProvider` 与两类来源：只读标记（#15 的 `Workspace::rules`，含 `rove.files.extraReadonlyInclude`）、错误 / 警告计数（`ProblemDecorations`，问题面板 R60 合并前为空，文件夹显示其下的总数）；**不接 Git**（`gitDecoration.*` 静默忽略） | 否 |
+| `registry.rs` | 命令（`explorer.openAndPassFocus`、`explorer.openToSide`、`filesExplorer.openFilePreserveFocus`、`first/last/next/previousCompressedFolder`、`workbench.files.action.showActiveFileInExplorer`）、界面字符串、上下文键名、`ExplorerAction` | 仅 action |
+| `view.rs` | `ExplorerView`：#18 `ListView` 的包装——行渲染（twistie、按扩展名区分的 codicon 图标、紧凑文件夹分段、锁 / 计数徽标）、命令、`filesExplorerFocus` 等上下文键、空状态、定位、文件事件的增量应用 | 是 |
+
+- **节点就是路径**：节点 ID 永远是工作区路径；紧凑文件夹链的 ID 是**链首目录**的路径、标签是 `a/b/c`。选中、定位、过滤、装饰都按路径解析（`chain_paths`、`reveal_plan`），不依赖行下标；链首作 ID 使“链尾继续变长或在下面断开”时上层展开状态不变。
+- **打开根目录不等扫描**：宿主用 #15 的 `Folder::start`（根目录已列出就返回），资源管理器立即显示；其余目录经文件事件到达。需要完整文件列表的消费者（快速打开、C# 快速索引、关闭已删除文件的标签订阅）在 `wait_until_complete` 之后再装配（`workspace_scanned`）。`files.exclude` / `rove.files.*` 变化触发重新扫描，展开状态与选中项按路径保留。
+- **增量更新，不重建整棵树**：宿主把一批（风暴时合并后的）文件事件交给 `ExplorerView::files_changed`；`plan_refresh` 只给出形状变了的节点——链不变时只刷新链首的子项，链变了（单子目录变多 / 变少）刷新它所在的节点；只处理已显示的目录；`Changed` 不触发任何刷新，`RescanRequired` 整棵重新装填。装填走 #18 的 `TreeModel::set_children`，它按 ID 还原展开状态，`ListWidget::update_tree` 按 ID 还原焦点与选中。
+- **紧凑文件夹导航**：压缩节点内部的焦点段由 `ExplorerView` 保存（聚焦时从最后一段开始，与 VS Code 一致）；`home` / `end` / `left` / `right` 的默认键位带 `explorerViewletCompressed*Focus` 条件，包装元素的 `KeyContext` 发布这三个键：在第一段按 `left`、最后一段按 `right` 时条件不成立，落回 #18 的 `list.collapse` / `list.expand`。鼠标点击某一段暂不单独聚焦（#18 的行不带监听器，行内命中要改树组件，留给后续）。
+- **打开文件**：`ListEvent::Open`（单击 = 预览且保持焦点、双击 / `list.select` = 正式标签）与三个命令（`enter` 正式并移交焦点、`ctrl+enter` 在侧边、`space` 预览并保持焦点）都转成 `ExplorerEvent::Open`，宿主经 #17 的 `OpenDocuments` 打开（`OpenSource::Explorer`；`.md` 的编辑器类型由 #17 解析：从文件树进入预览，D6）。
+- **定位当前文件**：宿主每帧比较活动标签，变了就 `auto_reveal`（`explorer.autoReveal`：true / false / `focusNoScroll`；`autoRevealExclude` 用 #15 的 `RuleSet`）；目标已是唯一选中项时不再动（由树自己打开的文件不会让焦点抖动）；`workbench.files.action.showActiveFileInExplorer` 无视设置、打开侧边栏并滚动到目标；`ctrl+shift+e` 后焦点交给树（`sync_explorer`）。
+- **过滤**：`list.find` 与 `workbench.list.defaultFindMode` / `defaultFindMatchType` 原样来自 #18（过滤时命中节点的父级自动展开、清空后还原）；作用在已加载的节点上。
+- **空状态与失败**：没有工作区时 `ExplorerView::set_workspace(None)` 显示“尚未打开文件夹。”与“打开文件夹”按钮（按钮发出 `workbench.action.files.openFolder`，对话框由 #28 / #16 提供）；目录读取失败显示一行原因（#15 的快照只区分“存在 / 不存在”，所以权限与路径过长在现有契约下都表现为“已不存在或无法读取”）。
+- **没有右键菜单**：本 issue 没有可放进菜单的已实现项，文件操作菜单属于 R62，所以不弹任何菜单（也就不存在未实现的文件操作项）。
+- **已知限制**：`explorer.sortOrder = modified` 需要修改时间，#15 不提供，按默认顺序；`explorer.expandSingleFolderWorkspaces` 针对多根工作区，Rove 单根且不显示根行；行高沿用骨架的 24 px。
+
+验证：`cargo test -p rove-ui explorer`（数据模型与装饰的单元测试；`skeleton/workbench/explorer_tests.rs` 真实 GPUI 窗口 + 真实文件监听的入口测试：根目录立即显示与默认排除、`extraExclude` 改动后重新扫描、紧凑文件夹与 `home` / `end` / `left` / `right`、`explorer.compactFolders = false`、单击预览 / 双击正式 / `space` / `enter` / `ctrl+enter`、`.md` 的编辑器类型、`autoReveal` 与 `autoRevealExclude`、命令“在资源管理器中显示活动文件”、`ctrl+shift+e` 焦点、过滤与还原、脚本一次创建 / 删除 500 个文件后树与磁盘一致且展开与选中保留、重命名 / 删除已展开的目录、只读装饰、空状态）。性能：`cargo test -p rove-ui --release --test explorer_perf -- --nocapture`（合成的 1 万个文件 / 1 万个文件夹，以及 `ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE` 的最大目录；实测数据见 PR）。
