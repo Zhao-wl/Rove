@@ -105,15 +105,13 @@ impl Workbench {
             .collect();
         for (group, secondary, code, find) in slots {
             // 滚动条按“已索引按行 + 未索引按字节外推”的估计值算内容高度（UX_SPEC §3.2）。
-            let shown = code.read(cx).text().map(|text| {
-                (
-                    text.version(),
-                    IndexProgress::of(&text.lines()).estimated_lines(),
-                )
+            // **只在索引未建完时下发**：建完后估计值就等于文档总行数，继续下发会让内容高度
+            // 把折叠隐藏的行也算进去（#20 的折叠 + #19 的滚动模型一起失真）。
+            let estimate = code.read(cx).text().and_then(|text| {
+                let progress = IndexProgress::of(&text.lines());
+                (!progress.complete).then(|| progress.estimated_lines())
             });
-            code.update(cx, |code, cx| {
-                code.set_scroll_line_estimate(shown.map(|(_, lines)| lines), cx)
-            });
+            code.update(cx, |code, cx| code.set_scroll_line_estimate(estimate, cx));
             let Some(document) = self.shown_document(group, secondary) else {
                 // 这个视图没有文档了：撤掉装饰层，别让它拖着上一份文本的 Arc 不放。
                 if self
@@ -301,12 +299,15 @@ impl Workbench {
         self.large_files.goto_progress = Some(IndexProgress::of(&document.text.lines()));
     }
 
-    /// 取消等待（Esc、关闭快速输入框或点“取消”）。
+    /// 取消等待（Esc / 关闭快速输入框、在输入框里换一个目标行、为别的用途打开浮层）。
+    ///
+    /// 同时交还快速输入框：取消之后 #24 不再为这次等待重开或关闭浮层（`quick.goto_wait`）。
     pub fn cancel_pending_goto(&mut self) {
         if let Some(pending) = self.large_files.pending_goto.take() {
             pending.cancel();
         }
         self.large_files.goto_progress = None;
+        self.quick.goto_wait = None;
     }
 
     /// 转到行（1 起始）。目标行已索引时立即返回 `true`（调用方照常打开）；

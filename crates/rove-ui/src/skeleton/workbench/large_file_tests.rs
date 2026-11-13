@@ -202,13 +202,15 @@ fn line_index_progress_appears_only_while_indexing(cx: &mut TestAppContext) {
     }
     let progress = IndexProgress::of(&count);
     assert!(progress.estimated_lines() >= count.known.max(1));
-    // 滚动条用的是估计值，不是“已知行数”。
     let estimate = view.read_with(cx, |v, cx| v.code_view().read(cx).scroll_line_estimate());
-    assert_eq!(estimate, Some(progress.estimated_lines()));
-
-    // 索引建完时估计值就是真实行数：滚动条位置与行号一致，不存在一次性切换。
     if count.complete {
+        // 索引建完时估计值就是真实行数：不再下发（继续下发会把折叠隐藏的行算回内容高度，
+        // 见 `tests/code_view_features.rs` 的 `folding_shrinks_the_scroll_range_...`）。
         assert_eq!(progress.estimated_lines(), count.known);
+        assert_eq!(estimate, None, "索引建完后不再下发估计值");
+    } else {
+        // 索引未建完：滚动条用的是估计值，不是“已知行数”。
+        assert_eq!(estimate, Some(progress.estimated_lines()));
     }
 }
 
@@ -251,6 +253,73 @@ fn goto_line_waits_for_the_index_and_can_be_cancelled(cx: &mut TestAppContext) {
         Some(goto::WaitOutcome::Ready(Line(0)))
     );
     assert_eq!(goto::resolve_now(&*waiting, 90), None);
+}
+
+/// 等待期间界面上看得见、也取消得掉（UX_SPEC §6.2）：快速输入框保持打开、显示进度，
+/// `quickInput.hide`（Esc 的命令）取消等待。
+#[gpui::test]
+fn the_goto_line_wait_is_visible_and_cancellable(cx: &mut TestAppContext) {
+    let f = Fixture::new(SETTINGS);
+    let (view, cx) = f.open(cx);
+    open_file(&view, "big.log", cx);
+    settle(cx);
+
+    // 索引未建完的文档上转到未索引的行：进入等待。
+    let document = document(&view, cx);
+    let waiting = Arc::new(Pending::new(100));
+    let pending_doc = Arc::new(Document {
+        id: DocumentId(99_999),
+        resource: Resource::Virtual("pending".into()),
+        metadata: document.metadata.clone(),
+        text: waiting.clone(),
+    });
+    assert!(!view.update(cx, |v, cx| v.goto_line_or_wait(&pending_doc, 90, cx)));
+
+    // 下一帧：快速输入框（回车时已经关掉了）重新打开，里面是等待提示 + 进度 + 取消办法。
+    // 这里直接驱动每帧的装配，不跑后台执行器——等待任务一跑就会把 600 s 的轮询走完。
+    cx.update(|window, cx| view.update(cx, |v, cx| v.sync_quick_access(window, cx)));
+    let percent = view.read_with(cx, |v, _| v.pending_goto().expect("等待中").1);
+    let rows: Vec<(String, String)> = view.read_with(cx, |v, cx| {
+        let q = v.quick.view.as_ref().expect("浮层已创建").read(cx);
+        let a = q.service.active().expect("等待期间浮层开着");
+        a.list
+            .display_rows(0..a.list.len())
+            .iter()
+            .map(|r| {
+                (
+                    r.label.to_string(),
+                    r.detail.as_deref().unwrap_or("").to_owned(),
+                )
+            })
+            .collect()
+    });
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].0.contains("90"), "{rows:?}");
+    assert!(rows[0].0.contains("正在建立行索引"), "{rows:?}");
+    assert!(
+        rows[0].0.contains(&percent.to_string()),
+        "提示里有进度：{rows:?}"
+    );
+    assert!(rows[0].1.contains("取消"), "有取消办法：{rows:?}");
+
+    // Esc：`quickInput.hide` 关掉浮层 → 取消等待（`ARCHITECTURE` §39）。
+    let quick = view.read_with(cx, |v, _| v.quick.view.clone().unwrap());
+    cx.update(|window, cx| quick.update(cx, |q, cx| q.run_command("quickInput.hide", window, cx)));
+    assert!(
+        view.read_with(cx, |v, _| v.pending_goto().is_none()),
+        "Esc 取消了等待"
+    );
+    cx.update(|window, cx| view.update(cx, |v, cx| v.sync_quick_access(window, cx)));
+    assert!(
+        view.read_with(cx, |v, cx| v.quick.view.as_ref().is_none_or(|q| q
+            .read(cx)
+            .service
+            .active()
+            .is_none())),
+        "浮层已关闭"
+    );
+    settle(cx);
+    assert!(view.read_with(cx, |v, _| v.pending_goto().is_none()));
 }
 
 /// 流式查找：超大文件上显示“已找到 N 处 · 已搜索 X%”，结果可用，替换按钮不存在。
@@ -416,8 +485,19 @@ fn appending_to_the_file_keeps_the_scroll_position(cx: &mut TestAppContext) {
 
     // 滚动位置没动（新的快照换进来也要保持；这里文档还没重载，但位置必须稳定）。
     assert_eq!(code.read_with(cx, |c, _| c.scroll_position().top), before);
-    let after = view.read_with(cx, |v, cx| v.code_view().read(cx).scroll_line_estimate());
-    assert!(after.is_some_and(|lines| lines >= count.known));
+    let (after, complete) = view.read_with(cx, |v, cx| {
+        let code = v.code_view().read(cx);
+        (
+            code.scroll_line_estimate(),
+            code.text().is_some_and(|t| t.lines().complete),
+        )
+    });
+    match after {
+        // 索引未建完：估计值不小于已知行数（滚动范围只扩不缩）。
+        Some(lines) => assert!(lines >= count.known),
+        // 索引建完：不再下发估计值，内容高度回到真实（且经折叠映射的）行数。
+        None => assert!(complete, "只有索引建完才撤掉估计值"),
+    }
 }
 
 /// 状态栏数据本身：被关闭的功能来自 #20 的查询接口，普通文件没有条目。

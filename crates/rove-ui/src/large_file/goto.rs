@@ -64,6 +64,8 @@ impl PendingGoto {
 pub const WAIT_HINT_KEY: &str = "largeFile.gotoLine.waiting";
 /// 取消按钮的文案 key。
 pub const CANCEL_KEY: &str = "largeFile.gotoLine.cancel";
+/// 等待提示下方的取消说明（`{key}` 是 `quickInput.hide` 的实际键位，默认 Esc）。
+pub const CANCEL_HINT_KEY: &str = "largeFile.gotoLine.cancelHint";
 
 /// 目标行现在能不能直接跳（已索引，或索引已建完）。
 ///
