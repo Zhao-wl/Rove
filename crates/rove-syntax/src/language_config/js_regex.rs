@@ -93,6 +93,10 @@ impl fmt::Display for RegexOrigin {
         )
     }
 }
+/// Byte ranges of a match and of its capture groups; `None` for a group that did not
+/// participate. Group 0 is the whole match. Added for #48's regular expression replacement.
+pub type CaptureRanges = Vec<Option<(usize, usize)>>;
+
 /// A JavaScript regular expression compiled for matching against `str`.
 #[derive(Clone)]
 pub struct CompiledRegex {
@@ -153,6 +157,28 @@ impl CompiledRegex {
     /// Byte range of the first match.
     pub fn find(&self, text: &str) -> Result<Option<(usize, usize)>> {
         self.find_from(text, 0)
+    }
+    /// Byte ranges of the whole match and of every capture group of the first match at or after
+    /// byte `start`; `None` for a group that did not participate. Added for #48, whose regular
+    /// expression replacement expands `$1`…`$9` from the groups of the match it is replacing.
+    pub fn capture_ranges(
+        &self,
+        text: &str,
+        start: usize,
+    ) -> Result<Option<CaptureRanges>> {
+        if start > text.len() || !text.is_char_boundary(start) {
+            return Err(Error::OutOfBounds);
+        }
+        match self.expression.captures_from_pos(text, start) {
+            Ok(Some(captures)) => Ok(Some(
+                captures
+                    .iter()
+                    .map(|group| group.map(|m| (m.start(), m.end())))
+                    .collect(),
+            )),
+            Ok(None) => Ok(None),
+            Err(_) => Err(Error::Unsupported),
+        }
     }
 }
 /// Compile one configuration regular expression.
@@ -753,6 +779,25 @@ mod tests {
         let engine = error("(abc", "");
         assert!(engine.reason.contains("cannot compile"));
         assert!(engine.to_string().contains("field indentationRules"));
+    }
+
+    #[test]
+    fn capture_ranges_report_every_group_of_the_first_match() {
+        let regex = compile(r"(\w+)\s*=\s*(\d+)?;");
+        let text = "int a  = 12; int b = ;";
+        let groups = regex.capture_ranges(text, 0).unwrap().unwrap();
+        assert_eq!(groups[0], Some((4, 12)));
+        assert_eq!(&text[groups[1].unwrap().0..groups[1].unwrap().1], "a");
+        assert_eq!(&text[groups[2].unwrap().0..groups[2].unwrap().1], "12");
+        // 第二处匹配里 `(\d+)` 没有参与。
+        let groups = regex.capture_ranges(text, 12).unwrap().unwrap();
+        assert_eq!(&text[groups[1].unwrap().0..groups[1].unwrap().1], "b");
+        assert_eq!(groups[2], None);
+        assert_eq!(regex.capture_ranges("nothing here", 0).unwrap(), None);
+        assert!(matches!(
+            regex.capture_ranges(text, text.len() + 1),
+            Err(Error::OutOfBounds)
+        ));
     }
 
     #[test]

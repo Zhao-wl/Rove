@@ -59,7 +59,7 @@ pub mod parse;
 pub mod word;
 
 pub use folding::fold_ranges;
-pub use js_regex::{compile_regex, CompiledRegex, RegexOrigin};
+pub use js_regex::{compile_regex, CaptureRanges, CompiledRegex, RegexOrigin};
 pub use parse::parse_language_configuration;
 pub use word::{word_at, DEFAULT_WORD_PATTERN, DEFAULT_WORD_PATTERN_FLAGS};
 
