@@ -237,11 +237,21 @@ impl EditSession {
             self.buffer.set_line_endings(line_endings);
         }
         // 选区映射只依赖已经算好的区间，不会失败；失败时保底放在原光标的映射位置。
-        let mut after = selections_after(&applied).unwrap_or_else(|_| {
+        let after = selections_after(&applied).unwrap_or_else(|_| {
             Selections::single(Selection::cursor(
                 applied.map_offset(self.selections.primary().active, Bias::After),
             ))
         });
+        // 编辑可能把光标两侧的 `\r` 与 `\n` 并成一个换行，端点停在 CRLF 中间时下一次输入会被
+        // 拒绝；统一规整到换行之后（`EditBuffer::normalize_crlf`）。
+        let normalized = after.map(|s| {
+            Ok(Selection {
+                anchor: self.buffer.normalize_crlf(s.anchor),
+                active: self.buffer.normalize_crlf(s.active),
+                desired_column: s.desired_column,
+            })
+        });
+        let mut after = normalized.unwrap_or(after);
         after.normalize(
             self.options.multi_cursor_merge_overlapping,
             self.options.multi_cursor_limit,
