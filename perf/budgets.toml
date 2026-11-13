@@ -407,3 +407,14 @@ status = "enforced"
 bench = "peek/tree_scroll_frame_47k"
 aggregate = "p99"
 reason = "issue #41 验收：4.7 万条结果下滚动结果树满足帧预算（120 fps 一帧 8.33 ms，口径同 #18 的 list_bench）。开发机实测 p99 6.2 / 4.2 ms"
+
+[[budget]]
+id = "keystroke_to_paint"
+metric = "按键到上屏：可打印字符进入 → 包含新字符的帧绘制完成（10 万行 C#、插入符在中部、带语法着色）"
+value = 8
+unit = "ms"
+owner = "#47"
+status = "recorded"
+bench = "typing/key_to_frame"
+aggregate = "p99"
+reason = "CHARTER §6：按键到上屏 < 8 ms（p99）。进程内注入按键（不含系统消息排队与输入法），在上一帧回调里记下时间、在下一帧回调里收尾，帧率受显示器刷新与 vsync 约束，托管 runner 没有物理显示器，所以只记录、不在 CI 上判定；数据见 #47 的 PR"

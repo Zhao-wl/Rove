@@ -113,3 +113,8 @@ harness = false
 [[bench]]
 name = "peek"
 harness = false
+
+# #47：按键到上屏（真实 GPUI 窗口，10 万行 C#，带语法着色）。
+[[bench]]
+name = "typing"
+harness = false
