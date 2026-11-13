@@ -151,6 +151,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | 键位编辑器 | 改造 | P2 | 首版只提供 JSON 编辑 |
 | 界面语言（localization） | 改造 | P1 | 内置中文和英文，不使用语言包扩展 |
 | 设置同步、配置文件（profiles） | 不做 | — | 需要账号或网络 |
+| 自动更新（update） | 改造 | P0 | D11：从 GitHub Releases 检查并下载更新，校验签名后在重启时安装；`rove.update.mode`（`none` / `manual` / `start` / `default`，默认 `default`）。键名加 `rove.` 前缀，避免与共用 settings.json 中 VS Code 自己的 `update.mode` 冲突。这是全程序唯一的网络出口（`PROJECT_CHARTER` §2.1） |
 
 ## 8. 状态栏
 
@@ -185,7 +186,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | 版本控制 | scm、git、github、timeline、mergeEditor（以后可能提供只读的对比视图）|
 | 内置 AI | chat、inlineChat、chatWindow、inlineCompletions、mcp、remoteCodingAgents、agentsVoice、sessions、speech |
 | 远程与账号 | remote、remoteTunnel、authentication、userDataSync、editSessions、share、userDataProfile |
-| 遥测与运营 | telemetry、surveys、issue、update（自动更新以后再评估）、emergencyAlert、meteredConnection、onboarding、welcomeWalkthrough |
+| 遥测与运营 | telemetry、surveys、issue、emergencyAlert、meteredConnection、onboarding、welcomeWalkthrough |
 | 实时语言服务 | suggest、parameterHints、codeAction、rename、snippets、emmet、colorPicker、inlayHints（待议）|
 
 ## 11. 可以直接复用的 VS Code 资产
@@ -217,6 +218,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | D8 | 热退出的里程碑 | 从 M4 提前到 M3，避免 M3 交付后意外退出丢失未保存的修改 |
 | D9 | 不生效的预处理代码置灰 | 新增，P1，与 VS Code 的 C# 扩展一致，归 M4 的语义高亮 |
 | D10 | 文件图标主题 | 内置 Seti，并像颜色主题一样只读加载用户在 VS Code 中安装的图标主题（不运行扩展代码） |
+| D11 | 自动更新（2026-11-13） | 首个可发布版本 v0.1 起提供自动更新，作为唯一的网络出口；更新源为 GitHub Releases，单一稳定通道，安装包不做代码签名，靠 ed25519 签名的更新清单校验 |
 
 ## 13. 与 VS Code 共用设置文件的规则（D4 的落地）
 
