@@ -161,6 +161,11 @@ impl Workbench {
         ) else {
             return;
         };
+        // 非 C# 文件什么都不做（D2：其他语言不发布 `editorHasReferenceProvider`；
+        // 从命令面板直接运行时同样不弹错误、不开空视图）。
+        if !crate::nav::model::is_csharp(&document.metadata.language) {
+            return;
+        }
         let (caret, word) = code.read_with(cx, |c, _| (c.selection().active, c.word_at_caret()));
         let point = QueryPoint {
             resource: document.resource.clone(),

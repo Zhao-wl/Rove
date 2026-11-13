@@ -42,12 +42,23 @@ const WRITES_CS: &str = "namespace Game
 }
 ";
 
+/// `Box<T>` 的第二个 partial 部分：让类型定义有两个候选。
+const WRITES2_CS: &str = "namespace Game
+{
+    public partial class Box<T>
+    {
+        public int Count;
+    }
+}
+";
+
 const NOTES_MD: &str = "# Notes\n\nPlayer notes.\n";
 
-const FILES: [(&str, &str); 3] = [
+const FILES: [(&str, &str); 4] = [
     ("Assets/Hero.cs", HERO_CS),
     ("Assets/Player.cs", PLAYER_CS),
     ("Assets/Writes.cs", WRITES_CS),
+    ("Assets/Writes2.cs", WRITES2_CS),
 ];
 
 fn pos(line: u64, column: u64) -> Position {
@@ -69,7 +80,7 @@ fn build_index() -> TestIndex {
         .iter()
         .map(|(p, text)| t.file(p, hash_bytes(text.as_bytes())))
         .collect();
-    let (hero, player, writes) = (f[0], f[1], f[2]);
+    let (hero, player, writes, writes2) = (f[0], f[1], f[2], f[3]);
     let player_t = t.symbol("Game|T:Game.Player", "Player", KIND_TYPE, None);
     let box_t = t.symbol("Game|T:Game.Box`1", "Box", KIND_TYPE, None);
     let (line, col) = find_word(PLAYER_CS, "Player", 0);
@@ -89,6 +100,9 @@ fn build_index() -> TestIndex {
             t.reference(box_t, writes, line, col);
         }
     }
+    // partial 的第二部分：同一个符号的第二个定义处。
+    let (line, col) = find_word(WRITES2_CS, "Box", 0);
+    t.def(box_t, writes2, line, col);
     t
 }
 
@@ -337,7 +351,7 @@ fn type_definition_provider_key_is_only_published_for_csharp(cx: &mut TestAppCon
 
 /// 验收点名的五种写法各一例。#38 的索引不记录符号的声明类型，所以光标落在变量 / 字段 / 参数 /
 /// 属性 / 泛型实参的**名字**上时按 UX_SPEC §6.3 给空状态提示；落在写出来的**类型名**上时跳转。
-/// （数据层的这个限制已另开跟进 issue，用例同时补进 #39 的测试集。）
+/// （数据层的这个限制已另开跟进 issue #177，用例同时补进 #39 的测试集。）
 #[gpui::test]
 fn type_definition_covers_var_field_parameter_property_and_type_argument(cx: &mut TestAppContext) {
     let project = Project::new("{}");
@@ -384,28 +398,54 @@ fn type_definition_empty_state_mentions_the_index_when_approximate(cx: &mut Test
     );
 }
 
-/// `editor.gotoLocation.multipleTypeDefinitions` 的取值生效：`peek`（默认）多候选开速览，
-/// `goto` 直接跳到第一个。
+/// `editor.gotoLocation.multipleTypeDefinitions` 的取值生效：
+/// 单候选直接跳转；`peek`（默认）多候选开速览；`goto` 直接跳到第一个并进入符号导航模式。
 #[gpui::test]
 fn type_definition_multiple_candidates_follow_the_setting(cx: &mut TestAppContext) {
-    // `Box` 在 Writes.cs 里只有一个定义：单候选直接跳转（不开速览）。
+    // `Player` 只有一个定义：单候选直接跳转（不开速览）。
     let project = Project::new("{}");
     let (view, cx) = project.open(cx);
-    open_file(&view, "Assets/Writes.cs", cx);
-    caret(&view, word(WRITES_CS, "Box", 1), cx);
+    open_file(&view, "Assets/Hero.cs", cx);
+    caret(&view, word(HERO_CS, "Player", 0), cx);
     run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
     assert!(
         view.read_with(cx, |v, _| v.peek_widget(v.editor.focused, false).is_none()),
         "单候选直接跳转"
     );
-    assert_eq!(location(&view, cx).1, word(WRITES_CS, "Box", 0));
-    // 设置本身按 compat/SETTINGS.md 登记，默认值是 peek。
+    assert_eq!(location(&view, cx).0, "Assets/Player.cs");
+    // 默认值是 peek（按 compat/SETTINGS.md 登记）。
     let settings = view.read_with(cx, |v, _| v.settings.clone());
     assert_eq!(
         crate::nav::settings::NavSettings::read(&*settings, Some("csharp"))
             .multiple_type_definitions,
         crate::nav::settings::GotoMode::Peek
     );
+    // `Box<T>` 是 partial，两个定义处：多候选 → 速览窗口。
+    open_file(&view, "Assets/Writes.cs", cx);
+    caret(&view, word(WRITES_CS, "Box", 1), cx);
+    run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
+    let widget = view
+        .read_with(cx, |v, _| v.peek_widget(v.editor.focused, false))
+        .expect("多候选应打开速览窗口");
+    assert_eq!(
+        widget.read_with(cx, |w, _| w.results().map(|r| r.total())),
+        Some(2)
+    );
+}
+
+/// `goto`：多候选不开速览，直接跳到第一个。
+#[gpui::test]
+fn type_definition_goto_mode_jumps_without_peeking(cx: &mut TestAppContext) {
+    let project = Project::new("{ \"editor.gotoLocation.multipleTypeDefinitions\": \"goto\" }");
+    let (view, cx) = project.open(cx);
+    open_file(&view, "Assets/Writes.cs", cx);
+    caret(&view, word(WRITES_CS, "Box", 1), cx);
+    run_nav(&view, nav_reg::GOTO_TYPE_DEFINITION, cx);
+    assert!(
+        view.read_with(cx, |v, _| v.peek_widget(v.editor.focused, false).is_none()),
+        "goto 不开速览"
+    );
+    assert_eq!(location(&view, cx).1, word(WRITES_CS, "Box", 0));
 }
 
 // ------------------------------------------------------- 转到工作区中的符号

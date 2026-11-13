@@ -116,7 +116,15 @@ impl Fixture {
             crate::app_settings::registry().unwrap(),
         ));
         let folder = tempfile::tempdir().unwrap();
-        for (path, text) in [("Assets/Player.cs", PLAYER), ("Assets/Enemy.cs", ENEMY)] {
+        for (path, text) in [
+            ("Assets/Player.cs", PLAYER),
+            ("Assets/Enemy.cs", ENEMY),
+            (
+                "Assets/notes.txt",
+                "Player notes
+",
+            ),
+        ] {
             let full = folder.path().join(path);
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
             std::fs::write(full, text).unwrap();
@@ -512,8 +520,28 @@ fn forty_seven_thousand_results_stay_usable(cx: &mut TestAppContext) {
     // 逐条导航仍然是 O(1)。
     run(&view, reg::NEXT, cx);
     assert_eq!(selected(&view, cx), Some(0));
-    // 只防“构建树时展平 4.7 万条”；具体数字见 PR 描述（机器负载较高）。
+    // 只防“构建树时展平 4.7 万条”；具体数字（机器负载较高）用 `-- --nocapture` 看。
+    eprintln!("references: 4.7 万条结果从按键到结果树就绪 {elapsed:?}");
     assert!(elapsed.as_secs() < 20, "{elapsed:?}");
+}
+
+/// 非 C# 文件：命令什么都不做（不开面板、不留结果）。
+#[gpui::test]
+fn non_csharp_files_do_not_open_the_view(cx: &mut TestAppContext) {
+    let f = Fixture::new("{}");
+    let (view, cx) = f.open(
+        Fake {
+            references: move_references(),
+            ..Default::default()
+        },
+        cx,
+    );
+    open_file(&view, "Assets/notes.txt", cx);
+    caret(&view, pos(0, 1), cx);
+    run(&view, reg::FIND_REFERENCES, cx);
+    assert_eq!(panel(&view, cx), (false, "workbench.panel.markers".into()));
+    assert!(!view.read_with(cx, |v, _| v.references_state().has_result()));
+    assert!(view.read_with(cx, |v, _| v.references_state().history.is_empty()));
 }
 
 #[gpui::test]
