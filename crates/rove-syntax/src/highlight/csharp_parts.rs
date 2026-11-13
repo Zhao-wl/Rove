@@ -227,13 +227,17 @@ fn edit_range(mut range: TreeRange, patch: &InputEdit) -> TreeRange {
     range
 }
 
-/// Parts with their captures of the whole document, sorted for assembly.
-pub(super) type Parsed = (Parts, Vec<Capture>);
+/// Parts with the captures taken while their trees were hot, sorted for assembly, and
+/// the byte range those captures cover.
+pub(super) type Parsed = (Parts, Vec<Capture>, Range<usize>);
 
 /// Parse and capture each part on the worker that parsed it, while its tree is hot.
+/// `wanted` limits the capture step to the parts that reach into it (visible-first);
+/// `None` captures the whole document.
 pub(super) fn try_parse(
     source: &Source,
     pool: Option<&WorkerPool>,
+    wanted: Option<Range<usize>>,
     work: &Work<'_>,
 ) -> Result<Option<Parsed>> {
     if source.len() < MIN_BYTES {
@@ -246,10 +250,15 @@ pub(super) fn try_parse(
     let Some(permit) = pool.acquire(want) else {
         return Ok(None);
     };
-    parse_parts(source, permit.workers, work)
+    parse_parts(source, permit.workers, wanted, work)
 }
 
-fn parse_parts(source: &Source, workers: usize, work: &Work<'_>) -> Result<Option<Parsed>> {
+fn parse_parts(
+    source: &Source,
+    workers: usize,
+    wanted: Option<Range<usize>>,
+    work: &Work<'_>,
+) -> Result<Option<Parsed>> {
     let text = source.contiguous();
     let Some(layout) = scan(text.as_bytes(), work)? else {
         return Ok(None);
@@ -258,25 +267,39 @@ fn parse_parts(source: &Source, workers: usize, work: &Work<'_>) -> Result<Optio
         return Ok(None);
     };
     let container = layout.container;
+    let interesting = |span: &Range<usize>| match &wanted {
+        Some(wanted) => span.start < wanted.end && wanted.start < span.end,
+        None => true,
+    };
     let parsed = parallel_map(&plan.chunks, workers, |chunk| {
         let tree = Grammar::Csharp.parse_ranges(source, &chunk.included, None, work)?;
         if !is_independent(&tree, plan.header_end, plan.footer_start, container) {
             return Ok(None);
         }
         let mut captures = Vec::new();
-        Grammar::Csharp.capture(&tree, source, chunk.span.clone(), &mut captures, work)?;
-        captures.retain(|capture| chunk.span.contains(&capture.start));
-        sort_captures(&mut captures);
+        if interesting(&chunk.span) {
+            Grammar::Csharp.capture(&tree, source, chunk.span.clone(), &mut captures, work)?;
+            captures.retain(|capture| chunk.span.contains(&capture.start));
+            sort_captures(&mut captures);
+        }
         Ok(Some((tree, captures)))
     })?;
     let mut parts = Vec::with_capacity(parsed.len());
     let mut all = Vec::with_capacity(parsed.iter().flatten().map(|(_, c)| c.len()).sum());
+    let mut covered: Option<Range<usize>> = None;
     for (chunk, parsed) in plan.chunks.into_iter().zip(parsed) {
         let Some((tree, captures)) = parsed else {
             return Ok(None);
         };
-        // Parts are disjoint and ordered, so the concatenation stays sorted.
-        all.extend(captures);
+        // Parts are disjoint and ordered, so the concatenation stays sorted, and the
+        // captured parts that reach into `wanted` form one contiguous range.
+        if interesting(&chunk.span) {
+            all.extend(captures);
+            covered = Some(match covered {
+                Some(range) => range.start..chunk.span.end,
+                None => chunk.span.clone(),
+            });
+        }
         parts.push(Part {
             span: chunk.span,
             included: chunk.included,
@@ -291,6 +314,7 @@ fn parse_parts(source: &Source, workers: usize, work: &Work<'_>) -> Result<Optio
             parts,
         },
         all,
+        covered.unwrap_or(0..0),
     )))
 }
 

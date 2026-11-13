@@ -265,17 +265,24 @@ enum ParseTrees {
     Csharp(Arc<csharp_parts::Parts>),
 }
 
+/// Captures taken during a partitioned parse and the byte range they cover.
+type Captured = (Vec<grammar::Capture>, Range<usize>);
+
 impl ParseTrees {
-    /// Parse from scratch. Partitioned C# also returns the captures of the whole document.
+    /// Parse from scratch. Partitioned C# also returns the captures it took while the part
+    /// trees were hot; `wanted` keeps that to the parts a visible-first build needs.
     fn full(
         grammar: Grammar,
         source: &Source,
         pool: Option<&WorkerPool>,
+        wanted: Option<Range<usize>>,
         work: &Work<'_>,
-    ) -> Result<(Self, Option<Vec<grammar::Capture>>)> {
+    ) -> Result<(Self, Option<Captured>)> {
         if grammar == Grammar::Csharp {
-            if let Some((parts, captures)) = csharp_parts::try_parse(source, pool, work)? {
-                return Ok((Self::Csharp(parts.into()), Some(captures)));
+            if let Some((parts, captures, covered)) =
+                csharp_parts::try_parse(source, pool, wanted, work)?
+            {
+                return Ok((Self::Csharp(parts.into()), Some((captures, covered))));
             }
         }
         Ok((Self::Whole(grammar.parse(source, None, work)?), None))
@@ -411,6 +418,12 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
     // refresh budget. Full rebuilds, and edits confined to one independent C# member, must
     // be allowed to advance the baseline even when the budget has already elapsed.
     let baseline = patched.as_ref().map(|(_, patch)| *patch).zip(old_parse);
+    // Visible-first (no baseline to update): only the parts the visible rows reach into
+    // need captures; the rest is captured when the next analysis completes the snapshot.
+    let wanted = visible
+        .clone()
+        .filter(|_| baseline.is_none())
+        .and_then(|lines| visible_bytes(text.as_ref(), count.known, lines));
     let whole_baseline = baseline.is_some_and(|(_, old)| old.trees.whole().is_some());
     let work = if whole_baseline { work } else { &full_work };
     let source = match patched {
@@ -424,7 +437,7 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
     let mut diff: Option<(Tree, Tree)> = None;
     let mut captured = None;
     let mut full = |source: &Source| -> Result<ParseTrees> {
-        let (trees, captures) = ParseTrees::full(grammar, source, pool, work)?;
+        let (trees, captures) = ParseTrees::full(grammar, source, pool, wanted.clone(), work)?;
         captured = captures;
         Ok(trees)
     };
@@ -498,7 +511,10 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         _ => scan,
     };
     let partial = incremental.is_none() && scan != all;
-    let captured = captured.filter(|_| scan == all);
+    let scanned = ranges.bytes(scan.clone());
+    let captured = captured.and_then(|(captures, covered)| {
+        (covered.start <= scanned.start && scanned.end <= covered.end).then_some(captures)
+    });
     let (lines, changed_lines) = highlight(
         grammar,
         &trees,
@@ -646,6 +662,16 @@ fn snapshot(
             lines,
         }),
     }
+}
+
+/// Byte range of `lines`, clamped to the rows the text actually has.
+fn visible_bytes(text: &dyn TextSource, lines: u64, visible: LineRange) -> Option<Range<usize>> {
+    let last = lines.checked_sub(1)?;
+    let first_row = visible.start().0.min(last);
+    let last_row = visible.end().0.saturating_sub(1).clamp(first_row, last);
+    let first = text.line_range(Line(first_row)).ok()?;
+    let end = text.line_range(Line(last_row)).ok()?;
+    Some(first.start().0 as usize..end.end().0 as usize)
 }
 
 /// Widen Markdown rows to whole inline regions and code fences, so an injected region is

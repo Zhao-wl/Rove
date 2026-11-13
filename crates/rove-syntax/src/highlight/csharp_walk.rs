@@ -621,7 +621,15 @@ pub(super) fn capture(
         }
         if !skip {
             visit(walker, &node, kind, field, &ancestors, source, output);
-            if cursor.goto_first_child() {
+            // Within a range, enter at the first child that reaches into it: letting
+            // tree-sitter skip the earlier siblings costs much less than stepping the
+            // cursor over them one call at a time (an edit to one member of a large type).
+            let descended = if clip {
+                cursor.goto_first_child_for_byte(scan.start).is_some()
+            } else {
+                cursor.goto_first_child()
+            };
+            if descended {
                 ancestors.push((kind, field));
                 field = cursor.field_id().map_or(0, |id| id.get());
                 continue;
