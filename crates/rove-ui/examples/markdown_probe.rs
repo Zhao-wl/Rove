@@ -176,6 +176,7 @@ fn main() {
     });
     let sample = SAMPLE.replace("__ROVE_TEST_ORIGIN__", &origin);
     std::fs::write(root.join("Sample.md"), &sample).unwrap();
+    std::fs::write(root.join("Other.md"), &sample).unwrap();
     std::fs::write(
         root.join("local.css"),
         format!(r#"@import url("{origin}/import.css");"#),
@@ -258,7 +259,6 @@ fn main() {
         let service = service.clone();
         let root = root.clone();
         let contacts = contacts.clone();
-        let sample = sample.clone();
         cx.spawn(async move |cx| {
             let executor = cx.background_executor().clone();
             let sleep = move |ms: u64| executor.timer(Duration::from_millis(ms));
@@ -324,18 +324,25 @@ fn main() {
             phase("preview_steady_6s", json!({}));
 
             // 旧放行配置仍启用；改预览选项触发重新渲染，再切换至另一个预览。
+            let before = snap.render_sequence;
             std::fs::write(user_settings(&root), settings_json("Light 2026")).unwrap();
             service.reload();
-            sleep(1000).await;
-            let snap = snapshot(cx);
-            phase("offline_rerender", json!({ "rendered": snap.rendered, "stats": snap.stats, "remote_blocked": snap.remote }));
-            std::fs::write(user_settings(&root), settings_json("Dark 2026")).unwrap();
-            service.reload();
-            std::fs::write(root.join("Other.md"), &sample).unwrap();
+            let started = Instant::now();
+            let mut snap = snapshot(cx);
+            while (!snap.rendered || snap.render_sequence == before) && started.elapsed() < Duration::from_secs(20) {
+                sleep(50).await;
+                snap = snapshot(cx);
+            }
+            phase("offline_rerender", json!({ "rendered": snap.rendered && snap.render_sequence != before, "stats": snap.stats, "remote_blocked": snap.remote }));
+            let previous_owner = snap.owner;
             open(cx, "Other.md", false);
-            sleep(1000).await;
-            let snap = snapshot(cx);
-            phase("offline_switch", json!({ "rendered": snap.rendered, "stats": snap.stats, "remote_blocked": snap.remote }));
+            let started = Instant::now();
+            let mut snap = snapshot(cx);
+            while (!snap.rendered || snap.owner == previous_owner) && started.elapsed() < Duration::from_secs(20) {
+                sleep(50).await;
+                snap = snapshot(cx);
+            }
+            phase("offline_switch", json!({ "rendered": snap.rendered && snap.owner != previous_owner, "stats": snap.stats, "remote_blocked": snap.remote }));
 
             // 长文档并排：源码 → 预览、预览 → 源码。
             open(cx, "Long.md", true);
@@ -392,7 +399,7 @@ fn main() {
 
             // 主题切换：浏览器进程不变。
             let pids_before = snapshot(cx).process_ids;
-            std::fs::write(user_settings(&root), settings_json("Light 2026")).unwrap();
+            std::fs::write(user_settings(&root), settings_json("Dark 2026")).unwrap();
             service.reload();
             sleep(1500).await;
             let pids_after = snapshot(cx).process_ids;
