@@ -1,6 +1,7 @@
 //! Tree-sitter highlighting behind the frozen syntax contracts.
 
 mod csharp_parts;
+mod csharp_walk;
 mod documents;
 mod grammar;
 mod rows;
