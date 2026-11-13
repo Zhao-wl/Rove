@@ -347,6 +347,8 @@ pub struct FindHost {
     pending_after: After,
     /// #48：这一次文本变化是本查找条的替换引起的，范围已经自己算好了，不要清掉。
     keep_scope: bool,
+    /// 文档的大小级别（#8 分级）：超大文件只读，不提供替换（#22）。
+    size: rove_buffer::SizeClass,
     /// 查找文本改了但还没搜索（`editor.find.findOnType` 关闭时等回车）。
     dirty: bool,
     _subs: Vec<gpui::Subscription>,
@@ -441,6 +443,7 @@ impl FindHost {
             pending_research: false,
             pending_after: After::Nothing,
             keep_scope: false,
+            size: rove_buffer::SizeClass::Normal,
             dirty: false,
             _subs: subs,
         }
@@ -452,6 +455,33 @@ impl FindHost {
 
     pub fn model(&self) -> &FindModel {
         &self.model
+    }
+
+    /// 文档的大小级别（#22 在工作台装配时告知）。超大文件只读，查找条不提供替换。
+    pub fn set_document_size(&mut self, size: rove_buffer::SizeClass, cx: &mut Context<Self>) {
+        if self.size != size {
+            self.size = size;
+            cx.notify();
+        }
+    }
+
+    pub fn document_size(&self) -> rove_buffer::SizeClass {
+        self.size
+    }
+
+    /// 查找条是否提供替换：M1 本来就没有替换，#48 接入时**必须**遵守这个判断
+    /// （超大文件上替换按钮不存在，UX_SPEC §3.2）。
+    pub fn replace_allowed(&self) -> bool {
+        crate::large_file::allows_replace(self.size)
+    }
+
+    /// 行索引又前进了一段（#22）：之前只扫描了已知的行，重新搜索把新索引出来的行也算进去。
+    /// 下一帧生效（事件回调里没有窗口）。
+    pub fn reindexed(&mut self, cx: &mut Context<Self>) {
+        if self.visible {
+            self.pending_research = true;
+            cx.notify();
+        }
     }
 
     pub fn code(&self) -> &Entity<CodeView> {
@@ -776,8 +806,8 @@ impl FindHost {
         cx.background_executor()
             .spawn(async move {
                 let progress_tx = tx.clone();
-                let result = job.run(&*source, &mut |p| {
-                    let _ = progress_tx.try_send(SearchMessage::Progress(p));
+                let result = job.run(&*source, &mut |p, batch| {
+                    let _ = progress_tx.try_send(SearchMessage::Progress(p, batch.to_vec()));
                 });
                 let _ = tx.try_send(SearchMessage::Done(result));
             })
@@ -808,8 +838,18 @@ impl FindHost {
         cx: &mut Context<Self>,
     ) {
         match message {
-            SearchMessage::Progress(p) => {
-                if self.model.progress(generation, p) {
+            SearchMessage::Progress(p, batch) => {
+                // #22：流式查找——先接上新找到的匹配，再更新“已找到 N 处 · 已搜索 X%”。
+                let published = self.model.publish_partial(generation, &batch);
+                let advanced = self.model.progress(generation, p);
+                if published {
+                    let selection = self.code.read(cx).selection();
+                    self.model
+                        .set_current_from_selection(Some((selection.start(), selection.end())));
+                    // 装饰仍然只为可见行生成（#19 按行调用提供方），不会一次性铺满全部匹配。
+                    self.sync_decor(cx);
+                }
+                if published || advanced {
                     cx.notify();
                 }
             }
@@ -1676,7 +1716,8 @@ fn input_colors(colors: &FindColors) -> TextInputColors {
 
 /// 一次后台搜索回报给界面的消息。
 enum SearchMessage {
-    Progress(engine::Progress),
+    /// 进度 + 这一块新找到的匹配（#22 的流式查找：结果逐步出现）。
+    Progress(engine::Progress, Vec<engine::Match>),
     Done(rove_base::Result<engine::SearchOutput>),
 }
 

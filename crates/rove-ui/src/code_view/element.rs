@@ -1129,6 +1129,12 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
             } else if e.modifiers.control && !e.modifiers.shift && e.click_count == 1 {
                 // #40：Ctrl+点击转到定义（Ctrl+Alt+点击在旁边打开）。
                 v.mouse_down_link(p, e.modifiers.alt, cx);
+            } else if e.click_count == 1
+                && !e.modifiers.shift
+                && lay.text.contains(&p)
+                && v.overlay_clicked(p, cx)
+            {
+                // #22：点击行内覆盖物（超长行的截断标记）；已由宿主处理，不移动插入符。
             } else {
                 v.mouse_down_text(p, e.click_count, e.modifiers.shift, cx);
             }

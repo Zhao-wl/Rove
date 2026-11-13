@@ -49,11 +49,12 @@ pub struct SearchJob {
 }
 
 impl SearchJob {
-    /// 在后台线程执行；按块调用 `progress`，被取消时返回 `Err(Cancelled)`。
+    /// 在后台线程执行；按块调用 `progress`（第二个参数是这一块新找到的匹配，供 #22
+    /// 的流式查找逐步显示），被取消时返回 `Err(Cancelled)`。
     pub fn run(
         &self,
         text: &dyn TextSource,
-        progress: &mut dyn FnMut(Progress),
+        progress: &mut dyn FnMut(Progress, &[Match]),
     ) -> Result<SearchOutput> {
         engine::search_all(
             text,
@@ -82,6 +83,8 @@ pub struct FindModel {
     cancel: Cancellation,
     limit: usize,
     searcher: Option<Arc<Searcher>>,
+    /// 已经为哪一代搜索发布过流式部分结果（#22）。
+    partial: Option<u64>,
 }
 
 impl Default for FindModel {
@@ -101,6 +104,7 @@ impl Default for FindModel {
             cancel: Cancellation::default(),
             limit: MATCHES_LIMIT,
             searcher: None,
+            partial: None,
         }
     }
 }
@@ -189,6 +193,7 @@ impl FindModel {
         self.state = SearchState::Idle;
         self.error = None;
         self.searcher = None;
+        self.partial = None;
     }
 
     /// 按当前条件开始一次新搜索：取消上一次，编译查询。空文本或非法正则时清空匹配并返回 `None`。
@@ -236,6 +241,29 @@ impl FindModel {
         self.state = SearchState::Idle;
         self.error = error;
         self.searcher = None;
+        self.partial = None;
+    }
+
+    /// 流式查找（#22）：后台每扫完一块就把**新找到的**匹配交回界面，结果逐步出现，
+    /// 不必等整份文件扫完就能在已找到的结果之间跳转。代次不符或没有新匹配时返回 `false`。
+    ///
+    /// 一次搜索内第一次发布时丢掉上一次搜索遗留的匹配（[`FindModel::start_search`] 故意保留
+    /// 它们以免结果闪断），之后只追加。
+    pub fn publish_partial(&mut self, generation: u64, batch: &[Match]) -> bool {
+        if generation != self.generation || batch.is_empty() {
+            return false;
+        }
+        let mut matches = if self.partial == Some(generation) {
+            self.matches.as_ref().clone()
+        } else {
+            self.partial = Some(generation);
+            self.limit_exceeded = false;
+            self.current = None;
+            Vec::with_capacity(batch.len())
+        };
+        matches.extend_from_slice(batch);
+        self.matches = Arc::new(matches);
+        true
     }
 
     /// 后台报告进度；代次不符（已被新搜索取代）返回 `false`。
@@ -262,13 +290,17 @@ impl FindModel {
                 self.limit_exceeded = out.limit_exceeded;
                 self.current = None;
                 self.state = SearchState::Idle;
+                self.partial = None;
                 true
             }
             Err(_) => {
                 self.state = SearchState::Idle;
-                self.matches = Arc::new(Vec::new());
-                self.limit_exceeded = false;
-                self.current = None;
+                // 取消：保留已经流式发布的结果（#22：取消后已找到的结果仍可浏览）。
+                if self.partial.take() != Some(generation) {
+                    self.matches = Arc::new(Vec::new());
+                    self.limit_exceeded = false;
+                    self.current = None;
+                }
                 true
             }
         }
@@ -414,7 +446,7 @@ mod tests {
     fn run(m: &mut FindModel, doc: &str) {
         let rope = RopeText::from_text(doc);
         if let Some(job) = m.start_search() {
-            let out = job.run(&rope, &mut |_| {});
+            let out = job.run(&rope, &mut |_, _| {});
             assert!(m.finish(job.generation, out));
         }
     }
@@ -497,7 +529,7 @@ mod tests {
         let second = m.start_search().unwrap();
         // 上一次已被取消。
         assert!(first.cancel.check().is_err());
-        let out = first.run(&rope, &mut |_| {});
+        let out = first.run(&rope, &mut |_, _| {});
         assert!(out.is_err());
         assert!(!m.finish(first.generation, out));
         assert!(!m.progress(
@@ -508,7 +540,7 @@ mod tests {
                 total_bytes: 1
             }
         ));
-        let out = second.run(&rope, &mut |_| {});
+        let out = second.run(&rope, &mut |_, _| {});
         assert!(m.finish(second.generation, out));
         assert_eq!(m.count_label(), CountLabel::NoResults);
     }
