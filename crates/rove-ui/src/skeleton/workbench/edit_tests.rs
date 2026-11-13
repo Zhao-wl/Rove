@@ -273,6 +273,92 @@ fn csharp_edits_and_saves_reach_buffer_states(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn edits_during_save_stay_dirty_until_the_new_snapshot_is_saved(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let path = "Assets/A.cs";
+    let disk = fx.file(path, "class A\n{}\n");
+    let (view, cx) = fx.open(cx);
+    let code = open_file(&view, cx, path);
+    let document = active_doc(&view, cx);
+    let original_start = rove_base::Position {
+        line: Line(0),
+        column: rove_base::Utf8Column(0),
+    };
+    code.update(cx, |c, cx| {
+        c.set_selection(Selection::caret(original_start), None, cx)
+    });
+    cx.simulate_input("public ");
+    settle(cx);
+
+    let snapshot_a = shown_text(&code, cx);
+    let job = view.update(cx, |v, _| {
+        v.editing
+            .saves
+            .borrow_mut()
+            .begin_save(
+                document,
+                &rove_buffer::save::SaveRequest::default(),
+                &rove_buffer::save::SaveOptions::default(),
+                &mut v.shell.feedback,
+                Instant::now(),
+            )
+            .unwrap()
+    });
+
+    // 保持首个保存任务挂起，直到新编辑已同步到代码视图和导航。
+    code.update(cx, |c, cx| {
+        c.set_selection(Selection::caret(original_start), None, cx)
+    });
+    code.update(cx, |c, cx| c.type_text("// newer\n", None, cx));
+    settle(cx);
+    let snapshot_b = shown_text(&code, cx);
+    assert_ne!(snapshot_a, snapshot_b);
+    let result = job.run();
+    view.update(cx, |v, cx| v.finish_save(document, result, cx));
+    settle(cx);
+
+    assert_eq!(std::fs::read_to_string(&disk).unwrap(), snapshot_a);
+    assert_eq!(shown_text(&code, cx), snapshot_b);
+    assert!(active_tab(&view, cx, |_, tab| tab.dirty));
+    let state = view
+        .read_with(cx, |v, _| v.nav.router.buffers().get(path))
+        .unwrap();
+    assert_eq!(state.current_hash, None);
+    assert_eq!(state.version, code.read_with(cx, |c, _| c.version()));
+    assert_eq!(
+        state
+            .edits
+            .old_to_new_nearest(rove_base::Position {
+                line: Line(1),
+                ..original_start
+            })
+            .line,
+        Line(2)
+    );
+
+    view.update(cx, |v, cx| {
+        v.command("workbench.action.closeActiveEditor", cx)
+    });
+    assert!(view.read_with(cx, |v, _| v.open_document(document).is_some()));
+    assert!(view.read_with(cx, |v, _| v.shell.feedback.modal().is_some()));
+    let key = format!("{}{}", ids::KEY_CLOSE, document.0);
+    view.update(cx, |v, cx| {
+        v.save_feedback_action(&key, ids::ACTION_CANCEL, cx)
+    });
+
+    save_action(cx, ids::SAVE);
+    assert_eq!(std::fs::read_to_string(&disk).unwrap(), snapshot_b);
+    assert!(!active_tab(&view, cx, |_, tab| tab.dirty));
+    assert!(view.read_with(cx, |v, _| {
+        v.nav
+            .router
+            .buffers()
+            .get(path)
+            .is_some_and(|state| state.current_hash.is_some())
+    }));
+}
+
+#[gpui::test]
 fn ctrl_n_opens_an_editable_untitled_document(cx: &mut TestAppContext) {
     let fx = Fixture::new();
     let (view, cx) = fx.open(cx);
