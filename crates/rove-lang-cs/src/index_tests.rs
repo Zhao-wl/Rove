@@ -904,11 +904,21 @@ namespace Rove.Fixture
         protected internal event System.Action? Changed;
         public static Widget<T> operator +(Widget<T> a, Widget<T> b) => a;
         internal void Hidden() { }
+        /// <summary>Renames it.</summary>
+        public void Rename(string label) { }
         VERSION_2_MEMBER
     }
+    /// <summary>Tools.</summary>
+    public static class Tools
+    {
+        /// <summary>Scales it.</summary>
+        public static int Scale(this Widget<object> w, int factor, string label) => factor;
+    }
+    /// <summary>A callback.</summary>
+    public delegate void Callback(int code, string reason);
 }
 "#;
-    const A: &str = "using System.Collections.Generic;\nusing Rove.Fixture;\nclass A { void M() { var l = new List<int>(); l.Add(1); var d = new Dictionary<string, int>(); var w = new Widget<object>(); int c = 0; w.Make(ref c); var o = new Widget<object>.Options(); o.Size = 1; } }\n";
+    const A: &str = "using System.Collections.Generic;\nusing Rove.Fixture;\nclass A { void M() { var l = new List<int>(); l.Add(1); var d = new Dictionary<string, int>(); var w = new Widget<object>(); int c = 0; w.Make(ref c); var o = new Widget<object>.Options(); o.Size = 1; w.Make(count: ref c); w.Scale(factor: 2, label: \"x\"); w.Rename(label: \"y\"); Callback cb = null; cb(code: 1, reason: \"r\"); l.Insert(index: 0, item: 3); } }\n";
     const B: &str = "using Rove.Fixture;\nusing System;\nclass B { void M() { var w = new Widget<object>(); w.V2Only(); var l = new System.Collections.Generic.List<int>(); l.Add(2); } }\n";
 
     let fixture = Fixture::new();
@@ -1140,6 +1150,63 @@ namespace Rove.Fixture
     let (name, above) = line_of(&defs[0]);
     assert_eq!(name, "Size");
     assert_eq!(above, "/// <summary>Size.</summary>");
+
+    // 命名实参引用的外部方法参数（#126）：位置落在视图里所属成员签名行上的参数名。
+    let line_at = |location: &MetadataLocation| -> String {
+        let text = index.metadata_view_text(location.view).unwrap();
+        text.lines().nth(location.line as usize).unwrap().to_owned()
+    };
+    let parameter = |token: &str,
+                     expect_name: &str,
+                     expect_line: &str,
+                     views: usize|
+     -> (u32, MetadataLocation) {
+        let symbol = at("Assets/A.cs", A, token);
+        let defs = index.metadata_definitions(symbol);
+        assert_eq!(defs.len(), views, "{token}: {defs:?}");
+        for location in &defs {
+            assert_eq!(line_of(location).0, expect_name, "{token}");
+            let line = line_at(location);
+            assert!(line.trim().starts_with(expect_line), "{token}: {line}");
+        }
+        (symbol, defs[0])
+    };
+    // 普通方法的参数；方法本身与它的参数在同一行、不同列。Widget 有 1.0 与 2.0 两份视图。
+    let (count, count_at) = parameter("count: ref c", "count", "public T Make(ref int count,", 2);
+    let make_at = index.metadata_definitions(make);
+    assert_eq!(count_at.view, make_at[0].view);
+    assert_eq!(count_at.line, make_at[0].line);
+    assert!(count_at.col > make_at[0].col);
+    assert_ne!(count, make);
+    // 扩展方法以实例形式调用：序号要算上 this 参数。
+    parameter(
+        "factor: 2",
+        "factor",
+        "public static int Scale(this Widget<object> w,",
+        1,
+    );
+    // 同名同类型、但属于不同方法的参数不再共用一个后备键。
+    let (scale_label, _) = parameter(
+        "label: \"x\"",
+        "label",
+        "public static int Scale(this Widget<object> w,",
+        1,
+    );
+    let (rename_label, _) = parameter(
+        "label: \"y\"",
+        "label",
+        "public void Rename(string label);",
+        2,
+    );
+    assert_ne!(scale_label, rename_label);
+    // 委托的参数落在委托声明行上；泛型 BCL 类型的方法参数按原始定义取键。
+    parameter(
+        "code: 1",
+        "code",
+        "public delegate void Callback(int code,",
+        1,
+    );
+    parameter("index: 0", "index", "public void Insert(int index,", 1);
 
     // 解锁后 B 的同一个编译里同时引用 2.0 与 1.0 的拷贝（同名不同版本）：Roslyn 在编译内只取其一，
     // 索引照常完成，视图没有语法错误。

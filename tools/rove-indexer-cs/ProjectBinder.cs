@@ -144,6 +144,14 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
     /// 类型链上的每一层也放进符号表，视图里的嵌套类型与成员才能沿容器找到所在的视图。
     void NoteExternal(ISymbol s)
     {
+        // 外部成员的参数（命名实参）：顺带把所属成员放进符号表，视图里才会写出它的签名行与参数位置（#126）。
+        if (s is IParameterSymbol p)
+        {
+            var reduced = p.ContainingSymbol is IMethodSymbol { ReducedFrom: { } r } ? r : p.ContainingSymbol;
+            if (reduced?.OriginalDefinition is { } declaring
+                && declaring.Kind is SymbolKind.Method or SymbolKind.Property) GetSym(declaring);
+            return;
+        }
         if (s.Kind is not (SymbolKind.NamedType or SymbolKind.Method or SymbolKind.Property or SymbolKind.Field or SymbolKind.Event)) return;
         var type = (s as INamedTypeSymbol ?? s.ContainingType)?.OriginalDefinition;
         if (type == null || type.TypeKind == TypeKind.Error) return;
@@ -188,22 +196,36 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
         }
 
         var fallback = $"?{s.Kind}:{s.ToDisplayString()}";
-        // 依赖项目以元数据镜像提供，其中参数没有源码位置。按"所属成员 + 序号"记下，写索引时回指源码声明。
-        if (s is IParameterSymbol p && p.ContainingSymbol is { } owner)
+        // 没有源码位置的参数（命名实参指向的方法参数）按"所属成员 + 序号"取键。
+        if (s is IParameterSymbol p && OwnerOf(p) is { } owner)
         {
-            int ordinal = p.Ordinal;
-            // 扩展方法以实例形式调用时，参数属于约简后的方法，序号不含 this
-            if (owner is IMethodSymbol { ReducedFrom: { } reducedFrom }) { owner = reducedFrom; ordinal++; }
-            owner = owner.OriginalDefinition;
-            if (owner.ContainingAssembly?.Name is { } asm && ctx.ProjectAssemblies.Contains(asm)
-                && owner.GetDocumentationCommentId() is { } ownerId)
+            // 依赖项目以元数据镜像提供，参数在本次索引里另有源码声明：延迟键，写索引时回指那个声明。
+            if (ctx.ProjectAssemblies.Contains(owner.assembly))
             {
                 parameterFallback = fallback;
-                return SymbolKey.Global("\u0001" + asm + "|" + ownerId + "#" + ordinal);
+                return SymbolKey.Global("\u0001" + owner.assembly + "|" + owner.ownerId + "#" + owner.ordinal);
             }
+            // 外部程序集的参数：键直接对应元数据视图里签名行上的参数名（#126）。
+            return SymbolKey.Global(ParameterKey(owner.assembly, owner.ownerId, owner.ordinal));
         }
         return SymbolKey.Global(fallback);
     }
+
+    /// 参数所属成员的程序集名、文档注释 ID 与参数在其中的序号；取不到文档注释 ID（lambda、局部函数）时为 null。
+    internal static (string assembly, string ownerId, int ordinal)? OwnerOf(IParameterSymbol p)
+    {
+        if (p.ContainingSymbol is not { } owner) return null;
+        int ordinal = p.Ordinal;
+        // 扩展方法以实例形式调用时，参数属于约简后的方法，序号不含 this
+        if (owner is IMethodSymbol { ReducedFrom: { } reducedFrom }) { owner = reducedFrom; ordinal++; }
+        owner = owner.OriginalDefinition;
+        return owner.ContainingAssembly?.Name is { } asm && owner.GetDocumentationCommentId() is { } ownerId
+            ? (asm, ownerId, ordinal) : null;
+    }
+
+    /// 外部参数的全局键。文档注释 ID 里不会出现 '#'，所以不会和成员键相撞。
+    internal static string ParameterKey(string assembly, string ownerId, int ordinal) =>
+        assembly + "|" + ownerId + "#" + ordinal;
 
     /// 不生效的预处理区域。DisabledTextTrivia 只出现在预处理指令所在的前导 trivia 里，
     /// 所以沿指令链找，不必遍历整棵树的 trivia。
