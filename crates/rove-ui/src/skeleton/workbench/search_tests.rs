@@ -261,3 +261,45 @@ fn toggles_remove_and_the_unity_exclusion_empty_state(cx: &mut TestAppContext) {
     assert!(rows(&view, cx).is_empty());
     assert_eq!(search.read_with(cx, |s, _| s.state().clone()), State::Idle);
 }
+
+// #52：搜索视图里的 `Ctrl+Shift+L`（`addCursorsAtSearchResults`）：打开聚焦的那个文件，
+// 并在它的每一处匹配上放一个光标。
+#[gpui::test]
+fn add_cursors_at_search_results_opens_the_file_with_one_cursor_per_match(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (view, cx) = fixture.open(cx);
+    find_in_files(&view, "Move", cx);
+    // F4 在匹配之间走，直到聚焦到有两处匹配的 Player.cs。
+    for _ in 0..6 {
+        if active(&view, cx).map(|(name, _)| name).as_deref() == Some("src/Player.cs") {
+            break;
+        }
+        cx.simulate_keystrokes("f4");
+        refresh(cx);
+        refresh(cx);
+    }
+    assert_eq!(
+        active(&view, cx).map(|(name, _)| name).as_deref(),
+        Some("src/Player.cs")
+    );
+    let search = search_view(&view, cx);
+    cx.update(|window, cx| {
+        search.update(cx, |s, cx| {
+            s.command(crate::search::registry::ADD_CURSORS, window, cx)
+        })
+    });
+    refresh(cx);
+    refresh(cx);
+    assert_eq!(
+        active(&view, cx).map(|(name, _)| name).as_deref(),
+        Some("src/Player.cs")
+    );
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    let selections = code.read_with(cx, |c, _| c.selections());
+    assert_eq!(selections.len(), 2, "Player.cs 的两处 Move 各一个光标");
+    assert!(code.read_with(cx, |c, _| c.has_multiple_selections()));
+    for s in &selections {
+        assert_eq!(s.start().line, s.end().line);
+        assert_eq!(s.end().column.0 - s.start().column.0, 4, "选中的是 Move");
+    }
+}

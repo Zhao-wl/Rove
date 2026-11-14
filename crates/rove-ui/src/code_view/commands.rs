@@ -502,6 +502,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("default:type", "codeView.command.defaultType", "键入"),
 ];
 
+/// 全部命令：代码视图自己的加上 #52 的多光标 / 列选择 / 行操作。
+pub fn all_commands() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
+    COMMANDS.iter().chain(super::multicursor::COMMANDS)
+}
+
 /// #20 的界面字符串：只读提示（UX_SPEC §3.4、§6：先说发生了什么，再说可以怎么做）与按级别关闭的功能名。
 pub const STRINGS: &[(&str, &str)] = &[
     (
@@ -549,7 +554,7 @@ pub const CATEGORY_KEY: &str = "codeView.category";
 
 /// 登记命令（已登记的 ID 跳过，便于 #14 先行登记全量 VS Code 命令）。
 pub fn register(registry: &mut CommandRegistry) -> Result<()> {
-    for (id, title, _) in COMMANDS {
+    for (id, title, _) in all_commands() {
         if registry.get(id).is_some() {
             continue;
         }
@@ -569,7 +574,7 @@ pub fn register_strings(table: &mut StringTable) -> Result<()> {
     if table.get(CATEGORY_KEY).is_none() {
         table.register(CATEGORY_KEY, Arc::from("编辑器"))?;
     }
-    for (_, key, zh) in COMMANDS {
+    for (_, key, zh) in all_commands() {
         if table.get(key).is_none() {
             table.register(*key, Arc::from(*zh))?;
         }
@@ -720,6 +725,44 @@ command_actions! {
     EditToggleOvertypeInsertMode => "editor.action.toggleOvertypeInsertMode",
     EditIndentationToSpaces => "editor.action.indentationToSpaces",
     EditIndentationToTabs => "editor.action.indentationToTabs",
+    // #52：多光标。
+    MultiInsertCursorAbove => "editor.action.insertCursorAbove",
+    MultiInsertCursorBelow => "editor.action.insertCursorBelow",
+    MultiInsertCursorAtEndOfEachLineSelected => "editor.action.insertCursorAtEndOfEachLineSelected",
+    MultiRemoveSecondaryCursors => "removeSecondaryCursors",
+    MultiAddSelectionToNextFindMatch => "editor.action.addSelectionToNextFindMatch",
+    MultiAddSelectionToPreviousFindMatch => "editor.action.addSelectionToPreviousFindMatch",
+    MultiMoveSelectionToNextFindMatch => "editor.action.moveSelectionToNextFindMatch",
+    MultiMoveSelectionToPreviousFindMatch => "editor.action.moveSelectionToPreviousFindMatch",
+    MultiSelectHighlights => "editor.action.selectHighlights",
+    MultiChangeAll => "editor.action.changeAll",
+    // #52：列选择。
+    MultiColumnSelectUp => "cursorColumnSelectUp",
+    MultiColumnSelectDown => "cursorColumnSelectDown",
+    MultiColumnSelectLeft => "cursorColumnSelectLeft",
+    MultiColumnSelectRight => "cursorColumnSelectRight",
+    MultiColumnSelectPageUp => "cursorColumnSelectPageUp",
+    MultiColumnSelectPageDown => "cursorColumnSelectPageDown",
+    // #52：行操作。
+    LineCopyUp => "editor.action.copyLinesUpAction",
+    LineCopyDown => "editor.action.copyLinesDownAction",
+    LineMoveUp => "editor.action.moveLinesUpAction",
+    LineMoveDown => "editor.action.moveLinesDownAction",
+    LineDelete => "editor.action.deleteLines",
+    LineTrimTrailingWhitespace => "editor.action.trimTrailingWhitespace",
+    LineDuplicateSelection => "editor.action.duplicateSelection",
+    LineJoinLines => "editor.action.joinLines",
+    LineSortAscending => "editor.action.sortLinesAscending",
+    LineSortDescending => "editor.action.sortLinesDescending",
+    LineTranspose => "editor.action.transpose",
+    LineTransposeLetters => "editor.action.transposeLetters",
+    LineTransformToUppercase => "editor.action.transformToUppercase",
+    LineTransformToLowercase => "editor.action.transformToLowercase",
+    LineTransformToTitlecase => "editor.action.transformToTitlecase",
+    LineTransformToCamelcase => "editor.action.transformToCamelcase",
+    LineTransformToPascalcase => "editor.action.transformToPascalcase",
+    LineTransformToSnakecase => "editor.action.transformToSnakecase",
+    LineTransformToKebabcase => "editor.action.transformToKebabcase",
 }
 
 /// 键位上下文名，以及聚焦时发布的 VS Code 上下文键（只读代码视图）。
@@ -747,7 +790,7 @@ mod tests {
         register(&mut r).unwrap();
         let mut t = StringTable::default();
         register_strings(&mut t).unwrap();
-        for (id, key, _) in COMMANDS {
+        for (id, key, _) in all_commands() {
             assert!(
                 action_for(id).is_some() || TYPE_COMMANDS.contains(id),
                 "{id} 缺少 action"

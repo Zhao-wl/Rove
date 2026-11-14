@@ -18,6 +18,7 @@
 //! | 语法着色（#20）：快照与变化行 | [`CodeView::set_syntax`]、[`highlight`] |
 //! | 折叠（#20）：状态读写、区间、文档行 ↔ 屏幕行映射 | [`CodeView::folds`]、[`CodeView::set_folds`]、[`CodeViewEvent::FoldsChanged`]、[`folding::FoldMap`] |
 //! | 括号匹配 / 同名高亮（#20） | [`CodeView::bracket_match`]、[`CodeView::has_word_highlights`] |
+//! | 多光标与行操作（#52） | [`CodeView::selections`]、[`CodeView::set_selections`]、[`multicursor`]、[`lineops`] |
 //! | 编辑与输入法（#47）：编辑入口、编辑事件、组合串 | [`CodeView::set_edit_host`]、[`edit::EditHost`]、[`CodeViewEvent::Edited`]、[`CodeView::apply_edits`]、[`CodeView::type_text`]、[`CodeView::composition`] |
 //! | 只读与文档级别（#20） | [`CodeView::set_read_only`]、[`CodeViewEvent::EditBlocked`]、[`CodeView::set_document_level`]、[`CodeView::disabled_features`] |
 //!
@@ -40,6 +41,9 @@ mod element;
 pub mod folding;
 pub mod guides;
 pub mod highlight;
+// #52：多光标、列选择与行操作。
+pub mod lineops;
+pub mod multicursor;
 pub mod occurrences;
 pub mod options;
 pub mod scroll;
@@ -51,6 +55,7 @@ pub use decorations::{
     Overlay, TextStyle,
 };
 pub use edit::{Composition, EditHost, EditNotice, TextEdited};
+pub use multicursor::{ColumnSelect, MultiCursorModifier};
 pub use scroll::{Reveal, ScrollPosition};
 pub use selection::Selection;
 pub use view::{

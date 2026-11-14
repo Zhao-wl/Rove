@@ -280,6 +280,14 @@ pub(crate) enum Drag {
         granularity: Granularity,
         origin: (Position, Position),
     },
+    /// #52：按住多光标修饰键拖动添加的那一段选区（它是主选区，`origin` 是按下时的位置）。
+    AddedText {
+        origin: Position,
+    },
+    /// #52：`Shift+Alt+拖动`的列选择。
+    Column {
+        origin: Position,
+    },
     VThumb {
         grab: f64,
     },
@@ -371,6 +379,14 @@ pub struct CodeView {
     pub(crate) selection_anchor: Option<Position>,
     /// #47：上一帧插入符的窗口坐标；变化时让输入法候选框重新定位。
     pub(crate) last_caret: Option<Bounds<Pixels>>,
+    /// #52：次光标（主选区仍然是 `cursor`）。
+    pub(crate) secondary: Vec<Cursor>,
+    /// #52：列选择状态（`Shift+Alt+拖动`与 `cursorColumnSelect*`）。
+    pub(crate) column_select: Option<super::multicursor::ColumnSelect>,
+    /// #52：`Ctrl+D` 会话（在找什么、是否整词）。
+    pub(crate) match_session: Option<super::multicursor::MatchSession>,
+    /// #52：查找条可见时它的当前选项（`Ctrl+D` 是否区分大小写取这里）。
+    pub(crate) find_match_options: Option<crate::find::engine::FindOptions>,
 }
 
 impl Focusable for CodeView {
@@ -390,6 +406,14 @@ impl Render for CodeView {
         if !self.cursor.selection.is_empty() {
             context.add("editorHasSelection");
         }
+        // #52：次光标存在时 `escape` / `shift+escape` 才解析成 `removeSecondaryCursors`。
+        if self.has_multiple_selections() {
+            context.add(super::multicursor::HAS_MULTIPLE_SELECTIONS_KEY);
+        }
+        // #52：`editor.columnSelection` 为真时 `shift+方向键` 直接进入列选择。
+        if self.options.column_selection {
+            context.add(super::multicursor::COLUMN_SELECTION_KEY);
+        }
         if self.is_read_only() {
             context.add(super::commands::READONLY_CONTEXT_KEY);
         }
@@ -408,7 +432,11 @@ impl Render for CodeView {
             .size_full()
             // #40：按下 / 松开 Ctrl 时在指针处重新判定 `Ctrl+悬停`（不动鼠标也出现 / 收起下划线）。
             .on_modifiers_changed(cx.listener(|v, e: &gpui::ModifiersChangedEvent, _, cx| {
-                v.modifiers_changed(e.modifiers.control, cx)
+                // #52：#40 的跳转修饰键取 `editor.multiCursorModifier`（与加光标互换）。
+                let link = v
+                    .multi_cursor_modifier()
+                    .goes_to_definition(e.modifiers.control, e.modifiers.alt);
+                v.modifiers_changed(link, cx)
             }))
             // #47：可打印字符经输入法接口（`EntityInputHandler`）到达；回车没有键位，在这里换行。
             // 只读时回车同样在光标处提示原因。
@@ -579,6 +607,10 @@ impl CodeView {
             overtype: false,
             selection_anchor: None,
             last_caret: None,
+            secondary: Vec::new(),
+            column_select: None,
+            match_session: None,
+            find_match_options: None,
         };
         view.apply_feature_options();
         view
@@ -597,16 +629,26 @@ impl CodeView {
         self.text = text;
         self.lines.clear();
         self.content_width = 0.0;
+        // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
+        self.match_session = None;
+        self.column_select = None;
         if keep_view_state {
             // 同一文档的新快照：装饰重算前沿用旧结果，折叠保留（区间在后台按新文本重算）。
             self.decorations.mark_all_stale();
             let s = self.clamp_selection(self.cursor.selection);
             self.cursor.set(s);
+            let secondary: Vec<Selection> = self
+                .secondary
+                .iter()
+                .map(|c| self.clamp_selection(c.selection))
+                .collect();
+            self.secondary = secondary.into_iter().map(Cursor::new).collect();
         } else {
             self.decorations.reset();
             self.scroll = ScrollPosition::default();
             self.animation = None;
             self.cursor.set(Selection::default());
+            self.secondary.clear();
             self.doc_zones = ViewZones::default();
             self.syntax.borrow_mut().current = None;
             self.folding.clear();
@@ -961,6 +1003,10 @@ impl CodeView {
         let s = self.clamp_selection(selection);
         // 光标落进折叠：展开（VS Code 行为）。
         self.unfold_to_reveal(s.active.line.0, cx);
+        // #52：显式设置单个选区意味着回到单光标。
+        self.secondary.clear();
+        self.column_select = None;
+        self.match_session = None;
         self.cursor.set(s);
         if let Some(r) = reveal {
             self.reveal_position(s.active, r, cx);
@@ -972,7 +1018,7 @@ impl CodeView {
         Selection::new(self.clamp_position(s.anchor), self.clamp_position(s.active))
     }
 
-    fn clamp_position(&self, p: Position) -> Position {
+    pub(crate) fn clamp_position(&self, p: Position) -> Position {
         let Some(text) = self.text.as_deref() else {
             return Position::default();
         };
@@ -1032,7 +1078,7 @@ impl CodeView {
     }
 
     /// 文档使用的换行符（取第一行的终止符；单行文件为 `\n`）。
-    fn document_eol(&self) -> String {
+    pub(crate) fn document_eol(&self) -> String {
         let Some(text) = self.text.as_deref() else {
             return "\n".into();
         };
@@ -1243,6 +1289,10 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // #52：多光标、列选择与行操作。
+        if let Some(handled) = self.execute_multicursor(id, window, cx) {
+            return handled;
+        }
         // #47：编辑类命令。
         if let Some(handled) = self.execute_edit(id, window, cx) {
             return handled;
@@ -1283,9 +1333,21 @@ impl CodeView {
             };
             let tab = self.options.tab_size;
             let before = self.cursor.selection.active.line.0;
-            self.cursor
-                .move_caret(&TextLines(&*text), m, extend, tab, page);
+            // #52：次光标各自移动，移动后按设置合并。
+            let lines = TextLines(&*text);
+            for c in &mut self.secondary {
+                c.move_caret(&lines, m, extend, tab, page);
+            }
+            self.cursor.move_caret(&lines, m, extend, tab, page);
             self.skip_folded_lines(before);
+            // 只有真的合并掉了光标才整体重建（重建会丢掉各光标记忆的可见列）。
+            if self.has_multiple_selections() {
+                let merged = self.normalize_selections(self.selections());
+                if merged.len() != self.secondary.len() + 1 {
+                    self.apply_selections(merged);
+                }
+            }
+            self.column_select = None;
             self.reveal_caret(cx);
             self.selection_changed(SelectionSource::Keyboard, cx);
             return true;
@@ -1306,18 +1368,25 @@ impl CodeView {
             }
             "editor.action.selectAll" => {
                 if let Some(text) = self.text.clone() {
+                    // #52：全选回到单光标。
+                    self.secondary.clear();
+                    self.column_select = None;
                     self.cursor.select_all(&TextLines(&*text));
                     self.selection_changed(SelectionSource::Keyboard, cx);
                 }
             }
             "expandLineSelection" => {
                 if let Some(text) = self.text.clone() {
+                    self.secondary.clear();
+                    self.column_select = None;
                     self.cursor.expand_line_selection(&TextLines(&*text));
                     self.reveal_caret(cx);
                     self.selection_changed(SelectionSource::Keyboard, cx);
                 }
             }
             "cancelSelection" => {
+                self.secondary.clear();
+                self.column_select = None;
                 self.cursor.cancel_selection();
                 self.selection_changed(SelectionSource::Keyboard, cx);
             }
@@ -1407,6 +1476,10 @@ impl CodeView {
         } else {
             unit
         };
+        // #52：普通点击回到单光标。
+        self.secondary.clear();
+        self.column_select = None;
+        self.match_session = None;
         self.cursor.set(sel);
         self.drag = Some(Drag::Text {
             granularity,
@@ -1416,6 +1489,26 @@ impl CodeView {
             self.reveal_caret(cx);
         }
         self.selection_changed(SelectionSource::Mouse, cx);
+    }
+
+    /// #52：按住多光标修饰键按下（加光标；拖动则添加一段选区）。
+    pub(crate) fn mouse_down_add_cursor(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
+        self.commit_composition(None, cx);
+        let Some(p) = self.position_for_point(point) else {
+            return;
+        };
+        self.add_cursor_at(p, cx);
+        self.drag = Some(Drag::AddedText { origin: p });
+    }
+
+    /// #52：`Shift+Alt+拖动`按下：开始列选择。
+    pub(crate) fn mouse_down_column(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
+        self.commit_composition(None, cx);
+        let Some(p) = self.position_for_point(point) else {
+            return;
+        };
+        self.column_select_to(p, p, cx);
+        self.drag = Some(Drag::Column { origin: p });
     }
 
     /// #40：`Ctrl+点击`（多光标修饰键为 Alt 时 VS Code 的“转到定义”）：插入符移到点击处，再交给宿主跳转。
@@ -1428,6 +1521,10 @@ impl CodeView {
         let Some(p) = self.position_for_point(point) else {
             return;
         };
+        // #52：跳转回到单光标。
+        self.secondary.clear();
+        self.column_select = None;
+        self.match_session = None;
         self.cursor.set(Selection::caret(p));
         self.drag = None;
         self.selection_changed(SelectionSource::Mouse, cx);
@@ -1523,6 +1620,10 @@ impl CodeView {
         } else {
             Selection::new(unit.0, unit.1)
         };
+        // #52：行号栏上的整行选择回到单光标。
+        self.secondary.clear();
+        self.column_select = None;
+        self.match_session = None;
         self.cursor.set(sel);
         self.drag = Some(Drag::Text {
             granularity: Granularity::Line,
@@ -1536,6 +1637,26 @@ impl CodeView {
     }
 
     pub(crate) fn mouse_drag_text(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
+        // #52：列选择拖动与“加一段选区”的拖动。
+        match self.drag {
+            Some(Drag::Column { origin }) => {
+                if let Some(p) = self.position_for_point(point) {
+                    self.column_select_to(origin, p, cx);
+                }
+                return;
+            }
+            Some(Drag::AddedText { origin }) => {
+                if let Some(p) = self.position_for_point(point) {
+                    let mut items = self.selections();
+                    items[0] = Selection::new(origin, p);
+                    let merged = self.normalize_selections(items);
+                    self.apply_selections(merged);
+                    self.selection_changed(SelectionSource::Mouse, cx);
+                }
+                return;
+            }
+            _ => {}
+        }
         let Some(Drag::Text {
             granularity,
             origin,
@@ -2391,7 +2512,7 @@ impl CodeView {
     }
 
     /// 目标行在折叠里：展开它（跳转、选区接口）。
-    fn unfold_to_reveal(&mut self, line: u64, cx: &mut Context<Self>) {
+    pub(crate) fn unfold_to_reveal(&mut self, line: u64, cx: &mut Context<Self>) {
         if self.folding.reveal(line) {
             self.folds_changed(cx);
         }

@@ -1557,3 +1557,57 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 编辑三个文件 → 意外退出 → 重启后标签顺序与活动标签保持、内容回来、状态栏提示且不弹模态 / 通知；正常退出后不提示；
 `files.hotExit` 三种取值的关闭确认；保存与关闭后备份消失；备份期间文件被删除后恢复成“已删除”标签）。
 
+
+## 44. 多光标、列选择与行操作（#52）
+
+位置：`crates/rove-ui/src/code_view/multicursor.rs`（手势、列选择、按匹配添加选区、命令分发）与
+`crates/rove-ui/src/code_view/lineops.rs`（行操作的事务），`code_view/mod.rs` 只追加两行 `pub mod`；
+查找条与搜索视图各追加一条命令（`find/registry.rs`、`search/registry.rs`、`skeleton/workbench/search_host.rs`）。
+语义一律复用已有的层，不另写一套：多选区的合并与上限是 #46 的 `Selections::normalize`，匹配查找是 #21 的
+`find::engine::{Searcher, find_next, search_all}` 与 `editor.wordSeparators`，行尾空白是 #49 的
+`rove_buffer::save::transforms::trim_trailing_whitespace`，列对齐是 #19 的 `DisplayLine`。
+不修改 #1 与 #46 的契约；GPUI 类型只在 `rove-ui`。
+
+| 文件 | 内容 | GPUI |
+|---|---|---|
+| `code_view/multicursor.rs` | `MultiCursorModifier`（`editor.multiCursorModifier`，加光标与 #40 跳转手势的**唯一**来源）、`ColumnSelect`（VS Code `columnSelection.ts` 的移植）、`MatchSession`（`Ctrl+D` 在找什么）、本 issue 的 35 条命令表与分发、`CodeView::{selections, set_selections, has_multiple_selections, set_find_match_options}` | 是（挂在 `CodeView` 上） |
+| `code_view/lineops.rs` | 行操作 → 一个多区间 `Transaction`：移动 / 复制 / 删除行、`duplicateSelection`、`joinLines`、排序、`transpose` / `transposeLetters`、七种大小写与命名风格、尾随空白。移动 / 复制 / 排序用 `Transaction::verbatim()`，每行连同**自己的**行终止符一起搬动 | 否 |
+| `code_view/{view,element}.rs` | 追加：次光标 `secondary: Vec<Cursor>`、列选择与 `Ctrl+D` 会话状态、上下文键 `editorHasMultipleSelections` / `editorColumnSelection`、方向键移动全部光标、`Alt+点击` / `Shift+Alt+拖动`的路由、每个选区与每个插入符的绘制 | 是 |
+| `code_view/edit.rs` | 追加：`run_edit` 把**全部**选区写进会话、回读全部选区；`enter`、`deleteLeft`、`deleteAll*`、`lineBreakInsert`、`insertLine*` 改成逐选区计算（多光标下仍是一个事务、一次撤销） | 是 |
+| `code_view/{options,colors,commands}.rs` | 追加：`editor.multiCursor{Modifier,MergeOverlapping,Limit,Paste}` / `editor.columnSelection` 的登记与读取；`editorMultiCursor.{primary,secondary}.{foreground,background}`；命令、标题字符串与 GPUI action | 否 / 仅 action |
+
+**修饰键的唯一来源**：`editor.multiCursorModifier` 默认 `alt` 时 `Alt+点击`加光标、`Ctrl+点击`转到定义；设为 `ctrlCmd`
+时两者互换。`element.rs` 的鼠标路由与 `on_modifiers_changed`（#40 的 `Ctrl+悬停`下划线与预览）都调用
+`MultiCursorModifier::{adds_cursor, goes_to_definition}`，两边不会读出不同的设置。`Shift+Alt+拖动`始终是列选择，与这个设置无关。
+
+**列选择**：`ColumnSelect{from_line, from_visual, to_line, to_visual}`，展开成每行一个选区；`editor.columnSelection`
+为真时发布 `editorColumnSelection`，#14 的默认键位表把 `shift+方向键` 解析成 `cursorColumnSelect*`。列换算一律走
+`DisplayLine`（Tab 到制表位、全角两列），**不按字节数**。取舍：超长行在 `editor.stopRenderingLineAfter` 之后没有渲染
+结果可依据，`DisplayLine` 按“每字节一列”外推、结果再对齐到字符边界，与 VS Code“限制在已渲染范围内”的做法一致。
+
+**按匹配添加选区**：`Ctrl+D` 第一次选中光标处的单词（整词、区分大小写），之后每次把下一处匹配加成**新的主选区**；
+到文件末尾后循环，全部选中后再按因为合并而不再增加。`Ctrl+K Ctrl+D` 用移动代替新增。`Ctrl+Shift+L` / `Ctrl+F2`
+一次选中本文件所有出现。区分大小写等选项在查找条可见时取它的当前状态（`FindHost` 经
+`CodeView::set_find_match_options` 推过来），否则按 VS Code 的 `Ctrl+D` 用区分大小写。`Alt+Enter`
+（`editor.action.selectAllMatches`，#21 留给本 issue）把查找条的匹配列表变成多光标；搜索视图的 `Ctrl+Shift+L`
+（`addCursorsAtSearchResults`）发 `SearchViewEvent::AddCursors`，宿主打开该文件后把它的全部匹配写成多选区。
+
+**绘制与性能**：一批光标是同一组可缓存的装饰——每帧只为**视口里**的选区与插入符各画一个矩形（按行查找已有的
+`frame.lines`），光标数量不进入布局与整形。主光标用 `editorMultiCursor.primary.foreground`，次光标用 `secondary.*`
+（两者默认都派生自 `editorCursor.*`）。
+
+验证：`cargo test -p rove-ui --test code_view_multicursor`（真实 GPUI 窗口：`Alt+点击`加 / 删光标与 `Alt+拖动`、
+`Ctrl+Alt+↑↓`、`Shift+Alt+I`、`escape` 经键位解析走 `removeSecondaryCursors`、`multiCursorModifier` 两种取值下加光标
+与转到定义**同时**互换、`Ctrl+D` 连续添加 / 末尾循环 / `Ctrl+K Ctrl+D` 跳过、`Ctrl+Shift+L` 与 `Ctrl+F2`、列选择命令
+在 Tab / 全角 / 长短不一的行上的对齐与 `Shift+Alt+拖动`、`editor.columnSelection` 下的 `shift+方向键`、19 条行操作逐条
+一次撤销、首行上移 / 末行下移 / 跨行选区 / 多光标、混合换行符的字节级比对、10 个光标输入一次撤销、
+`multiCursorPaste` 两种取值、`multiCursorLimit` 截断、只读拒绝、1000 个光标的每帧 CPU 对比）、
+`cargo test -p rove-ui multicursor`（修饰键互换、列选择展开与跳过短行）、`cargo test -p rove-ui lineops`
+（每条行操作的文本结果与混合换行符、VS Code 的七种大小写变换）、`cargo test -p rove-ui find_tests`
+（查找条可见时 `alt+enter` 把全部匹配变成多光标）、`cargo test -p rove-ui search_tests`
+（搜索视图里的 `Ctrl+Shift+L`：打开文件并在每一处匹配上放一个光标）。
+
+与 VS Code 的差异（有意为之）：① `editor.action.trimTrailingWhitespace` 不读
+`files.trimTrailingWhitespaceInRegexAndStrings`（默认值 `true` 下行为相同，为 `false` 时本命令仍然会去掉字符串 /
+正则里的行尾空白；保存时的入口不受影响）；② 光标在单行上时 `sortLines*` 排序整个文件，但**末尾那个空行不参与**
+（VS Code 会把它排到最前面，留下一个开头的空行）。

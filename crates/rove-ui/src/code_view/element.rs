@@ -376,6 +376,8 @@ impl CodeView {
         let text = lay.text;
         let left = text.origin.x - px(self.scroll.x as f32);
         let sel = self.cursor.selection;
+        // #52：次光标与主选区一起画（主选区在下标 0）。
+        let selections = self.selections();
         // #47：组合中插入符在组合串里（组合行是内嵌了组合串的显示条目）。
         let composing = self.composition_columns();
         let comp_line = self.composition.as_ref().map(|c| c.start.line.0);
@@ -457,12 +459,15 @@ impl CodeView {
                     if o.guides_indentation {
                         self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
                     }
-                    // 选区。
-                    if !sel.is_empty()
-                        && composing.is_none()
-                        && l.line >= sel.start().line.0
-                        && l.line <= sel.end().line.0
-                    {
+                    // 选区（#52：主选区与每个次选区各画一次）。
+                    for sel in &selections {
+                        if sel.is_empty()
+                            || composing.is_some()
+                            || l.line < sel.start().line.0
+                            || l.line > sel.end().line.0
+                        {
+                            continue;
+                        }
                         let a = if l.line == sel.start().line.0 {
                             entry.display.x_for_source(&xs, sel.start().column.0 as u32)
                         } else {
@@ -577,54 +582,69 @@ impl CodeView {
                 }
             });
             // 插入符（组合期间不闪烁；改写模式用 `editor.overtypeCursorStyle`）。
+            // #52：主光标 `editorMultiCursor.primary.foreground`，次光标 `secondary.*`；
+            // 一批光标是同一组可缓存的装饰，这里只为**可见行**上的光标画一个矩形。
             if frame.focused && (self.caret_visible || composing.is_some()) {
-                if let Some(l) = frame.lines.iter().find(|l| l.line == caret_line) {
-                    if let (Some(entry), Some(xs)) = (&l.entry, self.line_xs(l)) {
-                        let column = composing
-                            .as_ref()
-                            .map_or(sel.active.column.0 as u32, |(_, c)| *c);
-                        let x = entry.display.x_for_source(&xs, column);
-                        let next = {
-                            let i = entry.display.stop_index_for_source(column);
-                            xs.get(i + 1).copied().unwrap_or(x + self.font.cell_width)
-                        };
-                        let cell = (next - x).max(self.font.cell_width * 0.5);
-                        let y = text.origin.y + px(l.y);
-                        let caret = hsla(p.cursor);
-                        let style = if self.overtype && composing.is_none() {
-                            o.overtype_cursor_style
-                        } else {
-                            o.cursor_style
-                        };
-                        let r = match style {
-                            CursorStyle::Line | CursorStyle::LineThin => {
-                                let h = if o.cursor_height > 0.0 {
-                                    (o.cursor_height as f32).min(lh)
-                                } else {
-                                    lh
-                                };
-                                Bounds::new(
-                                    point(left + px(x), y + px((lh - h) / 2.0)),
-                                    size(px(o.caret_width() as f32), px(h)),
-                                )
-                            }
-                            CursorStyle::Block | CursorStyle::BlockOutline => {
-                                Bounds::new(point(left + px(x), y), size(px(cell), px(lh)))
-                            }
-                            CursorStyle::Underline => Bounds::new(
-                                point(left + px(x), y + px(lh - 2.0)),
-                                size(px(cell), px(2.)),
-                            ),
-                            CursorStyle::UnderlineThin => Bounds::new(
-                                point(left + px(x), y + px(lh - 1.0)),
-                                size(px(cell), px(1.)),
-                            ),
-                        };
-                        if style == CursorStyle::BlockOutline {
-                            window.paint_quad(outline(r, caret, BorderStyle::Solid));
-                        } else {
-                            window.paint_quad(fill(r, caret));
+                for (index, s) in selections.iter().enumerate() {
+                    let primary = index == 0;
+                    let line = if primary { caret_line } else { s.active.line.0 };
+                    let Some(l) = frame.lines.iter().find(|l| l.line == line) else {
+                        continue;
+                    };
+                    let (Some(entry), Some(xs)) = (&l.entry, self.line_xs(l)) else {
+                        continue;
+                    };
+                    let column = match (primary, &composing) {
+                        (true, Some((_, c))) => *c,
+                        _ => s.active.column.0 as u32,
+                    };
+                    let x = entry.display.x_for_source(&xs, column);
+                    let next = {
+                        let i = entry.display.stop_index_for_source(column);
+                        xs.get(i + 1).copied().unwrap_or(x + self.font.cell_width)
+                    };
+                    let cell = (next - x).max(self.font.cell_width * 0.5);
+                    let y = text.origin.y + px(l.y);
+                    let caret = hsla(if primary {
+                        p.multi_cursor_primary
+                    } else {
+                        p.multi_cursor_secondary
+                    });
+                    let style = if self.overtype && composing.is_none() {
+                        o.overtype_cursor_style
+                    } else {
+                        o.cursor_style
+                    };
+                    let r = match style {
+                        CursorStyle::Line | CursorStyle::LineThin => {
+                            let h = if o.cursor_height > 0.0 {
+                                (o.cursor_height as f32).min(lh)
+                            } else {
+                                lh
+                            };
+                            Bounds::new(
+                                point(left + px(x), y + px((lh - h) / 2.0)),
+                                size(px(o.caret_width() as f32), px(h)),
+                            )
                         }
+                        CursorStyle::Block | CursorStyle::BlockOutline => {
+                            Bounds::new(point(left + px(x), y), size(px(cell), px(lh)))
+                        }
+                        CursorStyle::Underline => Bounds::new(
+                            point(left + px(x), y + px(lh - 2.0)),
+                            size(px(cell), px(2.)),
+                        ),
+                        CursorStyle::UnderlineThin => Bounds::new(
+                            point(left + px(x), y + px(lh - 1.0)),
+                            size(px(cell), px(1.)),
+                        ),
+                    };
+                    if style == CursorStyle::BlockOutline {
+                        window.paint_quad(outline(r, caret, BorderStyle::Solid));
+                    } else {
+                        window.paint_quad(fill(r, caret));
+                    }
+                    if primary {
                         caret_bounds =
                             Some(Bounds::new(point(left + px(x), y), size(px(cell), px(lh))));
                     }
@@ -1126,9 +1146,23 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
                 v.scrollbar_down(p, false, cx);
             } else if lay.gutter.contains(&p) {
                 v.mouse_down_gutter(p, e.modifiers.shift, cx);
-            } else if e.modifiers.control && !e.modifiers.shift && e.click_count == 1 {
-                // #40：Ctrl+点击转到定义（Ctrl+Alt+点击在旁边打开）。
-                v.mouse_down_link(p, e.modifiers.alt, cx);
+            } else if e.modifiers.shift && e.modifiers.alt && e.click_count == 1 {
+                // #52：Shift+Alt+拖动是列选择（与多光标修饰键无关）。
+                v.mouse_down_column(p, cx);
+            } else if e.click_count == 1
+                && !e.modifiers.shift
+                && v.multi_cursor_modifier()
+                    .adds_cursor(e.modifiers.control, e.modifiers.alt)
+            {
+                // #52：加光标（修饰键取 `editor.multiCursorModifier`）。
+                v.mouse_down_add_cursor(p, cx);
+            } else if e.click_count == 1
+                && !e.modifiers.shift
+                && v.multi_cursor_modifier()
+                    .goes_to_definition(e.modifiers.control, e.modifiers.alt)
+            {
+                // #40：转到定义（与加光标互换的那个修饰键；再加 Alt / Ctrl 在旁边打开）。
+                v.mouse_down_link(p, e.modifiers.alt && e.modifiers.control, cx);
             } else if e.click_count == 1
                 && !e.modifiers.shift
                 && lay.text.contains(&p)
@@ -1151,10 +1185,20 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
         // #40：悬停与 `Ctrl+悬停` 的指针位置（拖动时不报）。
         if e.pressed_button.is_none() {
             let inside = text_hitbox.is_hovered(window).then_some(e.position);
-            v.update(cx, |v, cx| v.pointer_moved(inside, e.modifiers.control, cx));
+            v.update(cx, |v, cx| {
+                // #52：跳转的修饰键与加光标互换，取 `editor.multiCursorModifier`。
+                let link = v
+                    .multi_cursor_modifier()
+                    .goes_to_definition(e.modifiers.control, e.modifiers.alt);
+                v.pointer_moved(inside, link, cx)
+            });
         }
         v.update(cx, |v, cx| match v.drag {
-            Some(Drag::Text { .. }) if e.pressed_button == Some(MouseButton::Left) => {
+            // #52：Drag::Column 是 `Shift+Alt+拖动`的列选择，Drag::AddedText 是按住多光标
+            // 修饰键拖出来的那一段选区；两者都由 `mouse_drag_text` 分流。
+            Some(Drag::Text { .. } | Drag::Column { .. } | Drag::AddedText { .. })
+                if e.pressed_button == Some(MouseButton::Left) =>
+            {
                 v.mouse_drag_text(e.position, cx)
             }
             Some(Drag::VThumb { .. } | Drag::HThumb { .. })

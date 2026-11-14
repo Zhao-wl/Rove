@@ -117,6 +117,15 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.trimAutoWhitespace", DefaultValue::Bool(true)),
     ("editor.overtypeCursorStyle", DefaultValue::Str("block")),
     ("editor.overtypeOnPaste", DefaultValue::Bool(true)),
+    // #52：多光标与列选择。
+    ("editor.multiCursorModifier", DefaultValue::Str("alt")),
+    (
+        "editor.multiCursorMergeOverlapping",
+        DefaultValue::Bool(true),
+    ),
+    ("editor.multiCursorLimit", DefaultValue::Num(10000.0)),
+    ("editor.multiCursorPaste", DefaultValue::Str("spread")),
+    ("editor.columnSelection", DefaultValue::Bool(false)),
 ];
 
 /// 设置项默认值（编译期表）。
@@ -297,6 +306,13 @@ pub struct EditorOptions {
     /// 改写模式下的插入符样式（`editor.overtypeCursorStyle`）。
     pub overtype_cursor_style: CursorStyle,
     pub overtype_on_paste: bool,
+    // #52
+    /// `editor.multiCursorModifier`：加光标与 #40 的跳转手势共用的修饰键来源。
+    pub multi_cursor_modifier: super::multicursor::MultiCursorModifier,
+    pub multi_cursor_merge_overlapping: bool,
+    pub multi_cursor_limit: usize,
+    /// `editor.columnSelection`：`shift+方向键` 直接进入列选择。
+    pub column_selection: bool,
 }
 
 impl Default for EditorOptions {
@@ -517,6 +533,12 @@ impl EditorOptions {
             trim_auto_whitespace: r.bool("editor.trimAutoWhitespace"),
             overtype_cursor_style: cursor_style(&r.str("editor.overtypeCursorStyle")),
             overtype_on_paste: r.bool("editor.overtypeOnPaste"),
+            multi_cursor_modifier: super::multicursor::MultiCursorModifier::parse(
+                &r.str("editor.multiCursorModifier"),
+            ),
+            multi_cursor_merge_overlapping: r.bool("editor.multiCursorMergeOverlapping"),
+            multi_cursor_limit: r.num("editor.multiCursorLimit", 1.0, 1e6) as usize,
+            column_selection: r.bool("editor.columnSelection"),
             cursor_width: r.num("editor.cursorWidth", 0.0, 100.0),
             cursor_height: r.num("editor.cursorHeight", 0.0, 1000.0),
             cursor_blinking: match r.str("editor.cursorBlinking").as_str() {

@@ -89,6 +89,8 @@ impl Workbench {
     fn search_event(&mut self, event: &SearchViewEvent, cx: &mut Context<Self>) {
         match event {
             SearchViewEvent::Open(request) => self.open_search_result(request, cx),
+            // #52：打开文件后把每一处匹配变成一个光标。
+            SearchViewEvent::AddCursors(request) => self.add_cursors_at_results(request, cx),
             SearchViewEvent::OpenSettings => {
                 // Rove 没有设置界面：打开共用的 VS Code settings.json（排除规则就在其中）。
                 let Some(path) = crate::keys::user_keybindings_path(std::env::args_os().skip(1))
@@ -110,6 +112,66 @@ impl Workbench {
                 cx.notify();
             }
         }
+    }
+
+    /// #52：`addCursorsAtSearchResults`——打开目标文件，再把全部匹配写成多选区。
+    pub(super) fn add_cursors_at_results(
+        &mut self,
+        request: &crate::search::view::AddCursorsRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(first) = request.selections.first().cloned() else {
+            return;
+        };
+        self.open_search_result(
+            &OpenRequest {
+                path: request.path.clone(),
+                selection: first,
+                side: false,
+                preserve_focus: false,
+                pinned: true,
+            },
+            cx,
+        );
+        // 打开是异步的，而且显示出来时 #17 会按 `OpenOptions::selection` 放一个单选区；
+        // 多光标留到那之后再写（见 `Workbench::sync_pending_cursors`）。
+        self.pending_cursors = Some((
+            Resource::Workspace(request.path.clone()),
+            request.selections.clone(),
+        ));
+        cx.notify();
+    }
+
+    /// 打开并定位（`OpenOptions::selection`）已经应用到代码视图之后调用：把全部匹配写成多选区。
+    /// 目标文件还不是活动标签时什么都不做，等它显示出来的那一帧。
+    pub(super) fn apply_pending_cursors(&mut self, cx: &mut Context<Self>) {
+        let Some((resource, ranges)) = self.pending_cursors.clone() else {
+            return;
+        };
+        let shown = self
+            .editor
+            .active()
+            .current()
+            .map(|tab| tab.resource.clone());
+        if shown.as_ref() != Some(&resource) {
+            return;
+        }
+        let code = self.code_view().clone();
+        if code.read(cx).text().is_none() {
+            return;
+        }
+        self.pending_cursors = None;
+        let selections: Vec<crate::code_view::Selection> = ranges
+            .iter()
+            .map(|r| crate::code_view::Selection::new(r.start(), r.end()))
+            .collect();
+        code.update(cx, |code, cx| {
+            code.set_selections(
+                selections,
+                Some(crate::code_view::Reveal::CenterIfOutside),
+                cx,
+            );
+        });
     }
 
     pub(super) fn open_search_result(&mut self, request: &OpenRequest, cx: &mut Context<Self>) {

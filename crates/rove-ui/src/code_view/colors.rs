@@ -159,6 +159,11 @@ pub const FEATURE_COLORS: &[&str] = &[
     "editorWhitespace.foreground",
     // #47：输入法组合串的下边框。
     "editor.compositionBorder",
+    // #52：主光标与次光标（默认都派生自 `editorCursor.*`）。
+    "editorMultiCursor.primary.foreground",
+    "editorMultiCursor.primary.background",
+    "editorMultiCursor.secondary.foreground",
+    "editorMultiCursor.secondary.background",
 ];
 
 /// 主题服务用的颜色登记表：全部 P0 键，加上代码视图用到的其余键（[`COLORS`]、[`FEATURE_COLORS`]）。
@@ -243,6 +248,12 @@ pub struct Palette {
     pub whitespace: Option<Color>,
     /// #47：`editor.compositionBorder`（输入法组合串下方的线）。
     pub composition_border: Option<Color>,
+    /// #52：主光标（`editorMultiCursor.primary.*`，默认派生自 `editorCursor.*`）。
+    pub multi_cursor_primary: Color,
+    pub multi_cursor_primary_text: Option<Color>,
+    /// #52：次光标（`editorMultiCursor.secondary.*`）。
+    pub multi_cursor_secondary: Color,
+    pub multi_cursor_secondary_text: Option<Color>,
 }
 
 fn fallback(key: &str, kind: ThemeKind) -> Option<Color> {
@@ -326,6 +337,14 @@ impl Palette {
             ],
             whitespace: get("editorWhitespace.foreground"),
             composition_border: get("editor.compositionBorder"),
+            multi_cursor_primary: get("editorMultiCursor.primary.foreground")
+                .unwrap_or_else(|| get("editorCursor.foreground").unwrap_or(foreground)),
+            multi_cursor_primary_text: get("editorMultiCursor.primary.background")
+                .or_else(|| get("editorCursor.background")),
+            multi_cursor_secondary: get("editorMultiCursor.secondary.foreground")
+                .unwrap_or_else(|| get("editorCursor.foreground").unwrap_or(foreground)),
+            multi_cursor_secondary_text: get("editorMultiCursor.secondary.background")
+                .or_else(|| get("editorCursor.background")),
         }
     }
 }

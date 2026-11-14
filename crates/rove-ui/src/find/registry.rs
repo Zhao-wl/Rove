@@ -32,6 +32,8 @@ pub const START_REPLACE: &str = "editor.action.startFindReplaceAction";
 pub const REPLACE_ONE: &str = "editor.action.replaceOne";
 pub const REPLACE_ALL: &str = "editor.action.replaceAll";
 pub const TOGGLE_PRESERVE_CASE: &str = "togglePreserveCase";
+/// #52：`alt+enter`，查找条可见时选中全部匹配（#21 把它留给了多光标）。
+pub const SELECT_ALL_MATCHES: &str = "editor.action.selectAllMatches";
 
 /// 发布在查找条上的 VS Code 上下文键（KEYBINDINGS.md 的 when 子句用到）。
 pub mod context {
@@ -83,6 +85,12 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         TOGGLE_PRESERVE_CASE,
         "find.command.togglePreserveCase",
         "切换保留大小写",
+    ),
+    // #52：选中全部匹配（`alt+enter`）。
+    (
+        SELECT_ALL_MATCHES,
+        "find.command.selectAllMatches",
+        "选择所有匹配项",
     ),
 ];
 
@@ -307,8 +315,9 @@ mod tests {
             assert!(!id.starts_with("search.action.replace"), "{id}");
             assert_ne!(id, "workbench.action.replaceInFiles");
             assert_ne!(id, "closeReplaceInFilesWidget");
-            assert_ne!(id, "editor.action.selectAllMatches");
         }
+        // #52 接手后 `editor.action.selectAllMatches` 由查找条登记。
+        assert!(r.get(SELECT_ALL_MATCHES).is_some());
     }
 
     #[test]

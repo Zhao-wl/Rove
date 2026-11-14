@@ -456,14 +456,13 @@ fn counts_cover_none_single_many(cx: &mut TestAppContext) {
 fn find_with_selection_and_no_cross_file_replace_commands(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);
-    // 当前文件的替换由 #48 接入（见 `replace_tests.rs`）；跨文件替换（#62）与多选区（#52）
-    // 的命令仍然不登记。
+    // 当前文件的替换由 #48 接入（见 `replace_tests.rs`）；跨文件替换（#62）的命令仍然不登记。
+    // `editor.action.selectAllMatches` 自 #52 起由查找条登记（见下一个用例）。
     view.read_with(cx, |v, _| {
         for (id, _) in v.commands.registry().entries() {
             assert!(!id.starts_with("search.action.replace"), "{id}");
             assert_ne!(id, "workbench.action.replaceInFiles");
             assert_ne!(id, "closeReplaceInFilesWidget");
-            assert_ne!(id, "editor.action.selectAllMatches");
         }
     });
     // actions.findWithSelection（无默认键位）：以选区为查找文本打开，不抢焦点。
@@ -477,4 +476,30 @@ fn find_with_selection_and_no_cross_file_replace_commands(cx: &mut TestAppContex
     refresh(cx);
     assert!(visible(&view, cx));
     assert_eq!(input(&view, cx), "baz");
+}
+
+// #52：`alt+enter`（查找条可见时）把全部匹配变成多光标。
+#[gpui::test]
+fn alt_enter_selects_all_matches_as_cursors(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    select(&view, pos(0, 0), pos(0, 3), cx);
+    press("ctrl-f", cx);
+    assert!(visible(&view, cx));
+    let found = matches(&view, cx);
+    assert_eq!(found.len(), 5);
+    // 焦点在输入框里，`alt+enter` 的 when 是 `editorFocus && findWidgetVisible`。
+    press("alt-enter", cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    let selections = code.read_with(cx, |c, _| c.selections());
+    assert_eq!(selections.len(), found.len(), "每处匹配一个光标");
+    let mut starts: Vec<(u64, u64)> = selections
+        .iter()
+        .map(|s| (s.start().line.0, s.start().column.0))
+        .collect();
+    starts.sort_unstable();
+    let mut expected = found;
+    expected.sort_unstable();
+    assert_eq!(starts, expected);
+    assert!(code.read_with(cx, |c, _| c.has_multiple_selections()));
 }
