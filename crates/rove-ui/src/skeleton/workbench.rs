@@ -118,6 +118,10 @@ mod references_tests;
 pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
 mod syntax_tests;
+// #76：「关于」对话框（版本 / 提交号 / 构建日期 / gpui / 索引组件，可复制）的装配。
+mod about_host;
+#[cfg(test)]
+mod about_tests;
 // #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）的装配。
 mod welcome_host;
 #[cfg(test)]
@@ -261,6 +265,8 @@ pub struct Workbench {
     pub(super) pending_cursors: Option<(Resource, Vec<rove_base::TextRange>)>,
     /// #60：侧边「引用」视图的结果、历史与面板列表（见 `references_host.rs`）。
     references: references_host::References,
+    /// #76：「关于」对话框的状态（见 `about_host.rs`）。
+    about: about_host::About,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -488,6 +494,7 @@ impl Workbench {
             editing: edit_host::Editing::new(files),
             markdown: Default::default(),
             welcome: welcome_host::Welcome::new(&store_for_welcome),
+            about: Default::default(),
             has_folder,
             large_files,
             status: Default::default(),
@@ -1866,6 +1873,8 @@ impl Render for Workbench {
         let hover = self.nav_overlay(cx);
         // #28：颜色主题 / 打开最近的快速选择。
         let welcome = self.welcome_overlay(cx);
+        // #76：「关于」浮层（在最上层，命令面板与欢迎页之上）。
+        let about = self.about_overlay(cx);
         // #29：弹出层打开时隐藏 WebView2（#6 报告的相交隐藏）。
         self.sync_markdown_overlays(
             goto.is_some() || quick.is_some() || hover.is_some() || welcome.is_some(),
@@ -1971,7 +1980,14 @@ impl Render for Workbench {
                     v.workspace_symbols_command(a.0, window, cx)
                 },
             ))
+            // #76：关于 Rove。
+            .on_action(
+                cx.listener(|v, a: &crate::about::registry::AboutAction, _, cx| {
+                    v.about_command(a.0, cx)
+                }),
+            )
             .child(workbench)
+            .children(about)
             .children(goto)
             .children(quick)
             .children(hover)

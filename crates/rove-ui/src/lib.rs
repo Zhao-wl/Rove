@@ -57,3 +57,5 @@ pub mod net;
 pub mod references;
 // #60：转到工作区中的符号（`Ctrl+T` 与快速打开的 `#`，同一份数据、同一套排序、同一个实现）。
 pub mod workspace_symbols;
+// #76：「关于」对话框（版本、提交号、构建日期、gpui 版本、C# 索引组件状态，可一键复制）。
+pub mod about;
