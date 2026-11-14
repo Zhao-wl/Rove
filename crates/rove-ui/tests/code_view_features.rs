@@ -808,6 +808,8 @@ fn large_and_huge_levels(cx: &mut TestAppContext) {
         assert_eq!(
             v.disabled_features(),
             vec![
+                // #55：粘性滚动在大文件与超大文件都关闭。
+                Feature::StickyScroll,
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxFolding,
                 Feature::BackgroundHighlighting

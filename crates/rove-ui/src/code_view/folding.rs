@@ -724,6 +724,25 @@ pub fn compute_ranges(
     out
 }
 
+/// 纯缩进区间（后台线程调用）：粘性滚动（#55）的缩进模型用，`editor.folding` 关闭时也要有，
+/// 所以与 [`compute_ranges`] 分开算（同一份文本、同一套 #12 的缩进规则，只保留缩进来源）。
+pub fn indentation_ranges(text: &str, language: Option<&str>, tab_size: usize) -> Vec<FoldRange> {
+    use rove_syntax::language_config::BuiltinLanguages;
+    let config = language.and_then(|l| BuiltinLanguages::shared().0.compiled(l));
+    let folds = match config {
+        Some(c) => c.fold_ranges(text, tab_size),
+        None => rove_syntax::language_config::fold_ranges(None, false, text, tab_size),
+    }
+    .unwrap_or_default();
+    let mut out: Vec<FoldRange> = folds
+        .iter()
+        .filter(|f| matches!(f.kind, rove_syntax::FoldKind::Indentation))
+        .filter_map(|f| FoldRange::new(f.lines.start().0, f.lines.end().0, FoldSource::Indentation))
+        .collect();
+    sort_dedup(&mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

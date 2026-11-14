@@ -45,6 +45,8 @@ pub(crate) struct PaintLine {
 
 pub struct Frame {
     lines: Vec<PaintLine>,
+    /// #55：粘性区里的行（`y` 相对粘性区顶边）。
+    sticky: Vec<PaintLine>,
     hitbox: Hitbox,
     text_hitbox: Hitbox,
     layout: FrameLayout,
@@ -216,6 +218,8 @@ impl CodeView {
             scroll_beyond_last_line: o.scroll_beyond_last_line,
             content_width: self.content_width,
             beyond_last_column: beyond,
+            // #55：本帧的粘性区高度在算出粘性行之后填（见下面的 `update_sticky`）。
+            sticky_height: 0.0,
         };
         let show_v = match o.vertical_scrollbar {
             ScrollbarVisibility::Visible => true,
@@ -251,6 +255,9 @@ impl CodeView {
             window.on_next_frame(move |_, cx| view.update(cx, |_, cx| cx.notify()));
         }
         let top = self.current_top().clamp(0.0, metrics.max_top(&self.zones));
+        // #55：粘性行按「粘性区下面的第一行」算；区高度计入视口换算（滚动定位避开粘性区）。
+        let sticky_height = self.update_sticky(&metrics, top);
+        metrics.sticky_height = sticky_height as f64;
         let pos = ScrollPosition {
             top,
             x: self.scroll.x,
@@ -289,6 +296,28 @@ impl CodeView {
             y += lh + self.zones.get(view_line) as f32;
             view_line += 1;
         }
+        // #55：粘性行复用正文的行缓存与整形缓存（同一行在正文与粘性区颜色一致）。
+        let sticky_lines: Vec<u64> = self.sticky.lines().iter().map(|s| s.line).collect();
+        let mut sticky: Vec<PaintLine> = Vec::with_capacity(sticky_lines.len());
+        for (i, line) in sticky_lines.into_iter().enumerate() {
+            let entry = self.lines.get(&line).cloned();
+            let shaped = entry
+                .as_ref()
+                .and_then(|e| self.shapes.get(&self.shape_key(e)).cloned());
+            sticky.push(PaintLine {
+                line,
+                y: i as f32 * lh,
+                entry,
+                shaped,
+                fold: None,
+            });
+        }
+        let sticky_bounds = (!sticky.is_empty()).then(|| {
+            Bounds::new(
+                bounds.origin,
+                size(px(gutter_w + text_w), px(sticky_height)),
+            )
+        });
         let first_doc = self.doc_line(first);
         stats.visible_lines = lines.len() as u32;
         stats.first_line = first_doc;
@@ -344,6 +373,7 @@ impl CodeView {
             hthumb,
             metrics: Some(metrics),
             fold_column,
+            sticky: sticky_bounds,
         };
         if let Some(start) = self.frame_started {
             self.last_frame.layout = start.elapsed();
@@ -352,6 +382,7 @@ impl CodeView {
         let text_hitbox = window.insert_hitbox(text, HitboxBehavior::Normal);
         Frame {
             lines,
+            sticky,
             hitbox,
             text_hitbox,
             layout: self.layout.clone(),
@@ -654,7 +685,98 @@ impl CodeView {
 
         self.paint_gutter(frame, window);
         self.paint_scrollbars(frame, window);
+        // #55：粘性区盖在最上面（它遮住正文顶部的若干行，滚动条与滑块不在它的范围里）。
+        self.paint_sticky(frame, window);
         caret_bounds
+    }
+
+    /// #55：粘性滚动区。复用正文的整形与着色结果，只是画在另一个 y 上。
+    fn paint_sticky(&self, frame: &Frame, window: &mut Window) {
+        let (Some(band), false) = (frame.layout.sticky, frame.sticky.is_empty()) else {
+            return;
+        };
+        let p = &self.palette;
+        let lay = &frame.layout;
+        let lh = self.font.line_height;
+        // `editor.stickyScroll.scrollWithEditor`：关闭时粘性行不跟着水平滚动。
+        let left = lay.text.origin.x - px(self.sticky_content_offset());
+        let gutter_band = Bounds::new(band.origin, size(lay.gutter.size.width, band.size.height));
+        let text_band = Bounds::new(
+            point(lay.text.origin.x, band.origin.y),
+            size(lay.text.size.width, band.size.height),
+        );
+        window.paint_quad(fill(text_band, hsla(p.sticky_background)));
+        window.paint_quad(fill(gutter_band, hsla(p.sticky_gutter_background)));
+        // 悬停行（聚焦时同样高亮，让键盘与鼠标看到的是同一行）。
+        if let (Some(index), Some(color)) = (
+            self.sticky.hover().or(self.sticky.focus()),
+            p.sticky_hover_background,
+        ) {
+            let r = Bounds::new(
+                point(band.origin.x, band.origin.y + px(index as f32 * lh)),
+                size(band.size.width, px(lh)),
+            );
+            window.paint_quad(fill(r, hsla(color)));
+        }
+        window.with_content_mask(Some(ContentMask { bounds: text_band }), |window| {
+            window.paint_layer(text_band, |window| {
+                for l in &frame.sticky {
+                    let y = band.origin.y + px(l.y);
+                    let Some(entry) = &l.entry else { continue };
+                    let Some(xs) = self.line_xs(l) else { continue };
+                    match &l.shaped {
+                        Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
+                        None => self.paint_placeholder(entry, left, y, &xs, text_band, window),
+                    }
+                }
+            });
+        });
+        // 行号栏与正文对齐（字形边距留空，折叠控件不画在粘性区里）。
+        if let Some(d) = self.font.digits.clone() {
+            let (glyph_w, ln_w, _) = frame.gutter_widths;
+            if ln_w > 0.0 {
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: gutter_band,
+                    }),
+                    |window| {
+                        let mut buf = [0u8; 20];
+                        for l in &frame.sticky {
+                            let y = band.origin.y + px(l.y);
+                            let ds = digits(l.line + 1, &mut buf);
+                            let right = lay.gutter.origin.x + px(glyph_w + ln_w);
+                            let baseline = self.baseline(y);
+                            for (k, digit) in ds.iter().enumerate() {
+                                let Some(glyph) = d.glyphs[*digit as usize] else {
+                                    continue;
+                                };
+                                let x = right - px((ds.len() - k) as f32 * d.advance);
+                                let _ = window.paint_glyph(
+                                    point(x, baseline),
+                                    d.font_id,
+                                    glyph,
+                                    self.font.size,
+                                    hsla(p.line_number),
+                                );
+                            }
+                        }
+                    },
+                );
+            }
+        }
+        // 下边框与阴影（`editorStickyScroll.border` / `.shadow`）。
+        let bottom = band.origin.y + band.size.height;
+        if let Some(border) = p.sticky_border {
+            let r = Bounds::new(
+                point(band.origin.x, bottom - px(1.0)),
+                size(band.size.width, px(1.0)),
+            );
+            window.paint_quad(fill(r, hsla(border)));
+        }
+        if let Some(shadow) = p.sticky_shadow {
+            let r = Bounds::new(point(band.origin.x, bottom), size(band.size.width, px(3.0)));
+            window.paint_quad(fill(r, alpha(shadow, 0.6)));
+        }
     }
 
     /// 缩进参考线：每个缩进单位一条 1 px 竖线，颜色按层级取 `editorIndentGuide.background1`–`6`。
@@ -1140,7 +1262,9 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
         v.update(cx, |v, cx| {
             window.focus(&v.focus);
             let p = e.position;
-            if lay.vbar.is_some_and(|b| b.contains(&p)) {
+            // #55：粘性区盖在正文之上，先判定它（点击跳转到该行，`Ctrl+点击` 与正文一致）。
+            if v.mouse_down_sticky(p, e.modifiers.control, e.modifiers.alt, cx) {
+            } else if lay.vbar.is_some_and(|b| b.contains(&p)) {
                 v.scrollbar_down(p, true, cx);
             } else if lay.hbar.is_some_and(|b| b.contains(&p)) {
                 v.scrollbar_down(p, false, cx);
@@ -1185,12 +1309,15 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
         // #40：悬停与 `Ctrl+悬停` 的指针位置（拖动时不报）。
         if e.pressed_button.is_none() {
             let inside = text_hitbox.is_hovered(window).then_some(e.position);
+            // #55：指针在粘性区里时不报正文悬停（粘性区自己高亮）。
+            let sticky = v.read(cx).sticky_index_at(e.position).is_some();
             v.update(cx, |v, cx| {
                 // #52：跳转的修饰键与加光标互换，取 `editor.multiCursorModifier`。
                 let link = v
                     .multi_cursor_modifier()
                     .goes_to_definition(e.modifiers.control, e.modifiers.alt);
-                v.pointer_moved(inside, link, cx)
+                v.sticky_hover(inside.filter(|_| sticky), cx);
+                v.pointer_moved(inside.filter(|_| !sticky), link, cx)
             });
         }
         v.update(cx, |v, cx| match v.drag {

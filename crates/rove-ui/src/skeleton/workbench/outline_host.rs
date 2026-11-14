@@ -69,8 +69,25 @@ impl Workbench {
         Some((group, opened.document.clone(), tab.view.cursor))
     }
 
+    /// #55：把每个代码视图所显示文档的符号树交给它（粘性滚动的大纲模型与大纲、面包屑共用同一份）。
+    /// 符号树没变时 `set_symbols` 直接返回，所以可以每帧调用。
+    fn sync_sticky_symbols(&mut self, cx: &mut Context<Self>) {
+        let Self { views, outline, .. } = self;
+        for slot in views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(&views.secondary))
+        {
+            let symbols = slot
+                .shown
+                .and_then(|shown| outline.cached(shown.document).cloned());
+            slot.code
+                .update(cx, |code, cx| code.set_symbols(symbols, cx));
+        }
+    }
+
     /// 每帧调用（只读缓存与轻量状态）：让大纲跟上活动编辑器，必要时在后台请求新版本的符号。
     pub(super) fn sync_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_sticky_symbols(cx);
         self.outline.bar_active = self.outline.bar.focus.contains_focused(window, cx)
             || self
                 .outline

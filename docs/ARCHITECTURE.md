@@ -228,6 +228,7 @@ cargo test --workspace
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；窗口装配（`ctrl+s` / 另存为 / 全部保存 → `SaveController`、`ctrl+n`、重载后刷新视图、脏点与“已删除”、窗口关闭确认）由 #47 在 `workbench/edit_host.rs` 完成（见 §37） | #49（已完成） |
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
+| `sticky-scroll` | 无骨架标记（#2 没有粘性滚动的临时实现）：已由 `rove-ui::code_view::sticky` 实现（见 §46）：三档模型与回退、作用域链的首行区间缓存、顶部覆盖区域的绘制、点击与键盘交互、按级别关闭；速览预览复用同一套实现，只换两个颜色键 | #55（已完成） |
 | `explorer` | 已由 `rove-ui::explorer` 实现（见 §36）：`SKELETON(explorer)` 标记与骨架的 `WorkspaceTree` 适配器、固定绘制已删除；“文件夹”小节是 #18 `ListView` 的包装，数据来自流式扫描的 #15 工作区（根目录立即显示）；`skeleton/workbench/explorer_host.rs` 只做窗口装配 | #23（已完成） |
 | `status` | 已由 `rove-ui::status_items` 与 `skeleton/workbench/status_host.rs` 实现（见 §39）：`SKELETON(status)` 标记、骨架的 `rove.status.file` 条目与“文件名 / 行数 / 编码”固定内容都已删除，右侧改为六个登记过的条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）；状态栏左侧只保留 #16 的临时消息、问题计数与 #36 的索引状态 | #27（已完成） |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
@@ -1666,3 +1667,41 @@ C#（`///` 与 `//` 续写）与 JSON（`//` 续写）；`/* */` 里补 ` * ` �
 包围、`editor.autoClosing*` 与 `comments.*` 的取值、粘贴重新缩进、只读与超大文件）。
 性能：`cargo xtask bench --filter typing/`（按键到上屏，预算 `keystroke_to_paint`）。
 
+## 46. 粘性滚动（#55）
+
+位置：`crates/rove-ui/src/code_view/sticky.rs`（纯计算，不依赖 gpui）与 `view.rs` / `element.rs` 里的接入；
+符号树由 `skeleton/workbench/outline_host.rs` 每帧交给代码视图（与大纲、面包屑共用 #26 的同一份
+`DocumentSymbols`）；速览预览的两个颜色键在 `peek/widget.rs` 的主题适配里映射。
+
+| 位置 | 内容 |
+|---|---|
+| `code_view/sticky.rs` | 三档模型与回退（大纲 → 折叠提供方 → 缩进）、作用域链计算、首行有效区间缓存、焦点与悬停状态 |
+| `code_view/view.rs` | `set_symbols` / `sticky_lines` / `sticky_height` / `go_to_sticky_line` / `sticky_index_at` 等接口、每帧 `update_sticky`、六条命令、`stickyScrollFocused` 上下文键、点击与悬停命中 |
+| `code_view/element.rs` | 粘性区的布局（顶部覆盖区域）与绘制（复用正文的行缓存、整形缓存与着色） |
+| `code_view/scroll.rs` | `Metrics::sticky_height`：滚动定位避开粘性区（`Reveal` 四种策略都按粘性区下面的可见区算） |
+| `code_view/folding.rs` | `indentation_ranges`：缩进模型的区间，与折叠区间同一个后台任务，`editor.folding` 关着时也算 |
+
+- **计算**：按「粘性区下面的第一行」求作用域链。大纲模型用 `DocumentSymbols::path_from`（复用上一条路径，
+  按位置二分查找），折叠 / 缩进模型按区间链回溯。每次结果都带一个「首行有效区间」，滚动时首行仍落在区间里就
+  直接复用，不再遍历；只有越界（进出符号、进出下一个子符号、越过区间末行）才重算。粘性区本身占几行会影响首行，
+  所以一帧里最多迭代两次收敛。
+- **绘制**：作为代码视图 Element 的顶部覆盖区域。行号栏与正文分别用 `editorStickyScrollGutter.background` 与
+  `editorStickyScroll.background`，悬停 / 聚焦行用 `editorStickyScrollHover.background`，下边框与阴影用
+  `editorStickyScroll.border` / `editorStickyScroll.shadow`。粘性行的字形直接取正文那一行的整形与着色缓存
+  （同一行在正文与粘性区颜色一致），未命中时先画占位，并把粘性行排进帧外准备队列。
+- **交互**：点击跳到该行（经 `reveal_line`，粘性区高度已计入视口换算，目标行落在粘性区下面）；`Ctrl+点击` 与正文一致
+  （发 `LinkClicked`）；`editor.action.focusStickyScroll` 之后 `↑` / `↓` / `Enter` / `Esc` 走 VS Code 的四条键位，
+  上下文键 `stickyScrollFocused` 发布在代码视图的 key context 上（与 #18 的 `treestickyScrollFocused` 是两个键）。
+- **设置**：`editor.stickyScroll.enabled`、`maxLineCount`（1–10，超出保留最内层）、`defaultModel`、`scrollWithEditor`；
+  `editor.action.toggleStickyScroll` 经 #13 的保留格式写入写回 `editor.stickyScroll.enabled`，不只改内存状态。
+- **按级别关闭**：大文件与超大文件都关闭粘性滚动（UX_SPEC §3.1）；`disabled_features()` 里多一条
+  `Feature::StickyScroll`，#22 的状态栏悬停据此列出原因。
+- **速览**：嵌入预览本身就是一个代码视图，粘性滚动自动生效；`PeekTheme` 把两个背景键映射到
+  `peekViewEditorStickyScroll.background` / `peekViewEditorStickyScrollGutter.background`，没有另写一份实现。
+
+本 issue 没有对应的 `SKELETON(...)` 标记（骨架里没有粘性滚动的最简实现）。
+
+验证：`cargo test -p rove-ui --test code_view_sticky`（三档模型、`maxLineCount`、横向滚动、点击跳转与视口换算、
+键盘与键位冲突、切换命令写回设置、按级别关闭、登记与深浅主题取色）、`cargo test -p rove-ui code_view::sticky`
+（作用域链与有效区间的单元测试）、`cargo test -p rove-ui peek::widget`（速览的两个颜色键）。
+性能：`cargo xtask bench --filter sticky`（预算 `sticky_scroll_frame_extra`：每帧 < 100 µs）。
