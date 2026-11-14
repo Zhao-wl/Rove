@@ -49,6 +49,22 @@ License: Apache License, Version 2.0. The original license is retained in
 `vendor/gpui/LICENSE-APACHE`. Rove modifications and reapplication instructions
 are recorded in `vendor/gpui/ROVE_PATCHES.md`.
 
+## gpui_http_client 0.2.2（被 Rove 的替身取代）
+
+Source: https://crates.io/crates/gpui_http_client/0.2.2 (Zed Industries).
+License: Apache License, Version 2.0（同 `vendor/gpui/LICENSE-APACHE`）。
+
+`gpui` 强制依赖这个 crate。#74 用 workspace 的 `[patch.crates-io]` 把它整个换成
+`crates/rove-gpui-http-stub`（包名同为 `gpui_http_client`），所以**上游实现不在依赖图、
+也不在发布产物里**；reqwest / hyper / rustls / ring / tokio 随之消失。
+
+替身是 **Rove 自己的代码**（MIT，与本仓库一致），没有网络实现。但为了做到「drop-in 替换」，
+它的公开 API 形状照着上游 0.2.2 写：`HttpClient` trait 的方法签名、`AsyncBody` 的构造与
+`futures::AsyncRead` 实现、`HttpClientWithProxy` / `HttpClientWithUrl` / `RedirectPolicy` /
+`HttpRequestExt` / `read_proxy_from_env` 等少量平凡实现与上游基本一致。**这部分视为派生自上游的
+Apache-2.0 代码**，故在此保留来源与许可声明；删减项与理由见
+`crates/rove-gpui-http-stub/src/lib.rs` 顶部与 `vendor/gpui/ROVE_PATCHES.md`。
+
 ## VS Code 语言配置（`language-configuration.json`）
 
 `crates/rove-syntax/data/vscode-extensions/` 下的五个语言配置文件原样取自 Microsoft VS Code

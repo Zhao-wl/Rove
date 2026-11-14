@@ -49,6 +49,11 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File .github/scripts/check-core-crates.ps1
 
+      # #74：依赖图里不允许出现 HTTP / TLS 栈（reqwest / hyper / rustls / ring / tokio……）。
+      # 和核心层检查一样只解析依赖图，不编译，所以放在 clippy 之前先失败。
+      - name: 依赖图禁止 HTTP / TLS 栈
+        run: cargo xtask check-deps
+
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

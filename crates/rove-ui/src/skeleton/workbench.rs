@@ -1952,7 +1952,10 @@ pub fn launch(
     let root = startup.folder.clone().unwrap_or_default();
     // #29：Markdown 预览按 #6 报告的 Hwnd 方式嵌入 WebView2（不创建任何实例，只选渲染路径）。
     crate::markdown::prepare_hwnd_hosting();
-    Application::new().run(move |cx: &mut App| {
+    // #74：gpui 默认的 NullHttpClient 只返回错误、不记日志。换成 Rove 的客户端：
+    // 拒绝一切请求并把方法与 URI 写进日志，违例无法悄悄发生（编译期的保证见 crates/rove-gpui-http-stub）。
+    let application = Application::new().with_http_client(crate::net::blocked_http_client());
+    application.run(move |cx: &mut App| {
         if let Err(e) = cx
             .text_system()
             .add_fonts(vec![Cow::Borrowed(shell::icons::FONT)])

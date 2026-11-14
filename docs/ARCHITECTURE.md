@@ -1762,3 +1762,40 @@ ZWJ / 肤色 emoji、组合字符、连字、折叠组合、增量更新、30 �
 `cargo xtask bench --filter scroll`（`scroll/wrapped_frame_cpu_cache_hit` 与关闭软换行的
 `scroll/frame_cpu_cache_hit` 对照）。
 
+## 48. 精简 GPUI 的网络依赖（#74）
+
+**目标**：Rove 运行时不发起任何网络请求（[PROJECT_CHARTER](PROJECT_CHARTER.md) §2.1，唯一例外是更新模块）。
+但 `gpui` 对 `gpui_http_client` 的依赖不是 optional，默认会把 `zed-reqwest` → `hyper` / `hyper-rustls` →
+`rustls` → `ring` / `tokio` 整条 HTTP + TLS 栈拉进依赖图。这些代码最终被链接器剔除，**不是体积问题**，
+但它是多余的审计面与供应链面。本 issue 只负责**编译期**；运行期的实测属于 #75。
+
+| 位置 | 职责 | 依赖 gpui |
+|---|---|---|
+| 根 `Cargo.toml` 的 `[patch.crates-io]` | 把 `gpui_http_client` 指向 `crates/rove-gpui-http-stub`（`vendor/gpui` 源码零改动） | — |
+| `crates/rove-gpui-http-stub`（包名 `gpui_http_client`） | 替身：保留 gpui 需要的公开 API 形状，内部无任何网络实现；`BlockedHttpClient` 调用即失败并记日志 | 否（核心层） |
+| `crates/rove-ui/src/net.rs` | `blocked_http_client()`：应用装给 gpui 的客户端 | 是 |
+| `crates/rove-ui/src/skeleton/workbench.rs::launch` | `Application::with_http_client(...)` 把它装上（gpui 自带的 `NullHttpClient` 只返回错误、不写日志） | 是 |
+| `xtask/src/deps.rs`（`cargo xtask check-deps`） | 依赖图里出现 HTTP / TLS 栈即失败；已加进 `.github/workflows/ci.yml` 的 `rust` 任务 | 否 |
+
+**路线**：issue 给的两条路线里选了 **B（patch `gpui_http_client`）**，因为它对 `vendor/gpui` 的改动是 0 行，
+升级 gpui 时整包替换即可；路线 A（给 gpui 加 optional feature）要改 `Cargo.toml` 加 7 个源文件，每次升级都要重打补丁。
+权衡、替身与上游 0.2.2 的逐项差异、前后对照数据与重新应用步骤，全部记在
+[`vendor/gpui/ROVE_PATCHES.md`](../vendor/gpui/ROVE_PATCHES.md) 的「R74」一节。
+
+**语义**：替身是「调用即失败」而不是「静默成功」。`BlockedHttpClient` 在**构造 future 的那一刻**就写一条
+`log::error!` 与一行 stderr（固定前缀 `ROVE_NO_NETWORK`，带请求方法与 URI），即使调用方把 future 丢掉，
+这次尝试也留在日志里。
+
+**确认没有功能依赖它**：gpui 的图片 / SVG 资源加载只有 `Resource::Uri` 分支走 HTTP，Rove 只用
+`Resource::Path` / `Resource::Workspace`（#63 图片预览读本地文件，#69 的图标字体与 #10 的主题都读本地文件）；
+字体走 `TextSystem::add_fonts` 的内置 codicon 与本机字体；Markdown 预览走系统 WebView2（#29），
+完全不经过 gpui 的 HTTP 客户端，远程资源的拦截仍由 `rove.markdown.allowRemoteResources` 负责。
+`async-compression` 仍在依赖图里，但来源是 `gpui → gpui_util → async_zip`，与 HTTP 无关，
+写在 `check-deps` 的白名单里并注明理由。
+
+本 issue 不登记命令、设置项、颜色键、界面字符串或视图，也没有对应的 `SKELETON(...)` 标记。
+
+验证：`cargo test -p gpui_http_client`（替身的 5 个单元测试：GET / POST 被拒绝、future 丢掉也记日志、
+包装层不吞错误、`AsyncBody` 读写）；`cargo test -p rove-ui --test no_network`（入口测试：Rove 装的客户端
+被拒绝并记日志、gpui 自己的 `cx.http_client()` 同样被拒绝）；`cargo xtask check-deps`（依赖图判定，
+已实测人为加回 `zed-reqwest` 后以非零码退出）。
