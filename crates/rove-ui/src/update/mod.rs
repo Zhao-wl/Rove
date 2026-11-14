@@ -4,7 +4,10 @@
 //!
 //! 1. [`registry`]：命令、界面字符串、齿轮菜单项（全部走 #1 的登记机制）；
 //! 2. [`UpdateService`]：读设置、决定「现在该做什么」，**不碰 GPUI**，所以可以直接测；
-//! 3. 窗口装配在 `skeleton/workbench/update_host.rs`：把 [`Step`] 翻译成提示条、通知与状态栏消息。
+//! 3. [`component`]：C# 索引组件的跟随更新（第 4 节）——把 #43 的安装位置与版本规则
+//!    翻译成 `rove_update::component` 要的形状，装了才升级、没装不下载；
+//! 4. 窗口装配在 `skeleton/workbench/update_host.rs`：把 [`Step`] 翻译成提示条、通知与状态栏消息，
+//!    并在「下载完安装包之后」与「下次启动的首帧之后」接上组件的升级与清理。
 //!
 //! 反馈分级按 `UX_SPEC` §6.1：
 //!
@@ -17,10 +20,12 @@
 //!
 //! 更新**永远不弹模态框**：模态框留给数据丢失与安全确认。
 
+pub mod component;
 pub mod registry;
 
 use rove_base::Error;
 use rove_config::{Key, Scope, Settings};
+use rove_lang_cs::lifecycle::component as cs_component;
 use rove_update::{
     install, mode::UpdateMode, paths::Pending, state::UpdateState, Outcome, UpdateError, Updater,
     Version,
@@ -81,6 +86,12 @@ pub struct UpdateService {
     /// 已经发现、还没下载的那一版清单（`start` / `manual` 模式里用户点「下载」时直接用它，
     /// **不再重新查一遍**：那样既多一次请求，也可能拿到和提示里不一样的版本）。
     available: Option<Box<rove_update::Manifest>>,
+    /// C# 索引组件的位置（#43 的规则）。应用入口从环境取，测试注入临时目录——
+    /// 默认是空的，**所以不联网的测试绝不会碰到真实的 `%LOCALAPPDATA%\Rove\components`**。
+    component_roots: cs_component::Roots,
+    /// 上次更新**已经装上**之后，随它一起装的那一版组件（`pending.json` 里记的）。
+    /// 启动清理时留它、删别的（见 [`component::cleanup`]）。
+    installed_component: Option<String>,
 }
 
 impl UpdateService {
@@ -95,7 +106,10 @@ impl UpdateService {
         let exe = std::env::current_exe().unwrap_or_default();
         let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
         let portable = install::is_portable(&exe, local.as_deref());
-        Self::with_updater(updater, portable)
+        let mut service = Self::with_updater(updater, portable);
+        // 组件的位置按 #43 的规则从环境取（只有应用入口这样做）。
+        service.component_roots = cs_component::Roots::current();
+        service
     }
 
     /// 测试与演练用。
@@ -111,7 +125,24 @@ impl UpdateService {
             portable,
             pending: None,
             available: None,
+            component_roots: cs_component::Roots::default(),
+            installed_component: None,
         }
+    }
+
+    /// 组件的安装位置（#43 的规则）。
+    pub fn component_roots(&self) -> &cs_component::Roots {
+        &self.component_roots
+    }
+
+    /// 测试与演练用：把组件位置指到临时目录，别碰真实的 `%LOCALAPPDATA%`。
+    pub fn set_component_roots(&mut self, roots: cs_component::Roots) {
+        self.component_roots = roots;
+    }
+
+    /// 启动清理时要保留的那一版组件（上次更新随包装上的那一个）。
+    pub fn installed_component(&self) -> Option<&str> {
+        self.installed_component.as_deref()
     }
 
     /// 已经发现、等用户确认下载的那一版清单。
@@ -144,14 +175,25 @@ impl UpdateService {
     /// - 还比当前版本新 → 再提示一次（issue 第 3 节：用户忽略过也要再提示）；
     /// - 已经装上了 → `rove-update` 会把记录与下载清掉，这里什么都不显示。
     pub fn on_start(&mut self) -> Step {
+        // 随这次更新一起装的组件版本记在 `pending.json` 里；更新装上之后
+        // `take_pending_after_start` 会把记录清掉，所以要先读一次。
+        let recorded = self
+            .updater
+            .paths()
+            .and_then(|paths| paths.read_pending())
+            .and_then(|pending| pending.component_version);
         if let Some(pending) = self.updater.take_pending_after_start() {
             let version = pending.version.clone();
             self.pending = Some(pending);
             self.state = UpdateState::ReadyToInstall {
                 version: version.clone(),
             };
+            // 还没装上：正在跑的仍是旧版本的 Rove，这时不拿新组件当「要保留的那一版」，
+            // 清理退回到 #43 的发现规则（留着正在用的那一个）。
             return Self::restart_prompt(&version);
         }
+        // 没有待安装版本了 → 上次记下的组件版本就是「刚随更新装上的那一版」，清理时留它。
+        self.installed_component = recorded;
         Step::Nothing
     }
 

@@ -1,7 +1,7 @@
 //! #149：自动更新的窗口装配。
 //!
 //! 决策在 `crate::update::UpdateService`（不依赖 gpui），联网在 `rove-update`（核心层）；
-//! 这里只负责三件事：
+//! 这里只负责四件事：
 //!
 //! 1. **把检查排到首帧之后**：`render` 画完第一帧才 [`Workbench::start_update_checks`]，
 //!    所以冷启动预算完全不受影响（#149 验收第 6 条）。`default` 模式之后每 6 小时再查一次。
@@ -9,6 +9,9 @@
 //!    **不弹模态框**（UX_SPEC §6.1 把它留给数据丢失与安全确认），**不加状态栏常驻条目**。
 //! 3. **「重启以更新」**：先走 #50 的热退出把会话与未保存的修改存好 → 关窗口 →
 //!    拉起安装包（静默参数来自清单）→ 安装器装完再把 Rove 拉起来。
+//! 4. **C# 索引组件跟着一起升级**（第 4 节）：安装包下好之后调
+//!    [`crate::update::component::follow_update`]（装了才下，没装不下），
+//!    下次启动的首帧之后调 [`crate::update::component::cleanup`] 删掉旧版本目录。
 //!
 //! 检查与下载都在**后台执行器**上跑：它们会阻塞在网络 I/O 上，绝不能占 UI 线程。
 
@@ -65,13 +68,38 @@ impl Workbench {
             return;
         };
         let mode = service.mode();
+        self.updates.scheduled = true;
+        // 首帧之后顺手把不再使用的旧组件版本删掉（#149 第 4 节）：纯本地文件操作，
+        // 和检查一样排在首帧之后，冷启动预算不受影响。
+        self.cleanup_old_components(cx);
         let Some(delay) = mode.startup_check() else {
             // `none` / `manual`：启动时不检查。
-            self.updates.scheduled = true;
             return;
         };
-        self.updates.scheduled = true;
         self.schedule_update_check(delay, mode, cx);
+    }
+
+    /// 启动时清掉不再使用的旧组件版本（#149 第 4 节）。删不掉说明进程还占着文件，
+    /// 留到下一次启动再说。
+    fn cleanup_old_components(&mut self, cx: &mut Context<Self>) {
+        let Some(service) = &self.updates.service else {
+            return;
+        };
+        if !service.mode().may_connect() {
+            // `none`：更新整个关着，不去动用户自己装的组件。
+            return;
+        }
+        let roots = service.component_roots().clone();
+        let keep = service.installed_component().map(str::to_string);
+        let log = service.updater().log().clone();
+        cx.background_executor()
+            .spawn(async move {
+                let removed = crate::update::component::cleanup(&roots, keep.as_deref());
+                if removed > 0 {
+                    log.line(&format!("component cleanup: 删掉 {removed} 个旧版本目录"));
+                }
+            })
+            .detach();
     }
 
     fn schedule_update_check(
@@ -149,10 +177,19 @@ impl Workbench {
             return;
         };
         let updater = service.updater().clone();
+        let roots = service.component_roots().clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { updater.download(&manifest) })
+                .spawn(async move {
+                    let result = updater.download(&manifest);
+                    // 安装包下好了，C# 索引组件跟着一起升级（#149 第 4 节）：
+                    // **装了才下，没装不下**；组件这一步失败只写日志，不影响主程序这条主线。
+                    if result.is_ok() {
+                        crate::update::component::follow_update(&updater, &manifest, &roots);
+                    }
+                    result
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 let Some(service) = view.updates.service.as_mut() else {

@@ -153,6 +153,27 @@
 - zip 解压是本仓库自己写的只读实现（`crates/rove-update/src/zip.rs`）：只认「存储」与
   「deflate」，条目名出现 `..`、绝对路径、盘符或反斜杠时**整包作废**，解压总量有上限。
 
+### 产品里在哪两处接上
+
+核心层只提供 `plan` / `install` / `cleanup_old`，**位置与版本规则一概由界面侧按 #43 的
+`rove_lang_cs::lifecycle::component` 填**（所以 `rove-update` 不依赖 `rove-lang-cs`）。
+翻译在 `crates/rove-ui/src/update/component.rs`，两个接入点都在
+`crates/rove-ui/src/skeleton/workbench/update_host.rs` 里，都跑在后台执行器上：
+
+| 时机 | 做什么 |
+|---|---|
+| 主程序安装包下载**成功之后** | `component::follow_update`：装了组件才下载并切换，没装什么都不做 |
+| 下次启动的**首帧之后** | `component::cleanup`：删掉不再使用的旧版本目录（冷启动预算不受影响） |
+
+清理要保留的那一版这样定：优先取 `pending.json` 里的 `component_version`（**只在那次更新
+已经装上之后**才算数），否则取 #43 的发现规则当前选中的那一版；两样都定不下来就**一个目录
+都不删**。`rove.exe` 旁边的 `components`（随包放置）与 `ROVE_INDEXER_CS`（开发覆盖）不归
+更新管，`rove.update.mode = "none"` 时也不碰组件。
+
+组件这一步失败**不打扰用户**，只写进 `logs\update.log`：主程序的更新才是主线，组件下次
+检查时会再试。产品路径的验收在 `crates/rove-ui/src/skeleton/workbench/update_tests.rs`
+（已安装时升级 / 未安装时不下载 / 下次启动清理 / `none` 时不动组件）。
+
 ## 6. 失败与降级
 
 | 情况 | 行为 |
