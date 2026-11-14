@@ -594,7 +594,29 @@ impl Workbench {
                     if let Some(Resource::Workspace(p)) =
                         self.open_document(document).map(|d| d.resource.clone())
                     {
-                        let _ = self.nav.router.buffers().saved(&p, hash);
+                        // #51：这两个「磁盘内容哈希」不是同一个算法。`Effect::Saved` 里的 `hash`
+                        // 是 #49 自写去重用的 `DiskStamp`（FNV-1a）；#38 的 `BufferStates` 比的是
+                        // **C# 索引文件表的 xxHash64**（`hash_bytes`）。直接把前者交过去，保存后的
+                        // 文件就永远对不上索引版本：索引重建完成后仍判为 `Diverged`，整份文件的
+                        // 查询一直停在近似，直到关掉重开。
+                        //
+                        // 这里在后台把刚写出的字节读回来算一次索引哈希（刚写完，页缓存是热的），
+                        // 并用 FNV 哈希确认读到的仍然是我们写的那一份；不是就跳过，交给文件监听
+                        // 走外部修改的路径。登记口径与 `apply_buffer_change` 的打开 / 重新载入一致。
+                        let expected = hash;
+                        let file = path.clone();
+                        let task = cx.background_executor().spawn(async move {
+                            let bytes = std::fs::read(&file).ok()?;
+                            (rove_buffer::save::content_hash(&bytes) == expected)
+                                .then(|| rove_lang_cs::router::hash_bytes(&bytes))
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let Some(index_hash) = task.await else { return };
+                            let _ = this.update(cx, |view, _| {
+                                let _ = view.nav.router.buffers().saved(&p, index_hash);
+                            });
+                        })
+                        .detach();
                     }
                     let name = path
                         .file_name()

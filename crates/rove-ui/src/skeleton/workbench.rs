@@ -136,6 +136,10 @@ mod acceptance_tests;
 // #44：M2 集成验收——精确度标记的传递链、索引原子替换时的三个视图、降级路径与界面 / 查询层一致性。
 #[cfg(test)]
 mod m2_acceptance_tests;
+// #51：M3 集成验收——编辑 → 高亮 / 大纲 / 面包屑 / 索引精确度的链路、只读文档的保存入口、
+// 外部修改风暴在窗口里的表现，以及真实 Unity 项目文件在窗口里的字节级往返。
+#[cfg(test)]
+mod m3_acceptance_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {

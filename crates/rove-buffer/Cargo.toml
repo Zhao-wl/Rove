@@ -31,3 +31,5 @@ tempfile = "3"
 proptest = "1"
 # #46：Markdown / XML 的 wordPattern 与 R12 对齐（开发依赖环只用于集成测试）。
 rove-syntax.workspace = true
+# #51：M3 集成验收在真实 Unity 项目上做编码往返（路径由环境变量给出，未设置时跳过）。
+rove-test-support.workspace = true

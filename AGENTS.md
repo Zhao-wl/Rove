@@ -341,3 +341,25 @@ M2 的接缝（精确度标记的传递链、索引原子替换时开着的三�
 - 导航准确率的两份基线：精确层 `tests/nav-cases/baseline-l2.md`、近似层
   `tests/nav-cases/baseline-l1.md`（近似层的低准确率是**设计使然**，读法写在那份文件里）。
   用 `--baseline tests/nav-cases/baseline-l2.json --fail-on-regression` 可以做前后对比。
+
+<!-- #51 追加：M3 集成验收 -->
+
+### 8.11 M3 集成验收的编码往返与接缝测试（#51）
+
+M3 的两条硬线（编码往返零差异、编辑 → 保存 → 索引重绑的链路）固化成两组测试，逐条结论、
+性能实测与**人工事项清单**见 [docs/M3_ACCEPTANCE_REPORT.md](docs/M3_ACCEPTANCE_REPORT.md)。
+
+- **编码往返（核心层）**：`cargo test -p rove-buffer --test m3_roundtrip -j 1 -- --nocapture`。
+  它**先扫真实 Unity 项目**（跳过 `Library` / `Temp` / `obj` / `Logs`，每个项目最多 6,000 个文本文件），
+  按编码 / 换行 / 末尾换行 / 单行大小分类，再对每类的真实样本做字节级往返；项目里没有的类别
+  （实测两个项目的非 UTF-8 文件为 **0**）用真实文件的内容 + 构造的编码补齐。
+  **一个字节都不往测试项目里写**（全部在临时目录的副本上做）。`--nocapture` 打印的那张表就是报告 §3。
+- **界面接缝**：`cargo test -p rove-ui m3_ -j 1 -- --nocapture`。合成那几条照常进 CI；
+  `m3_real_project_file_edits_and_saves_byte_identically` 需要 `ROVE_TEST_UNITY_MEDIUM`，缺失时跳过。
+- **改保存路径或 `BufferStates` 登记时务必重跑** `m3_edit_then_save_updates_syntax_outline_breadcrumb_and_precision`：
+  它钉住的是「保存 → 索引重绑 → 查询由近似变精确」。注意**两个「磁盘内容哈希」不是同一个算法**：
+  `SaveOutcome::Saved { hash }` 是 #49 自写去重用的 FNV-1a（`rove_buffer::save::content_hash`），
+  `BufferStates` 比的是 C# 索引文件表的 xxHash64（`rove_lang_cs::router::hash_bytes`）。
+  混用过一次，后果是保存后整份文件的导航结果永远停在「近似」（报告 §5.1）。
+- **输入法矩阵只能实机做**：`spikes/ime_test.ps1` 会抢前台、注入按键、改输入法状态，
+  判据要看截图。#51 本次**一条都没有跑**，全部留在报告的人工清单里——不要把它当成已验收。

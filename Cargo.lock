@@ -4759,6 +4759,7 @@ dependencies = [
  "rove-base",
  "rove-config",
  "rove-syntax",
+ "rove-test-support",
  "tempfile",
  "unicode-segmentation",
  "windows-sys 0.61.2",
