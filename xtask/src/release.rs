@@ -221,8 +221,22 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
 
     // ---------------------------------------------------------------- 4. 安装包
     println!("\n[4/6] 安装包（Inno Setup）");
+    // 组件包必须在建安装包**之前**解析：安装器里那个「安装 C# 索引组件」勾选项
+    // 是 rove.iss 按 /DComponentZip 条件编译出来的，拿不到路径就整段不生成（issue #76 §5）。
+    let component = component_zip(args)?;
+    match &component {
+        Some(path) => println!("  随包携带 C# 索引组件：{}", path.display()),
+        None => println!("  没传 --component：安装器里不会出现「安装 C# 索引组件」勾选项"),
+    }
     let installer = match find_iscc() {
-        Some(iscc) => Some(build_installer(&iscc, &version, &stage, &out, &info)?),
+        Some(iscc) => Some(build_installer(
+            &iscc,
+            &version,
+            &stage,
+            &out,
+            &info,
+            component.as_deref(),
+        )?),
         None => {
             println!("::warning::没找到 Inno Setup 6 的 ISCC.exe，跳过安装包");
             println!("  装好后重跑本命令，或用 ROVE_ISCC 指定 ISCC.exe 的路径。");
@@ -236,7 +250,6 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
 
     // ---------------------------------------------------------------- 5. 校验值与更新清单
     println!("\n[5/6] SHA256 与更新清单");
-    let component = util::flag(args, "--component").map(PathBuf::from);
     let mut artifacts: Vec<PathBuf> = vec![zip.clone()];
     artifacts.extend(installer.clone());
     artifacts.extend(component.clone());
@@ -390,19 +403,59 @@ pub fn find_iscc() -> Option<PathBuf> {
     None
 }
 
+/// 解析 `--component <zip>`，并化成**绝对路径**。
+///
+/// rove.iss 的 `[Files]` 用 `{#ComponentZip}` 原样取文件，相对路径会被当成相对 .iss 所在目录，
+/// 所以这里统一按当前工作目录补全（其余路径参数的习惯一样）。
+fn component_zip(args: &[String]) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let Some(raw) = util::flag(args, "--component") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(&raw);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if !path.is_file() {
+        return Err(format!("--component：找不到组件包 {}", path.display()).into());
+    }
+    Ok(Some(path))
+}
+
+/// ISCC 的 `/D` 参数（不含脚本路径本身）。单独拆出来是为了能在没装 Inno Setup 的机器上测。
+fn iscc_defines(
+    version: &str,
+    stage: &Path,
+    out: &Path,
+    info: &BuildInfo,
+    component: Option<&Path>,
+) -> Vec<String> {
+    let mut defines = vec![
+        format!("/DRoveVersion={version}"),
+        format!("/DRoveCommit={}", info.short_commit),
+        format!("/DStageDir={}", stage.display()),
+        format!("/DOutputDir={}", out.display()),
+    ];
+    // 只有带着组件包时才定义 ComponentZip：没定义时 rove.iss 把「安装 C# 索引组件」
+    // 整段跳过，安装器里就不会出现一个点了没用的勾选项（issue #76 §5）。
+    if let Some(zip) = component {
+        defines.push(format!("/DComponentZip={}", zip.display()));
+    }
+    defines
+}
+
 fn build_installer(
     iscc: &Path,
     version: &str,
     stage: &Path,
     out: &Path,
     info: &BuildInfo,
+    component: Option<&Path>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let script = util::repo_root().join("packaging/windows/rove.iss");
     let status = Command::new(iscc)
-        .arg(format!("/DRoveVersion={version}"))
-        .arg(format!("/DRoveCommit={}", info.short_commit))
-        .arg(format!("/DStageDir={}", stage.display()))
-        .arg(format!("/DOutputDir={}", out.display()))
+        .args(iscc_defines(version, stage, out, info, component))
         .arg(&script)
         .status()
         .map_err(|e| format!("调用 {} 失败：{e}", iscc.display()))?;
@@ -760,6 +813,80 @@ mod tests {
             }
         }
         out
+    }
+
+    /// `--component` 必须真的传到 ISCC：rove.iss 用 `#if ComponentZip != ""` 把
+    /// 「安装 C# 索引组件」整段包了起来，少了这个 `/D` 勾选项就永远不会出现。
+    #[test]
+    fn component_zip_reaches_iscc_as_a_define() {
+        let info = BuildInfo {
+            commit: "0".repeat(40),
+            short_commit: "0000000".into(),
+            date: "2026-11-14".into(),
+            dirty: false,
+        };
+        let stage = PathBuf::from(r"C:\stage");
+        let out = PathBuf::from(r"C:\out");
+
+        let without = iscc_defines("0.1.0", &stage, &out, &info, None);
+        assert!(
+            !without.iter().any(|a| a.starts_with("/DComponentZip=")),
+            "没传 --component 时不能定义 ComponentZip，否则会生成一个装不上东西的勾选项"
+        );
+
+        let zip = PathBuf::from(r"C:\components\rove-indexer-cs-1.2.0.0-win-x64.zip");
+        let with = iscc_defines("0.1.0", &stage, &out, &info, Some(&zip));
+        assert!(
+            with.contains(&format!("/DComponentZip={}", zip.display())),
+            "带 --component 时必须把绝对路径传给 ISCC：{with:?}"
+        );
+        // rove.iss 里那一段确实是靠这个符号开关的。
+        let iss = installer_script();
+        assert!(iss.contains("#if ComponentZip != \"\""));
+        assert!(
+            iss.contains("Name: \"indexer\";"),
+            "「安装 C# 索引组件」勾选项在 [Tasks] 里"
+        );
+    }
+
+    /// 相对路径要补成绝对路径（ISPP 会把相对路径当成相对 .iss 所在目录），
+    /// 路径不存在时要当场报错，而不是等到第 5 步算 SHA256 才炸。
+    #[test]
+    fn component_flag_requires_an_existing_file() {
+        let missing = util::target_dir().join("no-such-component.zip");
+        let err = component_zip(&[format!("--component={}", missing.display())])
+            .expect_err("不存在的组件包必须报错");
+        assert!(err.to_string().contains("找不到组件包"), "{err}");
+
+        assert!(
+            component_zip(&[]).unwrap().is_none(),
+            "不传 --component 时是 None"
+        );
+
+        let file = util::target_dir().join("component-flag-test.zip");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"not a real zip").unwrap();
+        let resolved = component_zip(&[format!("--component={}", file.display())])
+            .unwrap()
+            .unwrap();
+        assert!(
+            resolved.is_absolute(),
+            "传给 ISCC 的必须是绝对路径：{}",
+            resolved.display()
+        );
+        assert_eq!(resolved.file_name(), file.file_name());
+
+        // 相对路径按当前工作目录补全。
+        let name = file.file_name().unwrap().to_string_lossy().into_owned();
+        let here = std::env::current_dir().unwrap();
+        if let Ok(rest) = file.strip_prefix(&here) {
+            let resolved = component_zip(&[format!("--component={}", rest.display())])
+                .unwrap()
+                .unwrap();
+            assert!(resolved.is_absolute());
+            assert_eq!(resolved.file_name().unwrap().to_string_lossy(), name);
+        }
+        fs::remove_file(&file).ok();
     }
 
     #[test]

@@ -57,6 +57,8 @@ const USAGE: &str = "\
       本地发布（#76）：构建 release、组装便携版 zip、调用 Inno Setup 出安装包、
       算 SHA256、生成并用 ed25519 私钥签名 latest.json、写出 Release 说明与上传脚本。
       **不打 tag、不创建 Release、不上传**：上传要人工跑生成出来的 upload.ps1。
+      --component ZIP 同时做两件事：让安装器多出「安装 C# 索引组件」勾选项（离线解压），
+      并把组件包写进 SHA256SUMS.txt 与 latest.json 的 components（体积不计入 30 MB 预算）。
 
   check-version --tag v0.1.0
       校验 tag 与 Cargo.toml 的版本一致（不一致时非零退出）。

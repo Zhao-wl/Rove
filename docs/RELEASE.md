@@ -48,7 +48,9 @@ Markdown 预览资源等**全部嵌在 `rove.exe` 里**，所以包里没有资�
 安装器的约定（逐条对应验收标准，`cargo test -p xtask` 里有对脚本文本的检查）：
 
 - 装到 `%LOCALAPPDATA%\Programs\Rove`，`PrivilegesRequired=lowest`，**只写 `HKCU`，不写 `HKLM`**；
-- 可选项**默认全不勾**：桌面快捷方式、文件关联、文件右键菜单、目录右键菜单、C# 索引组件；
+- 可选项**默认全不勾**：桌面快捷方式、文件关联、文件右键菜单、目录右键菜单、C# 索引组件。
+  其中「安装 C# 索引组件」是条件编译出来的：只有 `cargo xtask release --component <zip>`
+  把组件包带进来（转成 ISCC 的 `/DComponentZip=<绝对路径>`）时才会出现，否则整段不生成；
 - 文件关联走 `HKCU\Software\Classes\Rove.SourceFile` + 各扩展名的 `OpenWithProgids`，
   **不写扩展名的默认值**，所以只出现在「打开方式」里，不抢默认程序。
   清单：`.cs .json .jsonc .yaml .yml .xml .md .log .txt .shader .hlsl .lua .asmdef`；
