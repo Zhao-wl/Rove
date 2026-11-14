@@ -24,6 +24,8 @@ rove-commands = { path = "crates/rove-commands" }
 rove-i18n = { path = "crates/rove-i18n" }
 rove-fuzzy = { path = "crates/rove-fuzzy" }
 rove-search = { path = "crates/rove-search" }
+# #149 自动更新：全程序唯一允许联网的 crate（PROJECT_CHARTER §2.1 的唯一例外）。
+rove-update = { path = "crates/rove-update" }
 
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
 # #7 文本缓冲：rope 快照、编码推断与解码。默认 feature 里的 unicode_lines 会把

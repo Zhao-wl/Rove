@@ -1,0 +1,32 @@
+[package]
+name = "rove-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# issue #149：全程序**唯一**允许联网的 crate（PROJECT_CHARTER §2.1）。
+# 这里的依赖清单本身就是一份审查材料：没有 reqwest / hyper / rustls / ring / tokio，
+# HTTPS 走 Windows 自带的 WinHTTP（系统证书库与系统代理），其余都是纯计算。
+[dependencies]
+rove-base.workspace = true
+# 更新清单是 JSON；解析只用 serde，不做任何求值。
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+# 清单的 ed25519 分离签名（公钥 packaging/release/update-signing.pub 编进 rove.exe）
+# 与安装包的 SHA-256 校验。纯 Rust，不含网络或 TLS。
+ed25519-dalek = "3.0.0"
+sha2 = "0.11.1"
+# 索引组件包（zip）的解压：只用到 deflate，zip 容器由本 crate 自己读（src/zip.rs）。
+flate2.workspace = true
+
+# **唯一**打开 WinHTTP 的地方：`cargo xtask check-deps` 检查除本 crate外没有别的
+# workspace 成员声明网络相关的 windows feature（见 xtask/src/deps.rs）。
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinHttp",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"

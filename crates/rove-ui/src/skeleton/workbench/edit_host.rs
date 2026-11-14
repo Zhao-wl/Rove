@@ -33,8 +33,8 @@ pub(super) struct Editing {
     disk_timer: bool,
     /// 窗口关闭按钮触发了逐个确认。
     closing_window: bool,
-    /// 本窗口（全部确认完后由它关闭）。
-    window: Option<gpui::AnyWindowHandle>,
+    /// 本窗口（全部确认完后由它关闭；#149 的「重启以更新」也用它收尾）。
+    pub(super) window: Option<gpui::AnyWindowHandle>,
     /// 打开服务的具体加载器（编辑后的新快照要回填它的缓存）。
     pub(super) files: Option<Arc<FileDocuments>>,
 }

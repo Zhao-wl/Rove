@@ -23,7 +23,12 @@ impl Workbench {
     /// 命令分发：目前只有「关于 Rove」。
     pub(super) fn about_command(&mut self, id: &str, cx: &mut Context<Self>) {
         if id == about_registry::SHOW_ABOUT {
-            self.about.info = Some(AboutInfo::current());
+            let mut info = AboutInfo::current();
+            // #149：更新状态（已是最新 / 正在下载 / 待重启安装 / 更新已关闭 / 上次检查失败）。
+            if let Some(service) = self.update_service() {
+                info = info.with_update(service.state().clone());
+            }
+            self.about.info = Some(info);
             cx.notify();
         }
     }

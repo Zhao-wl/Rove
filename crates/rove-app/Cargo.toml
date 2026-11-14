@@ -26,3 +26,6 @@ rove-commands.workspace = true
 rove-i18n.workspace = true
 # #76：「关于」对话框的颜色键登记（端到端登记测试）。
 rove-theme.workspace = true
+# #149：自动更新的命令 / 字符串 / 设置项登记（端到端登记测试）。
+rove-update.workspace = true
+rove-base.workspace = true

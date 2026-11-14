@@ -48,6 +48,8 @@ flowchart TD
  search --> buffer
  search --> config
  search --> base
+ ui --> update[rove-update]
+ update --> base
 ```
 
 | crate | 职责 | GPUI |
@@ -64,6 +66,7 @@ flowchart TD
 | rove-docview | 结构树节点，复用语法符号模型 | 禁止 |
 | rove-fuzzy | VS Code `fuzzyScorer` 的逐条移植（快速打开排序）与命令面板的单词过滤 | 禁止 |
 | rove-search | 全局搜索引擎（#25，见 §32）：`search.*` 语义、并行流式结果、取消、编码识别 | 禁止 |
+| rove-update | 自动更新（#149，见 §52）：清单解析、ed25519 验签、版本比较、WinHTTP 下载、状态机、组件更新。**全程序唯一允许联网的 crate** | 禁止 |
 | rove-ui | 打开/定位/关闭、反馈、列表/树、快速输入、贡献点 | 允许 |
 | rove-app | 入口、服务装配与窗口生命周期 | 允许 |
 
@@ -2006,4 +2009,55 @@ K&R 风格下两者同在声明行。`#region` 不在查询里（由 #12 的 `fo
 RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与生成结果一致、tag 与版本不一致时失败）；
 `cargo test -p rove-ui about`（「关于」的取值、复制文本、三种组件状态的文案，以及真实 GPUI 窗口里的
 入口测试：命令打开对话框、复制进剪贴板并回执、关闭、第三方声明按钮）。
+
+## 52. 自动更新：唯一的网络出口（#149）
+
+位置：核心层 `crates/rove-update/`（**不依赖 gpui**，登记在 `.github/core-crates.txt`），界面一侧
+`crates/rove-ui/src/update/`（登记项与决策）与 `crates/rove-ui/src/skeleton/workbench/update_host.rs`
+（窗口装配）。设置项 `rove.update.mode` 在 #13 的内置设置目录里（`docs/compat/SETTINGS.md` §4，
+由 `scripts/compat/gen_compat_docs.py` 的 `ROVE_SETTINGS` 生成）。清单格式、请求清单、失败分级与
+演练办法在 [UPDATE](UPDATE.md)，发布侧（生成与签名 `latest.json`）在 [RELEASE](RELEASE.md) §4。
+本 issue 没有对应的 `SKELETON(...)` 标记：#2 的骨架不含自动更新。
+
+| 模块 | 内容 |
+|---|---|
+| `rove-update::endpoint` | 写死的清单地址（`https://github.com/Zhao-wl/Rove/releases/latest/download`）；演练用的覆盖只在 `cfg(debug_assertions)` 里编译 |
+| `rove-update::http` | **唯一的网络出口**：`Transport` trait + WinHTTP 实现（系统证书库与系统代理，不从 https 掉到 http）。`StubTransport` 让其余模块脱离网络测试 |
+| `rove-update::signature` | 内嵌公钥（`include_str!` 仓库里的 `packaging/release/update-signing.pub`）与 ed25519 分离签名验证；对**字节**验签，不重新序列化 JSON |
+| `rove-update::manifest` | `latest.json`（`schema = 1`）：严格校验 `schema` / `product` / `version`，不认识的字段忽略（向前兼容）；`min_version` 可选 |
+| `rove-update::version` | 2–4 段版本号 + 可选预发布标签；**解析不了就当没有更新** |
+| `rove-update::download` | 边写边算 SHA-256：先落 `.part`，`size` 与 `sha256` 都对上才改名；失败删文件 |
+| `rove-update::paths` | `%LOCALAPPDATA%\Rove\updates\`（`pending.json` + 一个安装包）、`logs\update.log` |
+| `rove-update::mode` | `rove.update.mode` 的四个取值 → 启动检查延迟、周期、是否后台下载 |
+| `rove-update::engine` | `Updater::check / download / take_pending_after_start`；**`none` 时根本不构造传输层** |
+| `rove-update::install` | 静默安装参数来自清单；`cmd /D /C "<安装包> <参数> & start "" "<rove.exe>""`；便携版判定 |
+| `rove-update::component` | #43 索引组件的跟随更新：只在已安装时下载，解到 `.staging` 校验后整体改名，旧版本下次启动清理 |
+| `rove-update::zip` | 自写只读 zip（存储 + deflate）：路径穿越整包作废、解压总量有上限，不为这点需求再加依赖 |
+| `rove-ui::update` | 命令 `update.checkForUpdates` / `update.restartToUpdate`、界面字符串、齿轮菜单项（**状态栏不加常驻条目**）；`UpdateService` 把检查结果翻译成 `Step`（状态栏消息 / 带按钮的通知 / 开始下载） |
+| `skeleton/workbench/update_host.rs` | 首帧之后才排第一次检查；检查与下载跑在后台执行器上；「重启以更新」复用 #49/#50 的关窗口收尾（热退出存会话）后拉起安装器 |
+
+**几条定死的约定**：
+
+- **联网代码只在 `rove-update` 一个 crate 里**，而且只在 `http` 一个模块里。
+  `cargo xtask check-deps` 现在除了守 #74 的 HTTP/TLS 栈，还逐个扫 workspace 成员的
+  `Cargo.toml`：除 `rove-update` 外任何 crate 打开 `Win32_Networking_*` 之类的
+  `windows` feature 都以 `::error::` 失败。
+- **地址与公钥在发布构建里是常量**：覆盖它们的代码（环境变量 `ROVE_UPDATE_TEST_BASE_URL`、
+  `Updater::set_test_public_key`）整段裹在 `#[cfg(debug_assertions)]` 里，release 的
+  `rove.exe` 里根本不存在，所以没有任何运行期开关能把更新指向别处。
+- **五种「不更新」**（签名错、版本号非法、版本号不更新、SHA-256 不符、体积不符）结果一致：
+  当作没有更新，旧版本不受影响；前三种静默，后两种删文件并发通知。
+- **冷启动预算不受影响**：第一次检查挂在 `render` 的 `first_frame` 分支里
+  （`default` 延迟 20 秒，`start` 延迟 2 秒），`none` / `manual` 启动时不检查。
+- **不弹模态框、不加状态栏条目**：按 `UX_SPEC` §6.1，更新只用状态栏临时消息（第 1 级）
+  与带按钮的通知（第 4 级）。
+
+验证：`cargo test -p rove-update`（版本比较、清单解析、ed25519 含 RFC 8032 向量、五种「不更新」、
+四个 mode、zip 路径穿越、日志每请求一行、待安装记录）、
+`cargo test -p rove-update --test rehearsal`（本机 HTTP 服务器 + 真实 WinHTTP 的
+「v0.1.0 → v0.1.1」演练、组件跟随升级与旧版本清理、安装包被动过手脚、换钥匙签的清单、
+`none` 零连接）、`cargo test -p rove-ui update`（四个 mode 的界面行为、通知按钮、
+「关于」里的更新状态行、不加状态栏条目）、
+`cargo test -p rove-app --test workbench_registration`（命令 / 字符串 / 菜单 / 设置项全部走登记机制）、
+`cargo test -p xtask deps`（只有 `rove-update` 打开网络 feature）。
 

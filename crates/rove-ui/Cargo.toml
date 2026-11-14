@@ -18,6 +18,8 @@ rove-lang-cs.workspace = true
 rove-docview.workspace = true
 rove-fuzzy.workspace = true
 rove-search.workspace = true
+# #149：自动更新（联网只发生在这个 crate 里；rove-ui 只做命令、提示与「关于」里的状态）。
+rove-update.workspace = true
 
 gpui.workspace = true
 serde_json.workspace = true
