@@ -688,7 +688,8 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 | 模块 | 内容 |
 |---|---|
 | `source.rs` | 解析输入：从 `TextSource::visit_chunks` 读一次，存成至多 64 KiB 的共享分片；tree-sitter 的读取回调和查询的 `TextProvider` 直接读分片。编辑只重建受影响的分片，其余分片与上一版共享，增量路径不再复制全文 |
-| `csharp_parts.rs` | C# 分区并行：词法扫描识别注释、普通/逐字/插值字符串（含嵌套插值洞）、字符、`@标识符` 与条件指令（`#if/#elif/#else/#endif` 必须在同一花括号深度配对），只在没有括号、方括号和条件块未闭合的成员边界切分。容器取“唯一的一对花括号”逐层下探（`namespace N { class C { … } }`），多顶层类型时取编译单元。每个分区带真实的头尾作为 included ranges 解析，校验无错误且直接成员都是独立声明后，在同一个工作线程里查询并排序 capture。线程来自 `WorkerPool`：默认是进程共享池（硬件线程数，最多 16），并发文档按剩余线程分配；`TreeSitterSyntax::with_parallelism(n)` 用私有池（测试据此与其他分析隔离）。工作线程 panic 转成 `NotReady`，panic 信息写到 stderr（前缀 `rove-syntax:`） |
+| `csharp_parts.rs` | C# 分区并行：词法扫描识别注释、普通/逐字/插值字符串（含嵌套插值洞）、字符、`@标识符` 与条件指令（`#if/#elif/#else/#endif` 必须在同一花括号深度配对），只在没有括号、方括号和条件块未闭合的成员边界切分。容器取“唯一的一对花括号”逐层下探（`namespace N { class C { … } }`），多顶层类型时取编译单元。每个分区带真实的头尾作为 included ranges 解析，校验无错误且直接成员都是独立声明后，在同一个工作线程里取 capture 并排序。可见区域优先时（#117）只给与可见字节区间相交的分区取 capture，并把覆盖到的字节区间一起返回，调用方据此决定能否复用。线程来自 `WorkerPool`：默认是进程共享池（硬件线程数，最多 16），并发文档按剩余线程分配；`TreeSitterSyntax::with_parallelism(n)` 用私有池（测试据此与其他分析隔离）。工作线程 panic 转成 `NotReady`，panic 信息写到 stderr（前缀 `rove-syntax:`） |
+| `csharp_walk.rs` | C# 高亮不走查询引擎（#117）：按 tree-sitter 的 kind id 建规则表，一次前序遍历按「节点 kind + 字段 + 祖先 kind」判定 capture。规则与顺序和 `queries/csharp/highlights.scm` 一一对应（只有相对顺序影响装配）；查询实现保留为 `Grammar::capture_with_query`，单元测试逐 capture 比对两者（覆盖每条规则的 fixture、黄金着色 fixture、残缺输入、子区间，以及设了 `ROVE_TEST_UNITY_MEDIUM` 时真实项目里抽样的 400 个 .cs）。带 scan 区间时用 `goto_first_child_for_byte` 入场，不逐个跨过前面的兄弟节点 |
 | `rows.rs` | 行表：一次扫描按 LF/CRLF/单独 CR 切分，再与 `TextSource::line_range` 核对行数和 64 个抽样行，不一致时逐行读取；编辑时只重读编辑附近的行，其后的行按字节差平移 |
 | `documents.rs` | `DocumentHighlighter`（编辑器持有的接缝：`analyze(document, text, language, edit, visible, cancel)` 与 `close(document)`）；`SyntaxDocuments` 按 `DocumentId` 各自保存基线，`Stateless` 把任意 `SyntaxService`（如 `EmptySyntaxService`）包装成同一接口 |
 | `mod.rs` | 编辑：只核对编辑区及前后 256 字节和总长度（`EDIT_CONTEXT`），编辑点的 tree-sitter 坐标从旧树就近节点推算，不再从头扫描。整树基线做常规增量解析；分区基线只重解析包含编辑的那个分区（编辑落在头尾或分区边界时整文件重建），变化行取该分区新旧树的 changed ranges。Markdown 把扫描行扩到完整的行内区域（`inline`、表格单元格）和代码围栏，只重新注入这些区域。`DocumentSyntax::with_visible(lines)` 在没有基线时只给可见行生成 token（结果标为 partial，不作为编辑基线）；对同一文本再分析一次时复用其解析结果补全其余行。`ROVE_SYNTAX_TRACE=1` 时每次分析在 stderr 打印读取、解析、行表、查询、token 生成的分段耗时 |
@@ -712,6 +713,9 @@ GPUI 接入（`crates/rove-ui/src/keys.rs`）：全应用只有一个按键入�
 Markdown 局部更新与回退、可见区域优先、按文档基线、设置层；`csharp_parts` 单元测试覆盖 Unity 特征分区、不安全边界与分区重解析）；
 `cargo test -p rove-ui syntax_tests`（真实窗口：大文件先显示后着色、版本不符与关闭后的结果、`files.associations`、
 主题按选择器特异性取色）。性能：`cargo xtask bench --filter syntax/ --check-budgets`，用 `RopeText` 计入缓冲区读取与取行开销。
+受预算判定的是 `syntax/csharp_visible_1mb_unity`（首次打开 1 MB Unity 特征 C# 到可见区域出高亮，< 50 ms）；
+`syntax/csharp_initial_1mb_unity`（全量，后台补齐）只记录、不设门槛。口径见 [PROJECT_CHARTER](PROJECT_CHARTER.md) §6
+（2026-11-14 修订）与 `perf/budgets.toml`。
 
 ## 22. 文档符号、大纲、面包屑与转到符号（#26）
 

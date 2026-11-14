@@ -15,6 +15,9 @@ fn rope(text: &str) -> Arc<dyn TextSource> {
     Arc::new(RopeText::from_text(text))
 }
 
+/// 一屏可见行数（首屏口径，与 #115 的「先显示可见区域」一致）。
+const VISIBLE_LINES: u64 = 50;
+
 fn benchmark(c: &mut Criterion) {
     // Measure completed analysis even when this worker is temporarily descheduled.
     let syntax = TreeSitterSyntax::default().with_refresh_budget(Duration::from_secs(30));
@@ -90,6 +93,26 @@ fn benchmark(c: &mut Criterion) {
     let unity = rope(&unity_source());
     group.bench_function("csharp_initial_1mb_unity", |b| {
         b.iter(|| black_box(analyze(&syntax, unity.clone())))
+    });
+    // 首次打开的口径（#117）：没有上一份结果要释放，只量「可见区域出高亮」。
+    // `iter_batched` 把上一轮结果的回收放在计时之外，`with_visible` 之后的全量补齐
+    // 在后台进行，由 csharp_initial_1mb_unity 记录。
+    let viewport = Span::new(Line(0), Line(VISIBLE_LINES)).unwrap();
+    group.bench_function("csharp_visible_1mb_unity", |b| {
+        b.iter_batched(
+            || syntax.document().with_visible(viewport.clone()),
+            |document| {
+                let update = analyze(&document, unity.clone());
+                assert!(!update.snapshot.tokens(Line(1)).unwrap().is_empty());
+                assert!(update
+                    .snapshot
+                    .tokens(Line(VISIBLE_LINES + 100))
+                    .unwrap()
+                    .is_empty());
+                black_box(update)
+            },
+            BatchSize::PerIteration,
+        )
     });
     group.finish();
 }

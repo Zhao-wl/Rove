@@ -374,6 +374,73 @@ fn visible_first_results_are_completed_by_the_next_analysis() {
     assert!(Arc::ptr_eq(&again.snapshot, &complete.snapshot));
 }
 
+/// #117: a visible-first build of a partitioned C# document only captures the parts the
+/// viewport reaches into, and the completing analysis still equals a full parse.
+#[test]
+fn visible_first_csharp_matches_a_full_parse_of_every_line() {
+    let source = unity_namespace(700);
+    assert!(source.len() > 256 * 1024);
+    let text: Arc<dyn TextSource> = Arc::new(RopeText::from_text(&source));
+    let lines = text.lines().known;
+    let syntax = TreeSitterSyntax::default().with_parallelism(4);
+    let document = syntax.document();
+    let visible = Span::new(Line(0), Line(40)).unwrap();
+
+    let first = run(&document.with_visible(visible), "csharp", text.clone());
+    assert!(document.is_partial());
+    assert!(first.changed_lines.is_none());
+    assert!(!first.snapshot.tokens(Line(5)).unwrap().is_empty());
+    assert!(first.snapshot.tokens(Line(lines - 3)).unwrap().is_empty());
+
+    let full = run(&TreeSitterSyntax::default(), "csharp", text.clone());
+    assert_eq!(
+        dump(first.snapshot.as_ref(), &source, 40),
+        dump(full.snapshot.as_ref(), &source, 40),
+        "可见区域的 token 必须和整文件解析一致"
+    );
+
+    let complete = run(&document, "csharp", text);
+    assert!(!document.is_partial());
+    assert_eq!(
+        dump(complete.snapshot.as_ref(), &source, lines),
+        dump(full.snapshot.as_ref(), &source, lines)
+    );
+}
+
+/// A viewport at the end of a partitioned document captures the parts it needs, not the
+/// ones the first viewport would have.
+#[test]
+fn visible_first_csharp_works_at_the_end_of_the_document() {
+    let source = unity_namespace(700);
+    let text: Arc<dyn TextSource> = Arc::new(RopeText::from_text(&source));
+    let lines = text.lines().known;
+    let document = TreeSitterSyntax::default().with_parallelism(4).document();
+    let visible = Span::new(Line(lines - 20), Line(lines)).unwrap();
+
+    let first = run(&document.with_visible(visible), "csharp", text.clone());
+    let full = run(&TreeSitterSyntax::default(), "csharp", text);
+    assert!(first.snapshot.tokens(Line(2)).unwrap().is_empty());
+    let tail = |snapshot: &dyn SyntaxSnapshot| {
+        (lines - 20..lines)
+            .map(|row| {
+                snapshot
+                    .tokens(Line(row))
+                    .unwrap()
+                    .iter()
+                    .map(|token| {
+                        (
+                            token.range.start().0,
+                            token.range.end().0,
+                            token.scopes.join(" "),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(tail(first.snapshot.as_ref()), tail(full.snapshot.as_ref()));
+}
+
 fn analyze(
     documents: &SyntaxDocuments,
     id: u64,

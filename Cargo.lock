@@ -4799,6 +4799,7 @@ dependencies = [
  "rove-base",
  "rove-buffer",
  "rove-config",
+ "rove-test-support",
  "rove-theme",
  "serde",
  "serde_json",

@@ -159,6 +159,10 @@ Rove 的行为与「VS Code 没有装对应语法扩展」时一致：这段文�
 实测 0.17–0.31 ms。`csharp_initial_1mb_unity` 的 50 ms 预算在 main 上就还是 `pending`（见
 `budgets.toml` 里 #94 的说明），本次没有改变它的状态。
 
+> 2026-11-14（#117）：C# 高亮已改为直接遍历语法树（`csharp_walk.rs`），不再跑查询引擎，
+> 本节这些数字出自改动之前的查询实现；规则本身（`highlights.scm`）没有变，遍历结果与查询结果
+> 逐 capture 一致。预算口径也在同一天按章程修订，判定项换成了 `syntax/csharp_visible_1mb_unity`。
+
 ## 6. 加一种语言
 
 在 `tests/golden/thresholds.toml` 的 `[languages]` 下加一行：

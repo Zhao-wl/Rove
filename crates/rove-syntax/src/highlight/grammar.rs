@@ -280,7 +280,24 @@ impl Grammar {
         Ok(leaf.is_some_and(|n| n.kind() == "integer_literal" && n.byte_range() == (0..new.len())))
     }
 
+    /// Captures of `scan`. C# walks the tree directly (#117); the other grammars run the
+    /// bundled query.
     pub fn capture(
+        self,
+        tree: &Tree,
+        source: &Source,
+        scan: Range<usize>,
+        output: &mut Vec<Capture>,
+        work: &Work<'_>,
+    ) -> Result<()> {
+        if self == Self::Csharp {
+            return super::csharp_walk::capture(tree, source, scan, output, work);
+        }
+        self.capture_with_query(tree, source, scan, output, work)
+    }
+
+    /// The query engine, kept as the reference implementation of the bundled rules.
+    pub fn capture_with_query(
         self,
         tree: &Tree,
         source: &Source,
@@ -320,7 +337,7 @@ fn parse(
 /// （`punctuation.whitespace.comment.leading.cs`），而 tree-sitter 的 `comment` 节点从 `//`
 /// 开始。缩进与注释同色在小地图、注释带背景的主题下看得出区别，这里与 VS Code 对齐。
 /// 行内注释（前面还有代码）不受影响：扫到非空白就原样返回。
-fn leading_whitespace(source: &Source, start: usize) -> usize {
+pub(super) fn leading_whitespace(source: &Source, start: usize) -> usize {
     let mut at = start;
     while at > 0 {
         match source.byte(at - 1) {
@@ -615,7 +632,7 @@ mod tests {
         }
         let mut captures = Vec::new();
         grammar
-            .capture(&tree, &text, 0..source.len(), &mut captures, &work)
+            .capture_with_query(&tree, &text, 0..source.len(), &mut captures, &work)
             .unwrap();
         let mut actual: Vec<_> = captures
             .iter()
