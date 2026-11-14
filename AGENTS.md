@@ -324,3 +324,20 @@ cargo run -p xtask -- check-deps                    # 网络出口与 HTTP/TLS �
 - 截图与**真正的双显示器混合 DPI** 不能用模拟代替：清单与判据在 [docs/DPI_CHECKLIST.md](docs/DPI_CHECKLIST.md)，
   发版前与改动渲染路径后重跑。
 
+
+<!-- #44 追加：M2 集成验收 -->
+
+### 8.10 M2 集成验收的接缝测试（#44）
+
+M2 的接缝（精确度标记的传递链、索引原子替换时开着的三个视图、组件缺失的降级、界面与查询层是否一致）
+固化在 `crates/rove-ui/src/skeleton/workbench/m2_acceptance_tests.rs`，分工与结论见
+[docs/M2_ACCEPTANCE_REPORT.md](docs/M2_ACCEPTANCE_REPORT.md)。
+
+- 合成那几个测试照常进 CI：`cargo test -p rove-ui m2_ -j 1`。
+- 其中 `m2_real_project_ui_matches_the_query_layer` 还需要 `ROVE_TEST_UNITY_MEDIUM` **和**该项目的
+  L2 索引文件（默认 `target/nav-check/medium.idx`，可用 `ROVE_NAV_INDEX_MEDIUM` 指定）。缺任何一项
+  都跳过并把原因打到 stderr，不算失败。索引用
+  `cargo run --release -p rove-lang-cs --example nav_check -- --build` 生成。
+- 导航准确率的两份基线：精确层 `tests/nav-cases/baseline-l2.md`、近似层
+  `tests/nav-cases/baseline-l1.md`（近似层的低准确率是**设计使然**，读法写在那份文件里）。
+  用 `--baseline tests/nav-cases/baseline-l2.json --fail-on-regression` 可以做前后对比。

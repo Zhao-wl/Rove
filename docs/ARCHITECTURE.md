@@ -239,6 +239,7 @@ cargo test --workspace
 | `references` | 无骨架标记（#2 没有引用视图的临时实现）：已由 `rove-ui::references`、`rove-ui::workspace_symbols` 与 `skeleton/workbench/references_host.rs` 实现（见 §49）：转到类型定义、`Ctrl+T` / `#` 工作区符号、面板里的侧边「引用」视图与 `references.preferredLocation` 的一处开关 | #60（已完成） |
 | `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
 | `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
+| `metadata-view` | 无骨架标记（#2 没有元数据视图这种文档类型）：已由 `rove-lang-cs::metadata_view` 与 `rove-ui::metadata`、`skeleton/workbench/metadata_host.rs` 实现（见 §26、§35）：`rove-cs-metadata:` 虚拟资源、只读文档、`X [元数据]` 标签与 DLL 路径悬停、`#region` 头、面包屑、`showDocs` 热切换、索引原子替换后换进同一个标签 | #34、#42（已完成） |
 
 数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -2112,3 +2113,32 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 运行：`cargo test -p rove-ui acceptance_ -j 1 -- --nocapture`（数字与逐条结论见验收报告）。
 不可自动化的部分（截图对照、真实输入法、双显示器混合 DPI、干净虚拟机、1 GB 日志的手感）留在报告的
 人工清单里，不伪造结果。
+
+## 55. M2 集成验收（#44）
+
+这是**验证型** issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约，也没有
+`SKELETON(...)` 标记要替换（M2 的标记在各自的 issue 里已经删完，审计结论见
+[M2_ACCEPTANCE_REPORT](M2_ACCEPTANCE_REPORT.md) §5）。本次把上表补了一行 `metadata-view`
+（#34 / #42 新增的文档类型，之前只有 §26、§35 的正文，没有在对照表里登记）。
+
+位置：`crates/rove-ui/src/skeleton/workbench/m2_acceptance_tests.rs`（`workbench.rs` 只追加一行
+`mod m2_acceptance_tests;`）。与 M2 各 issue 自己的入口测试的分工：
+
+| | 各 issue 的入口测试（#38 / #40 / #41 / #42 / #36） | #44 的验收测试 |
+|---|---|---|
+| 覆盖的是 | **某一层在某一个状态下**的行为 | **状态之间的切换**与**几层串起来之后**的一致性 |
+| 典型断言 | 「构建中时速览标题带近似标记」 | 「构建中 → 就绪的那一跳：没有按键，高亮自己变了，提示不重弹，标签不重开」 |
+| 数据 | 临时目录里的合成索引 | 同上；另有一组用 `ROVE_TEST_UNITY_MEDIUM` 与它的真实 L2 索引 |
+| 缺项目 / 缺索引时 | 照跑 | 真实项目那一组整组跳过并打印原因，CI 不受影响 |
+
+两条被验收的接缝链路（issue #44「风险与提示」点名的两处）：
+
+1. **精确度标记的传递链**：#38 的 `QueryResult::precision` → #40 的状态栏提示 / 高亮层 →
+   #41 的标题标记 → #42 决定是否打开视图。测试强制索引处于**构建中 / 已就绪 / 文件已修改 /
+   组件未安装**四种状态，每种状态下都把查询层的回答和界面的呈现放在一起比。
+2. **索引原子替换的那一瞬间**：速览窗口、元数据视图、语义同名高亮**同时开着**时换索引，断言
+   元数据标签换进新内容（不是旧快照）、标签集合不变、速览重开后结果数与精确度不变、不弹通知。
+
+真实项目那一组（`m2_real_project_ui_matches_the_query_layer`）做的是 issue 目标 2 的自动化部分：
+把索引里记下的出现位置当成光标位置，先问 `CsRouter`，再在真实窗口里按 `F12`，逐点比较落点。
+它只能证明**界面与查询层一致**；悬停签名的排版、近似标记的观感、截图对照仍然是人工事项。

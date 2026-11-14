@@ -133,6 +133,9 @@ mod welcome_tests;
 // #31：M1 集成验收——场景清单里可自动化的部分跑在真实 Unity 项目上（环境变量缺失时跳过）。
 #[cfg(test)]
 mod acceptance_tests;
+// #44：M2 集成验收——精确度标记的传递链、索引原子替换时的三个视图、降级路径与界面 / 查询层一致性。
+#[cfg(test)]
+mod m2_acceptance_tests;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
