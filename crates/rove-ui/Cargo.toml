@@ -61,3 +61,5 @@ rove-test-support.workspace = true
 futures-lite = "2"
 # #74：no_network 入口测试要捕获被拒绝请求写出的日志。
 log = "0.4"
+# #31：M1 集成验收把真实项目里的中文注释源码转成 GBK 再打开（两个测试项目自己没有非 UTF-8 文件）。
+encoding_rs.workspace = true

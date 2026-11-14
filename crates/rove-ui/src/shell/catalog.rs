@@ -851,7 +851,6 @@ const STRINGS: &[(&str, &str)] = &[
     ("status.notifications.dnd", "勿扰模式已开启"),
     ("commandCenter.placeholder", "{name}"),
     ("commandCenter.tooltip", "搜索 {name}"),
-    ("commandCenter.notImplemented", "快速打开尚未实现"),
     ("layout.toggleSidebar", "切换主侧边栏 ({key})"),
     ("layout.togglePanel", "切换面板 ({key})"),
     ("window.minimize", "最小化"),

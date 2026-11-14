@@ -216,10 +216,10 @@ cargo test --workspace
 | 标记 | 最简实现与位置（相对 skeleton/） | 替换 issue |
 |---|---|---|
 | `buffer` | 已由 `rove-buffer` 实现：编码识别（BOM/自动/候选）、换行符、rope 快照与坐标转换；`text.rs` 只保留文档缓存与打开策略 | #7（已完成） |
-| `syntax` | 已迁入 `rove-syntax::highlight`：五种语言、增量解析和逐行 scope，以及 #118 的语法折叠区间（见 §50） | #9 |
+| `syntax` | 已迁入 `rove-syntax::highlight`：五种语言、增量解析和逐行 scope，以及 #118 的语法折叠区间（见 §50） | #9（已完成） |
 | `theme` | 已由 `rove-theme::ThemeService` 实现：VS Code 主题 JSON（include 链）、vscode-textmate scope 匹配、颜色默认值表与用户覆盖；`workbench.rs` 直接装配该服务 | #10（已完成） |
 | `commands` | 已由 `rove-commands` 实现：命令登记与分发、keybindings.json、键表达式、when、和弦；`commands.rs` 只保留窗口的命令装配，`workbench.rs` 的 `on_key_down` 接 `rove_ui::keys` | #14（已完成） |
-| `workspace` | 已由 #15 替换为 `rove-workspace`：流式并行扫描（不读 `.gitignore`）、`files.exclude`/`rove.files.extraExclude` 合并、只读规则真值表、文件监听（溢出重扫、重命名还原） | #15 |
+| `workspace` | 已由 #15 替换为 `rove-workspace`：流式并行扫描（不读 `.gitignore`）、`files.exclude`/`rove.files.extraExclude` 合并、只读规则真值表、文件监听（溢出重扫、重命名还原） | #15（已完成） |
 | `workbench` | 已由 `rove-ui::shell` 实现（见 §14）：标题栏与命令中心、菜单、活动栏、侧边栏、面板、状态栏容器、布局持久化、五级反馈；骨架只保留装配（`workbench.rs` 实现 `ShellHost`） | #16（已完成） |
 | `editors` | 已由 `rove-ui::editors` 实现（见 §17）：编辑器组网格、标签（预览/固定/拖动）、打开文档服务、导航历史、编辑器类型解析；`workbench/editor_panes.rs` 绘制组与标签栏，每个组挂一个 `CodeView`；`text.rs` 只保留文档弱引用缓存 | #17（已完成） |
 | `lists` | 已由 `rove-ui::list_widget` 实现：虚拟化列表/树/快速输入与全部 `list.*`、`quickInput.*` 命令（见下文“列表、树与快速输入组件”）；骨架文件树的数据与控制已改用 `ListWidget` + `TreeModel` | #18（已完成） |
@@ -2089,3 +2089,26 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 测试窗口的缩放系数由 vendor 补丁提供（`vendor/gpui/ROVE_PATCHES.md` 的 R30 条目）。
 截图与真正的双显示器混合 DPI 走人工清单 [DPI_CHECKLIST](DPI_CHECKLIST.md)。
 
+## 54. M1 集成验收（#31）
+
+这是**验证型** issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约，也没有
+`SKELETON(...)` 标记要替换（M1 的标记在各自的 issue 里已经删完，审计结论见
+[M1_ACCEPTANCE_REPORT](M1_ACCEPTANCE_REPORT.md) §4）。
+
+位置：`crates/rove-ui/src/skeleton/workbench/acceptance_tests.rs`（`workbench.rs` 只追加一行
+`mod acceptance_tests;`）。与各 issue 自己的入口测试的分工：
+
+| | 各 issue 的入口测试 | #31 的验收测试 |
+|---|---|---|
+| 数据 | 临时目录里的合成文件 | `ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE` 指向的真实 Unity 项目 |
+| 目标 | 本模块的行为 | **接缝**：排除规则与 `.gitignore` 的关系、真实文件的编码 / 换行符、`.md` 的来源语义、包缓存只读、共用设置热加载、真实五种文件类型的大纲 |
+| 缺项目时 | 照跑 | 整组跳过（`UnityProject::path` 打印「已跳过」），CI 不受影响 |
+
+测试本身只读项目：窗口的根目录是项目本身，但共用 `settings.json` 放在临时用户目录里（场景 13 在
+那里改设置来模拟 VS Code 侧的改动），断言里逐条核对磁盘字节未被改动。两个项目都没有非 UTF-8 的源码
+文件，所以场景 6 取真实项目里带中文注释的 `.cs`，把内容转成 GBK 写进临时工作区再打开——内容真实、
+编码构造，不往测试项目里写任何东西。
+
+运行：`cargo test -p rove-ui acceptance_ -j 1 -- --nocapture`（数字与逐条结论见验收报告）。
+不可自动化的部分（截图对照、真实输入法、双显示器混合 DPI、干净虚拟机、1 GB 日志的手感）留在报告的
+人工清单里，不伪造结果。
