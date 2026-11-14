@@ -2,8 +2,8 @@
   "format": 1,
   "source": "l2",
   "sources": [
-    "medium：完整语义索引（格式 v2，索引进程 1.0.2.0，7718 个文件）",
-    "large：完整语义索引（格式 v2，索引进程 1.0.2.0，21221 个文件）"
+    "medium：完整语义索引（格式 v2，索引进程 1.2.0.0，7718 个文件）",
+    "large：完整语义索引（格式 v2，索引进程 1.2.0.0，21908 个文件）"
   ],
   "skipped": [],
   "summary": [
@@ -90,8 +90,8 @@
     {
       "project": "large",
       "category": "external",
-      "pass": 0,
-      "fail": 6,
+      "pass": 6,
+      "fail": 0,
       "stale": 0,
       "unsupported": 0
     },
@@ -218,8 +218,8 @@
     {
       "project": "medium",
       "category": "external",
-      "pass": 0,
-      "fail": 6,
+      "pass": 6,
+      "fail": 0,
       "stale": 0,
       "unsupported": 0
     },
@@ -1592,16 +1592,14 @@
       "id": "m-external-01",
       "project": "medium",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 M:UnityEngine.GameObject.GetComponent``1，实际没有落点（无元数据视图）；绑定到 T GameObject.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.GameObject.GetComponent``1]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:22:22",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "M:UnityEngine.GameObject.GetComponent``1",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "M:UnityEngine.GameObject.GetComponent``1",
       "actual_symbol": "T GameObject.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.GameObject.GetComponent``1]",
       "expected_refs": null,
       "actual_refs": 389,
@@ -1611,16 +1609,14 @@
       "id": "m-external-02",
       "project": "medium",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 T:UnityEngine.MonoBehaviour，实际没有落点（无元数据视图）；绑定到 MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs:7:47",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "T:UnityEngine.MonoBehaviour",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "T:UnityEngine.MonoBehaviour",
       "actual_symbol": "MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]",
       "expected_refs": null,
       "actual_refs": 115,
@@ -1630,16 +1626,14 @@
       "id": "m-external-03",
       "project": "medium",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 P:UnityEngine.Transform.position，实际没有落点（无元数据视图）；绑定到 Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Presentation/Rendering/GrfDeferredLighting.cs:63:47",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "P:UnityEngine.Transform.position",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "P:UnityEngine.Transform.position",
       "actual_symbol": "Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]",
       "expected_refs": null,
       "actual_refs": 367,
@@ -1649,16 +1643,14 @@
       "id": "m-external-04",
       "project": "medium",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 M:UnityEngine.Debug.Log(System.Object)，实际没有落点（无元数据视图）；绑定到 void Debug.Log(object message) [UnityEngine.CoreModule|M:UnityEngine.Debug.Log(System.Object)]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Editor/AnimationDiagnostics/LogicalPoseWindow.cs:45:19",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "M:UnityEngine.Debug.Log(System.Object)",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "M:UnityEngine.Debug.Log(System.Object)",
       "actual_symbol": "void Debug.Log(object message) [UnityEngine.CoreModule|M:UnityEngine.Debug.Log(System.Object)]",
       "expected_refs": null,
       "actual_refs": 198,
@@ -1668,16 +1660,14 @@
       "id": "m-external-05",
       "project": "medium",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 M:UnityEngine.Mathf.RoundToInt(System.Single)，实际没有落点（无元数据视图）；绑定到 int Mathf.RoundToInt(float f) [UnityEngine.CoreModule|M:UnityEngine.Mathf.RoundToInt(System.Single)]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Editor/VisualMotion/VisualMotionPublication.cs:150:32",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "M:UnityEngine.Mathf.RoundToInt(System.Single)",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "M:UnityEngine.Mathf.RoundToInt(System.Single)",
       "actual_symbol": "int Mathf.RoundToInt(float f) [UnityEngine.CoreModule|M:UnityEngine.Mathf.RoundToInt(System.Single)]",
       "expected_refs": null,
       "actual_refs": 68,
@@ -1687,16 +1677,14 @@
       "id": "m-external-06",
       "project": "medium",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 M:System.Math.Sqrt(System.Double)，实际没有落点（无元数据视图）；绑定到 double Math.Sqrt(double d) [netstandard|M:System.Math.Sqrt(System.Double)]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/Mathematics/V3.cs:42:44",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "M:System.Math.Sqrt(System.Double)",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "M:System.Math.Sqrt(System.Double)",
       "actual_symbol": "double Math.Sqrt(double d) [netstandard|M:System.Math.Sqrt(System.Double)]",
       "expected_refs": null,
       "actual_refs": 57,
@@ -2486,7 +2474,7 @@
       "actual_external": null,
       "actual_symbol": "void UIContainer.SetEnable(bool enable, bool isNotify = true) [Framework|M:TFW.UI.UIContainer.SetEnable(System.Boolean,System.Boolean)]",
       "expected_refs": null,
-      "actual_refs": 402,
+      "actual_refs": 433,
       "source_newer_than_index": false
     },
     {
@@ -2612,7 +2600,7 @@
       "actual_external": null,
       "actual_symbol": "List<AssetAdd> AssetAddsExt.SortByQuality(List<AssetAdd> self) [ScriptGame|M:X1.ScriptGame.AssetList.AssetAddsExt.SortByQuality(System.Collections.Generic.List{XCfg.AssetAdd})]",
       "expected_refs": null,
-      "actual_refs": 11,
+      "actual_refs": 12,
       "source_newer_than_index": false
     },
     {
@@ -2738,7 +2726,7 @@
       "actual_external": null,
       "actual_symbol": "void UIPlayerAvatar.SetAvatar(UnifyPlayerHead playerHead, bool showFrame = true, long unionId = 0, Action<long, int, long, GameObject> onCustomClick = null, bool showRaftLevel = true, bool flip = false) [ScriptGame|M:UI.UIPlayerAvatar.SetAvatar(cspb.UnifyPlayerHead,System.Boolean,System.Int64,System.Action{System.Int64,System.Int32,System.Int64,UnityEngine.GameObject},System.Boolean,System.Boolean)]",
       "expected_refs": null,
-      "actual_refs": 177,
+      "actual_refs": 183,
       "source_newer_than_index": false
     },
     {
@@ -2801,7 +2789,7 @@
       "actual_external": null,
       "actual_symbol": "List<AssetAdd> AssetAddsExt.SortByQuality(List<AssetAdd> self) [ScriptGame|M:X1.ScriptGame.AssetList.AssetAddsExt.SortByQuality(System.Collections.Generic.List{XCfg.AssetAdd})]",
       "expected_refs": null,
-      "actual_refs": 11,
+      "actual_refs": 12,
       "source_newer_than_index": false
     },
     {
@@ -2864,7 +2852,7 @@
       "actual_external": null,
       "actual_symbol": "long LCityEntity.ID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.ID]",
       "expected_refs": null,
-      "actual_refs": 503,
+      "actual_refs": 519,
       "source_newer_than_index": false
     },
     {
@@ -2885,7 +2873,7 @@
       "actual_external": null,
       "actual_symbol": "int LCityEntity.CfgID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.CfgID]",
       "expected_refs": null,
-      "actual_refs": 207,
+      "actual_refs": 214,
       "source_newer_than_index": false
     },
     {
@@ -2906,7 +2894,7 @@
       "actual_external": null,
       "actual_symbol": "long LCityEntity.ID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.ID]",
       "expected_refs": null,
-      "actual_refs": 503,
+      "actual_refs": 519,
       "source_newer_than_index": false
     },
     {
@@ -2927,7 +2915,7 @@
       "actual_external": null,
       "actual_symbol": "UIPlayerAvatar [ScriptGame|T:UI.UIPlayerAvatar]",
       "expected_refs": null,
-      "actual_refs": 271,
+      "actual_refs": 290,
       "source_newer_than_index": false
     },
     {
@@ -2948,7 +2936,7 @@
       "actual_external": null,
       "actual_symbol": "ScrollRectFilter [Framework|T:TFW.ScrollRectFilter]",
       "expected_refs": null,
-      "actual_refs": 600,
+      "actual_refs": 634,
       "source_newer_than_index": false
     },
     {
@@ -2969,7 +2957,7 @@
       "actual_external": null,
       "actual_symbol": "TFWText [Framework|T:TFW.UI.TFWText]",
       "expected_refs": null,
-      "actual_refs": 4611,
+      "actual_refs": 4867,
       "source_newer_than_index": false
     },
     {
@@ -3583,7 +3571,7 @@
       "actual_external": null,
       "actual_symbol": "int LCityEntity.CfgID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.CfgID]",
       "expected_refs": null,
-      "actual_refs": 207,
+      "actual_refs": 214,
       "source_newer_than_index": false
     },
     {
@@ -3719,35 +3707,31 @@
       "id": "l-external-01",
       "project": "large",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 M:UnityEngine.Component.GetComponent``1，实际没有落点（无元数据视图）；绑定到 T Component.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.Component.GetComponent``1]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/TFWCore/Script/UI/UICommonBluredBackground.cs:126:29",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "M:UnityEngine.Component.GetComponent``1",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "M:UnityEngine.Component.GetComponent``1",
       "actual_symbol": "T Component.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.Component.GetComponent``1]",
       "expected_refs": null,
-      "actual_refs": 1517,
+      "actual_refs": 1599,
       "source_newer_than_index": false
     },
     {
       "id": "l-external-02",
       "project": "large",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 T:System.Version，实际没有落点（无元数据视图）；绑定到 Version [netstandard|T:System.Version]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Launch/Flow/LaunchUpgrader.cs:98:23",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "T:System.Version",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "T:System.Version",
       "actual_symbol": "Version [netstandard|T:System.Version]",
       "expected_refs": null,
       "actual_refs": 23,
@@ -3757,73 +3741,65 @@
       "id": "l-external-03",
       "project": "large",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 M:UnityEngine.GameObject.SetActive(System.Boolean)，实际没有落点（无元数据视图）；绑定到 void GameObject.SetActive(bool value) [UnityEngine.CoreModule|M:UnityEngine.GameObject.SetActive(System.Boolean)]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptGame/Battle/UI/UIBattleHeroSkill.cs:313:36",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "M:UnityEngine.GameObject.SetActive(System.Boolean)",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "M:UnityEngine.GameObject.SetActive(System.Boolean)",
       "actual_symbol": "void GameObject.SetActive(bool value) [UnityEngine.CoreModule|M:UnityEngine.GameObject.SetActive(System.Boolean)]",
       "expected_refs": null,
-      "actual_refs": 7812,
+      "actual_refs": 8159,
       "source_newer_than_index": false
     },
     {
       "id": "l-external-04",
       "project": "large",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 P:UnityEngine.Transform.position，实际没有落点（无元数据视图）；绑定到 Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/TFWCore/Script/Utils/UnityGameObjectWrap.cs:181:22",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "P:UnityEngine.Transform.position",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "P:UnityEngine.Transform.position",
       "actual_symbol": "Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]",
       "expected_refs": null,
-      "actual_refs": 2003,
+      "actual_refs": 2040,
       "source_newer_than_index": false
     },
     {
       "id": "l-external-05",
       "project": "large",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 T:UnityEngine.MonoBehaviour，实际没有落点（无元数据视图）；绑定到 MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/TFWCore/Script/Common/QualitySetting.cs:16:35",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "T:UnityEngine.MonoBehaviour",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "T:UnityEngine.MonoBehaviour",
       "actual_symbol": "MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]",
       "expected_refs": null,
-      "actual_refs": 954,
+      "actual_refs": 964,
       "source_newer_than_index": false
     },
     {
       "id": "l-external-06",
       "project": "large",
       "category": "external",
-      "status": "fail",
-      "reasons": [
-        "定义：期望外部符号 P:UnityEngine.Time.deltaTime，实际没有落点（无元数据视图）；绑定到 float Time.deltaTime [UnityEngine.CoreModule|P:UnityEngine.Time.deltaTime]"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptCore/Common/Camera/Mode/CameraModeFollow.cs:125:45",
       "relocated": false,
       "expected_defs": [],
       "expected_external": "P:UnityEngine.Time.deltaTime",
       "actual_defs": [],
-      "actual_external": null,
+      "actual_external": "P:UnityEngine.Time.deltaTime",
       "actual_symbol": "float Time.deltaTime [UnityEngine.CoreModule|P:UnityEngine.Time.deltaTime]",
       "expected_refs": null,
       "actual_refs": 322,
@@ -4504,8 +4480,8 @@
       "category": "type_ref",
       "status": "pass",
       "reasons": [],
-      "query": "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs:315:37",
-      "relocated": false,
+      "query": "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs:334:37",
+      "relocated": true,
       "expected_defs": [
         "Assets/X1/ScriptGame/RoguelikeTower/GamePlay/Buff/Buff.cs:14"
       ],
@@ -4516,7 +4492,7 @@
       "actual_external": null,
       "actual_symbol": "Buff [ScriptGame.RoguelikeTower|T:X1.ScriptGame.RoguelikeTower.GamePlay.Buff.Buff]",
       "expected_refs": null,
-      "actual_refs": 91,
+      "actual_refs": 92,
       "source_newer_than_index": false
     }
   ]
