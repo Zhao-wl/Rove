@@ -1,0 +1,4 @@
+# Rove 更新清单的 ed25519 公钥（issue #76）。#149 的自动更新把它编进 rove.exe。
+# 私钥在仓库外：%LOCALAPPDATA%\Rove-release\update-signing.key（绝不提交）。
+# 指纹（公钥的 SHA-256 前 8 字节）：90fd6aee3a18ee0f
+ed25519 SmAQeGQqkPRQil2/LYj1InxHNJXgi3v+/1rHZXzSHc4=

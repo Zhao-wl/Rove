@@ -1,0 +1,43 @@
+# 允许的依赖许可（issue #76 第 6 节）。
+#
+# `cargo xtask licenses --check` 按 SPDX 语义判定每个依赖的许可表达式：
+# `A OR B` 只要有一边在下面的列表里就通过，`A AND B` 两边都要在。
+# 因此 `Apache-2.0 OR GPL-2.0-only` 可以用（走 Apache 那边），纯 copyleft 的依赖会直接失败。
+#
+# 新增一个许可不在列表里的依赖，CI 会失败。**不要为了让 CI 绿而随手加一行**：
+# 先确认这个许可对「随 rove.exe 分发的闭源产物」是否可接受，再加进来并写清理由（见下面的注释）。
+# copyleft（GPL / LGPL / AGPL）不得出现在本列表里，它们只能作为 OR 的另一边被绕开。
+
+schema = 1
+
+license = [
+  # —— 宽松许可，只要求保留版权与许可声明 ——
+  "MIT",
+  "MIT-0",            # MIT 去掉署名要求
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSD-1-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",          # Boost
+  "NCSA",             # libfuzzer-sys（只在模糊测试用，不进 rove.exe）
+  # —— 放弃版权 / 公有领域 ——
+  "CC0-1.0",
+  "Unlicense",
+  # —— 数据类 ——
+  "Unicode-3.0",      # ICU4X 与 unicode-ident 的 Unicode 数据表
+  # —— 文件级 copyleft：只要不修改这些 crate 的源码就只需随附声明 ——
+  # dwrote / cssparser / dtoa-short / option-ext / cbindgen（后者只在构建期）
+  "MPL-2.0",
+]
+
+# `cargo metadata` 里许可字段缺失或写法特殊的包，在这里补登记。
+# 目前没有：全部依赖都填了 license 字段（`cargo xtask licenses` 会报出任何遗漏）。
+# 例子：
+# [[exception]]
+# name = "some-crate"
+# license = "Apache-2.0"
+# reason = "只有 LICENSE 文件，没有填 license 字段；已核对为 Apache-2.0"

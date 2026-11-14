@@ -3,8 +3,12 @@
 //! 子命令：
 //! - `gen-testdata`：生成 M0 口径的测试数据（`small.txt` / `uniq.txt` / `big1g.txt`）；
 //! - `bench`：跑 criterion 基准，输出机器可读结果，可选与基线比较、校验预算；
-//! - `check-size`：报告 `rove.exe` 体积与基线差值，超预算时非零退出；
-//! - `check-deps`：依赖图里禁止出现 HTTP / TLS 栈（#74）。
+//! - `check-size`：报告 `rove.exe` 与发布包体积，超预算时非零退出；
+//! - `check-deps`：依赖图里禁止出现 HTTP / TLS 栈（#74）；
+//! - `release` / `release-keygen` / `release-sign` / `release-verify` / `check-version`：
+//!   本地发布流水线与更新清单签名（#76）；
+//! - `licenses`：依赖许可汇总与守护（#76）；
+//! - `icon`：生成应用图标（#76）。
 //!
 //! 基准只使用 #1（`docs/ARCHITECTURE.md`）定义的公开接口，不绕开接口测量，
 //! 也不在接口上开测量后门。
@@ -13,7 +17,12 @@ mod bench;
 mod budgets;
 mod deps;
 mod gen_testdata;
+mod icon;
+mod licenses;
+mod pack;
+mod release;
 mod results;
+mod sign;
 mod size;
 mod startup;
 mod util;
@@ -37,9 +46,35 @@ const USAGE: &str = "\
       --compare-floor-ns（默认 100）以下的用例不参与相对比较（噪声不可比）；
       --cs-index 也可以用环境变量 ROVE_PERF_CS_INDEX 指定。
 
-  check-size [--binary PATH] [--baseline-bytes N]
+  check-size [--binary PATH] [--baseline-bytes N] [--component ZIP]
       报告 rove.exe 体积与基线（默认取 perf/budgets.toml 里的 M0 基线）的差值，
-      超过预算时以非零码退出。
+      以及发布包（packaging/package-contents.toml）的体积与嵌入资产分项；
+      发布包超过预算时以非零码退出。--component 只报告索引组件包的体积，不计入预算。
+
+  release [--version X] [--skip-build] [--out DIR] [--component ZIP]
+          [--repo OWNER/NAME] [--base-url URL] [--notes-url URL]
+          [--require-installer] [--unsigned] [--binary PATH]
+      本地发布（#76）：构建 release、组装便携版 zip、调用 Inno Setup 出安装包、
+      算 SHA256、生成并用 ed25519 私钥签名 latest.json、写出 Release 说明与上传脚本。
+      **不打 tag、不创建 Release、不上传**：上传要人工跑生成出来的 upload.ps1。
+
+  check-version --tag v0.1.0
+      校验 tag 与 Cargo.toml 的版本一致（不一致时非零退出）。
+
+  release-keygen [--force]
+      生成更新清单的 ed25519 密钥对：私钥写到 %LOCALAPPDATA%\\Rove-release\\update-signing.key
+     （仓库外，绝不打印），公钥写到 packaging/release/update-signing.pub（提交进仓库）。
+
+  release-sign --file PATH [--out PATH]
+  release-verify --file PATH [--sig PATH] [--pubkey PATH]
+      对任意文件做 / 验分离式 ed25519 签名（发布流水线对 latest.json 用的就是它）。
+
+  licenses [--check] [--write]
+      汇总 Rust 依赖的许可并按 packaging/licenses/allowed.toml 判定；
+      --check 在出现未登记许可或汇总表过期时非零退出（CI 用）。
+
+  icon [--check] [--out PATH] [--preview PNG]
+      生成多尺寸应用图标 packaging/windows/rove.ico（含 256×256）。
 
   startup [--exe PATH] [--project DIR] [--startup-tries N] [--startup-timeout SECS]
           [--save PATH] [--require]
@@ -78,12 +113,21 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         "startup" => startup::run(rest),
         "check-size" => size::run(rest),
         "check-deps" => deps::run(rest),
+        "release" => release::run(rest),
+        "check-version" => release::check_version(rest),
+        "release-keygen" => sign::keygen(rest),
+        "release-sign" => sign::sign_command(rest),
+        "release-verify" => sign::verify_command(rest),
+        "licenses" => licenses::run(rest),
+        "icon" => icon::run(rest),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(0)
         }
         other => Err(format!(
-            "未知命令 `{other}`，可用：gen-testdata / bench / startup / check-size / check-deps"
+            "未知命令 `{other}`，可用：gen-testdata / bench / startup / check-size / check-deps / \
+             release / check-version / release-keygen / release-sign / release-verify / licenses / \
+             icon"
         )
         .into()),
     }
