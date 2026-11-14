@@ -456,14 +456,13 @@ fn counts_cover_none_single_many(cx: &mut TestAppContext) {
 fn find_with_selection_and_no_cross_file_replace_commands(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);
-    // 当前文件的替换由 #48 接入（见 `replace_tests.rs`）；跨文件替换（#62）与多选区（#52）
-    // 的命令仍然不登记。
+    // 当前文件的替换由 #48 接入（见 `replace_tests.rs`）；跨文件替换（#62）的命令仍然不登记。
+    // `editor.action.selectAllMatches` 自 #52 起由查找条登记（见下一个用例）。
     view.read_with(cx, |v, _| {
         for (id, _) in v.commands.registry().entries() {
             assert!(!id.starts_with("search.action.replace"), "{id}");
             assert_ne!(id, "workbench.action.replaceInFiles");
             assert_ne!(id, "closeReplaceInFilesWidget");
-            assert_ne!(id, "editor.action.selectAllMatches");
         }
     });
     // actions.findWithSelection（无默认键位）：以选区为查找文本打开，不抢焦点。

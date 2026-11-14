@@ -811,7 +811,7 @@ impl CodeView {
         };
         let cancel = Cancellation::default();
         let Ok(out) =
-            engine::search_all(&*text, &searcher, None, MATCHES_LIMIT, &cancel, &mut |_| {})
+            engine::search_all(&*text, &searcher, None, MATCHES_LIMIT, &cancel, &mut |_, _| {})
         else {
             return;
         };
