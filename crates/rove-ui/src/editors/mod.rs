@@ -239,6 +239,33 @@ pub(crate) struct LoadResult {
     selection: Option<TextRange>,
 }
 
+/// #132：这个已经打开的文档还要在打开任务里等一次内联语法分析吗？要等就不能同步定位。
+/// （大文件与不着色的文档不内联分析，`finish` 之后由 `start_highlight` 在后台补。）
+fn defers_syntax(text_editor: bool, opened: &Opened) -> bool {
+    text_editor
+        && opened.syntax.is_none()
+        && syntax::highlighted(&opened.document)
+        && syntax::inline(&opened.document)
+}
+
+/// #132：同步完成一次打开（文档与语法快照都已在手）：只校验要定位的位置。
+fn immediate(opened: Opened, options: &OpenOptions, cancel: &Cancellation) -> Result<LoadResult> {
+    cancel.check()?;
+    let position = options.reveal_position();
+    if let Some(position) = position {
+        opened.document.text.offset(position)?;
+    }
+    if let Some(selection) = &options.selection {
+        opened.document.text.offset(selection.start())?;
+        opened.document.text.offset(selection.end())?;
+    }
+    Ok(LoadResult {
+        opened,
+        position,
+        selection: options.selection.clone(),
+    })
+}
+
 pub(crate) struct EditorService {
     pub(crate) layout: Layout,
     pub(crate) groups: BTreeMap<EditorGroupId, Group>,
@@ -250,6 +277,9 @@ pub(crate) struct EditorService {
     highlights: syntax::Highlights,
     schedule: Rc<dyn Fn(OpenJob)>,
     schedule_syntax: Rc<dyn Fn(syntax::SyntaxJob)>,
+    /// #132：同步完成的打开没有「后台任务回到 UI 线程」那一次重绘，这里让宿主安排一次（兜底：
+    /// 调用方通常在自己的处理里 `notify`，先到的那次就够了）。
+    wake: Rc<dyn Fn()>,
     serial: u64,
     latest_navigation: Option<OpenRequestId>,
     history: History,
@@ -269,6 +299,7 @@ impl EditorService {
         settings: EditorSettings,
         schedule: impl Fn(OpenJob) + 'static,
         schedule_syntax: impl Fn(syntax::SyntaxJob) + 'static,
+        wake: impl Fn() + 'static,
     ) -> Self {
         let first = EditorGroupId(1);
         Self {
@@ -282,6 +313,7 @@ impl EditorService {
             highlights: syntax::Highlights::new(syntax),
             schedule: Rc::new(schedule),
             schedule_syntax: Rc::new(schedule_syntax),
+            wake: Rc::new(wake),
             serial: 1,
             latest_navigation: None,
             history: History::default(),
@@ -1166,6 +1198,15 @@ impl EditorService {
         });
         if let Some(request) = replaced {
             self.report_cancelled(group, request);
+        }
+        // #132：目标文件已经在别的标签里打开（同一版本的文档，语法快照也不需要在任务里等）时同步定位：
+        // 位置校验与快照复用都是纯内存操作，再走一次「后台任务 → 回到 UI 线程」要多等一到两帧，
+        // 而 `F12` 的判定口径是目标行画面完成。读盘、首次整句分析等真的要等的情况仍然走下面的任务。
+        if let Some(opened) = warm.clone().filter(|o| !defers_syntax(text_editor, o)) {
+            let result = immediate(opened, &options, &cancel);
+            self.finish(id, result);
+            (self.wake)();
+            return Ok(id);
         }
         let loader = self.loader.clone();
         let highlighter = self.highlights.service.clone();

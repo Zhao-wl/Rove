@@ -239,8 +239,9 @@ cargo test --workspace
 
 数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
-应用位置后发出 Ready。代码视图只绘制缓存；帧间空闲切片读取 TextSource、调用装饰提供方（语法着色层
-读 SyntaxSnapshot、Theme）并整形，paint/layout 不读取文件、不解析、不整形（见 §16）。
+应用位置后发出 Ready（目标文件已经打开时在 `open` 里同步完成定位，见 §35 的性能一节）。代码视图只
+绘制缓存；帧间空闲切片读取 TextSource、调用装饰提供方（语法着色层读 SyntaxSnapshot、Theme）并整形，
+paint/layout 不读取文件、不解析、不整形（见 §16；跳转落位后的那一次布局除外，#132）。
 命令走 CommandExecutor，提示走 FeedbackService，所有固定文字走 Strings/Message；
 视图和状态贡献登记时不做 IO，装配校验 factory_key、placement 与标题引用。
 
@@ -472,7 +473,10 @@ codicons 字体在 `launch` 中注册。
 “显示文本 + 粗斜体分段 + 字体代次”（字体代次覆盖字族、字号、字重、连字、字间距、缩放、DPI），颜色
 不进入键，所以主题 token 或查找高亮变化不触发重新整形。缓存未命中的行先按等宽近似画淡色占位，
 帧后的空闲切片（每片约 3 ms，至少推进一行）读文本、调用装饰提供方、整形，可见行优先，再沿滚动方向
-预取一屏、反方向半屏；行高与 y 坐标只由行号和 f64 滚动位置决定，替换时不跳动。
+预取一屏、反方向半屏；行高与 y 坐标只由行号和 f64 滚动位置决定，替换时不跳动。**唯一的例外是跳转**
+（#132）：`reveal_line` / `reveal_position` 之后的那一次布局先同步准备将要显示的行（`prepare_jump`，
+预算是空闲切片的 5 倍，至少推进一行），跳转的目标帧因此直接画正式字形而不是占位；预算内没做完的
+照旧留给帧后的空闲切片。
 
 对外接口（详见 `code_view/mod.rs` 的 rustdoc 速览表）：文本源 `set_text`；装饰 `add_decorations` /
 `invalidate_decorations`（优先级常量在 `decorations::priority`）；选区 `selection` / `set_selection` 与
@@ -1080,7 +1084,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 - **`Ctrl+悬停`**：标识符加 `editorLink.activeForeground` 下划线与前景色、手形光标，并在 `delay` 后弹出定义预览（定义处开始最多 8 行源码，打开中的缓冲区优先，否则读盘）；松开 Ctrl（`on_modifiers_changed`）立即收起。
 - **语义同名高亮**：只在 C#、`SizeClass::Normal` 的文档上接管；光标仍在当前高亮的某一处时不重查，否则按 `editor.occurrencesHighlightDelay` 去抖后在后台查询引用、只保留本文件的结果；装饰层优先级 `SYMBOL_HIGHLIGHT`，结果变化时只让新旧两组涉及的行失效（超过 64 行才整层失效），绘制时按行二分。索引的出现位置只区分定义与引用，所以**声明处按“写”（`wordHighlightStrong*`）、其余按“读”（`wordHighlight*`）**；真正的读 / 写区分要等索引记录访问方式。光标离开旧符号时旧高亮立即消失，模式（语义 / 文本）保持到新结果到达，不闪烁；索引快照代次或状态变化时静默重查（`nav_index_changed`）。`F7` / `Shift+F7` 在语义区间（文本模式下按整词扫描本文件）之间循环；`wordHighlight.trigger` 在 `occurrencesHighlight = off` 时也高亮一次。概览标尺的 `editorOverviewRuler.wordHighlight*` 由 R55 绘制，位置集合在装饰层状态里。
 
-**性能**：`F12` → 目标行画面完成 = 后台查询（索引侧，预算 `goto_definition` / `router_definition_*`）+ 打开文档服务对已打开文件的切换与定位 + 一帧绘制。`cargo xtask bench --filter nav/`（`xtask/benches/nav.rs`，真实窗口、2 万行目标文件、200 个不同目标区域）输出 `nav/f12_to_paint`（预算 `goto_definition_e2e`，p99 < 50 ms）、`nav/f12_to_frame`、`nav/f12_query`。`ROVE_NAV_TRACE=1` 运行 release 版时每次跳转在 stdout 输出 `NAV_F12_TO_PAINT_MS <总> QUERY_MS <查询>`。同名高亮不进入绘制关键路径（查询在后台，装饰按行缓存）。
+**性能**：`F12` → 目标行画面完成 = 后台查询（索引侧，预算 `goto_definition` / `router_definition_*`）+ 打开文档服务对已打开文件的切换与定位 + 一帧绘制。`cargo xtask bench --filter nav/`（`xtask/benches/nav.rs`，真实窗口、2 万行目标文件、200 个不同目标区域）输出 `nav/f12_to_paint`（预算 `goto_definition_e2e`，p99 < 50 ms）、`nav/f12_to_frame`、`nav/f12_query`、`nav/f12_to_full_paint`（#132 的判定口径：第一帧没有等宽占位的画面完成）。**两处让目标帧一帧到位**（#132）：目标文件已经打开（同一版本的文档与语法快照都在手）时，打开文档服务直接在 `open` 里完成定位，不再多走一次后台任务；代码视图在跳转落位后的那一次布局里先同步整形将要显示的行（`CodeView::prepare_jump`，预算是空闲切片的 5 倍），绘制的就是正式字形，剩下的仍交给绘制后的空闲切片。`ROVE_NAV_TRACE=1` 运行 release 版时每次跳转在 stdout 输出 `NAV_F12_TO_PAINT_MS <总> QUERY_MS <查询>`。同名高亮不进入绘制关键路径（查询在后台，装饰按行缓存）。
 
 验证：`cargo test -p rove-ui nav`（`nav::*` 单元测试：登记、设置逐项、呈现决策、符号导航、去重、高亮区间、XML 文档、语义来源与缓冲区同步；`skeleton::workbench::nav_tests` 入口集成测试：真实 GPUI 窗口 + 用 #38 的测试写出器现场生成的 RVCSIDX v2 索引——`F12` → 文档已打开并定位、历史后退 / 前进 / 重新打开已关闭的标签、`ctrl+k f12` 跨分屏、`ctrl+f12` 在抽象方法 / 虚方法 / 接口上、`partial` 多定义与 `hasSymbols`、`Ctrl+悬停` 下划线与预览、`Ctrl+点击`、`definitionLinkOpensInPeek`、悬停的 `delay` / `enabled` / `sticky` 与卡片焦点、`Init` / `Update` / `Dispose` / `Get` / `Value` 的语义高亮数量与 `F7`、近似呈现的五种场景、空状态、非 C# 文件、缓冲区登记）。真实项目上的界面抽查：`cargo test -p rove-ui ui_nav_cases -- --ignored --nocapture`（`skeleton/workbench/nav_cases_tests.rs`：需要 `ROVE_TEST_UNITY_MEDIUM` 与中型项目的 L2 索引 `target/nav-check/medium.idx` 或 `ROVE_NAV_INDEX_MEDIUM`，缺任何一个都跳过；从 #39 的 `tests/nav-cases/medium-*.toml` 按 var、重载、扩展方法、泛型、partial、接口实现、Unity API 每类取 5 个，在真实工作台里打开文件、放插入符、按 `f12`，读回落点并与期望定义比较，结果写到 `target/nav-check/ui-nav-cases-medium.md`）；手工核对用 `cargo run -p rove-app -- <ROVE_TEST_UNITY_MEDIUM>`。
 

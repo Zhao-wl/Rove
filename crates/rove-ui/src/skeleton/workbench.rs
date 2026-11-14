@@ -357,6 +357,17 @@ impl Workbench {
             })
             .detach();
         };
+        // #132：打开文档服务同步完成一次打开（目标文件已打开）时，让窗口在最近的一次前台任务里重绘。
+        let wake_owner = cx.entity().downgrade();
+        let wake_app = cx.to_async();
+        let wake = move || {
+            let owner = wake_owner.clone();
+            wake_app
+                .spawn(async move |cx| {
+                    let _ = owner.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+        };
         let syntax_owner = cx.entity().downgrade();
         let syntax_app = cx.to_async();
         let syntax_background = cx.background_executor().clone();
@@ -438,6 +449,7 @@ impl Workbench {
                 settings,
                 schedule,
                 schedule_syntax,
+                wake,
             ),
             root: root.clone(),
             views: BTreeMap::new(),

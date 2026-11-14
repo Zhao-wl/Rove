@@ -48,6 +48,9 @@ pub const DEFAULT_SHAPE_CACHE_BYTES: usize = 16 << 20;
 pub const DEFAULT_LINE_CACHE_BYTES: usize = 8 << 20;
 /// 每个空闲准备切片的时间预算。帧 CPU（< 1 ms）+ 切片 ≤ 半个 120 Hz 刷新间隔。
 pub const PREPARE_SLICE: Duration = Duration::from_millis(3);
+/// #132：跳转落位后那一帧同步准备目标区域的时间预算（空闲切片的 5 倍）。跳转只发生一次，
+/// 多花几毫秒把目标帧画成正式字形，比分几帧先画等宽占位更接近「画面完成」。
+const JUMP_PREPARE_SLICES: u32 = 5;
 /// 插入符闪烁间隔（VS Code `BLINK_INTERVAL`）。
 pub const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 pub(crate) fn hsla(c: Color) -> Hsla {
@@ -464,6 +467,8 @@ pub struct CodeView {
     last_top: f64,
     pub(crate) direction: i8,
     prepare_scheduled: bool,
+    /// #132：视口刚跳到新位置，下一次布局要在绘制前同步准备目标区域（一次性）。
+    pub(crate) prepare_on_layout: bool,
     pub(crate) last_viewport: Option<Viewport>,
     pub(crate) caret_visible: bool,
     blink_epoch: Rc<Cell<u64>>,
@@ -715,6 +720,7 @@ impl CodeView {
             last_top: 0.0,
             direction: 1,
             prepare_scheduled: false,
+            prepare_on_layout: false,
             last_viewport: None,
             caret_visible: true,
             blink_epoch: Rc::new(Cell::new(0)),
@@ -1743,6 +1749,7 @@ impl CodeView {
 
     /// 跳转到任意行（`workbench.action.gotoLine` 的落点接口）。行号超出已知范围时钳制到最后一个已知行。
     pub fn reveal_line(&mut self, line: u64, reveal: Reveal, cx: &mut Context<Self>) {
+        self.prepare_on_layout = true;
         let line = line.min(self.doc_line_count().saturating_sub(1));
         self.unfold_to_reveal(line, cx);
         let line = self.view_line(line);
@@ -1761,6 +1768,7 @@ impl CodeView {
 
     /// 让某个位置（行 + 列）可见。
     pub fn reveal_position(&mut self, p: Position, reveal: Reveal, cx: &mut Context<Self>) {
+        self.prepare_on_layout = true;
         let p = self.clamp_position(p);
         let surrounding = self.options.cursor_surrounding_lines;
         self.unfold_to_reveal(p.line.0, cx);
@@ -2922,6 +2930,35 @@ impl CodeView {
                 cx.notify();
             }
             self.schedule_prepare(window, cx);
+        }
+    }
+
+    /// #132：跳转落位后的第一帧，在绘制前同步把将要显示的行准备好（读文本、算装饰、整形），
+    /// 让目标帧直接是正式字形而不是等宽占位（`F12` 的「画面完成」口径）。布局时调用一次，
+    /// 预算内做不完的留给空闲切片（`prepare_slice`）按原样补。
+    ///
+    /// 可见范围按上一帧的度量估算（跳转不改变视口大小），两端各多备一行；没有度量（首次布局）
+    /// 时什么也不做：那一帧本来就还没有目标位置。
+    pub(crate) fn prepare_jump(&mut self, window: &mut Window) {
+        if self.text.is_none() {
+            return;
+        }
+        let Some(m) = self.metrics() else {
+            return;
+        };
+        let top = self.current_top().clamp(0.0, m.max_top(&self.zones));
+        let (first, y0) = ScrollPosition { top, x: 0.0 }.first_visible(&m, &self.zones);
+        let rows = ((m.viewport_height - y0) / m.line_height).ceil() as u64 + 1;
+        let count = self.line_count();
+        let deadline = Instant::now() + self.slice_budget * JUMP_PREPARE_SLICES;
+        for (i, view_line) in (first..(first + rows).min(count)).enumerate() {
+            // 至少推进一行：预算为 0 时与空闲切片一样，仍然逐帧补。
+            if i > 0 && Instant::now() >= deadline {
+                break;
+            }
+            let line = self.doc_line(view_line);
+            self.ensure_entry(line);
+            self.ensure_shaped(line, window);
         }
     }
 

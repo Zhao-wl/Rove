@@ -1149,7 +1149,9 @@ impl Workbench {
                     sample.placeholders = Some(stats.placeholders + stats.missing);
                     sample.next_frame_ms = Some(next);
                     if stats.placeholders + stats.missing == 0 {
-                        sample.full_ms = Some(next);
+                        // #132：目标帧本身就是正式字形，画面在这一帧绘制结束时完成（与
+                        // `painted_ms` 同口径）；不算上回调前多等的那次垂直同步。
+                        sample.full_ms = sample.painted_ms();
                     }
                     if trace {
                         println!(
