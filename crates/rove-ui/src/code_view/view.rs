@@ -1669,11 +1669,16 @@ impl CodeView {
     pub(crate) fn metrics(&self) -> Option<Metrics> {
         let mut m = self.layout.metrics.clone()?;
         // #22：索引未建完时按估计行数算内容高度（估计值永远不小于已知行数）。估计值是**文档行**，
-        // 要和已知行数一起经折叠映射换成屏幕行，否则收起的折叠会被重新算进内容高度（#20）。
+        // 要换成视觉行，否则收起的折叠会被重新算进内容高度（#20）。#58：已知行走同一份视觉行
+        // 映射（含折叠与软换行），还没索引到的行每行按一条视觉行估。
         let doc_lines = self
             .doc_line_count()
             .max(self.scroll_line_estimate.unwrap_or(0));
-        m.line_count = self.folding.map().view_count(doc_lines).max(1);
+        let mapped = self.wrap.map.doc_lines();
+        m.line_count = self
+            .line_count()
+            .saturating_add(doc_lines.saturating_sub(mapped))
+            .max(1);
         m.line_height = self.font.line_height as f64;
         // #55：粘性区盖住顶部若干行，滚动定位按上一帧的高度避开它。
         m.sticky_height = self.sticky_height as f64;
