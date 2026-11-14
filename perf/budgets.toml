@@ -5,6 +5,9 @@
 # 规则：
 # - 每条预算必须写清「由哪个 issue 负责达标」（owner）；
 # - 暂时达不到的标 status = "pending" 并写明 reason，**不允许静默降低数值**；
+#   但 v0.1 起**发布时不允许还有 pending 条目**（docs/MILESTONE_v0.1.md §5）：
+#   `cargo test -p xtask budgets::` 里的 `no_budget_is_still_pending` 会挡住；
+#   非时间指标（内存）用 `bench` 指向 `cargo xtask startup` 写进结果 `metrics` 表的 id；
 # - 要改数值只能走 PROJECT_CHARTER 的修订流程（像冷启动从 150 ms 改到 400 ms 那样留下记录），
 #   不能直接改这个文件；
 # - `cargo xtask bench --check-budgets` 只判定 status = "enforced" 且有测量值的条目，
@@ -34,8 +37,9 @@ metric = "冷启动到可交互"
 value = 400
 unit = "ms"
 owner = "#16"
-status = "pending"
-reason = "「可交互」= 首帧已呈现 + 第一个输入事件在一帧内得到响应；输入注入与重绘完成的埋点还没做，留给 #16 的启动预算。首帧已经有实测（见下一条），M0 实测 396 ms 也只是首帧口径"
+status = "enforced"
+bench = "startup/interactive"
+reason = "「可交互」= 首帧已呈现 + 第一个输入事件在一帧内得到响应。#150 补上了后半截埋点：`rove-ui` 的 `skeleton::workbench::startup_probe` 在首帧之后注入一个无副作用的按键（`right`）并等包含这次响应的那一帧画完，打印 INTERACTIVE_SINCE_PROCESS_MS；采集在 `cargo xtask startup`（起子进程时设 ROVE_STARTUP_PROBE=1，普通 rove.exe 不受影响），取多次的中位数。按键经 Window::dispatch_keystroke 注入，不含 Windows 键盘消息的排队时间（口径同 #47 的 typing/key_to_frame）。没有 release 版 rove.exe 或没有桌面会话时未测量、不算失败"
 
 [[budget]]
 id = "cold_start_first_frame"
@@ -51,12 +55,13 @@ reason = "CHARTER §6：单独记录，不设门槛。实测来自 `cargo xtask 
 
 [[budget]]
 id = "empty_window_memory"
-metric = "空窗口常驻内存"
+metric = "空窗口常驻内存（工作集）"
 value = 60
 unit = "MB"
 owner = "#16"
-status = "pending"
-reason = "M0 的 GPUI 原型工作集 47.7 MB，但 M1 工作台（标题栏 / 活动栏 / 侧边栏 / 状态栏 / 面板）还没实现，等 #16 落地后按工作集与私有提交分别记录"
+status = "enforced"
+bench = "startup/empty_window_working_set"
+reason = "M0 的 GPUI 原型工作集 47.7 MB；#16 的工作台落地后由 #150 补上采集：`cargo xtask startup` 启动不带任何路径参数的 rove.exe（空窗口 + 欢迎页，临时用户目录里 rove.update.mode = none），首帧之后稳定 2 s 再按进程树取工作集与私有提交，取多次的中位数。判定用工作集；私有提交同时记在 startup/empty_window_private（见 perf/README.md）。取数走 Get-CimInstance Win32_Process，拿不到进程表时未测量、不算失败"
 
 # ---------------------------------------------------------------- 工作区
 
@@ -94,14 +99,10 @@ reason = "#8 落地：open_file 内存映射 + 同步索引头部 1 MiB，到首
 
 # ---------------------------------------------------------------- 输入与帧
 
-[[budget]]
-id = "key_to_paint"
-metric = "按键到上屏延迟"
-value = 8
-unit = "ms"
-owner = "#46"
-status = "pending"
-reason = "只读场景先由 #19 保证输入响应；编辑链路的按键到上屏要等 M3 的 #46 编辑交互实现"
+# 原先这里有一条 `key_to_paint`（#46，8 ms，pending）：它是「等 M3 的编辑交互实现后再测」的占位。
+# #47 落地后同一个指标已经有了实测口径与用例，就是下面的 `keystroke_to_paint`
+#（CHARTER §6 同一条「按键到上屏 < 8 ms（p99）」，bench = typing/key_to_frame）。
+# #150 把这条占位删掉，**数值没有任何改动**：同一个指标只留一条，避免一条判定、一条永远 pending。
 
 [[budget]]
 id = "frame_cpu_cache_hit"
@@ -213,14 +214,9 @@ reason = "issue #38 验收：路由本身的开销 < 100 µs；路由开销 = �
 
 # ---------------------------------------------------------------- 导航界面
 
-[[budget]]
-id = "nav_end_to_end"
-metric = "导航界面端到端（按下 F12 到目标位置绘制完成，目标文件已打开）"
-value = 50
-unit = "ms"
-owner = "#40"
-status = "pending"
-reason = "界面侧端到端要等 #40 的导航交互与 #41 的速览窗口实现；与上面两条「索引查询本身」的耗时分开记录"
+# 原先这里有一条 `nav_end_to_end`（#40，50 ms，pending）：它是「等导航交互与速览窗口实现后再测」的占位。
+# #40 落地后同一个指标已经是下面的 `goto_definition_e2e`（50 ms、p99、bench = nav/f12_to_paint，
+# 分解见 nav/f12_query 与 nav/f12_to_frame）。#150 把这条占位删掉，**数值没有任何改动**。
 
 
 # ---------------------------------------------------------------- 语法高亮
@@ -233,6 +229,7 @@ unit = "ms"
 owner = "#9"
 status = "enforced"
 bench = "syntax/csharp_edit_5000_lines"
+reason = "CHARTER §6 / issue #9 验收：5,000 行 C# 里单字符编辑后 < 2 ms 完成增量重解析（口径是 tree-sitter 的 edit + reparse，不含绘制）。#150 补写本行，数值与 bench 都没有改动"
 
 [[budget]]
 id = "csharp_visible_1mb_unity"

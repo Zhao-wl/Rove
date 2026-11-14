@@ -95,37 +95,35 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
             )
             .into());
         }
-        if budget.bench.is_some() && time_unit(budget.value, &budget.unit).is_none() {
-            return Err(format!(
-                "预算 `{}` 用 bench 判定（{}），但单位 `{}` 不是时间；内存/体积类指标需要单独的判定路径，不能套用 bench",
-                budget.id,
-                budget.bench.as_deref().unwrap_or(""),
-                budget.unit
-            )
-            .into());
-        }
-
-        let measured = budget
-            .bench
-            .as_ref()
-            .and_then(|id| results.get(id))
-            .map(|r| {
-                if aggregate == "p99" {
-                    r.p99_ns.unwrap_or(r.mean_ns)
-                } else {
-                    r.mean_ns
-                }
-            });
+        // 时间类指标走 criterion 的结果（纳秒）；内存一类的非时间指标走 `metrics`
+        //（#150：`cargo xtask startup` 写进来的空窗口内存，单位就是预算自己的 `unit`）。
+        let is_time = time_unit(budget.value, &budget.unit).is_some();
+        let measured = budget.bench.as_ref().and_then(|id| {
+            if is_time {
+                results.get(id).map(|r| {
+                    if aggregate == "p99" {
+                        r.p99_ns.unwrap_or(r.mean_ns)
+                    } else {
+                        r.mean_ns
+                    }
+                })
+            } else {
+                results.metric(id)
+            }
+        });
+        // 非时间指标的展示值用预算自己的单位，时间指标统一换算成纳秒再格式化。
+        let show = |value: f64| {
+            if is_time {
+                format_ns(value)
+            } else {
+                format!("{value:.1} {}", budget.unit)
+            }
+        };
 
         match (budget.status.as_str(), measured) {
-            ("enforced", Some(measured_ns)) => {
-                let limit_ns = time_unit(budget.value, &budget.unit).ok_or_else(|| {
-                    format!(
-                        "预算 `{}` 的单位 `{}` 不是时间，无法用 bench 判定",
-                        budget.id, budget.unit
-                    )
-                })?;
-                let status = if measured_ns <= limit_ns {
+            ("enforced", Some(measured_value)) => {
+                let limit = time_unit(budget.value, &budget.unit).unwrap_or(budget.value);
+                let status = if measured_value <= limit {
                     "OK"
                 } else {
                     "超预算"
@@ -136,16 +134,16 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
                     budget.id,
                     budget.value,
                     budget.unit,
-                    format_ns(measured_ns),
-                    aggregate,
+                    show(measured_value),
+                    if is_time { aggregate } else { "median" },
                     budget.owner,
                     match status {
                         "OK" => String::new(),
-                        _ => format!("超出 {:.1}%", (measured_ns / limit_ns - 1.0) * 100.0),
+                        _ => format!("超出 {:.1}%", (measured_value / limit - 1.0) * 100.0),
                     }
                 );
-                if measured_ns > limit_ns {
-                    exceeded.push((budget, measured_ns));
+                if measured_value > limit {
+                    exceeded.push((budget, measured_value));
                 }
             }
             ("enforced", None) => {
@@ -174,7 +172,7 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
             }
             ("recorded", measured) => {
                 let measured = measured
-                    .map(|ns| format!("实测 {}", format_ns(ns)))
+                    .map(|value| format!("实测 {}", show(value)))
                     .unwrap_or_else(|| "未测量".to_string());
                 println!(
                     "  {:<7} {:<30} 只记录不设门槛：{}  （负责 {}）",
@@ -199,16 +197,20 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
     }
 
     eprintln!("超预算 {} 项：", exceeded.len());
-    for (budget, measured_ns) in &exceeded {
-        let limit_ns = time_unit(budget.value, &budget.unit).unwrap_or(f64::NAN);
+    for (budget, measured) in &exceeded {
+        let limit = time_unit(budget.value, &budget.unit).unwrap_or(budget.value);
+        let shown = match time_unit(budget.value, &budget.unit) {
+            Some(_) => format_ns(*measured),
+            None => format!("{measured:.1} {}", budget.unit),
+        };
         eprintln!(
             "  {}（{}）：目标 {} {}，实测 {}，超出 {:.1}%；负责 issue {}",
             budget.id,
             budget.metric,
             budget.value,
             budget.unit,
-            format_ns(*measured_ns),
-            (measured_ns / limit_ns - 1.0) * 100.0,
+            shown,
+            (measured / limit - 1.0) * 100.0,
             budget.owner
         );
         println!(
@@ -216,8 +218,8 @@ pub fn check(budgets: &Budgets, results: &Results) -> Result<u8, Box<dyn std::er
             budget.id,
             budget.value,
             budget.unit,
-            format_ns(*measured_ns),
-            (measured_ns / limit_ns - 1.0) * 100.0,
+            shown,
+            (measured / limit - 1.0) * 100.0,
             budget.owner
         );
     }
@@ -245,5 +247,115 @@ fn format_ns(ns: f64) -> String {
         format!("{:.2} us", ns / 1e3)
     } else {
         format!("{ns:.0} ns")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::results::{BenchResult, Results};
+
+    fn budgets() -> Budgets {
+        Budgets::load_default().expect("读得到 perf/budgets.toml")
+    }
+
+    /// #150（v0.1 发布门槛 5）：**不允许带着 `pending` 条目发布**。
+    /// 每条预算要么 `enforced`（有判定路径），要么 `recorded`（章程口径里就只记录不设门槛）。
+    #[test]
+    fn no_budget_is_still_pending() {
+        let budgets = budgets();
+        let pending: Vec<&str> = budgets
+            .budget
+            .iter()
+            .filter(|b| b.status == "pending")
+            .map(|b| b.id.as_str())
+            .collect();
+        assert!(
+            pending.is_empty(),
+            "perf/budgets.toml 还有 pending 条目：{pending:?}；v0.1 发布门槛要求每条要么 \
+             enforced 且达标，要么按章程流程改成 recorded（docs/MILESTONE_v0.1.md §5）"
+        );
+    }
+
+    /// `enforced` 的条目必须指得出测量来源，否则 `--check-budgets` 永远只会打印「未测量」。
+    #[test]
+    fn every_enforced_budget_names_where_the_number_comes_from() {
+        for budget in &budgets().budget {
+            if budget.status == "enforced" {
+                assert!(
+                    budget.bench.is_some(),
+                    "预算 `{}` 是 enforced，却没有 bench / metric 来源",
+                    budget.id
+                );
+            }
+            assert!(
+                matches!(budget.status.as_str(), "enforced" | "recorded"),
+                "预算 `{}` 的 status = `{}` 非法",
+                budget.id,
+                budget.status
+            );
+            assert!(
+                budget.reason.as_deref().is_some_and(|r| !r.is_empty()),
+                "预算 `{}` 没写口径与来源",
+                budget.id
+            );
+        }
+    }
+
+    /// id 不能重复：重复的话 `--check-budgets` 会把同一条判两遍，报告也会对不上。
+    #[test]
+    fn budget_ids_are_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for budget in &budgets().budget {
+            assert!(
+                seen.insert(budget.id.clone()),
+                "预算 id `{}` 重复",
+                budget.id
+            );
+        }
+    }
+
+    /// #150：内存一类的非时间指标走 `metrics`，和时间指标一样能判超限。
+    #[test]
+    fn a_memory_budget_is_judged_against_the_metrics_table() {
+        let budget = Budget {
+            id: "empty_window_memory".into(),
+            metric: "空窗口常驻内存".into(),
+            value: 60.0,
+            unit: "MB".into(),
+            owner: "#16".into(),
+            status: "enforced".into(),
+            reason: Some("测试".into()),
+            bench: Some("startup/empty_window_working_set".into()),
+            aggregate: None,
+        };
+        let budgets = Budgets {
+            schema: SCHEMA,
+            size: None,
+            budget: vec![budget],
+        };
+
+        let mut under = Results::new();
+        under
+            .metrics
+            .insert("startup/empty_window_working_set".into(), 52.5);
+        assert_eq!(check(&budgets, &under).unwrap(), 0);
+
+        let mut over = Results::new();
+        over.metrics
+            .insert("startup/empty_window_working_set".into(), 77.0);
+        assert_eq!(check(&budgets, &over).unwrap(), 1, "超了必须非零退出");
+
+        // 时间类的结果表里有同名条目也不会被误用（内存只认 metrics）。
+        let mut wrong_table = Results::new();
+        wrong_table.benchmarks.insert(
+            "startup/empty_window_working_set".into(),
+            BenchResult {
+                mean_ns: 1.0,
+                p99_ns: None,
+                std_dev_ns: None,
+            },
+        );
+        assert_eq!(check(&budgets, &wrong_table).unwrap(), 0, "未测量不算失败");
     }
 }

@@ -89,6 +89,10 @@ R75 → R76 和功能开发并行。
 
 ## 5. 发布门槛（R77 逐条核对）
 
+> 逐条核对的结果在 [V01_ACCEPTANCE_REPORT.md](V01_ACCEPTANCE_REPORT.md)（#150，2026-11-14）§9；
+> 其中机器能判的两条（预算没有 `pending`、COVERAGE 的每一行都有结论）可以用
+> `cargo xtask check-release-gate` 随时重跑。
+
 1. `COVERAGE.md` 中「v0.1」列为「是」的行全部完成，或者已经正式改判；
 2. 两个 Unity 项目上的端到端场景通过；
 3. 干净的 Windows 10 / 11 上安装 → 自动更新到 v0.1.1 → 卸载都通过，未保存的修改在更新后保留；

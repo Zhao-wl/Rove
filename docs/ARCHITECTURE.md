@@ -2176,3 +2176,36 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 未达标与未测的事情写在报告里，**没有改 `perf/budgets.toml` 的任何数值**：
 按键到上屏 p99 仍未达 8 ms（#215），索引换代后的 rebase 只在查询时发生（#216），
 输入法矩阵本次一条都没有实机跑（报告 §2 与人工清单）。
+
+## 57. v0.1 发布候选集成验收（#150）
+
+这是**验证 + 补测量**型 issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约，
+也没有 `SKELETON(...)` 标记要替换（M1–M3 的标记在各自的 issue 里早已删完，#31 / #44 / #51 做过审计）。
+逐条结论、实测数字、阻塞项与人工清单见 [V01_ACCEPTANCE_REPORT](V01_ACCEPTANCE_REPORT.md)。
+
+位置：
+
+| 文件 | 层 | 内容 |
+|---|---|---|
+| `crates/rove-ui/src/skeleton/workbench/v01_acceptance_tests.rs` | 界面层（`workbench.rs` 只追加一行 `mod v01_acceptance_tests;`） | 提前条目（#52 多光标、#53 自动编辑、#55 粘性滚动、#58 软换行）与 M1–M3 **叠在一起**时的接缝：粘性区 = 面包屑符号链（软换行开着）、分级关闭（大文件只关粘性、超大文件两个都关）、多光标编辑在软换行下仍是一个撤销单元、GBK 文件上注释切换保存零额外差异、「编辑 → 近似 → 保存 + 重绑 → 精确」在两项功能开着时不变；另有两条真实 Unity 项目（中型 / 大型）的同一条路径 |
+| `crates/rove-ui/src/skeleton/workbench/startup_probe.rs` | 界面层（同上，追加 `mod startup_probe;`） | 「可交互」冷启动埋点：首帧之后注入一个无副作用的按键（`right`）并等那一帧画完，打印 `INTERACTIVE_SINCE_PROCESS_MS`。**默认关闭**，只有 `ROVE_STARTUP_PROBE=1` 时才注入 |
+| `xtask/src/startup.rs` | 开发工具 | 一次启动同时测首帧、可交互与**空窗口内存**；结果 id：`startup/first_frame`、`startup/interactive`（耗时）与 `startup/empty_window_working_set`、`startup/empty_window_private`（`metrics`，MB） |
+| `xtask/src/procwatch.rs` | 开发工具 | 进程树的内存与连接采样（`Get-CimInstance Win32_Process` + `netstat -ano`），给上面两条和 `netwatch` 共用 |
+| `xtask/src/netwatch.rs` | 开发工具 | `cargo xtask netwatch`：在临时用户目录里设好 `rove.update.mode`，启动 `rove.exe`，按间隔采样整棵进程树的连接并汇总出站连接；`--mode none` 下有出站连接时 `--require-silent` 以 1 退出 |
+| `xtask/src/release_gate.rs` | 开发工具 | `cargo xtask check-release-gate`：发布门槛里机器能判的两条（预算没有 `pending`；COVERAGE 的每一行在验收报告里都有「已完成 / 改判」的结论），同样的判定也在 `cargo test -p xtask` 里 |
+| `xtask/src/budgets.rs`、`xtask/src/results.rs` | 开发工具 | 预算判定新增**非时间指标**通道：结果文件多了一张 `metrics` 表，单位由预算条目自己的 `unit` 决定（目前只有 MB）。时间指标的路径没有变化 |
+
+与 #31 / #44 / #51 三次里程碑验收的分工：那三次各看**一个里程碑内部**的接缝（M1 的阅读链路、
+M2 的精确度传递、M3 的编码往返与保存 / 重绑），#150 看的是**提前条目与它们叠在一起**之后的样子，
+外加发布本身的三件事（干净机器、自动更新、网络与预算）。
+
+`perf/budgets.toml` 的变化（**没有改任何预算数值**）：`cold_start_interactive` 与
+`empty_window_memory` 由 `pending` 改为 `enforced` 并指向上面的新测量路径；
+`key_to_paint`（#46）与 `nav_end_to_end`（#40）两条**重复的占位条目**删除——同一个指标已经分别由
+`keystroke_to_paint`（#47，`typing/key_to_frame`）与 `goto_definition_e2e`（#40，`nav/f12_to_paint`）
+以**相同的数值**判定，原地留了注释说明。`csharp_incremental_5000_lines` 补了缺失的 `reason`。
+
+本次**没有修改任何产品行为**：验收中发现的面包屑与粘性滚动在「声明行行首缩进」处的口径差异
+（面包屑按位置含列判定、粘性区按行判定）开了跟进 issue，没有在本 PR 里顺手改。
+未做的事情（干净机器安装、真实自动更新、`default` 模式的网络监视、实机输入法、空闲机器上的完整基准）
+全部写在报告 §8 的人工清单与 §9 的阻塞项里，**一条都没有记成通过**。

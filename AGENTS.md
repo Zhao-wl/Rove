@@ -367,3 +367,41 @@ M3 的两条硬线（编码往返零差异、编辑 → 保存 → 索引重绑�
   判为 `Clean`，给出**标为精确的错误位置**。
 - **输入法矩阵只能实机做**：`spikes/ime_test.ps1` 会抢前台、注入按键、改输入法状态，
   判据要看截图。#51 本次**一条都没有跑**，全部留在报告的人工清单里——不要把它当成已验收。
+
+<!-- #150 追加：v0.1 发布候选的验收、发布门槛自检与两条新测量 -->
+
+### 8.12 v0.1 发布候选：叠加场景的接缝测试与发布门槛自检（#150）
+
+提前条目（#52 多光标、#53 自动编辑、#55 粘性滚动、#58 软换行、#60 导航补全）与 M1–M3
+**叠在一起**时的接缝固化在 `crates/rove-ui/src/skeleton/workbench/v01_acceptance_tests.rs`，
+逐条结论、实测数字、**阻塞项**与人工清单见 [docs/V01_ACCEPTANCE_REPORT.md](docs/V01_ACCEPTANCE_REPORT.md)。
+
+- 合成那几条照常进 CI：`cargo test -p rove-ui v01_ -j 1 -- --nocapture`；
+  两条真实项目用例分别要 `ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE`，缺失时跳过并打印原因。
+- **改粘性滚动或软换行时务必重跑** `v01_sticky_scroll_agrees_with_the_breadcrumb_while_soft_wrap_is_on`：
+  它钉住的是两者的**坐标系**——`set_scroll_position` 的 `top` 是**屏幕行**，粘性行是**文档行**，
+  软换行打开后两者不是一回事（测试里先用 `visual_line_of` 换算并断言它们确实不同）。
+- **分级关闭是一张表、两行**：大文件只关粘性滚动，超大文件把粘性滚动与软换行一起关、
+  `alt+z` 也打不开（`v01_a_large_document_only_switches_off_sticky_scroll` /
+  `v01_a_huge_document_switches_off_sticky_scroll_and_soft_wrap_together`）。
+- 面包屑与粘性滚动对「光标在哪个作用域」的判定**不是同一套**（面包屑按位置含列、粘性区按行）：
+  插入符落在声明行的行首缩进里时两者会不一致。测试里把插入符放到**第一个非空白字符**上绕开，
+  已开跟进 issue，**不要**顺手改面包屑的判定。
+
+两条新的测量与两个新命令（都在 `xtask` 里，口径写在 [perf/README.md](perf/README.md)）：
+
+```powershell
+cargo xtask startup                 # 首帧 + 可交互 + 空窗口常驻内存（工作集 / 私有提交）
+cargo xtask netwatch --mode none --seconds 60 --project <Unity 项目> --require-silent
+cargo xtask check-release-gate      # 预算没有 pending；验收报告逐行回答了 COVERAGE
+```
+
+- 「可交互」埋点在 `rove-ui` 的 `skeleton::workbench::startup_probe`，**默认关闭**，
+  只有 `ROVE_STARTUP_PROBE=1` 才注入按键；正常跑的 `rove.exe` 不会多一次按键、也不多打印一行。
+- `netwatch` 看的是 `netstat -ano` 的连接表，**不是抓包**：瞬时连接可能漏掉，
+  结论必须照这个口径写（更强的证据用 `pktmon`，要管理员权限）。
+- **发布前不允许 `perf/budgets.toml` 里还有 `pending` 条目**（`docs/MILESTONE_v0.1.md` §5）：
+  `cargo test -p xtask` 里的 `no_budget_is_still_pending` 与 `check-release-gate` 都会挡住。
+  非时间指标（内存）的 `bench` 指向结果文件 `metrics` 表里的 id，不要往 criterion 的用例 id 上套。
+- **改了 `docs/issues/COVERAGE.md` 就要同步改验收报告**：`check-release-gate` 与
+  `cargo test -p xtask` 会逐行对照「v0.1 = 是」的行，漏一行就失败。
