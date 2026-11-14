@@ -1,5 +1,26 @@
 # 第三方来源
 
+> 本文件随安装包与便携版一起分发（`packaging/package-contents.toml`），「关于」对话框里的
+> 「第三方声明」按钮打开的就是安装目录里的这一份。维护规则见 `AGENTS.md` §5.1：
+> 移植第三方代码或资产时在这里注明来源与许可。
+
+## 总表（#76）
+
+| 来源 | 许可 | 用途 | 详见 |
+|---|---|---|---|
+| VS Code（microsoft/vscode） | MIT | 默认主题、语言配置、默认键位表、设置项 schema 与说明文字、`markdown.css` / `highlight.css`、colorize 测试数据、`vscode-textmate` 的主题匹配、模糊匹配 / 单词边界 / 缩进规则等算法 | 下文各节 |
+| codicons（@vscode/codicons） | **CC-BY-4.0（必须署名）** | 界面图标字体 | [Codicons 产品图标](#codicons-产品图标16) |
+| theme-seti + seti-ui 字体 | MIT | 文件图标主题 | 见下文「Seti 文件图标主题」 |
+| tree-sitter 与各语言 grammar | MIT（逐个列出） | 语法高亮 | [Tree-sitter 语法与高亮查询](#tree-sitter-语法与高亮查询9) |
+| Mermaid / KaTeX / highlight.js | MIT / MIT / BSD-3-Clause | Markdown 预览（离线打包） | [Markdown 预览的打包资源](#markdown-预览的打包资源29) |
+| gpui | **Apache-2.0**（单一许可，不是 MIT/Apache 双授权） | 界面框架 | [GPUI 0.2.2](#gpui-022) |
+| .NET 9 运行时与 Roslyn | MIT | 可选的 C# 索引组件（独立包，不在主安装包里） | 组件包里的 `THIRD_PARTY_NOTICES.txt` |
+| 其余 Rust 依赖 | 自动汇总 | 构建与运行时依赖 | [`packaging/licenses/rust-dependencies.md`](packaging/licenses/rust-dependencies.md) |
+
+Rust 依赖的完整许可清单由 `cargo xtask licenses --write` 从 `cargo metadata` 生成，
+并由 CI 的「依赖许可汇总」任务校验（`cargo xtask licenses --check`）：
+**新增一个许可未登记的依赖会失败**，允许列表在 `packaging/licenses/allowed.toml`。
+
 ## VS Code 默认主题与主题引擎（#10）
 
 以下内容来自 Microsoft VS Code **1.145.2**（提交 `c4453f8ea430795f941c1b2ff6c9321135a74a02`，MIT 许可）：
@@ -169,8 +190,17 @@ SOFTWARE.
 GitLens 19.5.0 随附的未修改副本（`dist/webviews/codicon.ttf`，其 `package.json` 依赖 `@vscode/codicons` 0.0.45）。
 `mapping.json` 由 `scripts/codicons/gen_mapping.py` 从字体 cmap 生成（图标名 → 码位）。
 
-许可：[Creative Commons Attribution 4.0 International（CC-BY-4.0）](https://creativecommons.org/licenses/by/4.0/)，
-© Microsoft Corporation。Rove 未修改字体本身，只读取其字形用于界面图标。
+**署名（CC-BY-4.0 要求，不能只写一行许可名）：**
+
+- 作品：**Visual Studio Code Icons（codicons）**，`@vscode/codicons` 0.0.45 的 `codicon.ttf`；
+- 作者 / 版权：**© Microsoft Corporation**；
+- 来源：<https://github.com/microsoft/vscode-codicons>；
+- 许可：[Creative Commons Attribution 4.0 International（CC-BY-4.0）](https://creativecommons.org/licenses/by/4.0/)，
+  许可全文见 <https://github.com/microsoft/vscode-codicons/blob/main/LICENSE>；
+- 修改说明：**Rove 未修改字体文件本身**（逐字节相同，哈希见上），只读取其字形用于界面图标；
+  `mapping.json`（图标名 → 码位）是 Rove 从字体的 cmap 生成的衍生数据。
+
+同一份署名随发布包分发（本文件就在安装目录里），并可从「关于」对话框打开。
 
 ## 列表与快速输入组件（#18）
 
@@ -287,3 +317,30 @@ Windows 的系统组件，不随 Rove 分发，也不由 Rove 下载。
 来源：<https://github.com/microsoft/vscode/tree/1.145.2>
 原始许可证：<https://github.com/microsoft/vscode/blob/1.145.2/LICENSE.txt>
 （MIT，Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。
+
+## Seti 文件图标主题（#69）
+
+VS Code 内置的 **Seti 文件图标主题**（`extensions/theme-seti/`：`icons/seti.woff`、
+`icons/vs-seti-icon-theme.json`）与它的上游 [jesseweed/seti-ui](https://github.com/jesseweed/seti-ui)
+都是 MIT 许可（seti-ui © Jesse Weed；VS Code 的打包副本 © Microsoft Corporation，MIT 全文见上文
+「VS Code 默认主题与主题引擎」一节）。
+
+Rove 只读加载该主题，不修改字体与图标定义。**#69 合并前仓库里还没有这些文件**；
+合并时由 #69 在这里补上文件清单、版本与哈希（做法与上面的 codicons 一节相同）。
+发布包的体积分项（`packaging/package-contents.toml` 的 `[[embedded]]`）也要同时加上一条。
+
+## Rust 依赖的完整清单（#76）
+
+见 [`packaging/licenses/rust-dependencies.md`](packaging/licenses/rust-dependencies.md)：
+由 `cargo xtask licenses --write` 从 `cargo metadata --all-features` 生成（覆盖全部 feature 的
+依赖图，因此也包含只在构建、基准与测试时使用、不进 `rove.exe` 的包），CI 校验它与依赖图一致。
+允许的许可及理由在 [`packaging/licenses/allowed.toml`](packaging/licenses/allowed.toml)。
+
+其中需要特别说明的几类：
+
+- **MPL-2.0**（`dwrote`、`cssparser`、`dtoa-short`、`option-ext`、`cbindgen`）：文件级 copyleft。
+  Rove 不修改这些 crate 的源码，只需随附本声明并指出其源码可从 crates.io 获取。
+- **Unicode-3.0**（ICU4X 的 `icu_*`、`unicode-ident` 等）：[Unicode License v3](https://www.unicode.org/license.txt)。
+  可选 feature `intl-segmenter`（默认关闭）启用时会把 ICU4X 的分词数据编进二进制，
+  届时需随发布包附上该许可全文。
+- **Apache-2.0 单授权**：`gpui`（见上文）。

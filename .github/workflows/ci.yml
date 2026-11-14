@@ -102,9 +102,32 @@ jobs:
       - name: dotnet build -c Release
         run: dotnet build -c Release --nologo
 
-  # 体积守护（issue #4）：每个 PR 都报告 rove.exe 的体积及相对基线（M0 6.2 MB）的变化。
+  # 依赖许可（issue #76）：新增一个未登记许可的依赖，或忘了重新生成汇总表，都会失败。
+  licenses:
+    name: 依赖许可汇总
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装工具链
+        shell: pwsh
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: licenses
+          cache-on-failure: true
+      - name: cargo xtask licenses --check
+        shell: pwsh
+        run: |
+          cargo xtask licenses --check 2>&1 | Tee-Object -FilePath licenses-report.txt
+          $code = $LASTEXITCODE
+          Get-Content licenses-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($code -ne 0) { exit $code }
+
+  # 体积守护（issue #4 建立，#76 扩展到整个发布包）：每个 PR 都报告 rove.exe 与发布包的体积，
+  # 发布包超过 perf/budgets.toml 的 [size].budget_bytes（30 MB）时失败。
   size:
-    name: 体积守护（rove.exe）
+    name: 体积守护（rove.exe 与发布包）
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -144,7 +167,7 @@ jobs:
       - name: cargo build --release -p rove-app
         run: cargo build --release -p rove-app
 
-      - name: 报告体积并检查预算
+      - name: 报告体积与发布包分项并检查预算
         shell: pwsh
         run: |
           cargo xtask check-size 2>&1 | Tee-Object -FilePath size-report.txt

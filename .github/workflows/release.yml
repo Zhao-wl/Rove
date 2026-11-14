@@ -1,0 +1,149 @@
+name: Release
+
+# 发布流水线（issue #76）。打 `v*` tag 触发：构建 release、出便携版 zip 与安装包、
+# 算 SHA256、生成并签名 latest.json，最后发布为**草稿** Release 等人工确认。
+#
+# 本地等价命令是 `cargo xtask release`（同一套代码、同样的产物），GitHub Actions 额度不够时用它：
+# 做法见 docs/RELEASE.md。两边唯一的差别是私钥的来源：这里是 Actions secret，本地是
+# %LOCALAPPDATA%\Rove-release\update-signing.key。
+#
+# 手动触发（workflow_dispatch）只构建与校验，不创建 Release，用来验证流水线本身。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  release:
+    name: 构建发布产物
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 产物里要记提交号与构建日期。
+          fetch-depth: 0
+
+      - name: 安装工具链
+        shell: pwsh
+        run: rustup show
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          cache-on-failure: true
+
+      # gpui 的着色器编译要调用 Windows SDK 的 fxc.exe（与 ci.yml 的 size 任务同一段）。
+      - name: 确保 fxc.exe 在 PATH 上
+        shell: pwsh
+        run: |
+          if (Get-Command fxc.exe -ErrorAction SilentlyContinue) { exit 0 }
+          $globs = @()
+          if (${env:ProgramFiles(x86)}) { $globs += (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\fxc.exe') }
+          if ($env:ProgramFiles) { $globs += (Join-Path $env:ProgramFiles 'Windows Kits\10\bin\*\x64\fxc.exe') }
+          $fxc = Get-ChildItem -Path $globs -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { Write-Error '找不到 fxc.exe'; exit 1 }
+          $fxc.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # 版本号单一来源：tag 必须与 Cargo.toml 的 [workspace.package] version 一致。
+      - name: 校验 tag 与 Cargo.toml 的版本
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cargo xtask check-version --tag ${{ github.ref_name }}
+
+      - name: 记录工具链版本（可复现构建）
+        shell: pwsh
+        run: |
+          rustc -vV | Tee-Object -FilePath toolchain.txt
+          cargo -vV | Tee-Object -FilePath toolchain.txt -Append
+          Get-Content toolchain.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: 安装 Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      # 私钥只存在 Actions secret 里：写到 runner 的临时文件，用完立刻删。
+      # secret 没配置时跳过签名（流水线仍然产出其他产物，并在摘要里说明）。
+      - name: 写入签名私钥
+        id: key
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.ROVE_UPDATE_SIGNING_KEY }}
+        run: |
+          if (-not $env:SIGNING_KEY) {
+            Write-Host '::warning::没有配置 ROVE_UPDATE_SIGNING_KEY，latest.json 将不签名'
+            "signed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'update-signing.key'
+          [System.IO.File]::WriteAllText($path, $env:SIGNING_KEY)
+          "ROVE_RELEASE_KEY=$path" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "signed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: cargo xtask release
+        shell: pwsh
+        run: |
+          $args = @('--require-installer')
+          if ('${{ steps.key.outputs.signed }}' -ne 'true') { $args += '--unsigned' }
+          cargo xtask release @args 2>&1 | Tee-Object -FilePath release-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content release-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: 删除私钥
+        if: always()
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'update-signing.key'
+          if (Test-Path $path) { Remove-Item -Force $path }
+
+      - name: 体积守护（发布包 < 30 MB）
+        shell: pwsh
+        run: |
+          cargo xtask check-size 2>&1 | Tee-Object -FilePath size-report.txt
+          $code = $LASTEXITCODE
+          Get-Content size-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($code -ne 0) { exit $code }
+
+      - name: 校验 latest.json 的签名
+        if: steps.key.outputs.signed == 'true'
+        shell: pwsh
+        run: |
+          $dir = Get-ChildItem target\release-dist -Directory | Select-Object -First 1
+          cargo xtask release-verify --file (Join-Path $dir.FullName 'latest.json')
+
+      - name: 上传产物（artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: rove-release
+          path: |
+            target/release-dist/*/Rove-*.zip
+            target/release-dist/*/Rove-*-setup.exe
+            target/release-dist/*/SHA256SUMS.txt
+            target/release-dist/*/latest.json
+            target/release-dist/*/latest.json.sig
+            target/release-dist/*/release-notes.md
+            toolchain.txt
+
+      # 草稿 Release：等人工确认后再在网页上发布（不自动公开）。
+      - name: 创建草稿 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = Get-ChildItem target\release-dist -Directory | Select-Object -First 1
+          $files = Get-ChildItem $dir.FullName -File |
+            Where-Object { $_.Name -notlike 'upload.ps1' } |
+            ForEach-Object { $_.FullName }
+          gh release create ${{ github.ref_name }} --draft `
+            --title "Rove ${{ github.ref_name }}" `
+            --notes-file (Join-Path $dir.FullName 'release-notes.md') @files

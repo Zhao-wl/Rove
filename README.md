@@ -13,6 +13,36 @@ Rove 是一款轻量、高性能的代码阅读编辑器。它以 VS Code 的使
 
 以后再评估的能力：AI 改动审阅（工作区检查点、跟踪外部改动、逐段标记已审），见 `docs/PROJECT_CHARTER.md`。
 
+## 安装（Windows 10/11 x64）
+
+从 [Releases](https://github.com/Zhao-wl/Rove/releases) 下载，两种形态任选：
+
+- **安装包** `Rove-<版本>-win-x64-setup.exe`：**用户级安装**，装到 `%LOCALAPPDATA%\Programs\Rove`，
+  不需要管理员权限，不写 `HKLM`。文件关联（`.cs`、`.json`、`.yaml`、`.xml`、`.md`、`.log` 等）与
+  资源管理器右键菜单「用 Rove 打开」是安装时的**可选项，默认不勾选**；勾上后 Rove 只会出现在
+  「打开方式」里，**不会抢走默认程序**。Rove 不往 `PATH` 里加东西。
+- **便携版** `Rove-<版本>-win-x64.zip`：解压即用，不写注册表。
+
+每个 Release 都附 `SHA256SUMS.txt`，建议下载后核对。
+
+**首次运行会看到 SmartScreen 提示。** 当前版本**没有做代码签名**（见 `docs/FEATURES.md` D11），
+Windows 会提示「Windows 已保护你的电脑 / 未知发布者」。放行：点「更多信息」→「仍要运行」。
+介意的话先用上面的 SHA-256 核对文件。
+
+**Markdown 预览需要 WebView2 运行时。** Windows 11 自带，部分 Windows 10 没有；
+这时 Markdown 会以源码打开并提示一次。**安装器不捆绑、也不会联网下载 WebView2**，
+需要时请自行从微软官方页面安装。
+
+**C# 语义导航需要可选的索引组件。** `rove-indexer-cs-<版本>-win-x64.zip` 单独下载，
+解压到 `%LOCALAPPDATA%\Rove\components\indexer-cs\`（压缩包的顶层目录就是版本号），
+或在安装器里勾选「安装 C# 索引组件」。组件自带 .NET 运行时，**不需要另外安装 .NET**；
+没有它时 C# 导航自动降级为声明索引。**Rove 运行期不会替你下载任何东西。**
+
+**卸载**：从「应用和功能」卸载。程序目录、快捷方式与注册表项都会清除；用户数据
+（`%LOCALAPPDATA%\Rove`：索引缓存、设置备份、工作区状态）**默认保留**，卸载时可以勾选一并删除。
+
+发布流程、安装器选型与干净机器验收清单见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+
 ## 项目状态
 
 - 首发平台：Windows 10/11 x64；以后扩展 macOS。
