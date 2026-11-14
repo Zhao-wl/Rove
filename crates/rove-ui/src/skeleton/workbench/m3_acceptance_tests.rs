@@ -33,7 +33,7 @@ use rove_config::{SettingsOptions, SettingsService};
 use rove_lang_cs::query::{CsQueries, NavigationKind, Precision, QueryPoint};
 use rove_lang_cs::router::testing::{find_word, metadata_sample_index, GAME_CS, GAME_PATH};
 use rove_lang_cs::router::{
-    IndexHolder, L2Snapshot, ManualSemantic, SemanticSource, SemanticStatus,
+    hash_bytes, IndexHolder, L2Snapshot, ManualSemantic, SemanticSource, SemanticStatus,
 };
 use rove_lang_cs::CsIndex;
 use rove_test_support::UnityProject;
@@ -449,6 +449,103 @@ fn m3_edit_then_save_updates_syntax_outline_breadcrumb_and_precision(cx: &mut Te
     assert!(
         semantic_highlight_count(&view, cx) >= highlights_before,
         "同名高亮不能在切换时被清掉"
+    );
+}
+
+/// 同一条链路上的**并发口径**：保存是异步的（写盘在后台），`Ctrl+S` 之后、写盘回来之前的输入
+/// 照常被接受。此时磁盘上是保存开始时的快照，缓冲区已经领先一步，所以**不能**把磁盘内容的哈希
+/// 登记成「当前内容的哈希」。
+///
+/// 少了这道守卫的后果不是「停在近似」，而是**标为精确的错误结果**：索引随后按磁盘内容重绑时，
+/// `BufferStates::rebase` 会命中 `current_hash == indexed` 而丢掉整份编辑记录、把文件判为
+/// `Clean`，之后整份文件的跳转 / 引用 / 悬停都按新文本的位置去查旧内容的索引。
+#[gpui::test]
+fn m3_edit_while_save_is_in_flight_keeps_the_buffer_diverged(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    fx.file(GAME_PATH, GAME_CS.as_bytes());
+    let index_dir = fx.folder.path().to_path_buf();
+    let base = {
+        let file = index_dir.join("index0.idx");
+        metadata_sample_index(GAME_CS).0.write(&file).unwrap();
+        Arc::new(CsIndex::open(&file).unwrap())
+    };
+    let semantic = Arc::new(ManualSemantic::ready(base));
+    let (view, cx) = fx.open(cx);
+    let source = semantic.clone() as Arc<dyn SemanticSource>;
+    view.update(cx, |v, cx| v.attach_semantic(Some(source), cx));
+    let code = open_file(&view, GAME_PATH, cx);
+
+    // ① 第一次编辑 E1，内容记为 S1。
+    caret(&code, word(GAME_CS, "list", 0), cx);
+    press("x", cx);
+    let s1 = text_of(&code, cx);
+    assert_ne!(s1, GAME_CS, "E1 必须真的改了内容");
+
+    // ② 派发保存命令但**不**跑后台：写盘还在途中（报告 §7.2 实测 1 MB 77 ms / 10 MB 289 ms，
+    //    这个窗口足够用户继续打字）。
+    let action = save_ids::action_for("workbench.action.files.save").unwrap();
+    cx.update(|window, cx| window.dispatch_action(action, cx));
+
+    // ③ 保存在途时继续输入 E2：走 `type_text`（同步进到 `text_edited`），不等后台。
+    let typed = code.update(cx, |c, cx| {
+        c.set_selection(code_view::Selection::caret(word(&s1, "q", 0)), None, cx);
+        c.type_text("Z", None, cx)
+    });
+    assert!(typed, "保存在途时的输入必须照常被接受");
+
+    // ④ 让保存跑完：磁盘上是 S1，缓冲区是 S1 + E2。
+    settle(cx);
+    let on_disk = std::fs::read_to_string(fx.folder.path().join(GAME_PATH)).unwrap();
+    assert_eq!(on_disk, s1, "写出的是保存开始时的快照");
+    let in_buffer = text_of(&code, cx);
+    assert_ne!(in_buffer, on_disk, "缓冲区里还有没落盘的 E2");
+
+    // ⑤ 登记口径：E2 还没保存，当前内容没有对应的磁盘哈希。
+    let state = view
+        .read_with(cx, |v, _| v.cs_buffers().get(GAME_PATH))
+        .expect("打开的 C# 文档已登记");
+    assert_eq!(
+        state.current_hash, None,
+        "保存期间被编辑过：不能把磁盘内容的哈希登记成当前内容的哈希"
+    );
+
+    // ⑥ 索引随后按磁盘内容（S1）重绑：编辑记录不能被丢掉，结果也不能标成精确。
+    reindex(&index_dir, &semantic, &on_disk, 1);
+    view.update(cx, |v, cx| v.nav_index_changed(cx));
+    settle(cx);
+    let after = view
+        .read_with(cx, |v, _| v.cs_buffers().get(GAME_PATH))
+        .expect("重绑后仍登记");
+    assert_eq!(
+        after.base_hash,
+        hash_bytes(GAME_CS.as_bytes()),
+        "重绑不能丢掉 E1 + E2 的编辑记录（基线仍是打开时的内容）"
+    );
+    let at = word(&in_buffer, "parent", 1);
+    caret(&code, at, cx);
+    assert_ne!(
+        router_precision(&view, cx, at, document_version(&code, cx)),
+        Precision::Exact,
+        "索引里只有 S1、缓冲区有 E2：结果可以降级为近似，但绝不能标成精确"
+    );
+
+    // ⑦ 再保存一次（这回全程没有新输入）：登记恢复正常，索引重绑后变精确。
+    save_command(cx);
+    let state = view
+        .read_with(cx, |v, _| v.cs_buffers().get(GAME_PATH))
+        .expect("仍登记");
+    assert_eq!(
+        state.current_hash,
+        Some(hash_bytes(in_buffer.as_bytes())),
+        "没有并发编辑的保存必须登记当前内容的索引哈希"
+    );
+    reindex(&index_dir, &semantic, &in_buffer, 2);
+    view.update(cx, |v, cx| v.nav_index_changed(cx));
+    settle(cx);
+    assert_eq!(
+        router_precision(&view, cx, at, document_version(&code, cx)),
+        Precision::Exact,
+        "索引追上当前内容后必须变成精确"
     );
 }
 

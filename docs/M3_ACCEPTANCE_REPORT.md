@@ -208,8 +208,21 @@ issue 正文说「GBK + CRLF 的 `.cs` 在 Unity 项目里很常见」。**在�
   根本不经过窗口的保存装配；#38 / #49 各自的入口测试也只看自己那一层
   （`edit_tests` 只断言 `current_hash.is_some()`，不比较它**等于什么**）。
   只有把「窗口里保存」和「索引换代后再查询」接在一起才会暴露——这正是集成验收该做的事。
+- 并发口径（修复自带的守卫）：保存是**异步**的（写盘与这次读回都在后台），`Ctrl+S` 之后、
+  结果回到窗口之前的输入照常被 `text_edited` 接受。这时磁盘上是保存开始时的快照、缓冲区已经
+  领先一步，**登记必须跳过**：
+  - 写盘期间就被编辑过（会话的历史标记越过保存点）→ 不读回、不登记；
+  - 读回期间又被编辑 → 回到窗口时文档版本对不上 → 丢弃这次结果（与
+    `nav_host::apply_buffer_change` 的 `still` 守卫同一口径）。
+
+  少了这两道守卫，后果比修复前更坏：`file_state` 会命中 `current_hash == indexed` 而让
+  `rebase` 丢掉整份编辑记录、把文件判为 `Clean`，之后整份文件的跳转 / 引用 / 悬停都按新文本的
+  位置去查旧内容的索引，并且**标为 `Exact`**——静默的错误结果，而不是降级为近似。
 - 回归保护：`m3_edit_then_save_updates_syntax_outline_breadcrumb_and_precision` 的最后一段
-  （修复前这条断言得到 `Approximate`，修复后得到 `Exact`）。
+  （修复前这条断言得到 `Approximate`，修复后得到 `Exact`）；并发口径由
+  `m3_edit_while_save_is_in_flight_keeps_the_buffer_diverged` 挡住（保存在途时继续输入，
+  断言 `current_hash` 仍为 `None`、索引按磁盘内容重绑后编辑记录不被丢掉、结果不标成精确，
+  再保存一次后恢复精确）。
 
 ## 6. 只读强制
 

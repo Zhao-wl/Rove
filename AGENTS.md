@@ -361,5 +361,9 @@ M3 的两条硬线（编码往返零差异、编辑 → 保存 → 索引重绑�
   `SaveOutcome::Saved { hash }` 是 #49 自写去重用的 FNV-1a（`rove_buffer::save::content_hash`），
   `BufferStates` 比的是 C# 索引文件表的 xxHash64（`rove_lang_cs::router::hash_bytes`）。
   混用过一次，后果是保存后整份文件的导航结果永远停在「近似」（报告 §5.1）。
+  同时重跑 `m3_edit_while_save_is_in_flight_keeps_the_buffer_diverged`：保存是**异步**的，
+  写盘与读回期间缓冲区还能被编辑，登记前必须确认「缓冲区还是刚写出的那一份」（写盘期间被改过
+  就不登记，读回期间被改就按文档版本丢弃）。少了这道守卫，索引重绑会丢掉编辑记录并把整份文件
+  判为 `Clean`，给出**标为精确的错误位置**。
 - **输入法矩阵只能实机做**：`spikes/ime_test.ps1` 会抢前台、注入按键、改输入法状态，
   判据要看截图。#51 本次**一条都没有跑**，全部留在报告的人工清单里——不要把它当成已验收。
