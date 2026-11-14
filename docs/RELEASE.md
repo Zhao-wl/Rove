@@ -186,5 +186,5 @@ reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall /f Rove /s
 - [ ] Authenticode 代码签名证书的采购（D11：首版不签名，SmartScreen 会提示未知发布者）。
 - [ ] Release 说明里附一张 SmartScreen 提示的截图（`release-notes.md` 已写好文字说明）。
 - [ ] 第 7 节第 7 条（`v0.1.0` → `v0.1.1`）跑完后，接着验自动更新的那一轮：
-      见 [UPDATE](UPDATE.md) §8（装 v0.1.0 → 发布 v0.1.1 → 自动检查、下载、提示 →
+      见 [UPDATE](UPDATE.md) §9（装 v0.1.0 → 发布 v0.1.1 → 自动检查、下载、提示 →
       重启后版本变了且会话原样恢复）。
