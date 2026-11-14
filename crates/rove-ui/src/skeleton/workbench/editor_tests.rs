@@ -575,6 +575,78 @@ fn open_now(cx: &mut VisualTestContext, view: &Entity<Workbench>, name: &str) ->
     view.read_with(cx, |v, _| v.editor.active().active.unwrap())
 }
 
+/// #132：已经打开的文件再打开（带定位）不再走一次后台任务——`open` 返回时标签已经就绪、
+/// 插入符已经在目标位置；读盘的那一次仍然是异步的。
+#[gpui::test]
+fn opening_an_already_open_document_locates_synchronously(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("A.cs"),
+        "public class V { }\n".repeat(400),
+    )
+    .unwrap();
+    std::fs::write(folder.path().join("B.cs"), "public class W { }\n").unwrap();
+    let (view, cx) = window(cx, folder.path().into());
+    open_now(cx, &view, "A.cs");
+    let b = open_now(cx, &view, "B.cs");
+    // 另一个标签是活动标签：再打开 A.cs 并定位到第 200 行。
+    let at = pos(200, 13);
+    view.update(cx, |v, cx| {
+        assert_eq!(v.editor.active().active, Some(b));
+        v.open_documents()
+            .open(
+                resource("A.cs"),
+                OpenOptions {
+                    preview_tab: false,
+                    location: Some(at),
+                    ..Default::default()
+                },
+                Cancellation::default(),
+            )
+            .unwrap();
+        // 还没有 run_until_parked：没有后台任务，标签已经就绪并带着定位。
+        let tab = v.editor.active().current().unwrap();
+        assert!(matches!(tab.content, Content::Ready(_)), "同步就绪");
+        assert_eq!(tab.view.cursor, at);
+        assert!(tab.reveal, "等代码视图把目标行置入视口");
+        assert!(!tab.show_progress());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    redraw(cx);
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.code_view().read(cx).selection().active, at);
+        let tabs = v.editor.in_group(v.editor.focused);
+        assert_eq!(tabs.len(), 2, "没有多出标签");
+        assert!(tabs.iter().any(|t| t.active
+            && matches!(&t.state, EditorTabState::Ready(_))
+            && t.resource == resource("A.cs")));
+    });
+    // 没打开过的文件仍然走后台加载（读盘不能在 UI 线程上做）。
+    std::fs::write(folder.path().join("C.cs"), "public class X { }\n").unwrap();
+    view.update(cx, |v, cx| {
+        v.open_documents()
+            .open(
+                resource("C.cs"),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            v.editor.active().current().unwrap().content,
+            Content::Loading
+        ));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert!(matches!(
+            v.editor.active().current().unwrap().content,
+            Content::Ready(_)
+        ));
+    });
+}
+
 #[gpui::test]
 fn alias_completing_after_the_user_moved_on_does_not_steal_focus(cx: &mut TestAppContext) {
     let folder = tempfile::tempdir().unwrap();

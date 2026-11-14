@@ -22,7 +22,9 @@ pub struct NavSample {
     pub placeholders: Option<u32>,
     /// 从按键到下一帧回调（含等待下一次垂直同步，是画面完成的上界）。
     pub next_frame_ms: Option<f64>,
-    /// 从按键到第一帧没有占位行的帧回调（目标区域整形缓存未命中时晚一两帧；上界，含等待垂直同步）。
+    /// 从按键到第一帧没有占位行的画面完成。目标帧本身就没有占位（#132 的常态）时与
+    /// [`NavSample::painted_ms`] 同口径；要等后面的帧才补齐时取那一帧的回调时刻（上界，
+    /// 含等待垂直同步）。
     pub full_ms: Option<f64>,
 }
 

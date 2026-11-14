@@ -294,6 +294,27 @@ fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
     focus_code(view, cx);
 }
 
+/// 固定标签（不是预览）打开：再打开别的文件时不会被顶掉。
+fn open_pinned(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
+    view.update(cx, |v, cx| {
+        v.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new(path).unwrap()),
+                OpenOptions {
+                    preview_tab: false,
+                    ..Default::default()
+                },
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    refresh(cx);
+    refresh(cx);
+    focus_code(view, cx);
+}
+
 fn focus_code(view: &Entity<Workbench>, cx: &mut VisualTestContext) {
     let code = view.read_with(cx, |v, _| v.code_view().clone());
     cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
@@ -436,6 +457,44 @@ fn f12_opens_the_definition_and_history_returns(cx: &mut TestAppContext) {
     refresh(cx);
     press("alt-left", cx);
     assert_eq!(location(&view, cx), ("Assets/Hero.cs".into(), call));
+}
+
+/// #132：目标文件已经在另一个标签里打开时，`F12` 同步定位（不再多走一次后台任务），
+/// 而且目标帧一帧到位——跳转后画的每一帧都是正式字形，没有等宽占位或空白行。
+#[gpui::test]
+fn f12_to_an_open_file_paints_the_target_without_placeholders(cx: &mut TestAppContext) {
+    let project = Project::new();
+    let (view, cx) = project.open(project.exact(), cx);
+    // 两个都用固定标签打开：目标文件已在同组的另一个标签里（#132 的场景）。
+    open_pinned(&view, "Assets/Player.cs", cx);
+    open_pinned(&view, "Assets/Hero.cs", cx);
+    let call = word(HERO_CS, "Move", 0);
+    caret(&view, call, cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    // 从这里开始记录每一帧：跳转落位的那一帧也在内。
+    code.update(cx, |c, _| {
+        c.record_frames(true);
+        c.take_frame_samples();
+    });
+    press("f12", cx);
+    let target = word(PLAYER_CS, "Move", 0);
+    assert_eq!(location(&view, cx), ("Assets/Player.cs".into(), target));
+    // 打开已打开的文件是同步的：这一轮里代码视图始终是同一个实体，帧样本连续。
+    let frames = code.update(cx, |c, _| {
+        let frames = c.take_frame_samples();
+        c.record_frames(false);
+        frames
+    });
+    assert!(!frames.is_empty(), "跳转后至少画了一帧");
+    assert!(
+        frames.iter().all(|f| f.placeholders == 0 && f.missing == 0),
+        "目标帧不能有等宽占位或空白行：{frames:?}"
+    );
+    assert!(
+        frames.iter().any(|f| f.first_line <= target.line.0
+            && target.line.0 < f.first_line + u64::from(f.visible_lines)),
+        "记录到了目标行所在的帧：{frames:?}"
+    );
 }
 
 #[gpui::test]

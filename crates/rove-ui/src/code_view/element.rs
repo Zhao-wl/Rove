@@ -179,6 +179,11 @@ impl CodeView {
         if self.visual_map().doc_lines() != doc_count || self.fold_map_changed() {
             self.sync_fold_map();
         }
+        // #132：刚跳到新位置（`F12`、转到行、搜索结果……）：这一帧绘制前先把目标区域整形好，
+        // 目标帧不再是等宽占位；没做完的部分照旧交给绘制后的空闲切片。
+        if std::mem::take(&mut self.prepare_on_layout) {
+            self.prepare_jump(window);
+        }
         let o = &self.options;
 
         // 行号栏：字形边距 | 行号 | 行装饰区（含折叠控件）。

@@ -502,6 +502,33 @@ fn placeholders_are_replaced_without_jumping(cx: &mut TestAppContext) {
         .all(|f| f.first_line_y == 0.0 && f.visible_lines == last.visible_lines));
 }
 
+/// #132：正常预算下跳转一帧到位——目标帧就是正式字形，没有占位行也没有空白行。
+#[gpui::test]
+fn a_jump_paints_the_target_without_placeholders(cx: &mut TestAppContext) {
+    let text = (0..3000)
+        .map(|i| format!("unique line {i} {}\n", i * 7919))
+        .collect::<String>();
+    let (view, cx) = open(cx, &text, vec![]);
+    settle(cx);
+    view.update(cx, |v, cx| {
+        v.record_frames(true);
+        v.take_frame_samples();
+        v.reveal_line(2000, Reveal::Top, cx);
+    });
+    settle(cx);
+    let frames = view.update(cx, |v, _| v.take_frame_samples());
+    let at_target: Vec<_> = frames.iter().filter(|f| f.first_line == 2000).collect();
+    assert!(!at_target.is_empty(), "画了目标位置的帧：{frames:?}");
+    assert!(
+        at_target.iter().all(|f| f.placeholders + f.missing == 0),
+        "目标帧没有占位行：{frames:?}"
+    );
+    assert_eq!(
+        at_target[0].shaped, at_target[0].visible_lines,
+        "第一帧的可见行全部是正式整形结果"
+    );
+}
+
 /// 沿滚动方向预取：停下后下一屏已整形。
 #[gpui::test]
 fn prefetches_along_scroll_direction(cx: &mut TestAppContext) {
