@@ -7,7 +7,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 清单覆盖全部 feature 的依赖图，因此包含只在构建、基准与测试时使用、**不进 `rove.exe`** 的包。
 移植代码与随包资产的逐项声明在 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。
 
-依赖总数 798，许可种类 36。
+依赖总数 742，许可种类 34。
 
 ## 按许可汇总
 
@@ -17,13 +17,11 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | `(MIT OR Apache-2.0) AND NCSA` | 1 |
 | `(MIT OR Apache-2.0) AND Unicode-3.0` | 2 |
 | `0BSD OR MIT OR Apache-2.0` | 1 |
-| `Apache-2.0` | 25 |
+| `Apache-2.0` | 23 |
 | `Apache-2.0 / MIT` | 1 |
-| `Apache-2.0 AND ISC` | 1 |
 | `Apache-2.0 OR BSL-1.0` | 1 |
 | `Apache-2.0 OR GPL-2.0-only` | 1 |
-| `Apache-2.0 OR ISC OR MIT` | 4 |
-| `Apache-2.0 OR MIT` | 80 |
+| `Apache-2.0 OR MIT` | 76 |
 | `Apache-2.0 WITH LLVM-exception` | 1 |
 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 7 |
 | `Apache-2.0/MIT` | 6 |
@@ -34,15 +32,15 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | `CC0-1.0` | 3 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
-| `ISC` | 5 |
-| `MIT` | 175 |
+| `ISC` | 3 |
+| `MIT` | 160 |
 | `MIT / Apache-2.0` | 4 |
-| `MIT OR Apache-2.0` | 348 |
+| `MIT OR Apache-2.0` | 325 |
 | `MIT OR Apache-2.0 OR BSD-1-Clause` | 1 |
 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | 2 |
-| `MIT OR Apache-2.0 OR Zlib` | 7 |
+| `MIT OR Apache-2.0 OR Zlib` | 6 |
 | `MIT OR Zlib OR Apache-2.0` | 2 |
-| `MIT/Apache-2.0` | 43 |
+| `MIT/Apache-2.0` | 39 |
 | `MPL-2.0` | 5 |
 | `Unicode-3.0` | 22 |
 | `Unlicense OR MIT` | 11 |
@@ -77,19 +75,16 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | ashpd | 0.11.1 | `MIT` | crates.io |
 | ashpd | 0.12.3 | `MIT` | crates.io |
 | async-broadcast | 0.7.2 | `MIT OR Apache-2.0` | crates.io |
-| async-channel | 1.9.0 | `Apache-2.0 OR MIT` | crates.io |
 | async-channel | 2.5.0 | `Apache-2.0 OR MIT` | crates.io |
 | async-compression | 0.4.52 | `MIT OR Apache-2.0` | crates.io |
 | async-executor | 1.14.1 | `Apache-2.0 OR MIT` | crates.io |
 | async-fs | 2.2.0 | `Apache-2.0 OR MIT` | crates.io |
-| async-global-executor | 2.4.1 | `Apache-2.0 OR MIT` | crates.io |
 | async-io | 2.6.0 | `Apache-2.0 OR MIT` | crates.io |
 | async-lock | 3.5.0 | `Apache-2.0 OR MIT` | crates.io |
 | async-net | 2.0.0 | `Apache-2.0 OR MIT` | crates.io |
 | async-process | 2.5.0 | `Apache-2.0 OR MIT` | crates.io |
 | async-recursion | 1.2.0 | `MIT OR Apache-2.0` | crates.io |
 | async-signal | 0.2.14 | `Apache-2.0 OR MIT` | crates.io |
-| async-std | 1.13.2 | `Apache-2.0 OR MIT` | crates.io |
 | async-task | 4.7.1 | `Apache-2.0 OR MIT` | crates.io |
 | async-trait | 0.1.92 | `MIT OR Apache-2.0` | crates.io |
 | async_zip | 0.0.17 | `MIT` | crates.io |
@@ -231,7 +226,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | errno | 0.3.14 | `MIT OR Apache-2.0` | crates.io |
 | etagere | 0.2.15 | `MIT/Apache-2.0` | crates.io |
 | euclid | 0.22.14 | `MIT OR Apache-2.0` | crates.io |
-| event-listener | 2.5.3 | `Apache-2.0 OR MIT` | crates.io |
 | event-listener | 5.4.2 | `Apache-2.0 OR MIT` | crates.io |
 | event-listener-strategy | 0.5.4 | `Apache-2.0 OR MIT` | crates.io |
 | exr | 1.74.3 | `BSD-3-Clause` | crates.io |
@@ -242,7 +236,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | fdeflate | 0.3.7 | `MIT OR Apache-2.0` | crates.io |
 | fiat-crypto | 0.3.0 | `MIT OR Apache-2.0 OR BSD-1-Clause` | crates.io |
 | filedescriptor | 0.8.3 | `MIT` | crates.io |
-| filetime | 0.2.29 | `MIT/Apache-2.0` | crates.io |
 | find-msvc-tools | 0.1.15 | `MIT OR Apache-2.0` | crates.io |
 | flate2 | 1.1.11 | `MIT OR Apache-2.0` | crates.io |
 | float-cmp | 0.9.0 | `MIT` | crates.io |
@@ -284,7 +277,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | git2 | 0.20.4 | `MIT OR Apache-2.0` | crates.io |
 | glob | 0.3.4 | `MIT OR Apache-2.0` | crates.io |
 | globset | 0.4.21 | `Unlicense OR MIT` | crates.io |
-| gloo-timers | 0.3.0 | `MIT OR Apache-2.0` | crates.io |
 | glow | 0.16.0 | `MIT OR Apache-2.0 OR Zlib` | crates.io |
 | gpu-alloc | 0.6.2 | `MIT OR Apache-2.0` | crates.io |
 | gpu-alloc-ash | 0.7.1 | `MIT OR Apache-2.0` | crates.io |
@@ -293,7 +285,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | gpui-macros | 0.2.2 | `Apache-2.0` | crates.io |
 | gpui_collections | 0.2.2 | `Apache-2.0` | crates.io |
 | gpui_derive_refineable | 0.2.2 | `Apache-2.0` | crates.io |
-| gpui_http_client | 0.2.2 | `Apache-2.0` | crates.io |
 | gpui_media | 0.2.2 | `Apache-2.0` | crates.io |
 | gpui_perf | 0.2.2 | `Apache-2.0` | crates.io |
 | gpui_refineable | 0.2.2 | `Apache-2.0` | crates.io |
@@ -305,7 +296,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | grep-regex | 0.1.14 | `Unlicense OR MIT` | crates.io |
 | grep-searcher | 0.1.17 | `Unlicense OR MIT` | crates.io |
 | grid | 0.18.0 | `MIT` | crates.io |
-| h2 | 0.4.20 | `MIT` | crates.io |
 | half | 2.7.1 | `MIT OR Apache-2.0` | crates.io |
 | hashbrown | 0.14.5 | `MIT OR Apache-2.0` | crates.io |
 | hashbrown | 0.15.5 | `MIT OR Apache-2.0` | crates.io |
@@ -321,13 +311,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | home | 0.5.12 | `MIT OR Apache-2.0` | crates.io |
 | html5ever | 0.40.1 | `MIT OR Apache-2.0` | crates.io |
 | http | 1.5.0 | `MIT OR Apache-2.0` | crates.io |
-| http-body | 1.1.0 | `MIT` | crates.io |
-| http-body-util | 0.1.5 | `MIT` | crates.io |
-| httparse | 1.10.1 | `MIT OR Apache-2.0` | crates.io |
 | hybrid-array | 0.4.15 | `MIT OR Apache-2.0` | crates.io |
-| hyper | 1.12.0 | `MIT` | crates.io |
-| hyper-rustls | 0.27.10 | `Apache-2.0 OR ISC OR MIT` | crates.io |
-| hyper-util | 0.1.21 | `MIT` | crates.io |
 | icu_collections | 2.4.0 | `Unicode-3.0` | crates.io |
 | icu_locale_core | 2.4.0 | `Unicode-3.0` | crates.io |
 | icu_locale_fallback | 2.4.0 | `Unicode-3.0` | crates.io |
@@ -354,7 +338,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | interpolate_name | 0.2.4 | `MIT` | crates.io |
 | inventory | 0.3.25 | `MIT OR Apache-2.0` | crates.io |
 | io-surface | 0.16.1 | `MIT OR Apache-2.0` | crates.io |
-| ipnet | 2.12.2 | `MIT OR Apache-2.0` | crates.io |
 | is-docker | 0.2.0 | `MIT` | crates.io |
 | is-terminal | 0.4.17 | `MIT` | crates.io |
 | is-wsl | 0.4.0 | `MIT` | crates.io |
@@ -369,7 +352,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | kqueue | 1.2.1 | `MIT` | crates.io |
 | kqueue-sys | 1.1.2 | `MIT` | crates.io |
 | kurbo | 0.11.3 | `Apache-2.0 OR MIT` | crates.io |
-| kv-log-macro | 1.0.7 | `MIT OR Apache-2.0` | crates.io |
 | lazy_static | 1.5.1 | `MIT OR Apache-2.0` | crates.io |
 | leak | 0.1.2 | `Apache-2.0 OR MIT` | crates.io |
 | leaky-cow | 0.1.1 | `MIT / Apache-2.0` | crates.io |
@@ -387,7 +369,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | lock_api | 0.4.14 | `MIT OR Apache-2.0` | crates.io |
 | log | 0.4.35 | `MIT OR Apache-2.0` | crates.io |
 | loop9 | 0.1.5 | `MIT` | crates.io |
-| lru-slab | 0.1.3 | `MIT OR Apache-2.0 OR Zlib` | crates.io |
 | lyon | 1.0.19 | `MIT OR Apache-2.0` | crates.io |
 | lyon_algorithms | 1.0.22 | `MIT OR Apache-2.0` | crates.io |
 | lyon_geom | 1.0.20 | `MIT OR Apache-2.0` | crates.io |
@@ -455,7 +436,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | oo7 | 0.5.0 | `MIT` | crates.io |
 | oorandom | 11.1.5 | `MIT` | crates.io |
 | open | 5.4.5 | `MIT` | crates.io |
-| openssl-probe | 0.2.2 | `MIT OR Apache-2.0` | crates.io |
 | option-ext | 0.2.0 | `MPL-2.0` | crates.io |
 | ordered-stream | 0.2.0 | `MIT OR Apache-2.0` | crates.io |
 | parking | 2.2.1 | `Apache-2.0 OR MIT` | crates.io |
@@ -475,7 +455,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | pin-project | 1.1.13 | `Apache-2.0 OR MIT` | crates.io |
 | pin-project-internal | 1.1.13 | `Apache-2.0 OR MIT` | crates.io |
 | pin-project-lite | 0.2.17 | `Apache-2.0 OR MIT` | crates.io |
-| pin-utils | 0.1.1 | `MIT OR Apache-2.0` | crates.io |
 | piper | 0.2.5 | `MIT OR Apache-2.0` | crates.io |
 | pkg-config | 0.3.34 | `MIT OR Apache-2.0` | crates.io |
 | png | 0.17.16 | `MIT OR Apache-2.0` | crates.io |
@@ -501,9 +480,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | quick-error | 1.2.3 | `MIT/Apache-2.0` | crates.io |
 | quick-error | 2.0.1 | `MIT/Apache-2.0` | crates.io |
 | quick-xml | 0.41.0 | `MIT` | crates.io |
-| quinn | 0.11.12 | `MIT OR Apache-2.0` | crates.io |
-| quinn-proto | 0.11.19 | `MIT OR Apache-2.0` | crates.io |
-| quinn-udp | 0.5.16 | `MIT OR Apache-2.0` | crates.io |
 | quote | 1.0.47 | `MIT OR Apache-2.0` | crates.io |
 | r-efi | 5.3.0 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | crates.io |
 | r-efi | 6.0.0 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | crates.io |
@@ -515,7 +491,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | rand_core | 0.10.1 | `MIT OR Apache-2.0` | crates.io |
 | rand_core | 0.6.4 | `MIT OR Apache-2.0` | crates.io |
 | rand_core | 0.9.5 | `MIT OR Apache-2.0` | crates.io |
-| rand_pcg | 0.10.2 | `MIT OR Apache-2.0` | crates.io |
 | rand_xorshift | 0.5.0 | `MIT OR Apache-2.0` | crates.io |
 | rangemap | 1.8.0 | `MIT/Apache-2.0` | crates.io |
 | rav1e | 0.8.1 | `BSD-2-Clause` | crates.io |
@@ -525,7 +500,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | rayon | 1.12.0 | `MIT OR Apache-2.0` | crates.io |
 | rayon-core | 1.13.0 | `MIT OR Apache-2.0` | crates.io |
 | read-fonts | 0.41.0 | `MIT OR Apache-2.0` | crates.io |
-| redox_syscall | 0.2.16 | `MIT` | crates.io |
 | redox_syscall | 0.5.18 | `MIT` | crates.io |
 | redox_users | 0.4.6 | `MIT` | crates.io |
 | ref-cast | 1.0.27 | `MIT OR Apache-2.0` | crates.io |
@@ -535,7 +509,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | regex-syntax | 0.8.11 | `MIT OR Apache-2.0` | crates.io |
 | resvg | 0.45.1 | `Apache-2.0 OR MIT` | crates.io |
 | rgb | 0.8.53 | `MIT` | crates.io |
-| ring | 0.17.14 | `Apache-2.0 AND ISC` | crates.io |
 | ropey | 1.6.1 | `MIT` | crates.io |
 | roxmltree | 0.20.0 | `MIT OR Apache-2.0` | crates.io |
 | rust-embed | 8.13.0 | `MIT` | crates.io |
@@ -547,18 +520,12 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | rustc_version | 0.4.1 | `MIT OR Apache-2.0` | crates.io |
 | rustix | 0.38.44 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | crates.io |
 | rustix | 1.1.6 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | crates.io |
-| rustls | 0.23.46 | `Apache-2.0 OR ISC OR MIT` | crates.io |
-| rustls-native-certs | 0.8.5 | `Apache-2.0 OR ISC OR MIT` | crates.io |
-| rustls-pemfile | 2.2.0 | `Apache-2.0 OR ISC OR MIT` | crates.io |
-| rustls-pki-types | 1.15.1 | `MIT OR Apache-2.0` | crates.io |
-| rustls-webpki | 0.103.16 | `ISC` | crates.io |
 | rustversion | 1.0.23 | `MIT OR Apache-2.0` | crates.io |
 | rusty-fork | 0.3.1 | `MIT/Apache-2.0` | crates.io |
 | rustybuzz | 0.14.1 | `MIT` | crates.io |
 | rustybuzz | 0.20.1 | `MIT` | crates.io |
 | ryu | 1.0.23 | `Apache-2.0 OR BSL-1.0` | crates.io |
 | same-file | 1.0.6 | `Unlicense/MIT` | crates.io |
-| schannel | 0.1.30 | `MIT` | crates.io |
 | schemars | 1.2.3 | `MIT` | crates.io |
 | schemars_derive | 1.2.3 | `MIT` | crates.io |
 | scoped-tls | 1.0.1 | `MIT/Apache-2.0` | crates.io |
@@ -566,8 +533,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | screencapturekit | 0.2.8 | `MIT OR Apache-2.0` | crates.io |
 | screencapturekit-sys | 0.2.8 | `MIT OR Apache-2.0` | crates.io |
 | seahash | 4.1.0 | `MIT` | crates.io |
-| security-framework | 3.7.0 | `MIT OR Apache-2.0` | crates.io |
-| security-framework-sys | 2.17.0 | `MIT OR Apache-2.0` | crates.io |
 | self_cell | 1.3.0 | `Apache-2.0 OR GPL-2.0-only` | crates.io |
 | semver | 1.0.28 | `MIT OR Apache-2.0` | crates.io |
 | serde | 1.0.229 | `MIT OR Apache-2.0` | crates.io |
@@ -580,7 +545,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | serde_repr | 0.1.21 | `MIT OR Apache-2.0` | crates.io |
 | serde_spanned | 0.6.9 | `MIT OR Apache-2.0` | crates.io |
 | serde_spanned | 1.1.3 | `MIT OR Apache-2.0` | crates.io |
-| serde_urlencoded | 0.7.1 | `MIT/Apache-2.0` | crates.io |
 | sha1_smol | 1.0.1 | `BSD-3-Clause` | crates.io |
 | sha2 | 0.10.9 | `MIT OR Apache-2.0` | crates.io |
 | sha2 | 0.11.1 | `MIT OR Apache-2.0` | crates.io |
@@ -599,7 +563,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | smallvec | 1.16.5 | `MIT OR Apache-2.0` | crates.io |
 | smol | 2.0.2 | `Apache-2.0 OR MIT` | crates.io |
 | smol_str | 0.2.2 | `MIT OR Apache-2.0` | crates.io |
-| socket2 | 0.6.5 | `MIT OR Apache-2.0` | crates.io |
 | spin | 0.9.9 | `MIT` | crates.io |
 | spirv | 0.3.0+sdk-1.3.268.0 | `Apache-2.0` | crates.io |
 | stable_deref_trait | 1.2.1 | `MIT OR Apache-2.0` | crates.io |
@@ -631,12 +594,9 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | syn | 1.0.109 | `MIT OR Apache-2.0` | crates.io |
 | syn | 2.0.119 | `MIT OR Apache-2.0` | crates.io |
 | syn | 3.0.10 | `MIT OR Apache-2.0` | crates.io |
-| sync_wrapper | 1.0.2 | `Apache-2.0` | crates.io |
 | synstructure | 0.14.0 | `MIT` | crates.io |
 | sys-locale | 0.3.2 | `MIT OR Apache-2.0` | crates.io |
 | sysinfo | 0.31.4 | `MIT` | crates.io |
-| system-configuration | 0.6.1 | `MIT OR Apache-2.0` | crates.io |
-| system-configuration-sys | 0.6.0 | `MIT OR Apache-2.0` | crates.io |
 | taffy | 0.9.0 | `MIT` | crates.io |
 | take-until | 0.2.0 | `MIT` | crates.io |
 | tao-core-video-sys | 0.2.0 | `MIT` | crates.io |
@@ -656,10 +616,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | tinystr | 0.8.5 | `Unicode-3.0` | crates.io |
 | tinytemplate | 1.2.1 | `Apache-2.0 OR MIT` | crates.io |
 | tinyvec | 1.13.3 | `Zlib OR Apache-2.0 OR MIT` | crates.io |
-| tokio | 1.54.1 | `MIT` | crates.io |
-| tokio-rustls | 0.26.6 | `MIT OR Apache-2.0` | crates.io |
-| tokio-socks | 0.5.3 | `MIT` | crates.io |
-| tokio-util | 0.7.20 | `MIT` | crates.io |
 | toml | 0.8.23 | `MIT OR Apache-2.0` | crates.io |
 | toml | 1.2.1+spec-1.1.0 | `MIT OR Apache-2.0` | crates.io |
 | toml_datetime | 0.6.11 | `MIT OR Apache-2.0` | crates.io |
@@ -669,9 +625,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | toml_parser | 1.1.5+spec-1.1.0 | `MIT OR Apache-2.0` | crates.io |
 | toml_write | 0.1.2 | `MIT OR Apache-2.0` | crates.io |
 | toml_writer | 1.2.0+spec-1.1.0 | `MIT OR Apache-2.0` | crates.io |
-| tower | 0.5.3 | `MIT` | crates.io |
-| tower-layer | 0.3.3 | `MIT` | crates.io |
-| tower-service | 0.3.3 | `MIT` | crates.io |
 | tracing | 0.1.44 | `MIT` | crates.io |
 | tracing-attributes | 0.1.31 | `MIT` | crates.io |
 | tracing-core | 0.1.36 | `MIT` | crates.io |
@@ -682,7 +635,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | tree-sitter-md | 0.5.4 | `MIT` | crates.io |
 | tree-sitter-xml | 0.7.0 | `MIT` | crates.io |
 | tree-sitter-yaml | 0.7.2 | `MIT` | crates.io |
-| try-lock | 0.2.5 | `MIT` | crates.io |
 | ttf-parser | 0.20.0 | `MIT OR Apache-2.0` | crates.io |
 | ttf-parser | 0.21.1 | `MIT OR Apache-2.0` | crates.io |
 | ttf-parser | 0.25.1 | `MIT OR Apache-2.0` | crates.io |
@@ -703,7 +655,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | unicode-segmentation | 1.13.3 | `MIT OR Apache-2.0` | crates.io |
 | unicode-vo | 0.1.0 | `MIT/Apache-2.0` | crates.io |
 | unicode-width | 0.2.3 | `MIT OR Apache-2.0` | crates.io |
-| untrusted | 0.9.0 | `ISC` | crates.io |
 | url | 2.5.8 | `MIT OR Apache-2.0` | crates.io |
 | usvg | 0.45.1 | `Apache-2.0 OR MIT` | crates.io |
 | utf-8 | 0.7.6 | `MIT OR Apache-2.0` | crates.io |
@@ -721,15 +672,12 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | wait-timeout | 0.2.1 | `MIT/Apache-2.0` | crates.io |
 | waker-fn | 1.2.0 | `Apache-2.0 OR MIT` | crates.io |
 | walkdir | 2.5.0 | `Unlicense/MIT` | crates.io |
-| want | 0.3.2 | `MIT` | crates.io |
 | wasi | 0.11.1+wasi-snapshot-preview1 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | crates.io |
 | wasip2 | 1.0.4+wasi-0.2.12 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | crates.io |
 | wasm-bindgen | 0.2.130 | `MIT OR Apache-2.0` | crates.io |
-| wasm-bindgen-futures | 0.4.80 | `MIT OR Apache-2.0` | crates.io |
 | wasm-bindgen-macro | 0.2.130 | `MIT OR Apache-2.0` | crates.io |
 | wasm-bindgen-macro-support | 0.2.130 | `MIT OR Apache-2.0` | crates.io |
 | wasm-bindgen-shared | 0.2.130 | `MIT OR Apache-2.0` | crates.io |
-| wasm-streams | 0.4.2 | `MIT OR Apache-2.0` | crates.io |
 | wayland-backend | 0.3.17 | `MIT` | crates.io |
 | wayland-client | 0.31.15 | `MIT` | crates.io |
 | wayland-cursor | 0.31.14 | `MIT` | crates.io |
@@ -739,7 +687,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | wayland-scanner | 0.31.11 | `MIT` | crates.io |
 | wayland-sys | 0.31.11 | `MIT` | crates.io |
 | web-sys | 0.3.107 | `MIT OR Apache-2.0` | crates.io |
-| web-time | 1.1.0 | `MIT OR Apache-2.0` | crates.io |
 | web_atoms | 0.3.0 | `MIT OR Apache-2.0` | crates.io |
 | webview2-com | 0.38.2 | `MIT` | crates.io |
 | webview2-com-macros | 0.8.1 | `MIT` | crates.io |
@@ -764,11 +711,9 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | windows-link | 0.1.3 | `MIT OR Apache-2.0` | crates.io |
 | windows-link | 0.2.1 | `MIT OR Apache-2.0` | crates.io |
 | windows-numerics | 0.2.0 | `MIT OR Apache-2.0` | crates.io |
-| windows-registry | 0.4.0 | `MIT OR Apache-2.0` | crates.io |
 | windows-registry | 0.5.3 | `MIT OR Apache-2.0` | crates.io |
 | windows-result | 0.1.2 | `MIT OR Apache-2.0` | crates.io |
 | windows-result | 0.3.4 | `MIT OR Apache-2.0` | crates.io |
-| windows-strings | 0.3.1 | `MIT OR Apache-2.0` | crates.io |
 | windows-strings | 0.4.2 | `MIT OR Apache-2.0` | crates.io |
 | windows-sys | 0.48.0 | `MIT OR Apache-2.0` | crates.io |
 | windows-sys | 0.52.0 | `MIT OR Apache-2.0` | crates.io |
@@ -812,7 +757,6 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | x11-clipboard | 0.9.3 | `MIT` | crates.io |
 | x11rb | 0.13.2 | `MIT OR Apache-2.0` | crates.io |
 | x11rb-protocol | 0.13.2 | `MIT OR Apache-2.0` | crates.io |
-| xattr | 0.2.3 | `MIT/Apache-2.0` | crates.io |
 | xcb | 1.7.1 | `MIT` | crates.io |
 | xcursor | 0.3.11 | `MIT` | crates.io |
 | xim-ctext | 0.3.0 | `MIT` | crates.io |
@@ -829,9 +773,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | zbus_macros | 5.19.0 | `MIT` | crates.io |
 | zbus_names | 4.3.5 | `MIT` | crates.io |
 | zcheapstr | 1.2.0 | `MIT` | crates.io |
-| zed-async-tar | 0.5.0-zed | `MIT/Apache-2.0` | crates.io |
 | zed-font-kit | 0.14.1-zed | `MIT OR Apache-2.0` | crates.io |
-| zed-reqwest | 0.12.15-zed | `MIT OR Apache-2.0` | crates.io |
 | zed-scap | 0.0.8-zed | `MIT` | crates.io |
 | zed-xim | 0.4.0-zed | `MIT` | crates.io |
 | zeno | 0.3.3 | `Apache-2.0 OR MIT` | crates.io |
