@@ -112,6 +112,8 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::workspace_symbols::register_commands(&mut registry)?;
     // #76：关于 Rove。
     crate::about::registry::register_commands(&mut registry)?;
+    // #149：检查更新 / 重启以更新。
+    crate::update::registry::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -168,6 +170,8 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::workspace_symbols::action_for(id))
         // #76：关于 Rove（窗口在 `about_host` 里处理）。
         .or_else(|| crate::about::registry::action_for(id))
+        // #149：检查更新 / 重启以更新（窗口在 `update_host` 里处理）。
+        .or_else(|| crate::update::registry::action_for(id))
 }
 
 /// Whether a command can run (for menus and the command palette): it has a handler in the

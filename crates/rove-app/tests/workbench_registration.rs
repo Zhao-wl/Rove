@@ -226,3 +226,73 @@ fn about_dialog_registers_its_command_and_a_gear_menu_item() {
         assert!(colors.get(key).is_some(), "{key}");
     }
 }
+
+#[test]
+fn auto_update_registers_its_commands_a_menu_item_and_a_setting() {
+    // 例：#149 自动更新。命令、界面字符串与齿轮菜单项全部走登记机制；
+    // `rove.update.mode` 走 #13 的内置设置目录；**不登记任何状态栏条目或视图**
+    //（issue 原文：状态栏不加常驻条目，只用提示条与通知）。
+    use rove_ui::update::registry as update;
+    let mut commands = CommandRegistry::default();
+    catalog::register_commands(&mut commands).unwrap();
+    update::register_commands(&mut commands).unwrap();
+    for (id, _, _) in update::COMMANDS {
+        assert!(commands.get(id).is_some(), "{id} 没有登记");
+    }
+
+    let mut strings = rove_i18n::StringTable::default();
+    update::register_strings(&mut strings).unwrap();
+    for (key, _) in update::STRINGS {
+        assert!(strings.get(key).is_some(), "{key} 没有登记");
+    }
+    // 「关于」对话框要显示的每一种更新状态都查得到文案。
+    for state in [
+        rove_update::UpdateState::Disabled,
+        rove_update::UpdateState::Checking,
+        rove_update::UpdateState::UpToDate {
+            checked_at: "2026-11-14 10:00:00Z".into(),
+        },
+        rove_update::UpdateState::Downloading {
+            version: "0.1.1".into(),
+        },
+        rove_update::UpdateState::ReadyToInstall {
+            version: "0.1.1".into(),
+        },
+        rove_update::UpdateState::Failed {
+            at: "2026-11-14 10:00:00Z".into(),
+            reason: "网络不可用".into(),
+        },
+    ] {
+        assert!(strings.get(state.string_key()).is_some(), "{state:?}");
+    }
+
+    // 齿轮菜单（帮助组）里有「检查更新」。
+    let mut menus = default_menus();
+    update::register_menus(&mut menus).unwrap();
+    let implemented = |id: &str| catalog::is_implemented(id) || id == update::CHECK_FOR_UPDATES;
+    let items = visible_items(&menus, MenuId::Manage, &commands, &implemented);
+    assert!(items
+        .iter()
+        .any(|(_, item)| item.command.as_ref() == update::CHECK_FOR_UPDATES));
+
+    // `rove.update.mode` 在内置设置目录里，默认 `default`，四个取值都认得。
+    let settings = rove_config::catalog::builtin_registry();
+    let setting = settings
+        .get(rove_update::mode::SETTING_KEY)
+        .expect("rove.update.mode 已登记");
+    let default = setting.rove_default.as_ref().unwrap_or(&setting.default);
+    let rove_base::Value::String(default) = default else {
+        panic!("默认值应该是字符串，实际 {default:?}");
+    };
+    assert_eq!(default.as_ref(), "default");
+    for mode in rove_update::UpdateMode::ALL {
+        assert!(rove_update::UpdateMode::parse(mode.as_str()).is_some());
+    }
+
+    // 状态栏与视图：一条都没有。
+    let views = rove_ui::shell::view::default_contributions();
+    assert!(
+        !views.entries().any(|(id, _)| id.starts_with("update.")),
+        "更新不应该登记视图或状态栏条目"
+    );
+}

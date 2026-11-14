@@ -93,7 +93,8 @@ powershell -NoProfile -File target\release-dist\<版本>\upload.ps1
 
 ## 4. 更新清单 `latest.json` 与签名
 
-格式由 #149 定义，本 issue 负责生成与签名。当前字段（`schema = 1`）：
+格式由 #149 定义（字段逐项说明、更新端怎么校验、怎么演练都在 [UPDATE](UPDATE.md)），
+本 issue 负责生成与签名。当前字段（`schema = 1`）：
 
 ```json
 {
@@ -184,3 +185,6 @@ reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall /f Rove /s
       产出安装包并在干净虚拟机上走完第 7 节的清单。
 - [ ] Authenticode 代码签名证书的采购（D11：首版不签名，SmartScreen 会提示未知发布者）。
 - [ ] Release 说明里附一张 SmartScreen 提示的截图（`release-notes.md` 已写好文字说明）。
+- [ ] 第 7 节第 7 条（`v0.1.0` → `v0.1.1`）跑完后，接着验自动更新的那一轮：
+      见 [UPDATE](UPDATE.md) §9（装 v0.1.0 → 发布 v0.1.1 → 自动检查、下载、提示 →
+      重启后版本变了且会话原样恢复）。

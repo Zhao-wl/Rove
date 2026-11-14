@@ -147,6 +147,8 @@ pub fn default_menus() -> MenuRegistry {
     crate::welcome::registry::register_menus(&mut r).expect("欢迎页菜单登记");
     // #76：齿轮菜单里的「关于」。
     crate::about::registry::register_menus(&mut r).expect("关于对话框菜单登记");
+    // #149：齿轮菜单里的「检查更新」（排在「关于」前面）。
+    crate::update::registry::register_menus(&mut r).expect("自动更新菜单登记");
     r
 }
 

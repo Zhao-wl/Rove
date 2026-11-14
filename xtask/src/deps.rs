@@ -84,9 +84,87 @@ const SCOPES: &[Scope] = &[
     },
 ];
 
+// ---------------------------------------------------------------- #149 的网络出口检查
+
+/// **只有它**可以打开网络相关的 `windows` feature（issue #149 第 1 节）。
+pub const NETWORK_CRATE: &str = "rove-update";
+
+/// 网络相关的 `windows` / `windows-sys` feature 前缀。出现在别的 crate 的
+/// `Cargo.toml` 里就是违例：Rove 唯一的网络出口是 #149 的更新模块。
+const NETWORK_FEATURES: &[&str] = &[
+    "Win32_Networking_WinHttp",
+    "Win32_Networking_WinInet",
+    "Win32_Networking_WinSock",
+    "Win32_Networking_HttpServer",
+    "Win32_Networking_Ldap",
+    "Win32_Networking_Clustering",
+    "Win32_Networking_WebSocket",
+    "Win32_Networking_ActiveDirectory",
+    "Win32_Networking_NetworkListManager",
+];
+
+/// 逐个扫 workspace 成员的 `Cargo.toml`，看谁打开了网络 feature。
+/// 返回 `(crate 名, feature)`。
+fn network_feature_hits(
+    members: &[(String, std::path::PathBuf)],
+) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let mut hits = Vec::new();
+    for (name, manifest) in members {
+        let text = util::read_text(manifest)?;
+        for feature in NETWORK_FEATURES {
+            if text.contains(feature) {
+                hits.push((name.clone(), (*feature).to_string()));
+            }
+        }
+    }
+    Ok(hits)
+}
+
+/// workspace 成员的 `(包名, Cargo.toml 路径)`。
+fn workspace_members() -> Result<Vec<(String, std::path::PathBuf)>, Box<dyn std::error::Error>> {
+    let root = util::repo_root();
+    let mut members = Vec::new();
+    for dir in [root.join("crates"), root.clone()] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let manifest = entry.path().join("Cargo.toml");
+            if !manifest.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // 只收 workspace 成员目录（crates/* 与 xtask）。
+            if dir == root && name != "xtask" {
+                continue;
+            }
+            members.push((name, manifest));
+        }
+    }
+    members.sort();
+    Ok(members)
+}
+
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     let package = util::flag(args, "--package");
     let mut failed = false;
+
+    // #149：除更新模块外，谁都不许开网络相关的 windows feature。
+    println!("网络出口检查（issue #149）：只有 `{NETWORK_CRATE}` 可以打开网络 feature");
+    let members = workspace_members()?;
+    let hits = network_feature_hits(&members)?;
+    for (name, feature) in &hits {
+        if name == NETWORK_CRATE {
+            println!("  OK：{name} 打开了 {feature}（唯一的网络出口）");
+            continue;
+        }
+        failed = true;
+        println!("::error::crate `{name}` 打开了网络 feature `{feature}`；Rove 唯一的网络出口是 `{NETWORK_CRATE}`（issue #149 第 1 节，PROJECT_CHARTER §2.1）");
+    }
+    if !hits.iter().any(|(name, _)| name == NETWORK_CRATE) {
+        println!("  注意：`{NETWORK_CRATE}` 没有打开任何网络 feature（更新功能是不是被摘掉了？）");
+    }
+    println!();
 
     println!("依赖检查（issue #74）：禁止 HTTP / TLS 栈出现在依赖图里");
     for (name, reason) in ALLOWED {
@@ -122,7 +200,9 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     if failed {
         println!();
         println!(
-            "失败：依赖图里出现了 HTTP / TLS 栈。确实去不掉的项请加进 xtask/src/deps.rs 的 ALLOWED 并写明理由。"
+            "失败：依赖图里出现了 HTTP / TLS 栈，或有 `{NETWORK_CRATE}` 之外的 crate 打开了网络 feature。\n\
+             前者确实去不掉的项请加进 xtask/src/deps.rs 的 ALLOWED 并写明理由；\n\
+             后者请把联网代码搬进 `{NETWORK_CRATE}`（PROJECT_CHARTER §2.1：全程序只有一个网络出口）。"
         );
         return Ok(1);
     }
@@ -227,6 +307,32 @@ anyhow v1.0.86 (*)
         let names: Vec<&str> = hits.iter().map(|(name, _)| *name).collect();
         // 顺序跟着 DENIED 的书写顺序走。
         assert_eq!(names, ["zed-reqwest", "hyper", "rustls", "ring", "tokio"]);
+    }
+
+    /// #149：仓库里只有 `rove-update` 打开网络 feature。
+    #[test]
+    fn only_the_update_crate_opens_a_network_feature() {
+        let members = workspace_members().expect("读得到 workspace 成员");
+        assert!(
+            members.iter().any(|(name, _)| name == NETWORK_CRATE),
+            "没找到 {NETWORK_CRATE}：{members:?}"
+        );
+        let hits = network_feature_hits(&members).expect("读得到各 crate 的 Cargo.toml");
+        let others: Vec<&(String, String)> = hits
+            .iter()
+            .filter(|(name, _)| name != NETWORK_CRATE)
+            .collect();
+        assert!(
+            others.is_empty(),
+            "这些 crate 不该打开网络 feature：{others:?}"
+        );
+        // 更新模块自己必须开着 WinHTTP，否则这条检查就形同虚设。
+        assert!(
+            hits.iter()
+                .any(|(name, feature)| name == NETWORK_CRATE
+                    && feature == "Win32_Networking_WinHttp"),
+            "{NETWORK_CRATE} 应该打开 Win32_Networking_WinHttp"
+        );
     }
 
     /// 白名单为空时不会意外放过任何东西；DENIED 里的名字不能有重复。

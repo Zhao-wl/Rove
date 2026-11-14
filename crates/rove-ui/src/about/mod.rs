@@ -69,21 +69,31 @@ pub fn lines(strings: &dyn Strings, info: &AboutInfo) -> Vec<Line> {
         label: text(strings, key),
         value,
     };
-    vec![
+    let mut lines = vec![
         line("about.label.version", info.version.clone()),
         line("about.label.commit", info.short_commit()),
         line("about.label.date", info.build_date.clone()),
         line("about.label.channel", info.channel.clone()),
         line("about.label.gpui", info.gpui_version.clone()),
         line("about.label.indexer", indexer_text(strings, &info.indexer)),
-        line(
-            "about.label.executable",
-            info.executable
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or(unknown),
-        ),
-    ]
+    ];
+    // #149：更新状态（没有更新服务时不显示这一行）。
+    if let Some(state) = &info.update {
+        let owned = state.args();
+        let args: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        lines.push(Line {
+            label: text(strings, "update.label"),
+            value: text_with(strings, state.string_key(), &args),
+        });
+    }
+    lines.push(line(
+        "about.label.executable",
+        info.executable
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or(unknown),
+    ));
+    lines
 }
 
 /// 「复制」按钮放进剪贴板的纯文本：每行 `标签: 值`，提交号用完整的 40 位。
@@ -121,6 +131,8 @@ mod tests {
             gpui_version: "0.2.2".into(),
             indexer,
             executable: Some(std::path::PathBuf::from(r"C:\Rove\rove.exe")),
+            // #149：没有更新服务时不显示「更新」那一行。
+            update: None,
         }
     }
 

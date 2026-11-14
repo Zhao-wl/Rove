@@ -482,7 +482,7 @@ fn watermark_follows_the_user_keybindings_file(cx: &mut TestAppContext) {
     assert_ne!(before, after);
 }
 
-/// 齿轮菜单里全部可用的项（#28 的四项 + #76 追加的「关于」）。
+/// 齿轮菜单里全部可用的项（#28 的四项 + #76 的「关于」 + #149 的「检查更新」）。
 /// 以后再有 issue 往齿轮菜单里加项，就在这张期望表里追加一行。
 #[gpui::test]
 fn the_gear_menu_lists_every_usable_item(cx: &mut TestAppContext) {
@@ -508,6 +508,8 @@ fn the_gear_menu_lists_every_usable_item(cx: &mut TestAppContext) {
             reg::OPEN_SETTINGS.to_string(),
             reg::OPEN_KEYBINDINGS.to_string(),
             reg::SELECT_THEME.to_string(),
+            // #149：检查更新（排在「关于」前面；状态栏不加常驻条目，菜单是唯一的常驻入口）。
+            crate::update::registry::CHECK_FOR_UPDATES.to_string(),
             // #76：关于 Rove（版本、提交号、构建日期、gpui 版本、索引组件状态）。
             crate::about::registry::SHOW_ABOUT.to_string(),
         ]

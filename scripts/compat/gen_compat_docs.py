@@ -47,6 +47,7 @@ ROVE_SETTINGS = [
     ("rove.contextBasket.contextLines", "3", "P1", "从速览或搜索结果加入时，额外带上的前后行数（UX_SPEC §5.1）"),
     ("rove.locale", "\"auto\"", "P1", "界面语言：`auto`（跟随系统）、`zh-cn`、`en`。只读参考共用用户目录下 `argv.json` 的 `locale`，从不写入它"),
     ("rove.contextBasket.clearAfterCopy", "false", "P1", "复制后是否清空篮子（UX_SPEC §5.3）"),
+    ("rove.update.mode", "\"default\"", "P0", "自动更新：`none`（从不联网）/ `manual`（只在「检查更新」命令时检查）/ `start`（启动时检查一次，确认后下载）/ `default`（启动后延迟检查、之后每 6 小时一次、有新版本时后台下载）。键名带 `rove.` 前缀，避免与共用 settings.json 中 VS Code 的 `update.mode` 冲突；这是全程序唯一的网络出口（PROJECT_CHARTER §2.1）"),
 ]
 
 # Rove 的默认值与 VS Code 不同（只在用户未设置时生效，不写入共用文件；FEATURES §13 规则 5）

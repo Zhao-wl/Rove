@@ -59,3 +59,6 @@ pub mod references;
 pub mod workspace_symbols;
 // #76：「关于」对话框（版本、提交号、构建日期、gpui 版本、C# 索引组件状态，可一键复制）。
 pub mod about;
+// #149：自动更新的界面一侧（命令、提示条与通知、「关于」里的更新状态）。
+// 联网部分全在核心层的 `rove-update` 里，这里不发任何请求。
+pub mod update;

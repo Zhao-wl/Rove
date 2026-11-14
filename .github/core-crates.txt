@@ -16,6 +16,8 @@ rove-i18n
 rove-theme
 rove-fuzzy
 rove-search
+# #149 自动更新：核心层（不依赖 gpui），也是全程序唯一允许联网的 crate。
+rove-update
 # #74：crates/rove-gpui-http-stub 的包名（workspace 的 [patch.crates-io] 按包名替换 gpui_http_client，
 # 所以它必须叫这个名字）。它是 Rove 自己的代码，不依赖 gpui。
 gpui_http_client

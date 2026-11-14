@@ -283,3 +283,32 @@ cargo xtask icon --check       # 应用图标与生成器一致
 
 **签名私钥绝不进仓库**：它在 `%LOCALAPPDATA%` 下的 `Rove-release\update-signing.key`，
 公钥 `packaging/release/update-signing.pub` 提交。不要把私钥内容打印到任何输出或 PR 里。
+
+<!-- #149 追加：唯一的网络出口 -->
+
+### 8.8 自动更新是唯一的网络出口（#149）
+
+§1 的第一条硬约束「运行时不发起任何网络请求」只有一个例外，就是 `crates/rove-update`。
+完整做法在 [docs/UPDATE.md](docs/UPDATE.md)（清单格式、全部请求、失败分级、演练办法）。
+日常开发只要记住四条：
+
+- **联网代码只能写在 `rove-update` 里**，而且只在它的 `http` 模块里。
+  `cargo xtask check-deps` 会扫每个 workspace 成员的 `Cargo.toml`：除 `rove-update` 外
+  任何 crate 打开 `Win32_Networking_*` 之类的 `windows` feature，检查直接失败。
+  需要联网的新功能先问维护者，**不要自己加第二个出口**。
+- **更新地址与验签公钥在发布构建里是常量**。演练用的覆盖
+  （`ROVE_UPDATE_TEST_BASE_URL`、`Updater::set_test_public_key`）整段裹在
+  `#[cfg(debug_assertions)]` 里，release 的 `rove.exe` 里不存在。
+  **演练一律用本机 HTTP 服务器**（见 `crates/rove-update/tests/rehearsal.rs`），
+  不要为了试更新去 GitHub 上建 Release。
+- **清单格式改动要两边一起改**：生成在 `xtask/src/release.rs`，解析在
+  `rove-update/src/manifest.rs`，文档在 `docs/UPDATE.md` §2 与 `docs/RELEASE.md` §4。
+  加字段是安全的（解析器忽略不认识的字段），改字段含义不是。
+- **更新不弹模态框、不加状态栏常驻条目**：只用状态栏临时消息与带按钮的通知
+  （`UX_SPEC` §6.1 的第 1 级与第 4 级）。
+
+```powershell
+cargo test -p rove-update -j 1                      # 版本 / 清单 / 验签 / 五种「不更新」/ 四个 mode
+cargo test -p rove-update --test rehearsal -j 1     # 本机 HTTP 服务器上的 v0.1.0 → v0.1.1 演练
+cargo run -p xtask -- check-deps                    # 网络出口与 HTTP/TLS 栈
+```

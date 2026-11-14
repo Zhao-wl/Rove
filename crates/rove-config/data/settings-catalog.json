@@ -450,6 +450,7 @@
     {"key": "rove.markdown.allowRemoteResources", "priority": "P0", "source": "rove", "default": false, "languageOverridable": false},
     {"key": "rove.markdown.webviewIdleTimeout", "priority": "P0", "source": "rove", "default": 300, "languageOverridable": false},
     {"key": "rove.metadataView.showDocs", "priority": "P1", "source": "rove", "default": true, "languageOverridable": false},
+    {"key": "rove.update.mode", "priority": "P0", "source": "rove", "default": "default", "languageOverridable": false},
     {"key": "screencastMode.fontSize", "priority": "P2", "source": "vscode", "default": 56, "languageOverridable": false},
     {"key": "screencastMode.keyboardOptions", "priority": "P2", "source": "vscode", "default": {"showKeys": true, "showKeybindings": true, "showCommands": true, "showCommandGroups": false, "showSingleEditorCursorMoves": true}, "languageOverridable": false},
     {"key": "screencastMode.keyboardOverlayTimeout", "priority": "P2", "source": "vscode", "default": 800, "languageOverridable": false},

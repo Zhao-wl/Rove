@@ -49,6 +49,9 @@ pub struct AboutInfo {
     pub gpui_version: String,
     pub indexer: Indexer,
     pub executable: Option<PathBuf>,
+    /// #149：更新状态（已是最新 / 正在下载 / 待重启安装 / 更新已关闭 / 上次检查失败）。
+    /// `None` 表示这次装配没有更新服务（例如入口测试），那一行就不显示。
+    pub update: Option<rove_update::UpdateState>,
 }
 
 impl AboutInfo {
@@ -67,7 +70,14 @@ impl AboutInfo {
             gpui_version: GPUI_VERSION.into(),
             indexer,
             executable: std::env::current_exe().ok(),
+            update: None,
         }
+    }
+
+    /// #149：带上更新状态那一行。
+    pub fn with_update(mut self, state: rove_update::UpdateState) -> Self {
+        self.update = Some(state);
+        self
     }
 
     /// 提交号只显示前 12 位（完整值在复制出来的文本里）。

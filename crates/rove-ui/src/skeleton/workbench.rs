@@ -122,6 +122,10 @@ mod syntax_tests;
 mod about_host;
 #[cfg(test)]
 mod about_tests;
+// #149：自动更新（检查 / 下载 / 提示重启 / 静默安装）的装配。
+mod update_host;
+#[cfg(test)]
+mod update_tests;
 // #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）的装配。
 mod welcome_host;
 #[cfg(test)]
@@ -267,6 +271,8 @@ pub struct Workbench {
     references: references_host::References,
     /// #76：「关于」对话框的状态（见 `about_host.rs`）。
     about: about_host::About,
+    /// #149：自动更新服务与调度（见 `update_host.rs`）。
+    updates: update_host::Updates,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -321,6 +327,9 @@ impl Workbench {
         //（与上面的 `LayoutStore::disabled()` 同一套做法）。
         if !cfg!(test) {
             view.start_hot_exit(cx);
+            // #149：按 `rove.update.mode` 建更新服务。**这里不联网**：第一次检查排在
+            // 首帧之后（`start_update_checks`），冷启动预算不受影响。
+            view.start_updates(cx);
         }
         Ok(view)
     }
@@ -495,6 +504,7 @@ impl Workbench {
             markdown: Default::default(),
             welcome: welcome_host::Welcome::new(&store_for_welcome),
             about: Default::default(),
+            updates: Default::default(),
             has_folder,
             large_files,
             status: Default::default(),
@@ -1590,6 +1600,18 @@ impl Workbench {
                     }
                     continue;
                 }
+                // #149：更新提示条 / 通知上的「重启」「下载」「稍后」。
+                if key.starts_with("update.") {
+                    if this
+                        .update(cx, |view, cx| {
+                            view.update_feedback_action(&key, &action, cx)
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
                 if !key.starts_with(index_status::FAILURE_KEY_PREFIX)
                     || !index_status::is_index_command(&action)
                 {
@@ -1862,6 +1884,8 @@ impl Render for Workbench {
                     start.elapsed().as_secs_f64() * 1000.0
                 );
             });
+            // #149：第一次更新检查排在**首帧之后**（冷启动预算不受影响）。
+            self.start_update_checks(cx);
         }
         // #22：超大文件提示条、状态栏标记、索引进度、滚动估计与流式查找。
         self.sync_large_files(cx);
@@ -1984,6 +2008,12 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|v, a: &crate::about::registry::AboutAction, _, cx| {
                     v.about_command(a.0, cx)
+                }),
+            )
+            // #149：检查更新 / 重启以更新。
+            .on_action(
+                cx.listener(|v, a: &crate::update::registry::UpdateAction, _, cx| {
+                    v.update_command(a.0, cx)
                 }),
             )
             .child(workbench)

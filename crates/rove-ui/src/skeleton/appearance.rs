@@ -89,6 +89,8 @@ pub fn strings() -> Result<StringTable> {
     crate::workspace_symbols::register_strings(&mut t)?;
     // #76：「关于」对话框。
     crate::about::registry::register_strings(&mut t)?;
+    // #149：自动更新的命令、状态、提示条与通知。
+    crate::update::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
