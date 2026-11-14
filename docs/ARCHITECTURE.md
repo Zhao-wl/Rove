@@ -228,7 +228,7 @@ cargo test --workspace
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；窗口装配（`ctrl+s` / 另存为 / 全部保存 → `SaveController`、`ctrl+n`、重载后刷新视图、脏点与“已删除”、窗口关闭确认）由 #47 在 `workbench/edit_host.rs` 完成（见 §37） | #49（已完成） |
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
-| `sticky-scroll` | 无骨架标记（#2 没有粘性滚动的临时实现）：已由 `rove-ui::code_view::sticky` 实现（见 §39）：三档模型与回退、作用域链的首行区间缓存、顶部覆盖区域的绘制、点击与键盘交互、按级别关闭；速览预览复用同一套实现，只换两个颜色键 | #55（已完成） |
+| `sticky-scroll` | 无骨架标记（#2 没有粘性滚动的临时实现）：已由 `rove-ui::code_view::sticky` 实现（见 §46）：三档模型与回退、作用域链的首行区间缓存、顶部覆盖区域的绘制、点击与键盘交互、按级别关闭；速览预览复用同一套实现，只换两个颜色键 | #55（已完成） |
 | `explorer` | 已由 `rove-ui::explorer` 实现（见 §36）：`SKELETON(explorer)` 标记与骨架的 `WorkspaceTree` 适配器、固定绘制已删除；“文件夹”小节是 #18 `ListView` 的包装，数据来自流式扫描的 #15 工作区（根目录立即显示）；`skeleton/workbench/explorer_host.rs` 只做窗口装配 | #23（已完成） |
 | `status` | 已由 `rove-ui::status_items` 与 `skeleton/workbench/status_host.rs` 实现（见 §39）：`SKELETON(status)` 标记、骨架的 `rove.status.file` 条目与“文件名 / 行数 / 编码”固定内容都已删除，右侧改为六个登记过的条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）；状态栏左侧只保留 #16 的临时消息、问题计数与 #36 的索引状态 | #27（已完成） |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
@@ -1666,7 +1666,6 @@ C#（`///` 与 `//` 续写）与 JSON（`//` 续写）；`/* */` 里补 ` * ` �
 公共缩进、回车的五种 `autoIndent` 取值、`indentOutdent`、`///` 续写、自动闭合 / 越过 / 成对删除 /
 包围、`editor.autoClosing*` 与 `comments.*` 的取值、粘贴重新缩进、只读与超大文件）。
 性能：`cargo xtask bench --filter typing/`（按键到上屏，预算 `keystroke_to_paint`）。
-
 
 ## 46. 粘性滚动（#55）
 
