@@ -53,9 +53,13 @@ use std::{
 
 // #47：可编辑代码视图与 #49 保存控制器的窗口装配。
 mod edit_host;
+// #50：热退出与崩溃恢复（持续备份、启动恢复、退出标记）的窗口装配。
 #[cfg(test)]
 mod edit_tests;
 mod editor_panes;
+mod hotexit_host;
+#[cfg(test)]
+mod hotexit_tests;
 // #23：资源管理器（文件树）的装配。
 #[cfg(test)]
 mod editor_tests;
@@ -244,6 +248,8 @@ pub struct Workbench {
     large_files: large_file_host::LargeFiles,
     /// #27：状态栏右侧条目的快照、选择器与会话内覆盖（见 `status_host.rs`）。
     status: status_host::StatusItems,
+    /// #50：热退出的备份服务、待恢复的备份与退出标记（见 `hotexit_host.rs`）。
+    hotexit: hotexit_host::HotExit,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -294,6 +300,11 @@ impl Workbench {
         let mut view = Self::build(root, started, store, settings, editor, cx);
         // #36：应用入口按设置启动 C# 索引（测试入口 `new` 不启动，条目不显示）。
         view.start_index(cx);
+        // #50：应用入口才碰用户目录里的备份；测试显式调用 `start_hot_exit_in`，不写用户目录
+        //（与上面的 `LayoutStore::disabled()` 同一套做法）。
+        if !cfg!(test) {
+            view.start_hot_exit(cx);
+        }
         Ok(view)
     }
     fn build(
@@ -457,6 +468,7 @@ impl Workbench {
             has_folder,
             large_files,
             status: Default::default(),
+            hotexit: Default::default(),
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -561,6 +573,13 @@ impl Workbench {
         self.metadata_settings_changed(keys, cx);
         // #23：explorer.* 与装饰设置变化。
         self.explorer_settings_changed(keys, cx);
+        // #50：files.hotExit / files.restoreUndoStack 变化（改成 off 时立刻清掉本组备份）。
+        if keys.iter().any(|k| {
+            &**k == rove_buffer::hotexit::HOT_EXIT
+                || &**k == rove_buffer::hotexit::RESTORE_UNDO_STACK
+        }) {
+            self.hot_exit_settings_changed();
+        }
         // 代码视图重读 editor.* 选项（字号、行高、字体……），再乘窗口缩放。
         let zoom = self.shell.zoom() as f64;
         for code in self.code_views() {
@@ -1911,6 +1930,13 @@ pub fn launch(
     settings: Arc<dyn Settings>,
     started: Instant,
 ) {
+    // #50：panic 与致命错误写一份本地崩溃日志（`%LOCALAPPDATA%\Rove\logs`，保留最近 10 份）。
+    // 只保存在本地，不上传、不发起任何网络请求（FEATURES §10：遥测不做）。
+    if let Some(state) = rove_buffer::hotexit::default_state_root(|key| std::env::var_os(key)) {
+        rove_buffer::hotexit::crash::install_panic_hook(
+            state.join(rove_buffer::hotexit::crash::LOGS_DIR),
+        );
+    }
     // #28：第一个文件夹是本窗口的工作区；没有文件夹就是空窗口（欢迎页 + 资源管理器空状态）。
     let root = startup.folder.clone().unwrap_or_default();
     // #29：Markdown 预览按 #6 报告的 Hwnd 方式嵌入 WebView2（不创建任何实例，只选渲染路径）。

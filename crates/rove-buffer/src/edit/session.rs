@@ -570,6 +570,19 @@ impl EditSession {
         self.history.marker()
     }
 
+    /// #50 热退出：撤销栈的可持久化快照，最多 `limit` 个撤销单元（超限丢最旧的，不报错）。
+    pub fn undo_snapshot(&self, limit: usize) -> super::history::UndoSnapshot {
+        self.history.snapshot(limit)
+    }
+
+    /// #50 热退出：按快照重建撤销栈（恢复文档时紧跟在建立缓冲之后调用）。
+    /// 快照为空等同于 `files.restoreUndoStack = false`：撤销栈为空，当前内容不可撤销。
+    pub fn restore_undo_snapshot(&mut self, snapshot: super::history::UndoSnapshot) {
+        self.history.restore(snapshot);
+        self.cursors.clear();
+        self.previous_kind = EditKind::Other;
+    }
+
     /// 把事务并入最后一个撤销单元（#49：保存时的文本变换与用户的改动是同一个撤销单元）。
     /// 撤销栈为空时开启新单元。之后的编辑开始新单元。
     pub fn edit_joined(&mut self, transaction: Transaction, now: Instant) -> Result<AppliedEdit> {

@@ -342,6 +342,101 @@ impl TextFile {
         self.is_dirty()
     }
 
+    // --------------------------------------------------------------- #50 热退出（只追加）
+
+    /// #50：当前状态的热退出备份。不读盘、不写盘，可以在 UI 线程调用（一次全文复制）。
+    ///
+    /// `undo_limit` 为 0 时不备份撤销栈（`files.restoreUndoStack = false`）。`tab_index` /
+    /// `active` 由宿主按标签位置给出。未命名文档（#63）暂不备份，这里返回 `None`。
+    pub fn to_backup(
+        &self,
+        undo_limit: usize,
+        tab_index: u32,
+        active: bool,
+    ) -> Option<crate::hotexit::Backup> {
+        let path = self.path.clone()?;
+        let undo = self.session.undo_snapshot(undo_limit);
+        let dirty = self.is_dirty();
+        // 保存点可能被上限截断掉了（或者根本没备份撤销栈）：那时怎么撤销都回不到“未修改”，
+        // 用一个永远不会被分配出去的标记，保证恢复后的文档一直显示为已修改。
+        let saved_marker = if !dirty || undo.reaches(self.saved_marker) {
+            self.saved_marker
+        } else {
+            u64::MAX
+        };
+        Some(crate::hotexit::Backup {
+            path,
+            language: self.language.clone(),
+            encoding: self.encoding.clone(),
+            bom: self.bom,
+            line_endings: self.line_endings().clone(),
+            text: self.session.contents(),
+            version: self.session.buffer().version(),
+            saved_marker,
+            dirty,
+            disk: self.disk.clone(),
+            deleted: self.deleted,
+            undo,
+            tab_index,
+            active,
+        })
+    }
+
+    /// #50：按备份重建一个有未保存修改的文档。
+    ///
+    /// 磁盘标记沿用备份里记下的那一份，所以备份期间磁盘上的文件被外部改过时，第一次保存就会
+    /// 落到 #49 的保存冲突路径（本模块不另造一套提示）。备份时文件已被删除、或现在已经不在，
+    /// 都恢复成“已删除”状态的标签（内容保留，下次保存视为新建写入）。
+    pub fn from_backup(
+        backup: crate::hotexit::Backup,
+        read_only: Arc<[ReadOnlyReason]>,
+        edit_options: EditOptions,
+    ) -> Self {
+        let crate::hotexit::Backup {
+            path,
+            language,
+            encoding,
+            bom,
+            line_endings,
+            text,
+            saved_marker,
+            dirty,
+            disk,
+            deleted,
+            undo,
+            ..
+        } = backup;
+        let buffer = EditBuffer::new(&text, line_endings);
+        let mut session = EditSession::new(buffer, edit_options);
+        session.restore_undo_snapshot(undo);
+        session.set_read_only(read_only);
+        let marker = session.history_marker();
+        // 撤销栈没有备份（`restoreUndoStack = false`）时恢复出来的标记必然是 0，可能正好等于
+        // 保存点；用一个不可能被分配出去的标记保证文档仍然显示为“已修改”。
+        let saved_marker = match (dirty, marker == saved_marker) {
+            (true, true) => u64::MAX,
+            (true, false) => saved_marker,
+            (false, _) => marker,
+        };
+        Self {
+            path: Some(path),
+            untitled: None,
+            language,
+            session,
+            encoding,
+            bom,
+            saved_marker,
+            disk,
+            deleted,
+            external: None,
+        }
+    }
+
+    /// #50：恢复出来的文档是否确实带着未保存的修改（备份被改坏时可能对不上）。
+    pub fn saved_marker(&self) -> u64 {
+        self.saved_marker
+    }
+
     /// `workbench.action.editor.changeEOL`：统一为 LF / CRLF，一次撤销（落盘走保存）。
     pub fn change_eol(&mut self, eol: Eol, now: Instant) -> Result<Option<AppliedEdit>> {
         self.session.change_eol(eol, now)
