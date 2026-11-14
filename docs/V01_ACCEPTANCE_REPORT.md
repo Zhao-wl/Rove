@@ -7,7 +7,7 @@
 > **一句话结论先说**：**现在还不能判「可以发布 v0.1.0」**。
 > 代码侧的发布门槛 1、6 已经达成，门槛 4 的 `none` 一半有实测；
 > 门槛 3（干净虚拟机安装 → 自动更新 → 卸载）**一条都没做**，而且里程碑「v0.1 首发」里
-> 还有 6 个跟进 issue 没关闭（§9）。阻塞项清单见 §9，人工事项见 §8。
+> 还有 8 个跟进 issue 没关闭（§9）。阻塞项清单见 §9，人工事项见 §8。
 >
 > 本次**真正落地的东西**是：`perf/budgets.toml` 的 4 条 `pending` 全部清零（两条补了埋点与实测、
 > 两条是重复占位，合并到已有条目），新增「可交互」与「空窗口内存」的自动采集、
@@ -22,7 +22,7 @@
 | 系统 | Windows 11 专业版 10.0.22631 |
 | 显卡 / 显示 | NVIDIA GeForce GTX 1060 6GB，1920×1080 @ 120 Hz，缩放 100%，**没有混合 DPI 环境** |
 | 机器负载 | 验收期间本机同时开着 Unity 编辑器与另外的构建槽，**负载较高**；所有耗时与内存只作相对参考，空闲机器复测见 §8 |
-| 构建 | stable MSVC（`rust-toolchain.toml`）；本机 release 构建**关掉了 LTO**（`CARGO_PROFILE_RELEASE_LTO=off`，内存限制），所以体积数字不是发布口径（§5.4） |
+| 构建 | stable MSVC（`rust-toolchain.toml`）；本机 release 构建**关掉了 LTO**（`CARGO_PROFILE_RELEASE_LTO=off`，内存限制），所以体积数字不是发布口径（§6.4） |
 | 工作区版本 | `Cargo.toml` 的 `[workspace.package] version = "0.0.1"`——**打 `v0.1.0` 之前必须先改成 `0.1.0`**，否则 `cargo xtask check-version --tag v0.1.0` 会失败（§9 第 7 条） |
 | 测试项目 | 中型 / 大型两个真实 Unity 项目，路径只来自环境变量 `ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE`，**不写进仓库** |
 | C# 索引组件 | 本机**没有安装**（`ROVE_INDEXER_CS` 未设置、`%LOCALAPPDATA%\Rove\components\indexer-cs\` 为空）：涉及索引进程的实测沿用 M2 / M3 当天的数字并注明未复测 |
@@ -32,7 +32,7 @@
 一共 **57 行**，逐行结论都是**已完成**，没有「改判」。「验证方式」里写的是这次真的跑过、
 或在 M1–M3 验收报告里已经记过的测试；本次新增的测试用 **本次新增** 标出。
 
-> 这张表**不是手抄的**：`cargo xtask check-release-gate`（新加，见 §6.3）会把
+> 这张表**不是手抄的**：`cargo xtask check-release-gate`（新加，见 §7）会把
 > COVERAGE.md 中「v0.1 = 是」的每一行和本节的表格逐行对照，漏一行、或者结论不是
 > 「已完成 / 改判」就以非零码退出；`cargo test -p xtask` 里也有同一条判定，
 > 以后 COVERAGE 改了而报告没跟上，CI 直接会红。
@@ -121,7 +121,7 @@
 | 3 | 粘性滚动 | `v01_sticky_scroll_agrees_with_the_breadcrumb_while_soft_wrap_is_on`（粘性区级数与名字 = 面包屑符号链）、`v01_a_large_document_only_switches_off_sticky_scroll`、`v01_a_huge_document_switches_off_sticky_scroll_and_soft_wrap_together`，以及两个真实项目上的同一条断言 | **通过** | 点击粘性行跳转的视觉效果（录屏） |
 | 4 | 软换行 | 上面三条里软换行全程开着；**坐标系**这条接缝单独钉住了：`set_scroll_position` 的 top 是屏幕行，`visual_line_of` 换算后才和文档行对得上（测试里断言两者确实不同）。列号 / 选区 / 插入符仍按文档坐标，查找命中与 F12 落点由 #58、#40 的用例覆盖 | **通过** | `alt+z` 的视觉效果与超长行横向滚动的手感（录屏） |
 | 5 | 转到类型定义、`Ctrl+T`、侧边引用视图 | #60 的 `nav_extra_tests` / `references_tests`：类型定义覆盖 `var` / 字段 / 参数 / 属性 / 泛型参数五种写法，`Ctrl+T` 与快速打开 `#` **逐条断言是同一份数据与同一套排序**，结果都来自 M2 的查询路由 | **通过**（沿用 #60 的入口测试，本次未新增） | 大型项目上的人工抽查（§8 人工事项 6） |
-| 6 | 1–5 与 M1–M3 叠加 | `v01_editing_with_sticky_and_wrap_on_goes_approximate_then_exact`：粘性滚动 + 软换行开着时编辑 → 查询标为**近似** → 保存 + 索引重绑 → **静默**回到精确、全程 0 通知、面包屑不乱、两项功能仍开着；两个真实项目上另有「粘性 + 软换行 + 编辑 + 保存，除改动处外逐字节不变」 | **通过**（功能接缝） | 「每帧 CPU 与按键到上屏仍在预算内」**本次没有在叠加状态下测**（§5.3、§8 人工事项 4） |
+| 6 | 1–5 与 M1–M3 叠加 | `v01_editing_with_sticky_and_wrap_on_goes_approximate_then_exact`：粘性滚动 + 软换行开着时编辑 → 查询标为**近似** → 保存 + 索引重绑 → **静默**回到精确、全程 0 通知、面包屑不乱、两项功能仍开着；两个真实项目上另有「粘性 + 软换行 + 编辑 + 保存，除改动处外逐字节不变」 | **通过**（功能接缝） | 「每帧 CPU 与按键到上屏仍在预算内」**本次没有在叠加状态下测**（§6.3、§8 人工事项 4） |
 
 本次 8 条 `v01_` 用例全部通过（含中型与大型项目各一条）：
 
@@ -148,7 +148,7 @@ issue #150 §3 要求在干净的 Windows 10 / 11 虚拟机上走安装 → 使�
 
 ### 5.1 `rove.update.mode = "none"`：**零出站连接**（本次实测）
 
-新加的 `cargo xtask netwatch`（§6.3）在临时用户目录里写好 `rove.update.mode`，启动
+新加的 `cargo xtask netwatch`（§7）在临时用户目录里写好 `rove.update.mode`，启动
 release 版 `rove.exe` 打开一个真实 Unity 项目，每 500 ms 用 `netstat -ano` 采一次**整棵进程树**
 的连接：
 
@@ -215,7 +215,7 @@ budgets.toml 里原地留了注释说明来龙去脉。另外给 `csharp_increme
   在同一量级，没有「优化前后」可比的对象，因此不做前后对比表。
 - **提醒**：CHARTER §6 只写「空窗口常驻内存 < 60 MB」，没有写是工作集还是私有提交。
   这里按**工作集**判定（M0 的 47.7 MB 也是工作集，才能比较），私有提交 121.6 MB 另行记录。
-  私有提交比工作集高一倍多，口径该怎么定已开跟进 issue（§7）。
+  私有提交比工作集高一倍多，口径该怎么定已开跟进 issue #219（§7.2）。
 
 `cargo xtask bench --from <startup 结果> --check-budgets` 的输出：`pending 0 条`，
 两条新判定都是 OK，没有超预算项（其余 28 条本次未测量，不算失败）。
@@ -298,7 +298,7 @@ budgets.toml 里原地留了注释说明来龙去脉。另外给 `csharp_increme
 | 3 | 干净 Win10 / Win11 上安装 → 更新到 v0.1.1 → 卸载 | **未达成**（§4）：本次一条都没做 |
 | 4 | `none` 零连接、`default` 只有 GitHub | **一半达成**：`none` 两个项目各 45 s 实测 0 条出站连接（§5.1）；`default` 未测（§5.2） |
 | 5 | `perf/budgets.toml` 没有 pending、`--check-budgets` 通过 | **部分达成**：pending 已清零、本次测到的两条达标（§6.1、§6.2）；但 **#210 是一条 enforced 预算的实测超限**，空闲机器上的完整基准也还没跑（§6.3） |
-| 6 | `cargo test --workspace` 全绿 | **达成**（本次在受影响的 crate 上跑了 `rove-ui` / `rove-app` / `xtask`，骨架端到端测试继续通过） |
+| 6 | `cargo test --workspace` 全绿 | **达成**：`cargo test -p rove-ui -j 1`（744 + 各集成测试，0 失败）与 `cargo test --workspace --exclude rove-ui -j 1`（64 个测试二进制，0 失败）都通过，#2 的骨架端到端测试继续通过；`cargo fmt --all --check`、`cargo clippy -p rove-ui / -p xtask --all-targets -- -D warnings`、`cargo xtask check-deps`、`check-eol.ps1`、`check-core-crates.ps1` 也都通过 |
 
 **阻塞项**（这些不解决就不能打 `v0.1.0`）：
 
