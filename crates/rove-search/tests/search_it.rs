@@ -342,6 +342,42 @@ fn large_files_are_searched_in_chunks_with_correct_line_numbers() {
     assert_eq!(lines, vec![7, 50_007, 100_007, 150_007]);
 }
 
+/// 读文件按 8 KiB 的二进制探测块分成两段（#133：读不满探测块就不再问文件大小）。
+/// 探测块内读完的小文件、匹配落在探测块之后的文件、正好一个探测块的文件，结果都与分段无关；
+/// NUL 在探测块里的二进制文件照常跳过，不受后面有多少正文影响。
+#[test]
+fn matches_are_found_on_both_sides_of_the_binary_probe_boundary() {
+    const PROBE: usize = 8 << 10;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    write(root, "tiny.txt", "NEEDLE\n");
+
+    // 匹配在探测块之后：第一次读只拿到开头 8 KiB，必须接着把剩下的读完。
+    let mut after = "0123456789abcdef\n".repeat(PROBE);
+    after.push_str("NEEDLE\n");
+    write(root, "after.txt", &after);
+
+    // 正好一个探测块：读满 8 KiB，但其实已经到了文件末尾。
+    let mut exact = String::from("NEEDLE\n");
+    exact.push_str(&"x".repeat(PROBE - exact.len() - 1));
+    exact.push('\n');
+    assert_eq!(exact.len(), PROBE);
+    write(root, "exact.txt", &exact);
+
+    // 二进制：NUL 在探测块里，后面还有几十 KiB 正文也不搜。
+    let mut binary = b"\x00\x01NEEDLE".to_vec();
+    binary.resize(4 * PROBE, b'x');
+    write(root, "binary.bin", &binary);
+
+    let (files, summary) = run(root, &SearchQuery::new("NEEDLE"), &config(&[]));
+    assert_eq!(paths(&files), vec!["after.txt", "exact.txt", "tiny.txt"]);
+    assert_eq!(files[0].lines[0].line, PROBE as u64, "匹配在最后一行");
+    assert_eq!(files[1].lines[0].line, 0);
+    assert_eq!(files[2].lines[0].line, 0);
+    assert_eq!(summary.skipped, 1, "只有二进制文件被跳过");
+}
+
 #[test]
 fn multiline_regex() {
     let dir = tempfile::tempdir().unwrap();
