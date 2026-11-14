@@ -128,3 +128,8 @@ harness = false
 [[bench]]
 name = "wrap"
 harness = false
+
+# #60：转到工作区中的符号的每次按键（查询 + 列表行与高亮）。
+[[bench]]
+name = "workspace_symbols"
+harness = false

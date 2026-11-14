@@ -109,6 +109,12 @@ mod markdown_tests;
 mod large_file_host;
 #[cfg(test)]
 mod large_file_tests;
+// #60：侧边「引用」视图（面板）与 references-view.* 命令。
+#[cfg(test)]
+mod nav_extra_tests;
+mod references_host;
+#[cfg(test)]
+mod references_tests;
 pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
 mod syntax_tests;
@@ -253,6 +259,8 @@ pub struct Workbench {
     /// #52：`addCursorsAtSearchResults` 要放的多光标；目标文件显示出来之后才写进代码视图
     /// （打开本身会先按 #17 的 `OpenOptions::selection` 放一个单选区）。
     pub(super) pending_cursors: Option<(Resource, Vec<rove_base::TextRange>)>,
+    /// #60：侧边「引用」视图的结果、历史与面板列表（见 `references_host.rs`）。
+    references: references_host::References,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -473,6 +481,7 @@ impl Workbench {
             status: Default::default(),
             hotexit: Default::default(),
             pending_cursors: None,
+            references: Default::default(),
         };
         // #24：快速打开、命令面板与转到行已实现：菜单与命令中心据此显示。
         for (id, _, _) in crate::quick_access::registry::COMMANDS {
@@ -499,6 +508,14 @@ impl Workbench {
         }
         view.shell
             .mark_implemented(crate::status_items::registry::CHANGE_EOL);
+        // #60：引用视图的命令（层级相关的 6 条只登记，不标记为已实现）。
+        for (id, _, _) in crate::references::registry::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
+        // #60：转到工作区中的符号（`Ctrl+T`）。
+        for (id, _, _) in crate::workspace_symbols::COMMANDS {
+            view.shell.mark_implemented(*id);
+        }
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
             assert!(
@@ -1663,7 +1680,7 @@ impl Workbench {
 }
 
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 8] = [
+const KNOWN_FACTORIES: [&str; 9] = [
     CONTAINER_FACTORY,
     STATUS_FACTORY,
     FILE_VIEW,
@@ -1673,6 +1690,8 @@ const KNOWN_FACTORIES: [&str; 8] = [
     search_host::SEARCH_FACTORY,
     // #29：编辑器标题栏的“显示源码 / 显示预览”按钮。
     crate::markdown::registry::TITLE_FACTORY,
+    // #60：面板里的「引用」视图。
+    crate::references::registry::VIEW,
 ];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
@@ -1715,6 +1734,7 @@ impl ShellHost for Workbench {
             crate::index_status::DETAILS_VIEW => Some(self.render_index_details(cx)),
             crate::outline::registry::OUTLINE_VIEW => Some(self.render_outline(cx)),
             search_host::SEARCH_FACTORY => Some(self.render_search()),
+            crate::references::registry::VIEW => Some(self.render_references(cx)),
             _ => None,
         }
     }
@@ -1792,6 +1812,8 @@ impl Render for Workbench {
         self.sync_markdown(window, cx);
         // #28：主题实时预览跟随选中项、共用文件提示条、浮层关闭后的焦点。
         self.sync_welcome(window, cx);
+        // #60：引用视图的两个上下文键。
+        self.sync_references(cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -1923,6 +1945,18 @@ impl Render for Workbench {
             .on_action(cx.listener(
                 |v, a: &crate::welcome::registry::WelcomeAction, window, cx| {
                     v.welcome_command(a.0, window, cx)
+                },
+            ))
+            // #60：引用视图命令。
+            .on_action(cx.listener(
+                |v, a: &crate::references::registry::ReferencesAction, window, cx| {
+                    v.references_action_handler(a, window, cx)
+                },
+            ))
+            // #60：转到工作区中的符号（`Ctrl+T`）。
+            .on_action(cx.listener(
+                |v, a: &crate::workspace_symbols::WorkspaceSymbolsAction, window, cx| {
+                    v.workspace_symbols_command(a.0, window, cx)
                 },
             ))
             .child(workbench)

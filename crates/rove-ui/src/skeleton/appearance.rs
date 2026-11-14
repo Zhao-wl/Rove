@@ -83,6 +83,10 @@ pub fn strings() -> Result<StringTable> {
     crate::large_file::registry::register_strings(&mut t)?;
     // #27：状态栏右侧的文件状态条目与它们的选择器。
     crate::status_items::registry::register_strings(&mut t)?;
+    // #60：引用视图的命令标题、标题模板与空状态。
+    crate::references::registry::register_strings(&mut t)?;
+    // #60：转到工作区中的符号的命令标题、占位符与近似说明。
+    crate::workspace_symbols::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -110,5 +114,7 @@ pub fn contributions() -> Result<ContributionRegistry> {
     crate::markdown::registry::register_contributions(&mut r)?;
     // #22：文件大小标记与行索引进度（状态栏右侧）。
     crate::large_file::registry::register_contributions(&mut r)?;
+    // #60：面板里的「引用」视图（与「问题」并列，UX_SPEC §1.4）。
+    crate::references::registry::register_contributions(&mut r)?;
     Ok(r)
 }

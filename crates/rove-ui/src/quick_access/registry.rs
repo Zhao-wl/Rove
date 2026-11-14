@@ -52,10 +52,6 @@ pub const STRINGS: &[(&str, &str)] = &[
         "quickAccess.symbols.unavailable",
         "活动编辑器无法提供大纲信息。",
     ),
-    (
-        "quickAccess.workspaceSymbols.unavailable",
-        "工作区符号搜索尚不可用。可以用 {key} 按文件名搜索。",
-    ),
 ];
 
 pub fn register_commands(registry: &mut CommandRegistry) -> Result<()> {

@@ -287,6 +287,21 @@ bench = "l1/workspace_symbols_large"
 aggregate = "p99"
 reason = "LANGUAGE_INTELLIGENCE §1：工作区符号搜索 < 30 ms；#24 的 fuzzyScorer 注入后要重测"
 
+# ---------------------------------------------------------------- 转到工作区中的符号（#60）
+# `Ctrl+T` 与快速打开 `#` 的整条按键路径：#1 契约的查询（#38 路由 → #37 的 L1）+ 列表行与高亮。
+# 与 #24 快速打开的 16 ms 预算分开报。大型项目用例需要 ROVE_TEST_UNITY_LARGE。
+
+[[budget]]
+id = "workspace_symbols_keystroke_large"
+metric = "转到工作区中的符号：每次按键到列表刷新（大型 Unity 项目，含查询、分组与高亮）"
+value = 30
+unit = "ms"
+owner = "#60"
+status = "enforced"
+bench = "workspace_symbols/keystroke_large"
+aggregate = "p99"
+reason = "LANGUAGE_INTELLIGENCE §1：工作区符号搜索 < 30 ms；issue #60 验收口径是“每次按键到列表刷新”"
+
 # ---------------------------------------------------------------- 编辑
 
 [[budget]]

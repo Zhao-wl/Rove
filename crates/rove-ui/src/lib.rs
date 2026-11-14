@@ -53,3 +53,7 @@ pub mod large_file;
 
 // #74：Rove 不联网。装给 gpui 的 HTTP 客户端拒绝一切请求并记日志。
 pub mod net;
+// #60：侧边「引用」视图（D3 的备选形态）与 `references.preferredLocation` 的一处开关。
+pub mod references;
+// #60：转到工作区中的符号（`Ctrl+T` 与快速打开的 `#`，同一份数据、同一套排序、同一个实现）。
+pub mod workspace_symbols;

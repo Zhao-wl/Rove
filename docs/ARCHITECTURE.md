@@ -224,7 +224,7 @@ cargo test --workspace
 | `code-features` | 已由 `rove-ui::code_view` 实现（见 §16“高亮、折叠与只读”）：语法着色层、括号匹配、同名高亮、折叠、缩进参考线、空白字符、只读表现与按级别关闭功能；`workbench.rs` 只把快照、级别与只读原因交给 `CodeView` | #20（已完成） |
 | `find` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::find` 实现（见 §27）：当前文件查找条、查找引擎与模型、`editor.find.*`、匹配装饰、历史，以及 #48 的替换行、替换语义与“全部替换 = 一次事务”；`workbench.rs` 只给每个代码视图包一层 `FindHost` | #21、#48（已完成） |
 | `nav` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::nav` 与 `skeleton/workbench/nav_host.rs` 实现（见 §31）：转到定义 / 声明 / 实现、`Ctrl+悬停` 与 `Ctrl+点击`、悬停卡片、符号导航模式、语义同名高亮、近似结果提示，以及 #38 `CsRouter` 的装配（语义来源、L1、`BufferStates` 的打开 / 重新载入 / 关闭） | #40（已完成） |
-| `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
+| `quickopen` | 已由 `rove-ui::quick_access` 与 `rove-fuzzy` 实现（见 §28）：`Ctrl+P` / `Ctrl+Shift+P` / `F1` / `Ctrl+G`、`:` `@` `#` `>` 四个前缀（`#` 的工作区符号数据由 #60 接上，见 §41）、命令中心入口；`keys.rs` 不再预登记两个“未实现”命令，`workbench/quick_access_host.rs` 只做窗口装配 | #24（已完成） |
 | `save` | 无骨架标记（骨架只读，#2 没有保存的临时实现）：已由 `rove-buffer::save` 与 `rove-ui::save` 实现（见 §30）：原样写回（编码 / BOM / 混合换行）、原子写入、占用重试、只读属性、保存冲突、自写去重、外部修改与自动重载、关闭确认；窗口装配（`ctrl+s` / 另存为 / 全部保存 → `SaveController`、`ctrl+n`、重载后刷新视图、脏点与“已删除”、窗口关闭确认）由 #47 在 `workbench/edit_host.rs` 完成（见 §37） | #49（已完成） |
 | `search` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-search`（引擎）与 `rove-ui::search`（视图）实现（见 §32）；`workbench/search_host.rs` 只做窗口装配，工作台原先“`findInFiles` 只打开视图容器”的行为保留，焦点随后交给查询框 | #25（已完成） |
 | `peek` | 无骨架标记（#2 没有速览的临时实现）：已由 `rove-ui::peek` 实现（见 §33）：速览定义 / 引用 / 实现窗口挂在代码视图的嵌入区域里，结果树复用 #18、预览复用 #19；`workbench/peek_host.rs` 只做窗口装配（命令、上下文键、打开结果、光标处提示；查询用 #40 的 `CsRouter`） | #41（已完成） |
@@ -233,6 +233,7 @@ cargo test --workspace
 | `status` | 已由 `rove-ui::status_items` 与 `skeleton/workbench/status_host.rs` 实现（见 §39）：`SKELETON(status)` 标记、骨架的 `rove.status.file` 条目与“文件名 / 行数 / 编码”固定内容都已删除，右侧改为六个登记过的条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）；状态栏左侧只保留 #16 的临时消息、问题计数与 #36 的索引状态 | #27（已完成） |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
 | `word-wrap` | 无骨架标记（#2 没有软换行的临时实现）：已由 `rove-ui::code_view::wrap` 实现（见 §39）：换行点计算、折叠 + 软换行合一的视觉行映射 `VisualMap`、`editor.action.toggleWordWrap`；`CodeView` 的滚动模型、行号栏、命中测试、光标移动都改走视觉行 | #58（已完成） |
+| `references` | 无骨架标记（#2 没有引用视图的临时实现）：已由 `rove-ui::references`、`rove-ui::workspace_symbols` 与 `skeleton/workbench/references_host.rs` 实现（见 §49）：转到类型定义、`Ctrl+T` / `#` 工作区符号、面板里的侧边「引用」视图与 `references.preferredLocation` 的一处开关 | #60（已完成） |
 | `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
 | `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
 
@@ -855,8 +856,10 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 精确度与契约：`navigate_detailed` 返回 `RoutedTarget { target, precision, reason, role }`，**逐条**标记（`role`：定义 / 引用 / L1 候选 / 元数据）。冻结的 `CsQueries::navigate` 只有批级精确度，按契约取最弱（精确 > 近似 > 语法）。空结果 + `Exact` 表示“确实没有”；空结果 + 非精确表示“不能确定”，`reason` 说明原因。
 
-各查询：`navigate`（定义；类型定义仅对类型符号，否则 `Unsupported`——索引不记录符号的类型；引用含定义处；实现 = 类型的派生类型或成员的实现/重写，传递闭包；派生/基类型；`Overrides` = 本成员重写或实现的成员）、`hover`（索引签名，否则显示名 + XML 文档；L0 回退给出声明文本）、`file_symbols`（当前文本上 #26 的语法大纲，`Syntax`）、`workspace_symbols`（L1，`Syntax`；没有 L1 时 `NotReady`）、`inactive_regions`（L2 的不生效行区间，映射到当前坐标）、`semantic_tokens`（`Unsupported`，属于 R58）。
+各查询：`navigate`（定义；类型定义见下；引用含定义处；实现 = 类型的派生类型或成员的实现/重写，传递闭包；派生/基类型；`Overrides` = 本成员重写或实现的成员）、`hover`（索引签名，否则显示名 + XML 文档；L0 回退给出声明文本）、`file_symbols`（当前文本上 #26 的语法大纲，`Syntax`）、`workspace_symbols`（L1，`Syntax`；没有 L1 时 `NotReady`）、`inactive_regions`（L2 的不生效行区间，映射到当前坐标）、`semantic_tokens`（`Unsupported`，属于 R58）。
 外部符号（没有源码定义）指向 `Resource::Virtual("rove-cs-metadata:<程序集|文档注释 ID>")`（`router::METADATA_SCHEME`，`metadata_symbol_key` 取回符号键），由 #42 按 #34 的元数据视图打开。
+
+**类型定义**（`NavigationKind::TypeDefinition`）问的是符号**声明的类型**，不是它自己的声明。索引里没有「符号 → 声明类型」这一项，但声明处的源码里写着它：`CsRouter::declared_types` 走到符号的定义处，用 L0 语法树读出声明写出来的类型名（`A.B.Foo<T>` → `Foo`，`Foo[]` / `Foo?` → `Foo`，`var` 从 `new T()` / `new T[n]` / `(T)x` / `x as T` 推断，方法取返回类型），再用索引里那个位置上的**出现位置**换回类型符号——名字到符号这一步仍然是 L2 的精确答案，不猜同名。类型与类型参数本身的类型定义就是它们的定义；外部类型照常指向元数据视图。读不出类型名（`int` 这类预定义类型、元组、推断不出的 `var`）或声明处的文本与索引对不上时返回**空结果**（不是 `Unsupported`），由界面按空状态提示。声明处的文件有未保存的编辑时按 `EditMap` 做两次映射（索引坐标 → 文本坐标找类型名，文本坐标 → 索引坐标问符号），落在改过的行上就不猜。回退层同理：L0 先找到局部声明，把查询点挪到它写出的类型名上，再交给 L1 的类型名解析（近似）。
 
 装配（#40 接入时完成；本 PR 不改 UI/app）：`CsRouter::new(lifecycle, buffers).with_l1(l1).with_root(项目根)`；文档打开时 `BufferStates::opened(path, text, hash_bytes(磁盘原始字节))`，外部修改重新载入时 `reloaded`，M3 编辑事务 `edited`，保存 `saved`，关闭 `closed`。所有查询在后台执行器上调用。
 
@@ -1799,3 +1802,90 @@ ZWJ / 肤色 emoji、组合字符、连字、折叠组合、增量更新、30 �
 包装层不吞错误、`AsyncBody` 读写）；`cargo test -p rove-ui --test no_network`（入口测试：Rove 装的客户端
 被拒绝并记日志、gpui 自己的 `cx.http_client()` 同样被拒绝）；`cargo xtask check-deps`（依赖图判定，
 已实测人为加回 `zed-reqwest` 后以非零码退出）。
+## 49. 转到类型定义、工作区符号与侧边「引用」视图（#60）
+
+位置：`crates/rove-ui/src/references/`（面板视图）、`crates/rove-ui/src/workspace_symbols.rs`（`Ctrl+T` 与 `#`），
+`lib.rs` 只追加两行 `pub mod`；窗口装配在 `skeleton/workbench/references_host.rs`，转到类型定义接在 #40 的
+`nav_host.rs` 上。不修改 #1 的契约；GPUI 类型只出现在 `references_host.rs` 与两个 `registry` 的 action。
+
+### 转到类型定义（`editor.action.goToTypeDefinition`）
+
+- 命令**没有默认键位**（VS Code 也没有）：登记在 #40 的 `nav::registry` 里（`GOTO_TYPE_DEFINITION` + 标题 +
+  `nav.noTypeDefinition{,.approximate}` 两条空状态），出现在命令面板中，用户可自行绑定。
+  `nav::registry::tests::go_to_type_definition_has_no_default_keybinding` 同时核对生成的 VS Code 表与模块附加键位。
+- 上下文键 `editorHasTypeDefinitionProvider` 加进 `nav::registry::context::PROVIDERS`：C# 文档为真、其余语言一个都不发布（D2）。
+- 语义复用 #40 的整条路径：`NavKind::TypeDefinition` → `NavigationKind::TypeDefinition`（#1 契约，#38 实现）→
+  `nav::model::plan`。候选数的呈现方式读 `editor.gotoLocation.multipleTypeDefinitions`
+  （`NavSettings::multiple_type_definitions`，默认 `peek`）：单候选经 #17 的打开文档服务跳转并按
+  `revealRangeInCenterIfOutsideViewport` 定位（跳转前自动进导航历史），多候选开 #41 的速览；只有外部符号时交给 #42。
+- 空状态按 `UX_SPEC` §6.3 在**光标处**提示「未找到 `X` 的类型定义」，不能确定时追加「（语义索引构建中）」。
+  查询失败的口径与速览统一到一处：`nav_host` 改用 `peek::source::error_precision`
+  （`NotReady` / `Stale` → 近似，其余 → 确实没有）。
+- **声明类型从哪儿来**：#38 的索引不记录「符号 → 声明类型」，由 #38 的路由到声明处把写出来的类型名读回来
+  （见 §25「类型定义」）。光标落在 `var` 变量、字段、属性、参数、泛型类型参数的**名字**上时跳到其声明类型的
+  定义处；落在写出来的**类型名**上时跳到该类型的定义（与 F12 相同）。
+  已知边界：预定义类型（`int`）、元组、以及推断不出的 `var`（`var x = Find();`）没有可跳的目标，按空状态提示；
+  #177 在索引里补上这层关系后，这里可以直接问索引，界面不用改。
+
+### 转到工作区中的符号（`Ctrl+T` 与快速打开的 `#`）
+
+**两个入口是同一份数据、同一套排序、同一个实现**：`Ctrl+T`（`workbench.action.showAllSymbols`）只是把快速打开的
+输入预置成 `#`（VS Code 里本来就是同一个 quick access provider），之后两者走的是同一个
+`quick_access_host::quick_workspace_symbols`。`nav_extra_tests` 逐条断言两个入口对同一输入返回相同序列。
+
+| 模块 | 内容 | GPUI |
+|---|---|---|
+| `workspace_symbols.rs` | 命令、界面字符串、`WorkspaceSymbolsAction`；`picks`（结果 → 列表行 + 高亮；**顺序一律是查询返回的顺序**）、`is_approximate`、`path_of`、`index_of` | 仅 action |
+| `skeleton/workbench/quick_access_host.rs` | `SymbolSearch` 状态机（按键 → 后台查询 → 结果回来后 `quick_refresh_current` 重算；同一个查询不重复发起、输入变了旧结果作废）、列表项右侧的「容器名 · 文件相对路径」、选中后打开 | 是 |
+
+- 查询一律经 #1 契约的 `CsQueries::workspace_symbols`（正式实现是 #38 的 `CsRouter`，数据来自 #37 的 L1 声明索引；
+  #38 以后把 L2 符号表接进来时这里不用改）。契约要求所有查询都在后台线程，所以这一帧先用上一次的结果绘制并在
+  列表底部显示「正在加载…」。测试用 `Workbench::set_workspace_symbol_queries` 换替身。
+- **不再写一套打分规则**：排序是 L1 的（它已经复用 #24 移植的 VS Code `fuzzyScorer`），`picks` 只用 #24 的
+  `FuzzyMatcher` 算符号名上的高亮区间。
+- **近似标记**（`UX_SPEC` §2.2）：结果不精确（L1 的语法级结果）时在列表**顶部**加一行「近似结果：语义索引构建中」，
+  不在每条结果上重复标注；精确结果不加任何标记。
+- 空状态「未找到匹配的符号」；查询返回 `NotReady` / `Unsupported`（工作区里没有 C# 代码、索引还没建好）时也走它，不报错。
+- 选中后经 #17 的打开文档服务打开并定位（`OpenSource::QuickOpen`，带选区，所以 `.md` 也打开源码，`UX_SPEC` §4.3）。
+- #24 里「工作区符号搜索尚不可用」的降级提示与它的字符串已删除。
+- 列表项目前没有 `symbolIcon.*` 种类图标：#1 契约的 `WorkspaceSymbol` 只有名字、容器与位置，不带符号种类。
+  已另开跟进 issue（#178，契约改动要单独提 PR）。
+
+### 侧边「引用」视图（D3 的备选形态）
+
+位置按 `UX_SPEC` §1.4 在**面板**里，与「问题」并列，通过 #16 的视图贡献点登记
+（`workbench.view.extension.references-view`，order 40，图标 `references`）。它是**备选**，不是默认。
+
+| 模块 | 内容 | GPUI |
+|---|---|---|
+| `references/registry.rs` | 16 条实现的命令 + 6 条只登记的层级命令、界面字符串、面板视图贡献点、上下文键名，以及 `references.preferredLocation` 的**唯一判定** `opens_in_view` | 仅 action |
+| `references/model.rs` | `ReferencesState`：结果与历史（最多 20 条，同一查询点去重）、逐条导航（跨文件循环）、消除某一条（按条目重建分组索引）、复制文案、两个上下文键的取值、标题与空状态 | 否 |
+| `skeleton/workbench/references_host.rs` | 命令分发、后台查询（与 #41 同一条流水线 `peek::source::run`）、结果树（#18 的 `ListWidget::tree` + #41 的 `ResultsTree`）、历史列表、打开结果、面板绘制、每帧发布上下文键 | 是 |
+
+- **结果树复用 #41 已经做好的分组索引**：数据层给出「文件 → 计数 + 偏移」，界面按需取段，展开某个文件时才在后台
+  读那个文件的片段。4.7 万条结果下树里只有文件节点 + 第一个文件的结果行，**不把 `Vec<Location>` 展平成界面节点**。
+- **入口与导航**（`KEYBINDINGS.md` 导航一节，when 逐条照抄，`the_navigation_keybindings_match_the_table_verbatim` 核对）：
+  `references-view.findReferences` = `shift+alt+f12`，when `editorHasReferenceProvider`；
+  `references-view.next` / `prev` = `f4` / `shift+f4`，when `reference-list.hasResult && references-view.canNavigate`。
+  速览的 `goToNextReference` / `goToPreviousReference`（when `inReferenceSearchEditor || referenceSearchVisible`）**一条不改**：
+  两条 when 可以同时成立而不打架。
+- **上下文键**：`reference-list.hasResult`（视图里有结果）与 `references-view.canNavigate`（当前结果可逐条导航；
+  历史列表模式与空结果为假）发布到全局上下文键，取值变了才写。
+- **`references.preferredLocation`**（默认 `peek`）：判定只有 `references::registry::opens_in_view` 一处，由 #41 的
+  `peek_host::peek_command` 调用——为 `view` 时 `editor.action.goToReferences`（`Shift+F12`）改在本视图里展示，
+  否则照旧开速览。没有用户设置时不改变默认值（`FEATURES.md` §13 规则 5）。
+- **其余 12 条 `references-view.*` 命令**以相同 ID 实现：`clear`（清当前结果、保留历史）、`clearHistory`、
+  `copy` / `copyAll`（`路径:行:列`，行列从 1 起算）、`copyPath`、`findImplementations`、`pickFromHistory`
+  （视图切成历史列表，Enter 恢复）、`refind`（重跑历史里聚焦的那条）、`refresh`（重跑当前这条）、
+  `removeReferenceItem`、`tree.focus`、`tree.resetViewLocation`。
+- **层级相关的 6 条**（`removeCallItem`、`removeTypeItem`、`showIncomingCalls`、`showOutgoingCalls`、`showSubtypes`、
+  `showSupertypes`，P2）**只登记命令、行为为空**，并且不给 GPUI action——`keys::is_implemented` 据此把它们挡在命令面板外。
+- **打开结果**：一律经 #17 的打开文档服务（`OpenSource::CodeNavigation`、带选区，`.md` 也打开源码并定位）。
+
+验证：`cargo test -p rove-ui references`、`cargo test -p rove-ui nav_extra`、`cargo test -p rove-ui workspace_symbols`
+（数据层单元测试 + `references_tests.rs` 的 8 个与 `nav_extra_tests.rs` 的 9 个真实 GPUI 窗口入口测试：
+`Shift+Alt+F12` → 面板里的分组与计数、`F4` / `Shift+F4` 逐条导航并打开、`preferredLocation` 两个取值、
+12 条命令逐条可用、6 条层级命令只登记、两个上下文键、4.7 万条结果下树里没有展平、空结果；
+转到类型定义的五种写法、上下文键与空状态；`Ctrl+T` 与 `#` 返回相同序列、近似说明只有一行且在顶部、
+`.md` 打开源码）。性能：`cargo xtask bench --filter workspace_symbols/`
+（预算 `workspace_symbols_keystroke_large`：大型 Unity 项目每次按键到列表刷新 < 30 ms，p99）。

@@ -125,6 +125,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "wrap",
         requires: "",
     },
+    BenchTarget {
+        // #60：转到工作区中的符号的每次按键；大型项目用例缺 ROVE_TEST_UNITY_LARGE 时在基准内部跳过。
+        name: "workspace_symbols",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

@@ -19,7 +19,7 @@ pub enum Mode<'a> {
     Line(&'a str),
     /// `@`：当前编辑器中的符号。
     Symbols(&'a str),
-    /// `#`：工作区符号（M1 不可用）。
+    /// `#`：工作区符号（#60 实现，与 `Ctrl+T` 同一份数据、同一套排序）。
     WorkspaceSymbols(&'a str),
 }
 

@@ -18,6 +18,8 @@ pub const REVEAL_DEFINITION: &str = "editor.action.revealDefinition";
 pub const REVEAL_DEFINITION_ASIDE: &str = "editor.action.revealDefinitionAside";
 pub const GOTO_DECLARATION: &str = "editor.action.goToDeclaration";
 pub const GOTO_IMPLEMENTATION: &str = "editor.action.goToImplementation";
+/// #60：转到类型定义。VS Code 没有默认键位，命令面板里可用、用户可自行绑定。
+pub const GOTO_TYPE_DEFINITION: &str = "editor.action.goToTypeDefinition";
 pub const NEXT_SYMBOL: &str = "editor.gotoNextSymbolFromResult";
 pub const NEXT_SYMBOL_CANCEL: &str = "editor.gotoNextSymbolFromResult.cancel";
 pub const SHOW_HOVER: &str = "editor.action.showHover";
@@ -41,6 +43,9 @@ pub mod context {
     pub const HAS_DEFINITION: &str = "editorHasDefinitionProvider";
     pub const HAS_DECLARATION: &str = "editorHasDeclarationProvider";
     pub const HAS_IMPLEMENTATION: &str = "editorHasImplementationProvider";
+    /// #60：当前编辑器的语言有类型定义提供方（C#）。`editor.action.goToTypeDefinition` 没有默认键位，
+    /// 所以这个键不在 KEYBINDINGS.md §6 的清单里；命令面板的可用性与用户自定义键位的 when 用它。
+    pub const HAS_TYPE_DEFINITION: &str = "editorHasTypeDefinitionProvider";
     pub const HAS_REFERENCE: &str = "editorHasReferenceProvider";
     pub const HAS_HOVER: &str = "editorHasHoverProvider";
     /// 多候选的符号导航模式（`f12` 循环、`escape` 取消）。
@@ -54,6 +59,8 @@ pub mod context {
         HAS_DEFINITION,
         HAS_DECLARATION,
         HAS_IMPLEMENTATION,
+        // #60：转到类型定义。
+        HAS_TYPE_DEFINITION,
         HAS_REFERENCE,
         HAS_HOVER,
     ];
@@ -76,6 +83,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         GOTO_IMPLEMENTATION,
         "nav.command.goToImplementation",
         "转到实现",
+    ),
+    (
+        GOTO_TYPE_DEFINITION,
+        "nav.command.goToTypeDefinition",
+        "转到类型定义",
     ),
     (NEXT_SYMBOL, "nav.command.nextSymbol", "转到下一个符号结果"),
     (
@@ -149,6 +161,11 @@ pub const STRINGS: &[(&str, &str)] = &[
     (
         "nav.noDeclaration.approximate",
         "未找到 `{name}` 的声明（语义索引构建中）",
+    ),
+    ("nav.noTypeDefinition", "未找到 `{name}` 的类型定义"),
+    (
+        "nav.noTypeDefinition.approximate",
+        "未找到 `{name}` 的类型定义（语义索引构建中）",
     ),
     ("nav.noImplementation", "未找到 `{name}` 的实现"),
     (
@@ -320,5 +337,28 @@ mod tests {
         ] {
             assert!(r.get(id).is_some(), "{id}");
         }
+    }
+
+    /// #60：`editor.action.goToTypeDefinition` 在 VS Code 里没有默认键位，Rove 也不自行分配。
+    #[test]
+    fn go_to_type_definition_has_no_default_keybinding() {
+        let defaults = rove_commands::keybindings::default_rules();
+        assert!(
+            !defaults
+                .iter()
+                .any(|d| &*d.rule.command == GOTO_TYPE_DEFINITION),
+            "转到类型定义不应有默认键位"
+        );
+        assert!(
+            !crate::keys::module_defaults()
+                .iter()
+                .any(|r| &*r.command == GOTO_TYPE_DEFINITION),
+            "Rove 也不为转到类型定义附加默认键位"
+        );
+        // 命令本身仍然登记、有 action，所以在命令面板里可用。
+        let mut r = CommandRegistry::default();
+        register_commands(&mut r).unwrap();
+        assert!(r.get(GOTO_TYPE_DEFINITION).is_some());
+        assert!(action_for(GOTO_TYPE_DEFINITION).is_some());
     }
 }
