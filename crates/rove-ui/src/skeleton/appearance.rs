@@ -87,6 +87,8 @@ pub fn strings() -> Result<StringTable> {
     crate::references::registry::register_strings(&mut t)?;
     // #60：转到工作区中的符号的命令标题、占位符与近似说明。
     crate::workspace_symbols::register_strings(&mut t)?;
+    // #76：「关于」对话框。
+    crate::about::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

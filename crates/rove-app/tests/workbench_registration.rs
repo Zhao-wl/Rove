@@ -188,3 +188,41 @@ fn status_items_register_the_file_state_entries_on_the_right() {
         assert_eq!(c.command.as_deref(), command, "{id}");
     }
 }
+
+#[test]
+fn about_dialog_registers_its_command_and_a_gear_menu_item() {
+    // 例：#76 的「关于 Rove」。命令 ID 沿用 VS Code 的 `workbench.action.showAboutDialog`，
+    // 菜单项登记在齿轮菜单里，界面字符串与颜色键也全部走登记机制（不写死）。
+    use rove_ui::about::registry as about;
+    let mut commands = CommandRegistry::default();
+    catalog::register_commands(&mut commands).unwrap();
+    about::register_commands(&mut commands).unwrap();
+    let command = commands.get(about::SHOW_ABOUT).expect("命令已登记");
+
+    let mut strings = rove_i18n::StringTable::default();
+    about::register_strings(&mut strings).unwrap();
+    // 命令标题与对话框里的每一条文案都能查到。
+    rove_i18n::Strings::text(&strings, &Message::key(command.title_key.clone())).unwrap();
+    for (key, _) in about::STRINGS {
+        // 带 {version} 占位符的几条要给参数才能渲染，这里只确认都登记过。
+        assert!(strings.get(key).is_some(), "{key} 没有登记");
+    }
+
+    let mut menus = default_menus();
+    about::register_menus(&mut menus).unwrap();
+    let implemented = |id: &str| catalog::is_implemented(id) || id == about::SHOW_ABOUT;
+    let items = visible_items(&menus, MenuId::Manage, &commands, &implemented);
+    assert!(
+        items
+            .iter()
+            .any(|(_, item)| item.command.as_ref() == about::SHOW_ABOUT),
+        "齿轮菜单里要有「关于」"
+    );
+
+    // 颜色键只用已有的主题键，不新造：每个键都有默认值。
+    let mut colors = rove_theme::ColorRegistry::default();
+    about::register_colors(&mut colors).unwrap();
+    for key in about::COLORS {
+        assert!(colors.get(key).is_some(), "{key}");
+    }
+}

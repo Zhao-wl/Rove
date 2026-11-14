@@ -1963,3 +1963,47 @@ K&R 风格下两者同在声明行。`#region` 不在查询里（由 #12 的 `fo
 查询（`ROVE_SYNTAX_TRACE` 的 `folds` 段）约 12 ms——整篇查询本身约 85 ms 的 CPU 摊在工作线程上。
 首开大文件还想再省这 12 ms 的话，下一步是把折叠查询并进 `parse_parts` 里各分区解析完就地做，
 省掉再取一次线程的开销。
+
+## 51. Windows 发布流水线、安装包、体积守护与第三方声明（#76）
+
+位置：发布命令在 `xtask/src/`（`release.rs` 流水线、`pack.rs` 发布包内容清单、`sign.rs` ed25519 签名、
+`licenses.rs` 依赖许可、`icon.rs` 图标生成、`size.rs` 体积守护扩展到发布包），打包资产与配置在
+`packaging/`（`windows/rove.iss` 安装器、`windows/rove.ico` 图标、`package-contents.toml` 发布包清单、
+`licenses/` 许可允许列表与汇总、`release/update-signing.pub` 更新清单公钥），Windows 资源在
+`crates/rove-app/build.rs`，「关于」对话框在 `crates/rove-ui/src/about/` 与
+`crates/rove-ui/src/skeleton/workbench/about_host.rs`，流水线在 `.github/workflows/release.yml`。
+操作手册（含安装器选型理由、干净机器验收清单、人工事项）在 [RELEASE](RELEASE.md)。
+本 issue 没有对应的 `SKELETON(...)` 标记：#2 的骨架不含发布与「关于」。
+
+| 模块 | 内容 |
+|---|---|
+| `xtask/src/release.rs` | `cargo xtask release`：构建（注入 `ROVE_BUILD_COMMIT` / `ROVE_BUILD_DATE`）→ 按清单组装暂存目录 → 便携版 zip → 调 ISCC 出安装包 → SHA256 → 生成并签名 `latest.json` → 写 Release 说明草稿与 `upload.ps1`。**不打 tag、不建 Release、不上传**；`check-version` 校验 tag 与 `Cargo.toml` 一致 |
+| `xtask/src/pack.rs` | `packaging/package-contents.toml` 的读取与暂存：`[[file]]` / `[[dir]]` 是包里的文件，`[[embedded]]` 是嵌入 `rove.exe` 的资产分项（体积报告按它分组） |
+| `xtask/src/sign.rs` | ed25519 密钥对生成 / 分离式签名 / 验签。私钥在仓库外（`%LOCALAPPDATA%\Rove-release\update-signing.key`，`ROVE_RELEASE_KEY` 可改），**从不打印内容**；公钥 `packaging/release/update-signing.pub` 提交进仓库供 #149 使用 |
+| `xtask/src/licenses.rs` | `cargo metadata` → SPDX 表达式判定（`OR` 取其一、`AND` 都要）→ 生成 `packaging/licenses/rust-dependencies.md`；`--check` 在未登记许可或清单过期时失败（CI 的「依赖许可汇总」任务） |
+| `xtask/src/icon.rs` | 多尺寸 `.ico`（16/32/48/64/128/256，小尺寸 BMP、64 起 PNG）由代码画出来；`--check` 保证仓库里的 `rove.ico` 与生成结果一致 |
+| `xtask/src/size.rs` | 体积守护：报告 `rove.exe`（相对 M0 6.2 MB 基线）**与发布包**，按 `perf/budgets.toml` 的 `[size].budget_bytes`（30 MB）判定**发布包**；索引组件包用 `--component` 只报告、不计入 |
+| `packaging/windows/rove.iss` | Inno Setup 6：用户级安装（`%LOCALAPPDATA%\Programs\Rove`，`PrivilegesRequired=lowest`，只写 `HKCU`）、默认不勾的文件关联（`OpenWithProgids`，不抢默认程序）与文件 / 目录右键菜单（目录传 `"%V"` 作为启动参数）、静默升级参数、卸载清理（用户数据默认保留，可勾选删除）、可选的 C# 索引组件（解压随包 zip 到 #43 的位置，**不联网**） |
+| `crates/rove-app/build.rs` | 把 `rove.ico` 以**资源 ID 1** 编进 `rove.exe`（gpui 的 `load_icon()` 正是按 ID 1 取图标，所以窗口 / 任务栏 / Alt+Tab 用同一张图）并写 `VERSIONINFO`（`FileDescription` / `ProductName` / `CompanyName` / `FileVersion` / `LegalCopyright`）。用 embed-resource（gpui 已经在用它编 manifest），不新增依赖链 |
+| `crates/rove-ui/build.rs` | 注入 `ROVE_BUILD_COMMIT` / `ROVE_BUILD_DATE` / `ROVE_BUILD_CHANNEL` / `ROVE_GPUI_VERSION`（发布流水线设了就用它的，本地构建现场问 git），供「关于」对话框使用 |
+| `crates/rove-ui/src/about/` | `info.rs` 取值（版本、提交号、构建日期、通道、gpui 版本、C# 索引组件状态、可执行文件路径）、`mod.rs` 排版与复制文本、`registry.rs` 命令 `workbench.action.showAboutDialog` + 界面字符串 + 齿轮菜单项 + GPUI action |
+| `skeleton/workbench/about_host.rs` | 浮层绘制与三个按钮：复制（写剪贴板 + 状态栏回执）、第三方声明（在编辑器里打开安装目录的 `THIRD_PARTY_NOTICES.md`，不调外部程序）、关闭 |
+
+**几条定死的约定**：
+
+- **版本号唯一来源**是根 `Cargo.toml` 的 `[workspace.package] version`。版本资源、安装包、`latest.json`、
+  「关于」对话框全部从它来（各 crate 写 `version.workspace = true`），CI 在打 tag 时校验 tag 与它一致。
+- **「关于」是浮层不是模态框**：UX_SPEC §6.1 把模态框保留给数据丢失与安全确认，VS Code 用模态框，
+  我们按自己的分级表走（`FeedbackHub` 也会拒绝没有经 `report(DataLoss/SecurityConfirmation)` 声明的模态）。
+- **C# 索引组件的位置与发现规则沿用 #43**（`%LOCALAPPDATA%\Rove\components\indexer-cs\<版本>\`），
+  安装器只是把 #43 打出来的 zip 解压到那里；「关于」里的组件状态直接调
+  `rove_lang_cs::lifecycle::component::discover`，不另造一套判定。
+- **发布与运行期都不联网**：安装器不下载 WebView2、不下载组件；`cargo xtask release` 只读本地文件
+  （上传是人工跑 `upload.ps1`）。唯一的网络出口仍然只有 #149 的更新模块。
+
+验证：`cargo test -p xtask`（发布包清单与仓库一致、发布包超预算时 check-size 非零退出、SPDX 判定、
+`.iss` 的用户级 / 不写 HKLM / 可选项默认不勾 / 关联不抢默认程序 / 卸载清理 / 不联网、ed25519 签名与
+RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与生成结果一致、tag 与版本不一致时失败）；
+`cargo test -p rove-ui about`（「关于」的取值、复制文本、三种组件状态的文案，以及真实 GPUI 窗口里的
+入口测试：命令打开对话框、复制进剪贴板并回执、关闭、第三方声明按钮）。
+

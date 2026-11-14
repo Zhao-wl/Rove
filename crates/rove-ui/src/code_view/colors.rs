@@ -187,6 +187,8 @@ pub fn theme_registry() -> ColorRegistry {
     crate::markdown::registry::register_colors(&mut registry).expect("markdown colors");
     // #28：欢迎页的三个 welcomePage.* 键。
     crate::welcome::registry::register_colors(&mut registry).expect("welcome colors");
+    // #76：「关于」浮层用到的 editorWidget.* / button.* / descriptionForeground。
+    crate::about::registry::register_colors(&mut registry).expect("about colors");
     registry
 }
 

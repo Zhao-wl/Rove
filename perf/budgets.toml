@@ -14,8 +14,9 @@ schema = 1
 updated = "2026-11-14"
 source = "docs/PROJECT_CHARTER.md §6"
 
-# 体积守护（cargo xtask check-size）。发布包的完整组成到 #75 才确定，
-# 届时由 #75 把检查对象扩展到整个发布包；现在只检查 rove.exe。
+# 体积守护（cargo xtask check-size）。#75 已把检查对象扩展到整个发布包：
+# 判定对象是 packaging/package-contents.toml 里登记的全部文件（rove.exe + 随包文档），
+# rove.exe 自己仍然单独报告（相对 M0 基线的变化）。C# 索引组件是独立的可选包，不计入。
 [size]
 # CHARTER §6：发布包体积（不含 C# 索引组件）< 30 MB。这里按十进制 30 MB 保守取 30,000,000 B。
 budget_bytes = 30_000_000
@@ -23,7 +24,7 @@ budget_bytes = 30_000_000
 baseline_bytes = 6_200_000
 owner = "#75"
 status = "enforced"
-reason = "先把 rove.exe 纳入守护；发布包（含资源、WebView2 依赖等）到 #75 扩展"
+reason = "判定对象是完整发布包（CHARTER §6：不含 C# 索引组件 < 30 MB）；随包资产全部嵌在 rove.exe 里，体积报告按来源分项列出，见 docs/RELEASE.md §5"
 
 # ---------------------------------------------------------------- 启动
 

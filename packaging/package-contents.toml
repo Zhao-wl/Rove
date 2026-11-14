@@ -1,0 +1,85 @@
+# 发布包的内容清单与嵌入资源分项（#76）
+#
+# 两件事：
+# 1. `[[file]]` / `[[dir]]`：便携版 zip 与安装目录里到底有哪些文件。`cargo xtask release` 按这张表
+#    组装暂存目录，`cargo xtask check-size` 按同一张表算「发布包体积」（CHARTER §6：< 30 MB，
+#    预算值在 perf/budgets.toml 的 [size].budget_bytes，不在这里重复写）。
+# 2. `[[embedded]]`：随包资产的分项。Rove 的资产（主题、语言配置、codicons、Markdown 预览资源）
+#    全部**嵌入 rove.exe**，不单独随包，所以体积报告里要按来源目录分项列出，
+#    否则超限那天不知道该砍谁（issue #76「风险与提示」）。
+#
+# 路径都相对仓库根目录；`target/` 开头的路径会换成实际的 CARGO_TARGET_DIR。
+
+schema = 1
+
+# 顶层目录名：zip 解开是 `Rove-<版本>-win-x64\`，安装器装进 %LOCALAPPDATA%\Programs\Rove。
+stage_name = "Rove-{version}-win-x64"
+
+[[file]]
+source = "target/release/rove.exe"
+name = "rove.exe"
+kind = "binary"
+note = "主程序，随包资产全部嵌在里面"
+
+[[file]]
+source = "LICENSE"
+name = "LICENSE.txt"
+kind = "doc"
+
+[[file]]
+source = "THIRD_PARTY_NOTICES.md"
+name = "THIRD_PARTY_NOTICES.md"
+kind = "doc"
+note = "「关于」对话框打开的就是安装目录里的这一份"
+
+[[file]]
+source = "README.md"
+name = "README.md"
+kind = "doc"
+
+# 可选：放在 packaging/bundled/ 下的文件会原样进包（默认目录不存在，不进包）。
+[[dir]]
+source = "packaging/bundled"
+name = "."
+kind = "bundled"
+optional = true
+
+# ---------------------------------------------------------------- 嵌入资源分项
+
+[[embedded]]
+name = "Markdown 预览资源（Mermaid / KaTeX / highlight.js / VS Code CSS）"
+path = "crates/rove-ui/assets/markdown"
+exclude = ["LICENSES"]
+owner = "#29"
+note = "构建时 DEFLATE 压缩后嵌入，二进制里约占压缩后的体积"
+
+[[embedded]]
+name = "codicons 图标字体与映射"
+path = "crates/rove-ui/assets/codicons"
+owner = "#16"
+
+[[embedded]]
+name = "VS Code 默认主题（十个 JSON）"
+path = "crates/rove-theme/data/themes"
+owner = "#10"
+
+[[embedded]]
+name = "VS Code 语言配置"
+path = "crates/rove-syntax/data/vscode-extensions"
+owner = "#12"
+
+[[embedded]]
+name = "tree-sitter 高亮查询（.scm）"
+path = "crates/rove-syntax/src/highlight/queries"
+owner = "#9"
+note = "语法解析表本身是编译进二进制的 C 代码，无法单列"
+
+[[embedded]]
+name = "默认键位表"
+path = "crates/rove-commands/data"
+owner = "#14"
+
+[[embedded]]
+name = "设置项目录"
+path = "crates/rove-config/data"
+owner = "#13"

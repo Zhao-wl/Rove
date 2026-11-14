@@ -16,6 +16,13 @@ gpui.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
+# #76：把应用图标（资源 ID 1，gpui 的 load_icon 按它取图）与版本信息编进 rove.exe。
+# gpui 也用这个 crate 编它的 manifest，所以不是新引入的依赖。
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0"
+
 [dev-dependencies]
 rove-commands.workspace = true
 rove-i18n.workspace = true
+# #76：「关于」对话框的颜色键登记（端到端登记测试）。
+rove-theme.workspace = true

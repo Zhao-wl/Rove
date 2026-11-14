@@ -256,3 +256,30 @@ $env:ROVE_MARKDOWN_TRACE=1; cargo run -p rove-ui --example markdown_probe
 - 加一种语言只需要在 `thresholds.toml` 的 `[languages]` 下加一行（省略 `threshold` 表示只统计）。
   **低于 0.98 的阈值必须带 `reason`**，否则测试失败；为了让测试通过而调低阈值是不允许的。
 
+<!-- #76 追加：发布与体积 -->
+
+### 8.7 发布、安装包与体积守护（#76）
+
+发布的全部做法在 [docs/RELEASE.md](docs/RELEASE.md)（安装器选型理由、`latest.json` 的格式与签名、
+干净机器验收清单、人工事项）。日常开发只需要记住三件事：
+
+- **体积**：`cargo xtask check-size` 现在同时报告 `rove.exe` 与**发布包**，按
+  `perf/budgets.toml` 的 `[size].budget_bytes`（30 MB）判定发布包，超限 CI 失败。
+  发布包的内容与嵌入资产分项登记在 `packaging/package-contents.toml`：**往 `crates/*/assets`
+  或 `data` 里加资源时顺手在那里加一行**，否则体积报告看不出是谁长的。
+- **依赖许可**：加依赖后跑 `cargo xtask licenses --check`。许可不在
+  `packaging/licenses/allowed.toml` 里，或 `packaging/licenses/rust-dependencies.md` 没重新生成
+  （`cargo xtask licenses --write`），CI 都会失败。移植代码或随包资产仍然要写
+  `THIRD_PARTY_NOTICES.md`（§5.1）。
+- **版本号只有一处**：根 `Cargo.toml` 的 `[workspace.package] version`。版本资源、安装包、
+  `latest.json` 与「关于」对话框都从它来，**不要在别处再写一遍**。
+
+```powershell
+cargo xtask release            # 本地出便携版 / 安装包 / 签名的 latest.json（不打 tag、不上传）
+cargo xtask check-size         # rove.exe 与发布包的体积 + 嵌入资产分项
+cargo xtask licenses --check   # 依赖许可
+cargo xtask icon --check       # 应用图标与生成器一致
+```
+
+**签名私钥绝不进仓库**：它在 `%LOCALAPPDATA%` 下的 `Rove-release\update-signing.key`，
+公钥 `packaging/release/update-signing.pub` 提交。不要把私钥内容打印到任何输出或 PR 里。
