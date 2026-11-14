@@ -14,7 +14,8 @@
 //! - **只读**：只读文档上的编辑命令发出 [`CodeViewEvent::EditBlocked`]（#20 的光标处提示），
 //!   输入法不进入组合态。单词导航与 `cursorLineStart/End` 不要求可编辑。
 
-use super::columns::{grapheme_boundaries, read_line, DisplayLine};
+use super::autoedit;
+use super::columns::{grapheme_boundaries, read_line, DisplayLine, TextLines};
 use super::scroll::Reveal;
 use super::selection::{pos, Selection};
 use super::view::{CodeView, CodeViewEvent, LineEntry, SelectionSource};
@@ -242,6 +243,34 @@ fn line_text(text: &dyn TextSource, line: u64) -> String {
     read_line(text, line).unwrap_or_default()
 }
 
+/// 两个位置之间的文本（#53 的自动包围判定用）。
+fn range_text(text: &dyn TextSource, from: Position, to: Position) -> String {
+    let (Ok(a), Ok(b)) = (text.offset(from), text.offset(to)) else {
+        return String::new();
+    };
+    let Ok(span) = Span::new(a, b) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let _ = text.visit_chunks(span, &mut |s| out.push_str(s));
+    out
+}
+
+/// #53：抽象改动（行 + 字节列）换算成事务的替换项。
+fn to_replacements(
+    text: &dyn TextSource,
+    changes: &[autoedit::Change],
+) -> rove_base::Result<Vec<Replacement>> {
+    changes
+        .iter()
+        .map(|c| {
+            let start = text.offset(pos(c.start.0, c.start.1 as u64))?;
+            let end = text.offset(pos(c.end.0, c.end.1 as u64))?;
+            Ok(Replacement::new(Span::new(start, end)?, c.text.as_str()))
+        })
+        .collect()
+}
+
 fn leading_whitespace(line: &str) -> &str {
     let n = line.len() - line.trim_start_matches([' ', '\t']).len();
     &line[..n]
@@ -415,6 +444,8 @@ impl CodeView {
         cx: &mut Context<Self>,
     ) {
         self.text = Some(after);
+        // #53：任何编辑都让“这对括号是编辑器补的”失效（自动闭合自己在编辑之后重新记）。
+        self.auto_closed.clear();
         let mut lines_moved = false;
         let first = self.doc_line(self.visible.start);
         let keep = first.saturating_sub(2048)..first + 4096;
@@ -614,6 +645,24 @@ impl CodeView {
         if text.is_empty() {
             return false;
         }
+        // #53：单个字符先走自动行为（包围 / 越过 / 闭合 / 重新缩进）。改写模式下不自动闭合。
+        let mut window = window;
+        if !self.overtype
+            && text.chars().count() == 1
+            && !text.contains(['\n', '\r'])
+            && self.auto_type(text, window.as_deref_mut(), cx)
+        {
+            return true;
+        }
+        self.type_text_plain(text, window, cx)
+    }
+
+    fn type_text_plain(
+        &mut self,
+        text: &str,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let overtype = self.overtype && !text.contains(['\n', '\r']);
         let text = text.to_string();
         self.run_edit(window, cx, move |s, snap, now| {
@@ -624,28 +673,417 @@ impl CodeView {
         })
     }
 
-    /// 回车：换行并保持当前行的缩进（自动缩进规则属于 R52）。`editor.trimAutoWhitespace` 时，
-    /// 只有空白的当前行在换行时清空。
+    /// 回车：`onEnterRules`、括号规则与 `indentationRules` 的自动缩进（#53），
+    /// 五种 `editor.autoIndent` 取值的差异都在 [`autoedit::on_enter::enter`] 里。
+    /// `editor.trimAutoWhitespace` 时只有空白的当前行先清空，自动插入的空白在光标离行时清除。
     pub(crate) fn enter(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) -> bool {
         let trim = self.options.trim_auto_whitespace;
+        if !self.secondary.is_empty() {
+            // #52：多光标时每个光标各自换行、各自保持本行缩进，合成一个事务；
+            // #53 的缩进规则引擎目前只作用于单选区。
+            return self.run_edit(window, cx, move |s, snap, now| {
+                let text: &dyn TextSource = &**snap;
+                // #52：每个光标各自换行、各自保持本行缩进，合成一个事务。
+                let edits = for_each_selection(s, text, |sel| {
+                    let start = sel.start();
+                    let line = line_text(text, start.line.0);
+                    let indent =
+                        leading_whitespace(&line[..(start.column.0 as usize).min(line.len())]);
+                    let only_ws = sel.is_empty()
+                        && trim
+                        && !line.is_empty()
+                        && line.trim().is_empty()
+                        && start.column.0 as usize == line.len();
+                    let from = if only_ws { pos(start.line.0, 0) } else { start };
+                    let range = Span::new(text.offset(from)?, text.offset(sel.end())?)?;
+                    Ok(Some(CursorEdit::replace(range, format!("\n{indent}"))))
+                })?;
+                let kind = EditKind::typing("\n", s.previous_kind());
+                Ok(s.edit_each(edits, kind, now)?.into())
+            });
+        }
+        let sel = self.cursor.selection;
+        let converter = self.options.indent_converter();
+        let auto_indent = if self.auto_edit_allowed() {
+            self.options.auto_indent
+        } else {
+            autoedit::indent::AutoIndent::Keep
+        };
+        let config = self
+            .auto_edit_allowed()
+            .then(|| self.language_config())
+            .flatten();
+        let pending_trim = self.take_trim_line(sel.start().line.0);
+        let edited = self.run_edit(window, cx, move |s, snap, now| {
+            let text: &dyn TextSource = &**snap;
+            let start = sel.start();
+            let line = line_text(text, start.line.0);
+            // 当前行只剩自动插入的空白：连同它一起换行（VS Code 的 trimAutoWhitespace）。
+            let only_ws = sel.is_empty()
+                && trim
+                && !line.is_empty()
+                && line.trim().is_empty()
+                && start.column.0 as usize == line.len();
+            let lines = TextLines(text);
+            let mut auto = autoedit::on_enter::enter(
+                auto_indent,
+                &lines,
+                config,
+                (start.line.0, start.column.0 as usize),
+                (sel.end().line.0, sel.end().column.0 as usize),
+                &converter,
+            );
+            if only_ws {
+                // 当前行只剩自动插入的空白：连同它一起替换掉（新行的缩进照常算）。
+                if let Some(first) = auto.changes.first_mut() {
+                    if first.start == (start.line.0, start.column.0 as usize) {
+                        first.start = (start.line.0, 0);
+                    }
+                }
+            }
+            let mut replacements = to_replacements(text, &auto.changes)?;
+            if let Some(trim) = &pending_trim {
+                replacements.extend(to_replacements(text, std::slice::from_ref(trim))?);
+            }
+            if replacements.is_empty() {
+                return Ok(EditOutcome::default());
+            }
+            let kind = EditKind::typing("\n", s.previous_kind());
+            let applied = if replacements.len() == 1 && pending_trim.is_none() {
+                let r = &replacements[0];
+                s.edit_each(
+                    vec![Some(CursorEdit::replace(
+                        r.range.clone(),
+                        r.text.to_string(),
+                    ))],
+                    kind,
+                    now,
+                )?
+                .into_iter()
+                .collect::<Vec<_>>()
+            } else {
+                vec![s.edit(Transaction::new(replacements)?, now)?]
+            };
+            Ok(EditOutcome {
+                edits: applied,
+                selection: auto.caret.map(|(l, c)| Selection::caret(pos(l, c as u64))),
+            })
+        });
+        if edited && trim {
+            self.remember_auto_whitespace();
+        }
+        edited
+    }
+
+    // ------------------------------------------------------------------ #53：自动行为
+
+    /// #53 的自动行为是否生效：超大文件上一律不触发（它本来也是只读的，这里再挡一道）。
+    pub fn auto_edit_allowed(&self) -> bool {
+        self.document_level() != rove_buffer::SizeClass::Huge
+    }
+
+    /// 本次编辑要顺带清掉的“自动插入的空白行”（光标已经离开那一行）。
+    fn take_trim_line(&mut self, editing: u64) -> Option<autoedit::Change> {
+        let line = self.auto_whitespace_line.take()?;
+        if line == editing {
+            return None;
+        }
+        let text = self.text.as_ref()?;
+        let source = line_text(&**text, line);
+        if source.is_empty() || !source.trim().is_empty() {
+            return None;
+        }
+        Some(autoedit::Change::delete((line, 0), (line, source.len())))
+    }
+
+    /// 编辑后：当前行只剩空白时记下来，光标离开时清掉（`editor.trimAutoWhitespace`）。
+    fn remember_auto_whitespace(&mut self) {
+        let line = self.cursor.selection.active.line.0;
+        self.auto_whitespace_line = match self.text.as_ref() {
+            Some(text) => {
+                let source = line_text(&**text, line);
+                (!source.is_empty() && source.trim().is_empty()).then_some(line)
+            }
+            None => None,
+        };
+    }
+
+    /// 输入一个字符时的自动行为：自动包围、越过自己补的闭合符、自动闭合、
+    /// `decreaseIndentPattern` 触发的重新缩进。处理了返回 `true`（调用方就不再普通输入）。
+    pub(crate) fn auto_type(
+        &mut self,
+        ch: &str,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.auto_edit_allowed() || self.is_read_only() || self.edit_host.is_none() {
+            return false;
+        }
+        let Some(config) = self.language_config() else {
+            return false;
+        };
+        let Some(text) = self.text.clone() else {
+            return false;
+        };
+        let data = config.data().clone();
+        let sel = self.cursor.selection;
+        let options = self.options.auto_close;
+        let converter = self.options.indent_converter();
+        let auto_indent = self.options.auto_indent;
+        let separators = self.options.word_separators.clone();
+
+        // 1. 有选区：自动包围（每段各自包围；本视图当前是单选区，#52 合并后按选区逐段展开）。
+        if !sel.is_empty() {
+            let selected = range_text(&*text, sel.start(), sel.end());
+            let Some(pair) = autoedit::autoclose::should_surround(&options, &data, ch, &selected)
+            else {
+                return false;
+            };
+            let start = (sel.start().line.0, sel.start().column.0 as usize);
+            let end = (sel.end().line.0, sel.end().column.0 as usize);
+            let changes = autoedit::autoclose::surround_changes(pair, start, end);
+            // 包围后选区仍然是原来那段文本：起点与（同一行时的）终点都右移一个 `open`。
+            let open_len = pair.open.len();
+            let moved = Selection::new(
+                pos(sel.start().line.0, (start.1 + open_len) as u64),
+                pos(
+                    sel.end().line.0,
+                    (end.1
+                        + if sel.start().line == sel.end().line {
+                            open_len
+                        } else {
+                            0
+                        }) as u64,
+                ),
+            );
+            return self.run_edit(window, cx, move |s, snap, now| {
+                let replacements = to_replacements(&**snap, &changes)?;
+                Ok(EditOutcome {
+                    edits: vec![s.edit(Transaction::new(replacements)?, now)?],
+                    selection: Some(moved),
+                })
+            });
+        }
+
+        // 2. 空选区：越过 / 自动闭合 / 重新缩进。
+        let caret = sel.active;
+        let line = caret.line.0;
+        let column = caret.column.0 as usize;
+        let source = line_text(&*text, line);
+        let before = source.get(..column.min(source.len())).unwrap_or("");
+        let after = source.get(column.min(source.len())..).unwrap_or("");
+        if autoedit::autoclose::should_overtype(
+            &options,
+            &data,
+            &self.auto_closed,
+            line,
+            column,
+            before,
+            after,
+            ch,
+        ) {
+            // 越过：把后面那个闭合符原样替换掉（和 VS Code 一样是一次可撤销的编辑）。
+            let typed = ch.to_string();
+            return self.run_edit(window, cx, move |s, snap, now| {
+                let from = snap.offset(pos(line, column as u64))?;
+                let to = snap.offset(pos(line, (column + typed.len()) as u64))?;
+                let kind = EditKind::typing(&typed, s.previous_kind());
+                Ok(s.edit_each(
+                    vec![Some(CursorEdit::replace(Span::new(from, to)?, typed))],
+                    kind,
+                    now,
+                )?
+                .into())
+            });
+        }
+        // 语法 token 只在真的有一对可闭合时才查：普通字符不走这一步，按键路径上没有额外开销。
+        let tokens = if autoedit::autoclose::find_open_pair(&data, before, ch).is_some() {
+            let (in_string, in_comment) = self.syntax.borrow().scope_at(line, column as u32);
+            autoedit::autoclose::TokenContext {
+                in_string,
+                in_comment,
+                in_regex: false,
+            }
+        } else {
+            autoedit::autoclose::TokenContext::default()
+        };
+        if let Some(pair) = autoedit::autoclose::should_auto_close(
+            &options,
+            &data,
+            before,
+            after,
+            ch,
+            tokens,
+            &separators,
+        ) {
+            let (open_tail, close) = (ch.to_string(), pair.close.to_string());
+            let caret_at = column + open_tail.len();
+            let closed = autoedit::autoclose::AutoClosed {
+                line,
+                column: caret_at,
+                close: close.clone(),
+            };
+            let inserted = format!("{open_tail}{close}");
+            let handled = self.run_edit(window, cx, move |s, snap, now| {
+                let at = snap.offset(pos(line, column as u64))?;
+                let kind = EditKind::typing(&open_tail, s.previous_kind());
+                Ok(EditOutcome {
+                    edits: s
+                        .edit_each(
+                            vec![Some(CursorEdit::replace(Span::new(at, at)?, inserted))],
+                            kind,
+                            now,
+                        )?
+                        .into_iter()
+                        .collect(),
+                    selection: Some(Selection::caret(pos(line, caret_at as u64))),
+                })
+            });
+            if handled {
+                self.auto_closed.record(closed);
+            }
+            return handled;
+        }
+        // 3. `decreaseIndentPattern`：输入 `}` 等字符后这一行要重新对齐。
+        let lines = TextLines(&*text);
+        let Some(indent) = autoedit::indent::indent_action_for_type(
+            auto_indent,
+            &lines,
+            config,
+            (line, column),
+            (line, column),
+            ch,
+            &converter,
+        ) else {
+            return false;
+        };
+        let current = leading_whitespace(&source).to_string();
+        if current == indent || column < current.len() {
+            return false;
+        }
+        let typed = ch.to_string();
+        let caret_at = indent.len() + (column - current.len()) + typed.len();
         self.run_edit(window, cx, move |s, snap, now| {
             let text: &dyn TextSource = &**snap;
-            // #52：每个光标各自换行、各自保持本行缩进，合成一个事务。
-            let edits = for_each_selection(s, text, |sel| {
-                let start = sel.start();
-                let line = line_text(text, start.line.0);
-                let indent = leading_whitespace(&line[..(start.column.0 as usize).min(line.len())]);
-                let only_ws = sel.is_empty()
-                    && trim
-                    && !line.is_empty()
-                    && line.trim().is_empty()
-                    && start.column.0 as usize == line.len();
-                let from = if only_ws { pos(start.line.0, 0) } else { start };
-                let range = Span::new(text.offset(from)?, text.offset(sel.end())?)?;
-                Ok(Some(CursorEdit::replace(range, format!("\n{indent}"))))
-            })?;
-            let kind = EditKind::typing("\n", s.previous_kind());
-            Ok(s.edit_each(edits, kind, now)?.into())
+            let changes = vec![
+                autoedit::Change::replace((line, 0), (line, current.len()), indent),
+                autoedit::Change::insert((line, column), typed),
+            ];
+            let replacements = to_replacements(text, &changes)?;
+            Ok(EditOutcome {
+                edits: vec![s.edit(Transaction::new(replacements)?, now)?],
+                selection: Some(Selection::caret(pos(line, caret_at as u64))),
+            })
+        })
+    }
+
+    /// 退格：左右正好是一对自动补上的括号 / 引号时一起删除（`editor.autoClosingDelete`）。
+    pub(crate) fn auto_delete_pair(&self) -> bool {
+        if !self.auto_edit_allowed() {
+            return false;
+        }
+        let (Some(config), Some(text)) = (self.language_config(), self.text.as_ref()) else {
+            return false;
+        };
+        let sel = self.cursor.selection;
+        if !sel.is_empty() {
+            return false;
+        }
+        let line = sel.active.line.0;
+        let column = sel.active.column.0 as usize;
+        let source = line_text(&**text, line);
+        let before = source.get(..column.min(source.len())).unwrap_or("");
+        let after = source.get(column.min(source.len())..).unwrap_or("");
+        autoedit::autoclose::should_delete_pair(
+            &self.options.auto_close,
+            config.data(),
+            &self.auto_closed,
+            line,
+            column,
+            before,
+            after,
+        )
+    }
+
+    /// 注释切换（`editor.action.commentLine` / `addCommentLine` / `removeCommentLine`）。
+    pub(crate) fn toggle_comment(
+        &mut self,
+        kind: autoedit::comments::CommentType,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.auto_edit_allowed() {
+            return false;
+        }
+        let Some(config) = self.language_config() else {
+            return false;
+        };
+        let data = config.data().clone();
+        if data.line_comment.is_none() {
+            // 没有行注释的语言退化为块注释（VS Code 的做法）。
+            return self.block_comment(window, cx);
+        }
+        let options = self.options.comments;
+        let sel = self.cursor.selection;
+        let first = sel.start().line.0;
+        let mut last = sel.end().line.0;
+        if last > first && sel.end().column.0 == 0 {
+            last -= 1;
+        }
+        let trim = self.take_trim_line(first);
+        self.run_edit(window, cx, move |s, snap, now| {
+            let text: &dyn TextSource = &**snap;
+            let lines = TextLines(text);
+            let Some(mut changes) =
+                autoedit::comments::toggle_line_comment(&lines, &data, first, last, kind, options)
+            else {
+                return Ok(EditOutcome::default());
+            };
+            changes.extend(trim);
+            if changes.is_empty() {
+                return Ok(EditOutcome::default());
+            }
+            let replacements = to_replacements(text, &changes)?;
+            Ok(EditOutcome {
+                edits: vec![s.edit(Transaction::new(replacements)?, now)?],
+                selection: None,
+            })
+        })
+    }
+
+    /// 块注释切换（`editor.action.blockComment`）。
+    pub(crate) fn block_comment(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.auto_edit_allowed() {
+            return false;
+        }
+        let Some(config) = self.language_config() else {
+            return false;
+        };
+        let data = config.data().clone();
+        let insert_space = self.options.comments.insert_space;
+        let sel = self.cursor.selection;
+        let start = (sel.start().line.0, sel.start().column.0 as usize);
+        let end = (sel.end().line.0, sel.end().column.0 as usize);
+        self.run_edit(window, cx, move |s, snap, now| {
+            let text: &dyn TextSource = &**snap;
+            let lines = TextLines(text);
+            let Some(auto) =
+                autoedit::comments::toggle_block_comment(&lines, &data, start, end, insert_space)
+            else {
+                return Ok(EditOutcome::default());
+            };
+            let replacements = to_replacements(text, &auto.changes)?;
+            if replacements.is_empty() {
+                return Ok(EditOutcome::default());
+            }
+            Ok(EditOutcome {
+                edits: vec![s.edit(Transaction::new(replacements)?, now)?],
+                selection: auto.caret.map(|(l, c)| Selection::caret(pos(l, c as u64))),
+            })
         })
     }
 
@@ -732,8 +1170,29 @@ impl CodeView {
             }
             "deleteLeft" => {
                 let (tab_stops, size) = (self.options.use_tab_stops, self.options.tab_size as u64);
+                // #53：左右正好是一对自己补上的括号 / 引号时一起删除。
+                let pair_sel = self.cursor.selection;
+                let delete_pair = self.secondary.is_empty() && self.auto_delete_pair();
                 self.run_edit(w, cx, move |s, snap, now| {
                     let text: &dyn TextSource = &**snap;
+                    if delete_pair {
+                        let p = pair_sel.active;
+                        let line = line_text(text, p.line.0);
+                        let col = p.column.0 as usize;
+                        let open = line[..col].chars().next_back().map_or(0, char::len_utf8);
+                        let close = line[col..].chars().next().map_or(0, char::len_utf8);
+                        let range = Span::new(
+                            text.offset(pos(p.line.0, (col - open) as u64))?,
+                            text.offset(pos(p.line.0, (col + close) as u64))?,
+                        )?;
+                        return Ok(s
+                            .edit_each(
+                                vec![Some(CursorEdit::replace(range, ""))],
+                                EditKind::DeletingLeft,
+                                now,
+                            )?
+                            .into());
+                    }
                     // 缩进里的空格：退到上一个制表位（VS Code `useTabStops`）。
                     let on_tab_stop = |sel: &Selection| {
                         if !tab_stops || !sel.is_empty() || sel.active.column.0 == 0 {
@@ -967,11 +1426,57 @@ impl CodeView {
                     ..ClipboardData::plain(text)
                 };
                 let overtype = self.overtype && self.options.overtype_on_paste;
+                // #53：`editor.autoIndentOnPaste`（默认关）。在字符串里粘贴另看
+                // `editor.autoIndentOnPasteWithinString`（默认开）。
+                let caret = self.cursor.selection.start();
+                let in_string = self
+                    .syntax
+                    .borrow()
+                    .scope_at(caret.line.0, caret.column.0 as u32)
+                    .0;
+                let reindent = self.auto_edit_allowed()
+                    && self.options.auto_indent_on_paste
+                    && (!in_string || self.options.auto_indent_on_paste_within_string);
+                let config = reindent.then(|| self.language_config()).flatten();
+                let converter = self.options.indent_converter();
+                let auto_indent = self.options.auto_indent;
                 self.run_edit(w, cx, move |s, snap, now| {
                     if overtype && !data.text.contains(['\n', '\r']) {
                         extend_for_overtype(s, &**snap, &data.text)?;
                     }
-                    Ok(s.paste(&data, now)?.into())
+                    let Some(applied) = s.paste(&data, now)? else {
+                        return Ok(EditOutcome::default());
+                    };
+                    let mut edits = vec![applied];
+                    if let Some(config) = config {
+                        // 粘贴进来的那几行逐行重新缩进，并入同一个撤销单元。
+                        let pasted = edits[0]
+                            .changes
+                            .ranges
+                            .iter()
+                            .map(|c| (c.new.start().0, c.new.end().0))
+                            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+                        if let Some((first, end)) = pasted {
+                            let after = s.snapshot();
+                            let lines = TextLines(&*after);
+                            let changes = autoedit::indent::reindent_lines(
+                                auto_indent,
+                                &lines,
+                                config,
+                                first,
+                                end.saturating_sub(1).max(first),
+                                &converter,
+                            );
+                            if !changes.is_empty() {
+                                let replacements = to_replacements(&*after, &changes)?;
+                                edits.push(s.edit_joined(Transaction::new(replacements)?, now)?);
+                            }
+                        }
+                    }
+                    Ok(EditOutcome {
+                        edits,
+                        selection: None,
+                    })
                 });
             }
             "editor.action.toggleOvertypeInsertMode" => {
@@ -983,6 +1488,29 @@ impl CodeView {
                 self.run_edit(w, cx, move |s, _, now| {
                     Ok(s.convert_indentation(spaces, now)?.into())
                 });
+            }
+            "editor.action.commentLine"
+            | "editor.action.addCommentLine"
+            | "editor.action.removeCommentLine" => {
+                let kind = match id {
+                    "editor.action.addCommentLine" => autoedit::comments::CommentType::ForceAdd,
+                    "editor.action.removeCommentLine" => {
+                        autoedit::comments::CommentType::ForceRemove
+                    }
+                    _ => autoedit::comments::CommentType::Toggle,
+                };
+                if self.is_read_only() {
+                    self.edit_blocked(cx);
+                } else {
+                    self.toggle_comment(kind, w, cx);
+                }
+            }
+            "editor.action.blockComment" => {
+                if self.is_read_only() {
+                    self.edit_blocked(cx);
+                } else {
+                    self.block_comment(w, cx);
+                }
             }
             "editor.action.setSelectionAnchor" => {
                 self.selection_anchor = Some(self.cursor.selection.active);

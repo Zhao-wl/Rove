@@ -132,23 +132,31 @@ impl SyntaxLayer {
 
     /// 某行某列（UTF-8 字节）所在 token 的 scope 是否属于字符串或注释（括号匹配跳过这些位置）。
     pub fn in_string_or_comment(&self, line: u64, column: u32) -> bool {
+        let (string, comment) = self.scope_at(line, column);
+        string || comment
+    }
+
+    /// 某行某列（UTF-8 字节）所在 token 是字符串 / 是注释（#53 的 `notIn` 分别判定这两类）。
+    pub fn scope_at(&self, line: u64, column: u32) -> (bool, bool) {
         let Some((snapshot, text)) = &self.current else {
-            return false;
+            return (false, false);
         };
         let line = self.snapshot_line(line);
         let (Ok(range), Ok(tokens)) = (text.line_range(Line(line)), snapshot.tokens(Line(line)))
         else {
-            return false;
+            return (false, false);
         };
         let at = range.start().0 + column as u64;
         tokens
             .iter()
             .find(|t| t.range.start().0 <= at && at < t.range.end().0)
-            .is_some_and(|t| {
-                t.scopes
-                    .iter()
-                    .any(|s| s.starts_with("string") || s.starts_with("comment"))
+            .map(|t| {
+                (
+                    t.scopes.iter().any(|s| s.starts_with("string")),
+                    t.scopes.iter().any(|s| s.starts_with("comment")),
+                )
             })
+            .unwrap_or((false, false))
     }
 }
 

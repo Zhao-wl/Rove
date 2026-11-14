@@ -126,6 +126,31 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.multiCursorLimit", DefaultValue::Num(10000.0)),
     ("editor.multiCursorPaste", DefaultValue::Str("spread")),
     ("editor.columnSelection", DefaultValue::Bool(false)),
+    // #53：注释切换、自动缩进、自动闭合与自动包围。
+    ("editor.indentSize", DefaultValue::Str("tabSize")),
+    ("editor.comments.insertSpace", DefaultValue::Bool(true)),
+    ("editor.comments.ignoreEmptyLines", DefaultValue::Bool(true)),
+    ("editor.autoIndent", DefaultValue::Str("full")),
+    ("editor.autoIndentOnPaste", DefaultValue::Bool(false)),
+    (
+        "editor.autoIndentOnPasteWithinString",
+        DefaultValue::Bool(true),
+    ),
+    (
+        "editor.autoClosingBrackets",
+        DefaultValue::Str("languageDefined"),
+    ),
+    (
+        "editor.autoClosingQuotes",
+        DefaultValue::Str("languageDefined"),
+    ),
+    (
+        "editor.autoClosingComments",
+        DefaultValue::Str("languageDefined"),
+    ),
+    ("editor.autoClosingDelete", DefaultValue::Str("auto")),
+    ("editor.autoClosingOvertype", DefaultValue::Str("auto")),
+    ("editor.autoSurround", DefaultValue::Str("languageDefined")),
 ];
 
 /// 设置项默认值（编译期表）。
@@ -313,6 +338,25 @@ pub struct EditorOptions {
     pub multi_cursor_limit: usize,
     /// `editor.columnSelection`：`shift+方向键` 直接进入列选择。
     pub column_selection: bool,
+    // #53
+    /// `editor.indentSize`：`"tabSize"` 时等于 `tab_size`。
+    pub indent_size: u32,
+    pub auto_indent: super::autoedit::indent::AutoIndent,
+    pub auto_indent_on_paste: bool,
+    pub auto_indent_on_paste_within_string: bool,
+    pub comments: super::autoedit::comments::CommentOptions,
+    pub auto_close: super::autoedit::autoclose::AutoCloseOptions,
+}
+
+impl EditorOptions {
+    /// `editor.insertSpaces` / `tabSize` / `indentSize` 的换算句柄（#53）。
+    pub fn indent_converter(&self) -> super::autoedit::indent::IndentConverter {
+        super::autoedit::indent::IndentConverter {
+            insert_spaces: self.insert_spaces,
+            tab_size: self.tab_size.max(1) as usize,
+            indent_size: self.indent_size.max(1) as usize,
+        }
+    }
 }
 
 impl Default for EditorOptions {
@@ -539,6 +583,38 @@ impl EditorOptions {
             multi_cursor_merge_overlapping: r.bool("editor.multiCursorMergeOverlapping"),
             multi_cursor_limit: r.num("editor.multiCursorLimit", 1.0, 1e6) as usize,
             column_selection: r.bool("editor.columnSelection"),
+            indent_size: match r.raw("editor.indentSize") {
+                Value::Number(n) if n >= 1.0 => n.min(100.0) as u32,
+                _ => r.num("editor.tabSize", 1.0, 100.0) as u32,
+            },
+            auto_indent: super::autoedit::indent::AutoIndent::parse(&r.str("editor.autoIndent")),
+            auto_indent_on_paste: r.bool("editor.autoIndentOnPaste"),
+            auto_indent_on_paste_within_string: r.bool("editor.autoIndentOnPasteWithinString"),
+            comments: super::autoedit::comments::CommentOptions {
+                insert_space: r.bool("editor.comments.insertSpace"),
+                ignore_empty_lines: r.bool("editor.comments.ignoreEmptyLines"),
+                tab_size: r.num("editor.tabSize", 1.0, 100.0) as usize,
+            },
+            auto_close: super::autoedit::autoclose::AutoCloseOptions {
+                brackets: super::autoedit::autoclose::AutoClosing::parse(
+                    &r.str("editor.autoClosingBrackets"),
+                ),
+                quotes: super::autoedit::autoclose::AutoClosing::parse(
+                    &r.str("editor.autoClosingQuotes"),
+                ),
+                comments: super::autoedit::autoclose::AutoClosing::parse(
+                    &r.str("editor.autoClosingComments"),
+                ),
+                overtype: super::autoedit::autoclose::AutoClosingEdit::parse(
+                    &r.str("editor.autoClosingOvertype"),
+                ),
+                delete: super::autoedit::autoclose::AutoClosingEdit::parse(
+                    &r.str("editor.autoClosingDelete"),
+                ),
+                surround: super::autoedit::autoclose::AutoSurround::parse(
+                    &r.str("editor.autoSurround"),
+                ),
+            },
             cursor_width: r.num("editor.cursorWidth", 0.0, 100.0),
             cursor_height: r.num("editor.cursorHeight", 0.0, 1000.0),
             cursor_blinking: match r.str("editor.cursorBlinking").as_str() {

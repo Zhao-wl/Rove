@@ -500,6 +500,27 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("type", "codeView.command.type", "键入"),
     ("default:type", "codeView.command.defaultType", "键入"),
+    // #53：注释切换。
+    (
+        "editor.action.commentLine",
+        "codeView.command.commentLine",
+        "切换行注释",
+    ),
+    (
+        "editor.action.addCommentLine",
+        "codeView.command.addCommentLine",
+        "添加行注释",
+    ),
+    (
+        "editor.action.removeCommentLine",
+        "codeView.command.removeCommentLine",
+        "删除行注释",
+    ),
+    (
+        "editor.action.blockComment",
+        "codeView.command.blockComment",
+        "切换块注释",
+    ),
 ];
 
 /// 全部命令：代码视图自己的加上 #52 的多光标 / 列选择 / 行操作。
@@ -763,6 +784,10 @@ command_actions! {
     LineTransformToPascalcase => "editor.action.transformToPascalcase",
     LineTransformToSnakecase => "editor.action.transformToSnakecase",
     LineTransformToKebabcase => "editor.action.transformToKebabcase",
+    EditCommentLine => "editor.action.commentLine",
+    EditAddCommentLine => "editor.action.addCommentLine",
+    EditRemoveCommentLine => "editor.action.removeCommentLine",
+    EditBlockComment => "editor.action.blockComment",
 }
 
 /// 键位上下文名，以及聚焦时发布的 VS Code 上下文键（只读代码视图）。

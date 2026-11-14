@@ -29,6 +29,8 @@
 //! 所有方法只在 UI 线程调用。绘制只读缓存；读文本、调用装饰提供方与整形都在帧之间的空闲切片里
 //! （每片 [`view::PREPARE_SLICE`]），缓存未命中时先画等宽近似占位，下一帧替换，行高不变。
 
+// #53：注释切换、自动缩进、自动闭合、包围与回车规则。
+pub mod autoedit;
 pub mod brackets;
 pub mod cache;
 pub mod colors;

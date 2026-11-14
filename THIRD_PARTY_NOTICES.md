@@ -249,5 +249,25 @@ Windows 的系统组件，不随 Rove 分发，也不由 Rove 下载。
 清单、哈希与升级步骤见该目录的 `README.md`。
 
 来源：<https://github.com/microsoft/vscode/tree/1.145.2/extensions/vscode-colorize-tests>
+## 注释切换、自动缩进、自动闭合与回车规则（#53）
+
+`crates/rove-ui/src/code_view/autoedit/` 逐段移植 Microsoft VS Code 1.145.2（MIT）的下列文件：
+
+- `src/vs/editor/common/languages/autoIndent.ts`（`IndentRulesSupport`、`getInheritIndentForLine`、
+  `getGoodIndentForLine`、`getIndentForEnter`、`getIndentActionForType`）、
+  `src/vs/editor/common/commands/shiftCommand.ts`（`shiftIndent` / `unshiftIndent`）与
+  `src/vs/editor/common/model/textModel.ts`（`normalizeIndentation`）→ `autoedit/indent.rs`；
+  `src/vs/editor/contrib/indentation/browser/indentation.ts` 的 `AutoIndentOnPaste` → 同文件的 `reindent_lines`。
+- `src/vs/editor/common/languages/supports/onEnter.ts`、`enterAction.ts` 与
+  `src/vs/editor/common/cursor/cursorTypeOperations.ts` 的 `_enter` → `autoedit/on_enter.rs`。
+- `src/vs/editor/common/cursor/cursorTypeOperations.ts`（`_findAutoClosingPairOpen`、
+  `_isAutoClosingOpenCharType`、`_isAutoClosingOvertype`、`_isSurroundSelectionType`）与
+  `cursorDeleteOperations.ts`（`_isAutoClosingPairDelete`）→ `autoedit/autoclose.rs`。
+- `src/vs/editor/contrib/comment/browser/lineCommentCommand.ts`、`blockCommentCommand.ts` → `autoedit/comments.rs`。
+
+单元测试移植自 `src/vs/editor/test/common/modes/supports/onEnter.test.ts` 的 `uses brackets`（16 例）与
+`uses regExpRules`（24 例），夹具 `javascriptOnEnterRules.ts` 与 `javascriptIndentationRules.ts` 的正则一并照抄。
+
+来源：<https://github.com/microsoft/vscode/tree/1.145.2>
 原始许可证：<https://github.com/microsoft/vscode/blob/1.145.2/LICENSE.txt>
 （MIT，Copyright (c) 2015 - present Microsoft Corporation，全文见上文“VS Code 语言配置”一节）。
