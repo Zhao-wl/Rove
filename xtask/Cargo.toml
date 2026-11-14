@@ -123,3 +123,8 @@ harness = false
 [[bench]]
 name = "sticky"
 harness = false
+
+# #58：软换行的换行点重算与视觉行映射（纯 CPU）。
+[[bench]]
+name = "wrap"
+harness = false

@@ -112,6 +112,92 @@ impl Cursor {
         self.desired_column = None;
     }
 
+    /// 软换行下的插入符移动（#58）：`cursorUp` / `cursorDown` / `Home` / `End` /
+    /// `PageUp` / `PageDown` 及其 `*Select` 变体按**视觉行**走；`cursorLineStart` /
+    /// `cursorLineEnd`（在 `edit.rs` 里）仍按缓冲行走。左右键与其余移动不受影响。
+    ///
+    /// `segs` 给出每条缓冲行的换行点；没开软换行时传 [`NoWrap`]，行为与
+    /// [`move_caret`](Self::move_caret) 完全一致。
+    pub fn move_caret_visual(
+        &mut self,
+        text: &dyn LineSource,
+        segs: &dyn LineSegments,
+        m: Move,
+        extend: bool,
+        tab_size: u32,
+        page: u64,
+    ) {
+        let sel = self.selection;
+        let vertical = matches!(
+            m,
+            Move::Up | Move::Down | Move::PageUp | Move::PageDown | Move::Home | Move::End
+        );
+        if !vertical {
+            // 左右移动、文首文末不受软换行影响。
+            self.move_caret(text, m, extend, tab_size, page);
+            return;
+        }
+        let last = text.line_count().saturating_sub(1);
+        let row = |line: u64| Row::new(text, segs, line, tab_size);
+        let from = match m {
+            Move::Up | Move::PageUp if !extend && !sel.is_empty() => sel.start(),
+            Move::Down | Move::PageDown if !extend && !sel.is_empty() => sel.end(),
+            _ => sel.active,
+        };
+        let here = row(from.line.0);
+        let seg = here.segment_of(from.column.0 as u32);
+        let target = match m {
+            Move::Home => {
+                let (start, first) = here.home(seg);
+                pos(
+                    from.line.0,
+                    if from.column.0 != first { first } else { start },
+                )
+            }
+            Move::End => pos(from.line.0, here.end(seg) as u64),
+            _ => {
+                let down = matches!(m, Move::Down | Move::PageDown);
+                let count = if matches!(m, Move::Up | Move::Down) {
+                    1
+                } else {
+                    page.max(1)
+                };
+                let want = self
+                    .desired_column
+                    .unwrap_or_else(|| here.column_in_row(seg, from.column.0 as u32));
+                self.desired_column = Some(want);
+                let mut at = (from.line.0, seg);
+                let mut moved = 0;
+                while moved < count {
+                    let Some(next) = step(text, segs, at, down, last) else {
+                        break;
+                    };
+                    at = next;
+                    moved += 1;
+                }
+                if moved == 0 {
+                    // 已经在首 / 末视觉行：VS Code 把插入符送到文首 / 文末。
+                    if down {
+                        pos(last, text.line_text(last).map_or(0, |t| t.len() as u64))
+                    } else {
+                        pos(0, 0)
+                    }
+                } else {
+                    let r = row(at.0);
+                    pos(at.0, r.column_at(at.1, want) as u64)
+                }
+            }
+        };
+        if !matches!(m, Move::Up | Move::Down | Move::PageUp | Move::PageDown) {
+            self.desired_column = None;
+        }
+        self.selection = if extend {
+            Selection::new(sel.anchor, target)
+        } else {
+            Selection::caret(target)
+        };
+    }
+
     /// 插入符移动；`extend` 为 `*Select` 变体。`tab_size` 用于可见列；`page` 为一页的行数。
     pub fn move_caret(
         &mut self,
@@ -241,6 +327,129 @@ impl Cursor {
     /// `cancelSelection`（escape）：折叠到插入符。
     pub fn cancel_selection(&mut self) {
         self.set(Selection::caret(self.selection.active));
+    }
+}
+
+/// 软换行下每条缓冲行的分段（由 #58 的 `LineWrap` 提供）。关闭软换行时用 [`NoWrap`]。
+pub trait LineSegments {
+    /// 续行起点（源行 UTF-8 字节列，升序，不含 0）；空表示这一行不换行。
+    fn breaks(&self, line: u64) -> Vec<u32>;
+    /// 续行缩进（可见列数）。
+    fn indent_columns(&self, line: u64) -> u32;
+}
+
+/// 不换行。
+pub struct NoWrap;
+
+impl LineSegments for NoWrap {
+    fn breaks(&self, _: u64) -> Vec<u32> {
+        Vec::new()
+    }
+    fn indent_columns(&self, _: u64) -> u32 {
+        0
+    }
+}
+
+/// 一条缓冲行在软换行下的分段几何（可见列 ↔ 源列，按段）。
+struct Row {
+    text: String,
+    display: DisplayLine,
+    breaks: Vec<u32>,
+    indent: u32,
+}
+
+impl Row {
+    fn new(text: &dyn LineSource, segs: &dyn LineSegments, line: u64, tab_size: u32) -> Self {
+        let t = text.line_text(line).unwrap_or_default();
+        Self {
+            display: DisplayLine::build(&t, tab_size, None),
+            breaks: segs.breaks(line),
+            indent: segs.indent_columns(line),
+            text: t,
+        }
+    }
+    fn count(&self) -> u32 {
+        self.breaks.len() as u32 + 1
+    }
+    fn segment_of(&self, column: u32) -> u32 {
+        self.breaks.partition_point(|&b| b <= column) as u32
+    }
+    fn start(&self, seg: u32) -> u32 {
+        if seg == 0 {
+            0
+        } else {
+            self.breaks[(seg as usize - 1).min(self.breaks.len() - 1)]
+        }
+    }
+    /// 本段最后一个可以停插入符的源列：末段是行尾，其余段是换行点之前的那个字素簇边界
+    /// （换行点本身属于下一条视觉行）。
+    fn end(&self, seg: u32) -> u32 {
+        match self.breaks.get(seg as usize) {
+            None => self.text.len() as u32,
+            Some(&b) => {
+                let g = grapheme_boundaries(&self.text);
+                let i = g.partition_point(|&x| x < b);
+                g[i.saturating_sub(1)].max(self.start(seg))
+            }
+        }
+    }
+    /// 本段的行首位置：(段首, 段内首个非空白)。
+    fn home(&self, seg: u32) -> (u64, u64) {
+        let (s, e) = (self.start(seg), self.end(seg));
+        let slice = &self.text[s as usize..e as usize];
+        let first = slice
+            .find(|c: char| c != ' ' && c != '\t')
+            .map_or(e, |i| s + i as u32);
+        (s as u64, first as u64)
+    }
+    fn indent_of(&self, seg: u32) -> u32 {
+        if seg == 0 {
+            0
+        } else {
+            self.indent
+        }
+    }
+    /// 源列 → 它在自己那条视觉行里的可见列（含续行缩进）。
+    fn column_in_row(&self, seg: u32, column: u32) -> u32 {
+        self.display.visible_column(column) - self.display.visible_column(self.start(seg))
+            + self.indent_of(seg)
+    }
+    /// 视觉行内的可见列 → 源列（钳在本段内）。
+    fn column_at(&self, seg: u32, want: u32) -> u32 {
+        let seg = seg.min(self.count() - 1);
+        let base = self.display.visible_column(self.start(seg));
+        let visible = base + want.saturating_sub(self.indent_of(seg));
+        self.display
+            .source_for_visible_column(visible)
+            .clamp(self.start(seg), self.end(seg))
+    }
+}
+
+/// 上 / 下一条视觉行的 (缓冲行, 段)。
+fn step(
+    text: &dyn LineSource,
+    segs: &dyn LineSegments,
+    at: (u64, u32),
+    down: bool,
+    last: u64,
+) -> Option<(u64, u32)> {
+    let count = |l: u64| segs.breaks(l).len() as u32 + 1;
+    let _ = text;
+    let (line, seg) = at;
+    if down {
+        if seg + 1 < count(line) {
+            Some((line, seg + 1))
+        } else if line < last {
+            Some((line + 1, 0))
+        } else {
+            None
+        }
+    } else if seg > 0 {
+        Some((line, seg - 1))
+    } else if line > 0 {
+        Some((line - 1, count(line - 1) - 1))
+    } else {
+        None
     }
 }
 

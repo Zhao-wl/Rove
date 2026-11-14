@@ -51,6 +51,8 @@ struct Scenario {
     highlight: Option<(Arc<dyn SyntaxSnapshot>, Arc<dyn Theme>)>,
     /// #21：打开查找条并搜索这个文本（匹配装饰层随每一行生成）。
     find: Option<&'static str>,
+    /// #58：开着软换行滚动（与同一文件关闭软换行的场景对照）。
+    word_wrap: bool,
 }
 
 #[derive(Default, Clone)]
@@ -164,6 +166,7 @@ fn run_next(
         scenario.file, scenario.frames, scenario.step
     );
     let highlight = scenario.highlight.clone();
+    let word_wrap = scenario.word_wrap;
     view.update(cx, |v, cx| {
         v.set_text(Some(text), false, cx);
         if let Some((syntax, theme)) = highlight {
@@ -173,6 +176,10 @@ fn run_next(
         }
         v.record_frames(false);
     });
+    if word_wrap {
+        // #58：只切换当前编辑器会话（不写设置），与 alt+z 同一条路径。
+        view.update(cx, |v, cx| v.toggle_word_wrap(cx));
+    }
     // 缓存命中场景的预热要覆盖整个循环范围。
     let warmup = 30
         + scenario
@@ -384,6 +391,7 @@ fn main() {
                 wrap: Some(300.0),
                 highlight: None,
                 find: None,
+                word_wrap: false,
             },
             text,
         ));
@@ -399,10 +407,27 @@ fn main() {
                 wrap: Some(300.0),
                 highlight: None,
                 find: Some("e"),
+                word_wrap: false,
             },
             text,
         ));
         names.push("find_hit");
+    }
+    // #58：同一份 small.txt，开着软换行滚动（与 hit 场景对照）。
+    if let Some(text) = load("small.txt") {
+        scenarios.push((
+            Scenario {
+                file: "small.txt（软换行）",
+                frames: 300,
+                step: 3.0,
+                wrap: Some(300.0),
+                highlight: None,
+                find: None,
+                word_wrap: true,
+            },
+            text,
+        ));
+        names.push("wrap_hit");
     }
     if let Some(text) = load("uniq.txt") {
         scenarios.push((
@@ -413,6 +438,7 @@ fn main() {
                 wrap: None,
                 highlight: None,
                 find: None,
+                word_wrap: false,
             },
             text,
         ));
@@ -427,6 +453,7 @@ fn main() {
                 wrap: Some(300.0),
                 highlight: Some((syntax, theme)),
                 find: None,
+                word_wrap: false,
             },
             text,
         ));
@@ -441,6 +468,7 @@ fn main() {
                 wrap: None,
                 highlight: Some((syntax, theme)),
                 find: None,
+                word_wrap: false,
             },
             text,
         ));
@@ -482,6 +510,10 @@ fn main() {
             "hit" => {
                 record("frame_cpu_cache_hit", &s.cpu);
                 record("frame_interval_cache_hit", &s.interval);
+            }
+            "wrap_hit" => {
+                record("wrapped_frame_cpu_cache_hit", &s.cpu);
+                record("wrapped_frame_interval_cache_hit", &s.interval);
             }
             "find_hit" => {
                 record("find_visible_frame_cpu_cache_hit", &s.cpu);

@@ -20,6 +20,13 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.letterSpacing", DefaultValue::Num(0.0)),
     ("editor.fullwidthCharacterWidth", DefaultValue::Str("font")),
     ("editor.wordBreak", DefaultValue::Str("normal")),
+    // #58：软换行。
+    ("editor.wordWrap", DefaultValue::Str("off")),
+    ("editor.wordWrapColumn", DefaultValue::Num(80.0)),
+    ("editor.wordWrapIndicator", DefaultValue::Bool(false)),
+    ("editor.wrappingIndent", DefaultValue::Str("same")),
+    ("editor.wrappingStrategy", DefaultValue::Str("simple")),
+    ("editor.wrapOnEscapedLineFeeds", DefaultValue::Bool(false)),
     ("editor.tabSize", DefaultValue::Num(4.0)),
     ("editor.stopRenderingLineAfter", DefaultValue::Num(10000.0)),
     ("editor.smoothScrolling", DefaultValue::Bool(false)),
@@ -280,6 +287,8 @@ pub struct EditorOptions {
     pub letter_spacing: f64,
     pub fullwidth_font_width: bool,
     pub word_break_keep_all: bool,
+    /// #58：软换行设置（`editor.wordWrap` 等）。
+    pub wrap: super::wrap::WrapOptions,
     pub tab_size: u32,
     /// `None` 表示不限（设置为 -1）。
     pub stop_rendering_line_after: Option<usize>,
@@ -540,6 +549,31 @@ impl EditorOptions {
             letter_spacing: r.num("editor.letterSpacing", -5.0, 20.0),
             fullwidth_font_width: r.str("editor.fullwidthCharacterWidth") != "fixed",
             word_break_keep_all: r.str("editor.wordBreak") == "keepAll",
+            wrap: super::wrap::WrapOptions {
+                mode: match r.str("editor.wordWrap").as_str() {
+                    "on" => super::wrap::WordWrap::On,
+                    "wordWrapColumn" => super::wrap::WordWrap::Column,
+                    "bounded" => super::wrap::WordWrap::Bounded,
+                    _ => super::wrap::WordWrap::Off,
+                },
+                column: r.num("editor.wordWrapColumn", 1.0, 1e6) as u32,
+                indent: match r.str("editor.wrappingIndent").as_str() {
+                    "none" => super::wrap::WrappingIndent::None,
+                    "indent" => super::wrap::WrappingIndent::Indent,
+                    "deepIndent" => super::wrap::WrappingIndent::DeepIndent,
+                    _ => super::wrap::WrappingIndent::Same,
+                },
+                strategy: if r.str("editor.wrappingStrategy") == "advanced" {
+                    super::wrap::WrappingStrategy::Advanced
+                } else {
+                    super::wrap::WrappingStrategy::Simple
+                },
+                keep_all: r.str("editor.wordBreak") == "keepAll",
+                escaped_line_feeds: r.bool("editor.wrapOnEscapedLineFeeds"),
+                indicator: r.bool("editor.wordWrapIndicator"),
+                separators: r.str("editor.wordSeparators").into(),
+                tab_size: r.num("editor.tabSize", 1.0, 100.0) as u32,
+            },
             tab_size: r.num("editor.tabSize", 1.0, 100.0) as u32,
             stop_rendering_line_after: if stop < 0.0 {
                 None

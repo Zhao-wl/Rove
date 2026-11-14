@@ -53,6 +53,8 @@ pub mod scroll;
 pub mod selection;
 pub mod sticky;
 pub mod view;
+// #58：软换行（换行点计算与视觉行映射）。
+pub mod wrap;
 
 pub use decorations::{
     priority, DecorationProvider, GlyphIcon, InlineDecoration, LayerId, LineDecorations, LineStyle,
@@ -66,6 +68,7 @@ pub use view::{
     presented_read_only, read_only_reason_key, CodeView, CodeViewEvent, CodeViewServices, Feature,
     FrameStats, SelectionSource, Viewport,
 };
+pub use wrap::{VisualMap, WordWrap, WrapOptions, WrappingIndent, WrappingStrategy};
 
 use rove_base::Result;
 

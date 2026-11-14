@@ -232,6 +232,7 @@ cargo test --workspace
 | `explorer` | 已由 `rove-ui::explorer` 实现（见 §36）：`SKELETON(explorer)` 标记与骨架的 `WorkspaceTree` 适配器、固定绘制已删除；“文件夹”小节是 #18 `ListView` 的包装，数据来自流式扫描的 #15 工作区（根目录立即显示）；`skeleton/workbench/explorer_host.rs` 只做窗口装配 | #23（已完成） |
 | `status` | 已由 `rove-ui::status_items` 与 `skeleton/workbench/status_host.rs` 实现（见 §39）：`SKELETON(status)` 标记、骨架的 `rove.status.file` 条目与“文件名 / 行数 / 编码”固定内容都已删除，右侧改为六个登记过的条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）；状态栏左侧只保留 #16 的临时消息、问题计数与 #36 的索引状态 | #27（已完成） |
 | `edit` | 无骨架标记（骨架只读，#2 没有编辑的临时实现）：已由 `rove-ui::code_view::edit` 实现（见 §37）：可编辑代码视图、`EntityInputHandler` 与内嵌组合串、编辑基础命令、剪切粘贴、改写模式、只读拒绝；`workbench/edit_host.rs` 只做窗口装配 | #47（已完成） |
+| `word-wrap` | 无骨架标记（#2 没有软换行的临时实现）：已由 `rove-ui::code_view::wrap` 实现（见 §39）：换行点计算、折叠 + 软换行合一的视觉行映射 `VisualMap`、`editor.action.toggleWordWrap`；`CodeView` 的滚动模型、行号栏、命中测试、光标移动都改走视觉行 | #58（已完成） |
 | `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
 | `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
 
@@ -502,7 +503,7 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
 | `highlight.rs` | 语法着色层：`SyntaxSnapshot` 的按行 token 经 `Theme::token_style` 解析为样式（前景、背景、粗体、斜体、下划线、删除线），按行缓存；`editor.maxTokenizationLineLength` 以上的行不着色 |
 | `brackets.rs` | 括号匹配（`editor.matchBrackets`）：按 #12 语言配置的 `brackets`，光标左右两侧；`always` 时高亮包围光标的一对；字符串与注释里的括号由语法 token 排除；每方向最多扫 5000 行 |
 | `occurrences.rs` | 文本同名高亮（单词按语言 `wordPattern` 整词、大小写敏感）与选区相似匹配（`editor.selectionHighlight*`、`selectedTextMatchMode`） |
-| `folding.rs` | 折叠：区间模型（语法、`#region` 标记、缩进、块注释、手动）、折叠状态、全部折叠命令，以及独立的“文档行 ↔ 屏幕行”映射 `FoldMap`（O(log 折叠数)；R54/R55/R57 共用） |
+| `folding.rs` | 折叠：区间模型（语法、`#region` 标记、缩进、块注释、手动）、折叠状态、全部折叠命令，以及独立的“文档行 ↔ 屏幕行”映射 `FoldMap`（O(log 折叠数)）。#58 起 `FoldMap` 不再直接对外：它被 `wrap::VisualMap` 包进“缓冲行 ↔ 视觉行”的一处权威映射，粘性滚动（#55）、缩略图（#56）都用后者 |
 | `guides.rs` | 缩进参考线层级与 `editor.renderWhitespace` 五种取值的纯计算 |
 
 - **装饰层**：语法（优先级 0）、同名高亮（25）、括号匹配（35）都是 `CodeView` 自己登记的装饰层，结果按行缓存，只在快照、
@@ -1705,3 +1706,59 @@ C#（`///` 与 `//` 续写）与 JSON（`//` 续写）；`/* */` 里补 ` * ` �
 键盘与键位冲突、切换命令写回设置、按级别关闭、登记与深浅主题取色）、`cargo test -p rove-ui code_view::sticky`
 （作用域链与有效区间的单元测试）、`cargo test -p rove-ui peek::widget`（速览的两个颜色键）。
 性能：`cargo xtask bench --filter sticky`（预算 `sticky_scroll_frame_extra`：每帧 < 100 µs）。
+## 47. 软换行（#58）
+
+位置：`crates/rove-ui/src/code_view/wrap.rs`（换行点计算 + 映射，**不依赖 GPUI**，可单独测试），
+接线在同目录的 `view.rs` / `element.rs` / `selection.rs` / `options.rs` / `commands.rs`。
+不修改 #1 的契约；GPUI 类型仍只出现在 `rove-ui` / `rove-app`。
+
+| 对象 | 内容 |
+|---|---|
+| `WrapOptions` | `editor.wordWrap`（四个取值）、`wordWrapColumn`、`wrappingIndent`（四个取值）、`wrappingStrategy`（`simple` / `advanced`）、`wordBreak`、`wrapOnEscapedLineFeeds`、`wordWrapIndicator`、`wordSeparators`、`tabSize` 的强类型快照 |
+| `wrap_line(source, display, metric, options)` | 一条缓冲行的换行点 `LineWrap`（续行起点的源字节列 + 续行缩进列）。输入是 #19 的 `DisplayLine`，所以换行点**只落在字素簇边界**上：ZWJ / 肤色修饰 emoji、组合字符不会被切开；`editor.stopRenderingLineAfter` 截断之后的部分不参与计算 |
+| `Metric` | `Columns`（`simple`：按可见列，CJK / emoji 记 2 列）与 `Pixels`（`advanced`：按整形结果的字素簇 x 表，连字与真实字形宽度都算进去）。算法同一套，只换度量 |
+| `VisualMap` | **一处权威映射**：折叠（`FoldMap`）+ 软换行。缓冲行 ↔ 视觉行区间、视觉行 → (缓冲行, 段号)、视觉行总数。每行的视觉行数放在 Fenwick 树里，单行更新与查询都是 O(log 行数)；软换行关掉时 `counts` 为 `None`，所有换算直接走 `FoldMap`，**一个字节都不分配**（超大文件安全） |
+| `WrapPending` | 待重算的行区间队列（合并相邻区间、按片取出），用于分帧重算 |
+
+**断行规则**：空白之后总可以断（行尾空白允许越过换行列，留在上一行）；其余按字符类别变化处断，
+类别用的就是 #19 双击选词那套 `editor.wordSeparators`（没有第二份实现）；`wordBreak: normal` 时
+CJK 与相邻字符之间可断，`keepAll` 时不断；没有任何可断点就在溢出处硬断。本段首个非空白之前不断，
+所以不会出现只有空白的视觉行。`wrappingIndent` 按原行缩进（`same`）再加 0 / 1 / 2 级制表位
+（`indent` / `deepIndent`），缩进挤得正文放不下时退回 0。
+
+**接线**（`CodeView`）：
+
+- `line_count()` / `view_line()` / `doc_line()` 的“屏幕行”语义整体换成“视觉行”，滚动模型（`scroll.rs` 的
+  f64 虚拟行）、滚动条长度、`scrollBeyondLastLine`、`cursorSurroundingLines`、嵌入区域、预取范围因此自动
+  按视觉行工作；嵌入区域落在一条缓冲行的**最后一条**视觉行之下。水平滚动条在软换行开启时隐藏，`scroll.x` 归零。
+- 绘制：每条视觉行仍然用**同一份整形结果与同一张 x 表**，只是整体左移到本段起点（`shift = 续行缩进 − 段起点 x`）
+  并裁剪到 `[续行缩进, 换行列]`，装饰、空白标记、字形都按本段的显示字节区间过滤，不会出现“每段重扫整行”。
+  行号栏只在首条视觉行画行号与折叠控件，当前行高亮覆盖该缓冲行的全部视觉行。
+- 换行点缓存挂在 #19 的行缓存条目上（与 `xs` 备忘同一处），键是“换行代次 + 本行有没有正式整形结果”；
+  换行代次由视口宽度、字体代次（字族 / 字号 / 缩放 / DPI）与换行设置共同决定，所以**不存在两套各自失效的缓存**。
+- 光标移动：`cursorUp` / `cursorDown` / `cursorHome` / `cursorEnd` / `cursorPageUp` / `cursorPageDown` 及其
+  `*Select` 变体走 `selection.rs` 的 `move_caret_visual`（按视觉行，期望列按“本段内可见列 + 续行缩进”记忆，
+  不因续行变短而漂移）；`cursorLineStart` / `cursorLineEnd` 仍按缓冲行。
+- `editor.action.toggleWordWrap`（`alt+z`）只改当前编辑器会话（`word_wrap_override()`），**不写回
+  `settings.json`**（与“切换主题要写回”正好相反）；切换前后视口钉在同一条缓冲行上。
+- 超大文件（`SizeClass::Huge`，`UX_SPEC` §3.1）强制关闭软换行，`disabled_features()` 多一项
+  `Feature::WordWrap`（字符串 key `codeView.feature.wordWrap`），供 #22 的状态栏悬停提示使用；大文件级别不关。
+
+**分帧重算**：视口宽度 / 字体 / 字号 / DPI / 换行设置变化时整份映射要重算。`sync_wrap` 只把全部行排进
+`WrapPending` 并**保留旧的视觉行数**，这一帧照旧绘制；空闲切片（与 #19 的整形切片同一个预算）按片消化队列，
+离屏行用等宽近似（`advanced` 也一样），显示出来时再按真实字形宽度修正。重算期间视口一直钉在原来那条缓冲行上
+（用户自己滚动就放弃接管）。`take_wrap_changes()` 给出“哪些行的视觉行数变了”（变化太多时为 `None` = 全部），
+`wrap_recompute_stats()` 给出上一次整体重算的耗时与行数。
+
+**下游**：`visual_map()`（映射）、`visual_rows()`（上一帧画了哪些 (缓冲行, 段号)）、`visual_line_of(position)`、
+`line_breaks(line)` 是给 #55 粘性滚动、#56 缩略图、#41 速览、#57 参考线用的接口——它们一律用这一份映射换算，
+不要另算一套（#20 的风险提示：两份实现必然出现“点击落在 A 行、高亮画在 B 行”）。
+
+验证：`cargo test -p rove-ui code_view::wrap`（映射与换行点的单元测试，不依赖 GPUI：空行、Tab、CJK、
+ZWJ / 肤色 emoji、组合字符、连字、折叠组合、增量更新、30 万行映射）与
+`cargo test -p rove-ui --test code_view_wrap`（入口集成测试：设置逐项生效、折叠组合、`alt+z` 不写设置、
+光标按视觉行、10 万字符单行与压缩 JSON、超大文件禁用、嵌入区域、命中测试、登记机制）。
+性能：`cargo xtask bench --filter wrap`（换行点重算与映射查询，纯 CPU）与
+`cargo xtask bench --filter scroll`（`scroll/wrapped_frame_cpu_cache_hit` 与关闭软换行的
+`scroll/frame_cpu_cache_hit` 对照）。
+

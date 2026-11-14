@@ -32,7 +32,7 @@ impl IntoElement for CodeElement {
     }
 }
 
-/// 一条可见行的绘制计划。
+/// 一条可见**视觉行**的绘制计划。软换行关闭时视觉行与缓冲行一一对应（`seg` 恒为 0）。
 pub(crate) struct PaintLine {
     pub line: u64,
     /// 行顶边相对文本区顶边的 y（像素）。
@@ -41,6 +41,18 @@ pub(crate) struct PaintLine {
     pub shaped: Option<Rc<Shaped>>,
     /// 首行为本行的折叠区间：(是否已折叠)。
     pub fold: Option<bool>,
+    /// #58：这是本缓冲行的第几条视觉行（0 为首条，只有首条画行号）。
+    pub seg: u32,
+    /// #58：本段在自己那条视觉行里的水平偏移（`续行缩进 - 段起点 x`，像素）。
+    pub shift: f32,
+    /// #58：续行缩进（像素，`wrappingIndent`）。
+    pub indent: f32,
+    /// #58：本段覆盖的源列区间（不换行时为整行）。
+    pub range: std::ops::Range<u32>,
+    /// #58：本段覆盖的显示字节区间（装饰、空白标记只画这一段，避免每条视觉行都扫整行）。
+    pub disp: std::ops::Range<u32>,
+    /// #58：本段右侧是否还有续行（画换行指示标记用）。
+    pub continues: bool,
 }
 
 pub struct Frame {
@@ -162,9 +174,11 @@ impl CodeView {
             .as_ref()
             .map_or(self.font.cell_width, |d| d.advance);
         let doc_count = self.text.as_ref().map_or(1, |t| t.lines().known.max(1));
-        // 行数随 #8 的索引增长时，折叠映射跟着更新。
+        // 行数随 #8 的索引增长时，折叠与换行映射跟着更新。
         self.folding.set_doc_lines(doc_count);
-        let line_count = self.line_count();
+        if self.visual_map().doc_lines() != doc_count || self.fold_map_changed() {
+            self.sync_fold_map();
+        }
         let o = &self.options;
 
         // 行号栏：字形边距 | 行号 | 行装饰区（含折叠控件）。
@@ -197,7 +211,14 @@ impl CodeView {
         let beyond = o.scroll_beyond_last_column * self.font.cell_width as f64;
         // 先按“不显示垂直滚动条”估算水平条，再确定垂直条（两者相互影响，取保守值）。
         let text_w_guess = (width - gutter_w - vs).max(0.0) as f64;
+        // #58：软换行开着时不需要横向滚动（照搬 VS Code 隐藏水平滚动条），
+        // 并且固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
+        let wrapping = self.word_wrap_enabled();
+        self.sync_wrap(text_w_guess);
+        let line_count = self.line_count();
+        let o = &self.options;
         let show_h = match o.horizontal_scrollbar {
+            _ if wrapping => false,
             ScrollbarVisibility::Visible => true,
             ScrollbarVisibility::Hidden => false,
             ScrollbarVisibility::Auto => self.content_width + beyond > text_w_guess,
@@ -227,7 +248,12 @@ impl CodeView {
             ScrollbarVisibility::Auto => metrics.max_top(&self.zones) > 0.0,
         };
         let vbar_w = if show_v { vs } else { 0.0 };
-        let text_w = (width - gutter_w - vbar_w).max(0.0);
+        // 软换行时文本区宽度与 `sync_wrap` 用的估算值一致（恒定留出垂直滚动条）。
+        let text_w = if wrapping {
+            text_w_guess as f32
+        } else {
+            (width - gutter_w - vbar_w).max(0.0)
+        };
         metrics.viewport_width = text_w as f64;
 
         let gutter = Bounds::new(bounds.origin, size(px(gutter_w), bounds.size.height));
@@ -268,11 +294,15 @@ impl CodeView {
         let composed = self.composition_line();
         let mut lines = Vec::with_capacity((viewport_h / lh) as usize + 2);
         let mut y = y0 as f32;
-        // `view` 是屏幕行（滚动坐标），`line` 是文档行（缓存与绘制内容）。
+        // `view_line` 是视觉行（滚动坐标），`line` 是文档行（缓存与绘制内容），
+        // `seg` 是这一文档行的第几条视觉行。按 (行, 段) 递推而不是逐行查映射：
+        // 可见行的换行点在这里按最新代次重算，映射会随之变化，递推才不会错位。
         let mut view_line = first;
+        let (mut line, mut seg) = self.wrap.map.to_doc(first);
+        let first_doc = line;
         let mut stats = FrameStats::default();
-        while view_line < line_count && y < viewport_h {
-            let line = self.doc_line(view_line);
+        let cell = self.font.cell_width;
+        while view_line < line_count && y < viewport_h && line < doc_count {
             let entry = match &composed {
                 Some((l, e)) if *l == line => Some(e.clone()),
                 _ => self.lines.get(&line).cloned(),
@@ -285,17 +315,56 @@ impl CodeView {
                 (Some(_), None) => stats.placeholders += 1,
                 (Some(_), Some(_)) => stats.shaped += 1,
             }
-            let fold = self.folding.header(line).map(|(_, collapsed)| collapsed);
+            // #58：可见行的换行点在布局时算好（并写回映射），绘制与映射因此总是一致的。
+            let (indent, shift, range, segments) = match &entry {
+                Some(e) if self.wrap.columns > 0 => {
+                    let w = self.wrap_of(line, e);
+                    let xs = self.xs_for(e, shaped.as_deref());
+                    let r = w.segment_range(seg, e.display.source_len);
+                    let x0 = e.display.x_for_source(&xs, r.start);
+                    let indent = w.indent_columns(seg) as f32 * cell;
+                    (indent, indent - x0, r, w.count())
+                }
+                _ => (0.0, 0.0, 0..u32::MAX, 1),
+            };
+            let disp = match &entry {
+                Some(e) if range.end != u32::MAX => {
+                    e.display.display_for_source(range.start)
+                        ..e.display.display_for_source(range.end)
+                }
+                _ => 0..u32::MAX,
+            };
+            let fold = (seg == 0)
+                .then(|| self.folding.header(line).map(|(_, c)| c))
+                .flatten();
             lines.push(PaintLine {
                 line,
                 y,
                 entry,
                 shaped,
+                disp,
                 fold,
+                seg,
+                shift,
+                indent,
+                range,
+                continues: seg + 1 < segments,
             });
-            y += lh + self.zones.get(view_line) as f32;
+            y += lh;
             view_line += 1;
+            if seg + 1 < segments {
+                seg += 1;
+            } else {
+                y += self.zones.get(view_line - 1) as f32;
+                seg = 0;
+                match self.folding.map().next_visible(line + 1, doc_count) {
+                    Some(next) => line = next,
+                    None => break,
+                }
+            }
         }
+        self.commit_wrap();
+        self.wrap.rows = lines.iter().map(|l| (l.line, l.seg)).collect();
         // #55：粘性行复用正文的行缓存与整形缓存（同一行在正文与粘性区颜色一致）。
         let sticky_lines: Vec<u64> = self.sticky.lines().iter().map(|s| s.line).collect();
         let mut sticky: Vec<PaintLine> = Vec::with_capacity(sticky_lines.len());
@@ -310,6 +379,13 @@ impl CodeView {
                 entry,
                 shaped,
                 fold: None,
+                // #58：粘性行永远只画一条（不换行），整行当作首段。
+                seg: 0,
+                shift: 0.0,
+                indent: 0.0,
+                range: 0..u32::MAX,
+                disp: 0..u32::MAX,
+                continues: false,
             });
         }
         let sticky_bounds = (!sticky.is_empty()).then(|| {
@@ -318,7 +394,6 @@ impl CodeView {
                 size(px(gutter_w + text_w), px(sticky_height)),
             )
         });
-        let first_doc = self.doc_line(first);
         stats.visible_lines = lines.len() as u32;
         stats.first_line = first_doc;
         stats.first_line_y = y0 as f32;
@@ -398,6 +473,27 @@ impl CodeView {
         Some(self.xs_for(entry, l.shaped.as_deref()))
     }
 
+    /// #58：一条视觉行的裁剪区。软换行开着时把这一行限制在
+    /// `[续行缩进, 换行列]` 之间，别的段的内容不会溢到这一行上。
+    fn row_mask(
+        &self,
+        l: &PaintLine,
+        text: Bounds<Pixels>,
+        y: Pixels,
+    ) -> Option<ContentMask<Pixels>> {
+        if self.wrap.columns == 0 {
+            return None;
+        }
+        let right = (self.wrap.width as f32).min(f32::from(text.size.width));
+        let w = (right - l.indent).max(0.0);
+        Some(ContentMask {
+            bounds: Bounds::new(
+                point(text.origin.x + px(l.indent), y),
+                size(px(w), px(self.font.line_height)),
+            ),
+        })
+    }
+
     /// 绘制一帧；返回插入符的窗口坐标（输入法候选框定位用）。
     pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) -> Option<Bounds<Pixels>> {
         let p = &self.palette;
@@ -423,7 +519,8 @@ impl CodeView {
             && o.render_line_highlight != LineHighlight::None
             && (frame.focused || !o.line_highlight_only_when_focus);
         if highlight {
-            if let Some(l) = frame.lines.iter().find(|l| l.line == caret_line) {
+            // #58：当前行高亮覆盖这条缓冲行的**全部**视觉行。
+            for l in frame.lines.iter().filter(|l| l.line == caret_line) {
                 let bg = if frame.focused {
                     p.line_highlight_background
                 } else {
@@ -469,145 +566,184 @@ impl CodeView {
                     let y = text.origin.y + px(l.y);
                     let Some(entry) = &l.entry else { continue };
                     let Some(xs) = self.line_xs(l) else { continue };
-                    // 整行装饰。
-                    if let Some(m) = &entry.merged {
-                        let b = Bounds::new(point(text.origin.x, y), size(text.size.width, px(lh)));
-                        if let Some(bg) = m.line.background {
-                            window.paint_quad(fill(b, hsla(bg)));
-                        }
-                        if let Some(border) = m.line.border {
-                            window.paint_quad(outline(b, hsla(border), BorderStyle::Solid));
-                        }
-                    }
-                    // 已折叠的首行：`editor.foldBackground`（`editor.foldingHighlight`）。
-                    if l.fold == Some(true) && o.folding_highlight {
-                        if let Some(bg) = p.fold_background {
+                    // #58：续行整体左移到自己那一段的起点，再按视觉行裁剪，于是同一条缓冲行的
+                    // 每一段都用同一份整形结果与同一张 x 表绘制，不另算一套几何。
+                    let left = left + px(l.shift);
+                    let row = self.row_mask(l, text, y);
+                    let draw = |window: &mut Window| {
+                        // 整行装饰。
+                        if let Some(m) = &entry.merged {
                             let b =
                                 Bounds::new(point(text.origin.x, y), size(text.size.width, px(lh)));
-                            window.paint_quad(fill(b, hsla(bg)));
+                            if let Some(bg) = m.line.background {
+                                window.paint_quad(fill(b, hsla(bg)));
+                            }
+                            if let Some(border) = m.line.border {
+                                window.paint_quad(outline(b, hsla(border), BorderStyle::Solid));
+                            }
                         }
-                    }
-                    if o.guides_indentation {
-                        self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
-                    }
-                    // 选区（#52：主选区与每个次选区各画一次）。
-                    for sel in &selections {
-                        if sel.is_empty()
-                            || composing.is_some()
-                            || l.line < sel.start().line.0
-                            || l.line > sel.end().line.0
-                        {
-                            continue;
+                        // 已折叠的首行：`editor.foldBackground`（`editor.foldingHighlight`）。
+                        if l.fold == Some(true) && o.folding_highlight {
+                            if let Some(bg) = p.fold_background {
+                                let b = Bounds::new(
+                                    point(text.origin.x, y),
+                                    size(text.size.width, px(lh)),
+                                );
+                                window.paint_quad(fill(b, hsla(bg)));
+                            }
                         }
-                        let a = if l.line == sel.start().line.0 {
-                            entry.display.x_for_source(&xs, sel.start().column.0 as u32)
-                        } else {
-                            0.0
-                        };
-                        let mut b = if l.line == sel.end().line.0 {
-                            entry.display.x_for_source(&xs, sel.end().column.0 as u32)
-                        } else {
-                            *xs.last().unwrap_or(&0.0) + self.font.cell_width * 0.5
-                        };
-                        if b <= a && l.line != sel.end().line.0 {
-                            b = a + self.font.cell_width * 0.5;
+                        if o.guides_indentation {
+                            self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
                         }
-                        if b > a {
-                            let color = if frame.focused {
-                                p.selection
+                        // 选区（#52：主选区与每个次选区各画一次）。
+                        for sel in &selections {
+                            if sel.is_empty()
+                                || composing.is_some()
+                                || l.line < sel.start().line.0
+                                || l.line > sel.end().line.0
+                            {
+                                continue;
+                            }
+                            let a = if l.line == sel.start().line.0 {
+                                entry.display.x_for_source(&xs, sel.start().column.0 as u32)
                             } else {
-                                p.inactive_selection
+                                0.0
                             };
-                            let r = if o.rounded_selection { px(3.) } else { px(0.) };
-                            window.paint_quad(quad(
-                                Bounds::new(point(left + px(a), y), size(px(b - a), px(lh))),
-                                r,
-                                hsla(color),
-                                px(0.),
-                                gpui::transparent_black(),
-                                BorderStyle::Solid,
-                            ));
+                            let mut b = if l.line == sel.end().line.0 {
+                                entry.display.x_for_source(&xs, sel.end().column.0 as u32)
+                            } else {
+                                *xs.last().unwrap_or(&0.0) + self.font.cell_width * 0.5
+                            };
+                            if b <= a && l.line != sel.end().line.0 {
+                                b = a + self.font.cell_width * 0.5;
+                            }
+                            if b > a {
+                                let color = if frame.focused {
+                                    p.selection
+                                } else {
+                                    p.inactive_selection
+                                };
+                                let r = if o.rounded_selection { px(3.) } else { px(0.) };
+                                window.paint_quad(quad(
+                                    Bounds::new(point(left + px(a), y), size(px(b - a), px(lh))),
+                                    r,
+                                    hsla(color),
+                                    px(0.),
+                                    gpui::transparent_black(),
+                                    BorderStyle::Solid,
+                                ));
+                            }
                         }
-                    }
-                    // 装饰区间的背景、外框。
-                    for (range, style) in &entry.paint_runs {
-                        if style.background.is_none() && style.border.is_none() {
-                            continue;
-                        }
-                        let a = DisplayLine::x_at(
-                            &xs,
-                            entry.display.stop_index_for_display(range.start),
-                        );
-                        let b =
-                            DisplayLine::x_at(&xs, entry.display.stop_index_for_display(range.end));
-                        let r =
-                            Bounds::new(point(left + px(a), y), size(px((b - a).max(1.0)), px(lh)));
-                        if let Some(bg) = style.background {
-                            window.paint_quad(fill(r, hsla(bg)));
-                        }
-                        if let Some(border) = style.border {
-                            window.paint_quad(outline(r, hsla(border), BorderStyle::Solid));
-                        }
-                    }
-                    match &l.shaped {
-                        Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
-                        None => self.paint_placeholder(entry, left, y, &xs, text, window),
-                    }
-                    self.paint_whitespace(l, entry, &xs, left, y, window);
-                    if l.fold == Some(true) {
-                        self.paint_fold_placeholder(&xs, left, y, window);
-                    }
-                    // 下划线、删除线。
-                    for (range, style) in &entry.paint_runs {
-                        let a = DisplayLine::x_at(
-                            &xs,
-                            entry.display.stop_index_for_display(range.start),
-                        );
-                        let b =
-                            DisplayLine::x_at(&xs, entry.display.stop_index_for_display(range.end));
-                        if let Some(u) = style.underline {
-                            let r = Bounds::new(
-                                point(left + px(a), y + px(lh - 2.0)),
-                                size(px(b - a), px(1.)),
+                        // 装饰区间的背景、外框（#58：只画落在本段里的，续行不重扫整行）。
+                        for (range, style) in &entry.paint_runs {
+                            if style.background.is_none() && style.border.is_none() {
+                                continue;
+                            }
+                            if range.end < l.disp.start || range.start > l.disp.end {
+                                continue;
+                            }
+                            let a = DisplayLine::x_at(
+                                &xs,
+                                entry.display.stop_index_for_display(range.start),
                             );
-                            window.paint_quad(fill(r, hsla(u)));
-                        }
-                        if let Some(s) = style.strikethrough {
-                            let r = Bounds::new(
-                                point(left + px(a), y + px(lh / 2.0)),
-                                size(px(b - a), px(1.)),
+                            let b = DisplayLine::x_at(
+                                &xs,
+                                entry.display.stop_index_for_display(range.end),
                             );
-                            window.paint_quad(fill(r, hsla(s)));
-                        }
-                    }
-                    // #47：组合串下划线（`editor.compositionBorder`）。
-                    if let (Some((cols, _)), Some(cl)) = (&composing, comp_line) {
-                        if cl == l.line {
-                            let a = entry.display.x_for_source(&xs, cols.start);
-                            let b = entry.display.x_for_source(&xs, cols.end);
-                            let color = p.composition_border.unwrap_or(p.foreground);
                             let r = Bounds::new(
-                                point(left + px(a), y + px(lh - 2.0)),
-                                size(px((b - a).max(1.0)), px(1.)),
+                                point(left + px(a), y),
+                                size(px((b - a).max(1.0)), px(lh)),
+                            );
+                            if let Some(bg) = style.background {
+                                window.paint_quad(fill(r, hsla(bg)));
+                            }
+                            if let Some(border) = style.border {
+                                window.paint_quad(outline(r, hsla(border), BorderStyle::Solid));
+                            }
+                        }
+                        match &l.shaped {
+                            Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
+                            None => self.paint_placeholder(entry, left, y, &xs, text, window),
+                        }
+                        self.paint_whitespace(l, entry, &xs, left, y, window);
+                        if l.fold == Some(true) {
+                            self.paint_fold_placeholder(&xs, left, y, window);
+                        }
+                        // 下划线、删除线。
+                        for (range, style) in &entry.paint_runs {
+                            if style.underline.is_none() && style.strikethrough.is_none() {
+                                continue;
+                            }
+                            if range.end < l.disp.start || range.start > l.disp.end {
+                                continue;
+                            }
+                            let a = DisplayLine::x_at(
+                                &xs,
+                                entry.display.stop_index_for_display(range.start),
+                            );
+                            let b = DisplayLine::x_at(
+                                &xs,
+                                entry.display.stop_index_for_display(range.end),
+                            );
+                            if let Some(u) = style.underline {
+                                let r = Bounds::new(
+                                    point(left + px(a), y + px(lh - 2.0)),
+                                    size(px(b - a), px(1.)),
+                                );
+                                window.paint_quad(fill(r, hsla(u)));
+                            }
+                            if let Some(s) = style.strikethrough {
+                                let r = Bounds::new(
+                                    point(left + px(a), y + px(lh / 2.0)),
+                                    size(px(b - a), px(1.)),
+                                );
+                                window.paint_quad(fill(r, hsla(s)));
+                            }
+                        }
+                        // #47：组合串下划线（`editor.compositionBorder`）。
+                        if let (Some((cols, _)), Some(cl)) = (&composing, comp_line) {
+                            if cl == l.line {
+                                let a = entry.display.x_for_source(&xs, cols.start);
+                                let b = entry.display.x_for_source(&xs, cols.end);
+                                let color = p.composition_border.unwrap_or(p.foreground);
+                                let r = Bounds::new(
+                                    point(left + px(a), y + px(lh - 2.0)),
+                                    size(px((b - a).max(1.0)), px(1.)),
+                                );
+                                window.paint_quad(fill(r, hsla(color)));
+                            }
+                        }
+                        // 行内覆盖物。
+                        if let Some(m) = &entry.merged {
+                            for ov in &m.overlays {
+                                let key = self.overlay_key(&ov.text);
+                                if let Some(shaped) = self.shapes.peek(&key).cloned() {
+                                    let x = entry.display.x_for_source(&xs, ov.column);
+                                    let color = ov.style.foreground.unwrap_or(p.foreground);
+                                    self.paint_layout(
+                                        &shaped.layout,
+                                        left + px(x),
+                                        y,
+                                        hsla(color),
+                                        window,
+                                    );
+                                }
+                            }
+                        }
+                    };
+                    match row {
+                        Some(mask) => window.with_content_mask(Some(mask), draw),
+                        None => draw(window),
+                    }
+                    // #58：`editor.wordWrapIndicator`——在换行列处画一条细标记。
+                    if l.continues && o.wrap.indicator {
+                        if let Some(color) = p.whitespace.or(Some(p.foreground)) {
+                            let x = text.origin.x + px(self.wrap.width as f32 - 2.0);
+                            let r = Bounds::new(
+                                point(x, y + px(lh * 0.25)),
+                                size(px(1.0), px(lh * 0.5)),
                             );
                             window.paint_quad(fill(r, hsla(color)));
-                        }
-                    }
-                    // 行内覆盖物。
-                    if let Some(m) = &entry.merged {
-                        for ov in &m.overlays {
-                            let key = self.overlay_key(&ov.text);
-                            if let Some(shaped) = self.shapes.peek(&key).cloned() {
-                                let x = entry.display.x_for_source(&xs, ov.column);
-                                let color = ov.style.foreground.unwrap_or(p.foreground);
-                                self.paint_layout(
-                                    &shaped.layout,
-                                    left + px(x),
-                                    y,
-                                    hsla(color),
-                                    window,
-                                );
-                            }
                         }
                     }
                 }
@@ -619,16 +755,24 @@ impl CodeView {
                 for (index, s) in selections.iter().enumerate() {
                     let primary = index == 0;
                     let line = if primary { caret_line } else { s.active.line.0 };
-                    let Some(l) = frame.lines.iter().find(|l| l.line == line) else {
+                    let column = match (primary, &composing) {
+                        (true, Some((_, c))) => *c,
+                        _ => s.active.column.0 as u32,
+                    };
+                    // #58：插入符画在它所在的那一条视觉行上。
+                    let row = frame.lines.iter().find(|l| {
+                        l.line == line
+                            && (l.range.contains(&column)
+                                || (!l.continues && column >= l.range.start))
+                    });
+                    let Some(l) = row else {
                         continue;
                     };
                     let (Some(entry), Some(xs)) = (&l.entry, self.line_xs(l)) else {
                         continue;
                     };
-                    let column = match (primary, &composing) {
-                        (true, Some((_, c))) => *c,
-                        _ => s.active.column.0 as u32,
-                    };
+                    // #58：续行上的插入符跟着这一段一起左移。
+                    let left = left + px(l.shift);
                     let x = entry.display.x_for_source(&xs, column);
                     let next = {
                         let i = entry.display.stop_index_for_source(column);
@@ -868,7 +1012,15 @@ impl CodeView {
             });
         let lh = self.font.line_height;
         let c = hsla(color);
+        // #58：只画落在本段里的空白标记（续行不重扫整行）。
+        let stops = entry.display.stops();
         for (i, tab) in guides::whitespace_marks(&entry.source, &entry.display, mode, selection) {
+            if stops
+                .get(i)
+                .is_some_and(|s| s.disp < l.disp.start || s.disp >= l.disp.end)
+            {
+                continue;
+            }
             let (a, b) = (DisplayLine::x_at(xs, i), DisplayLine::x_at(xs, i + 1));
             let r = if tab {
                 Bounds::new(
@@ -971,7 +1123,13 @@ impl CodeView {
         let baseline = self.baseline(y);
         let text = self.layout.text;
         let min_x = f32::from(text.origin.x - left) - self.font.cell_width * 4.0;
-        let max_x = f32::from(text.origin.x + text.size.width - left);
+        // #58：软换行时这一行只画到换行列为止，后面的字形属于下一条视觉行。
+        let width = if self.wrap.columns > 0 {
+            px((self.wrap.width as f32).min(f32::from(text.size.width)))
+        } else {
+            text.size.width
+        };
+        let max_x = f32::from(text.origin.x + width - left);
         let spacing = self.font.letter_spacing;
         let sel = self.cursor.selection;
         let sel_disp = (p.selection_foreground.is_some()
@@ -1118,6 +1276,10 @@ impl CodeView {
             window.paint_layer(lay.gutter, |window| {
                 let mut buf = [0u8; 20];
                 for l in &frame.lines {
+                    // #58：续行的行号栏留空（照搬 VS Code），只有首条视觉行画行号与控件。
+                    if l.seg > 0 {
+                        continue;
+                    }
                     let y = lay.text.origin.y + px(l.y);
                     // 字形边距图标：以首字母画一个徽记（图标资源由提供方 #40 等接入后替换）。
                     if glyph_w > 0.0 {

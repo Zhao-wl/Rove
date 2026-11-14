@@ -810,9 +810,14 @@ impl CodeView {
             return;
         };
         let cancel = Cancellation::default();
-        let Ok(out) =
-            engine::search_all(&*text, &searcher, None, MATCHES_LIMIT, &cancel, &mut |_, _| {})
-        else {
+        let Ok(out) = engine::search_all(
+            &*text,
+            &searcher,
+            None,
+            MATCHES_LIMIT,
+            &cancel,
+            &mut |_, _| {},
+        ) else {
             return;
         };
         if out.matches.is_empty() {
