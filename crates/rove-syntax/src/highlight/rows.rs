@@ -227,6 +227,11 @@ impl<'a> Incremental<'a> {
         }
     }
 
+    /// 旧行号 → 新行号的整体位移（编辑之后的行）。
+    pub fn shift(&self) -> isize {
+        self.shift
+    }
+
     fn previous(&self, row: usize) -> Option<&LineTokens> {
         if self.edited.contains(&row) {
             return None;
