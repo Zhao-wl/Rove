@@ -17,7 +17,7 @@ use std::{
     cmp::Ordering,
     collections::HashMap,
     hash::{Hash, Hasher},
-    ops::Deref,
+    ops::{Deref, Range},
 };
 
 /// `path.sep`。
@@ -95,6 +95,44 @@ pub(crate) trait Text {
             }
         }
     }
+    /// 把 `range` 里所有与小写字符 `ql` 相等的位置按升序追加到 `out`（下标仍是整条文本里的）。
+    fn collect_equal_in(&self, ql: u16, range: Range<usize>, out: &mut Vec<usize>) {
+        for i in range {
+            if consider_as_equal(ql, self.low(i)) {
+                out.push(i);
+            }
+        }
+    }
+    /// `query_lower`（小写）按顺序出现在文本里时，返回第一个查询字符最早能落的位置；否则 `None`。
+    /// 空查询返回 `Some(0)`。
+    ///
+    /// 热路径：“矩阵里不可能有分数”的必要条件，矩阵前先跑一遍；只在 description 里匹配的候选被下限
+    /// 否决时（`skip_combined`）也只需要它。`Ascii` 用 SIMD 覆盖它。
+    fn subsequence_start(&self, query_lower: &[u16]) -> Option<usize> {
+        let mut qi = 0;
+        let mut start = 0;
+        if qi == query_lower.len() {
+            return Some(0);
+        }
+        for i in 0..self.len() {
+            if consider_as_equal(query_lower[qi], self.low(i)) {
+                if qi == 0 {
+                    start = i;
+                }
+                qi += 1;
+                if qi == query_lower.len() {
+                    return Some(start);
+                }
+            }
+        }
+        None
+    }
+    /// 最后一个与 `ql` 相等的位置。
+    fn last_equal(&self, ql: u16) -> Option<usize> {
+        (0..self.len())
+            .rev()
+            .find(|&i| consider_as_equal(ql, self.low(i)))
+    }
     fn len(&self) -> usize;
     fn at(&self, i: usize) -> u16;
     fn low(&self, i: usize) -> u16;
@@ -122,19 +160,51 @@ impl Text for Wide<'_> {
 
 struct Ascii<'a>(&'a [u8]);
 
+/// 与小写字符 `ql` 等价（`consider_as_equal`）的两个 ASCII 字节；`ql` 不是 ASCII 时为 `None`。
+#[inline]
+fn ascii_equivalents(ql: u16) -> Option<(u8, u8)> {
+    if ql >= 128 {
+        return None;
+    }
+    let q = ql as u8;
+    Some(if q == b'/' || q == b'\\' {
+        (b'/', b'\\')
+    } else {
+        (q, q.to_ascii_uppercase())
+    })
+}
+
 impl Text for Ascii<'_> {
     fn collect_equal(&self, ql: u16, out: &mut Vec<usize>) {
         // ASCII 文本：用 SIMD 直接找到所有等价的字节
-        if ql >= 128 {
+        let Some((a, b)) = ascii_equivalents(ql) else {
             return;
-        }
-        let q = ql as u8;
-        let (a, b) = if q == b'/' || q == b'\\' {
-            (b'/', b'\\')
-        } else {
-            (q, q.to_ascii_uppercase())
         };
         out.extend(memchr::memchr2_iter(a, b, self.0));
+    }
+    fn collect_equal_in(&self, ql: u16, range: Range<usize>, out: &mut Vec<usize>) {
+        let Some((a, b)) = ascii_equivalents(ql) else {
+            return;
+        };
+        let from = range.start;
+        out.extend(memchr::memchr2_iter(a, b, &self.0[range]).map(|i| i + from));
+    }
+    fn subsequence_start(&self, query_lower: &[u16]) -> Option<usize> {
+        // 每个查询字符用一次 SIMD 查找往前推进；整条路径（约 70 字节）上比逐字节循环快得多。
+        let (mut from, mut start) = (0usize, 0usize);
+        for (k, &ql) in query_lower.iter().enumerate() {
+            let (a, b) = ascii_equivalents(ql)?;
+            let at = from + memchr::memchr2(a, b, &self.0[from..])?;
+            if k == 0 {
+                start = at;
+            }
+            from = at + 1;
+        }
+        Some(start)
+    }
+    fn last_equal(&self, ql: u16) -> Option<usize> {
+        let (a, b) = ascii_equivalents(ql)?;
+        memchr::memrchr2(a, b, self.0)
     }
     #[inline]
     fn len(&self) -> usize {
@@ -152,16 +222,7 @@ impl Text for Ascii<'_> {
 
 /// 查询（小写）是否按顺序出现在文本里（`consider_as_equal`）。
 fn is_subsequence<T: Text>(target: &T, query_lower: &[u16]) -> bool {
-    let mut qi = 0;
-    for i in 0..target.len() {
-        if consider_as_equal(query_lower[qi], target.low(i)) {
-            qi += 1;
-            if qi == query_lower.len() {
-                return true;
-            }
-        }
-    }
-    false
+    target.subsequence_start(query_lower).is_some()
 }
 
 fn starts_with_at<T: Text>(target: &T, at: usize, query_lower: &[u16]) -> bool {
@@ -266,20 +327,27 @@ fn score_core<T: Text>(
     // 单个字符的查询：矩阵退化成“各匹配位置字符得分的最大值”（最后一个取得最大值的位置，因为矩阵里
     // 分数不低于左边就算有效），不必建矩阵。
     if query_length == 1 {
-        let (mut best, mut best_at) = (0, 0);
-        let mut found = Vec::new();
-        target.collect_equal(query_lower[0], &mut found);
-        for i in found {
-            // 不允许不连续匹配时（引号包住的查询）要求精确相等（`startsWith`，不做路径分隔符等价）
-            if !allow_non_contiguous_matches && !starts_with_at(target, i, query_lower) {
-                continue;
+        // 位置用矩阵的 `hits` 缓冲（线程局部、反复使用）：每个候选都新建一个 Vec 的话，
+        // 单字符查询（快速打开的第一次按键）每条候选都要向分配器要一次内存，多线程时还互相抢锁。
+        let (best, best_at) = MATRIX.with(|m| {
+            let mut m = m.borrow_mut();
+            let found = &mut m.hits;
+            found.clear();
+            target.collect_equal(query_lower[0], found);
+            let (mut best, mut best_at) = (0, 0);
+            for &i in found.iter() {
+                // 不允许不连续匹配时（引号包住的查询）要求精确相等（`startsWith`，不做路径分隔符等价）
+                if !allow_non_contiguous_matches && !starts_with_at(target, i, query_lower) {
+                    continue;
+                }
+                let s = compute_char_score(query[0], query_lower[0], target, i, 0);
+                if s != 0 && s >= best {
+                    best = s;
+                    best_at = i;
+                }
             }
-            let s = compute_char_score(query[0], query_lower[0], target, i, 0);
-            if s != 0 && s >= best {
-                best = s;
-                best_at = i;
-            }
-        }
+            (best, best_at)
+        });
         if best != 0 {
             if let Some(out) = out {
                 out.push(best_at);
@@ -288,29 +356,25 @@ fn score_core<T: Text>(
         return best;
     }
 
-    // 快速否决（不改变结果）：查询必须按顺序出现在目标中，否则矩阵里不会产生任何分数。
-    {
-        let mut qi = 0;
-        for i in 0..target_length {
-            if consider_as_equal(query_lower[qi], target.low(i)) {
-                qi += 1;
-                if qi == query_length {
-                    break;
-                }
-            }
-        }
-        if qi < query_length {
-            return 0;
-        }
-    }
+    // 只有 `[window.start, window.end)` 这一段里可能产生分数：第一个查询字符最早只能落在
+    // `window.start`，最后一个最晚只能落在 `window.end - 1`。两端之外的格子要么恒为 0，
+    // 要么只是把分数原样带到右边，对结果没有影响（见 `match_window`）。查询不是子序列时窗口为空。
+    let Some(window) = match_window(target, query_lower) else {
+        return 0;
+    };
+    let (first, width) = (window.start, window.end - window.start);
 
     MATRIX.with(|m| {
         let mut m = m.borrow_mut();
-        let cells = query_length * target_length;
-        m.scores.clear();
-        m.scores.resize(cells, 0);
-        m.matches.clear();
-        m.matches.resize(cells, 0);
+        let cells = query_length * width;
+        // 两个数组的每一格都会在下面的循环里写一次（相等的位置逐格算，其余整段填充），
+        // 所以只需要保证容量够，不必先清零——清零是每个候选上白跑的一整遍内存写。
+        if m.scores.len() < cells {
+            m.scores.resize(cells, 0);
+        }
+        if m.matches.len() < cells {
+            m.matches.resize(cells, 0);
+        }
         let Matrix {
             scores,
             matches,
@@ -318,22 +382,26 @@ fn score_core<T: Text>(
         } = &mut *m;
 
         for query_index in 0..query_length {
-            let query_index_offset = query_index * target_length;
-            let query_index_previous_offset = query_index_offset.wrapping_sub(target_length);
+            let query_index_offset = query_index * width;
+            let query_index_previous_offset = query_index_offset.wrapping_sub(width);
             let query_index_gt_null = query_index > 0;
             let query_char = query[query_index];
             let query_lower_char = query_lower[query_index];
 
-            // 与查询字符不相等的格子没有分数：直接沿用左边的分数（`matches` 已经是 0）。
+            // 与查询字符不相等的格子没有分数：沿用左边的分数，`matches` 填 0。
             // 所以只需要逐个计算相等的位置，其余的整段填充。
             hits.clear();
-            target.collect_equal(query_lower_char, hits);
+            target.collect_equal_in(query_lower_char, window.clone(), hits);
             let mut filled = 0usize;
             let mut carried = 0i32;
-            for &target_index in hits.iter() {
+            for &absolute_index in hits.iter() {
+                // `target_index` 是窗口内的列号，`absolute_index` 是整条文本里的位置：
+                // 字符得分的词首 / 分隔符奖励看的是后者。
+                let target_index = absolute_index - first;
                 if target_index > filled {
-                    scores[query_index_offset + filled..query_index_offset + target_index]
-                        .fill(carried);
+                    let gap = query_index_offset + filled..query_index_offset + target_index;
+                    scores[gap.clone()].fill(carried);
+                    matches[gap].fill(NO_MATCH as u32);
                 }
                 let target_index_gt_null = target_index > 0;
                 let current_index = query_index_offset + target_index;
@@ -361,7 +429,7 @@ fn score_core<T: Text>(
                         query_char,
                         query_lower_char,
                         target,
-                        target_index,
+                        absolute_index,
                         matches_sequence_length,
                     )
                 };
@@ -370,7 +438,7 @@ fn score_core<T: Text>(
                 if is_valid_score
                     && (allow_non_contiguous_matches
                         || query_index_gt_null
-                        || starts_with_at(target, target_index, query_lower))
+                        || starts_with_at(target, absolute_index, query_lower))
                 {
                     matches[current_index] = matches_sequence_length + 1;
                     scores[current_index] = diag_score + score;
@@ -381,24 +449,25 @@ fn score_core<T: Text>(
                 carried = scores[current_index];
                 filled = target_index + 1;
             }
-            if filled < target_length {
-                scores[query_index_offset + filled..query_index_offset + target_length]
-                    .fill(carried);
+            if filled < width {
+                let gap = query_index_offset + filled..query_index_offset + width;
+                scores[gap.clone()].fill(carried);
+                matches[gap].fill(NO_MATCH as u32);
             }
         }
 
         let Some(positions) = out else {
             return scores[cells - 1];
         };
-        // 从矩阵右下角恢复位置
+        // 从矩阵右下角恢复位置（窗口右端之外没有最后一个查询字符，走到这里的路径与整条文本上一致）
         let mut query_index = query_length as isize - 1;
-        let mut target_index = target_length as isize - 1;
+        let mut target_index = width as isize - 1;
         while query_index >= 0 && target_index >= 0 {
-            let current_index = query_index as usize * target_length + target_index as usize;
+            let current_index = query_index as usize * width + target_index as usize;
             if matches[current_index] == NO_MATCH as u32 {
                 target_index -= 1;
             } else {
-                positions.push(target_index as usize);
+                positions.push(first + target_index as usize);
                 query_index -= 1;
                 target_index -= 1;
             }
@@ -406,6 +475,19 @@ fn score_core<T: Text>(
         positions.reverse();
         scores[cells - 1]
     })
+}
+
+/// 可能产生分数的最小窗口 `[第一个查询字符最早能落的位置, 最后一个查询字符最晚能落的位置 + 1)`；
+/// 查询不是目标的子序列时返回 `None`（矩阵里不会有任何分数）。
+///
+/// 窗口之外：左边的格子恒为 0（前面没有足够多的字符可匹配），右边的格子只是把分数原样带到右边
+/// （最后一个查询字符在那里不出现），所以把矩阵裁到窗口上不改变分数，也不改变恢复出来的位置。
+fn match_window<T: Text>(target: &T, query_lower: &[u16]) -> Option<Range<usize>> {
+    // 前向贪心既验证子序列，又给出第一个查询字符最早能落的位置；右端再倒着找一次最后一个查询字符。
+    let first = target.subsequence_start(query_lower)?;
+    let last = target.last_equal(*query_lower.last()?)?;
+    debug_assert!(last >= first);
+    (last >= first).then(|| first..last + 1)
 }
 
 #[inline]

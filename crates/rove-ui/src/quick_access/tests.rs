@@ -417,6 +417,53 @@ fn parallel_scoring_gives_the_same_results_as_a_single_thread() {
     }
 }
 
+/// 打分块是“谁先空下来谁取下一块”分发的，每次运行里哪个线程拿到哪一块都不一定。结果（包括用于
+/// 下一次按键剪枝的匹配集合）必须与单线程逐位相同，并且多次运行之间完全一致。
+///
+/// 候选里故意放一段同目录下连续的文件：真实工作区按扫描顺序排列，这类“热点段”正是静态等分时
+/// 拖慢整体的那一段。
+#[test]
+fn dynamic_block_scheduling_is_deterministic_and_matches_a_single_thread() {
+    let mut paths = synthetic_paths(9000);
+    paths.extend((0..4000).map(|i| format!("Assets/Scripts/Hot/EnemySpawner{i}.cs")));
+    paths.extend([
+        "Assets/角色/玩家Player.cs".to_string(),
+        "Assets/角色/敌人Enemy.cs".to_string(),
+    ]);
+    let idx = index(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+
+    for target in ["enemy spa", "Script", "EnemySpawner1", "e", "角色"] {
+        // 逐字键入，单线程与多线程走各自的剪枝链；每一步都要一致
+        let mut one = Search::default();
+        one.set_threads(Some(1));
+        let mut many = Search::default();
+        many.set_threads(Some(8));
+        let mut typed = String::new();
+        for ch in target.chars() {
+            typed.push(ch);
+            let want = names(
+                &idx,
+                &one.run(&idx, &typed, &[], SearchOptions::default()).files,
+            );
+            let got = names(
+                &idx,
+                &many.run(&idx, &typed, &[], SearchOptions::default()).files,
+            );
+            assert_eq!(got, want, "查询 {typed:?}");
+            // 同一个查询重复跑：块的分发顺序每次都不同，结果不能跟着变
+            for _ in 0..4 {
+                let mut fresh = Search::default();
+                fresh.set_threads(Some(8));
+                let again = names(
+                    &idx,
+                    &fresh.run(&idx, &typed, &[], SearchOptions::default()).files,
+                );
+                assert_eq!(again, want, "查询 {typed:?} 重复运行");
+            }
+        }
+    }
+}
+
 /// 整条优化过的流水线（紧凑数据、摘要打分、前缀剪枝、共享下限、并行、跳过用不上的 description 匹配）必须给出
 /// 与朴素实现（逐个 `score_item` + VS Code 比较器，选出前 N 名）完全相同的结果。
 #[test]

@@ -1978,6 +1978,80 @@ fn ascii_entry_point_agrees_with_the_target_path() {
     assert!(!prepare_query("角色").is_ascii());
 }
 
+/// 随机对照：ASCII 快路径（紧凑字节、SIMD 查找、裁到窗口的矩阵）与通用的 `Target` 路径
+/// 必须给出完全相同的摘要。固定种子，失败时能复现。
+#[test]
+fn ascii_fast_path_agrees_with_the_generic_one_on_random_paths() {
+    use crate::{ascii_masks, prepare_query, score_ascii_summary, score_target_summary, Target};
+    let sep = crate::SEP;
+    let alphabet: Vec<char> = r"abcdeABCDEmnpsuiM_-. 12".chars().collect();
+    let mut x: u64 = 0xD1B54A32D192ED03;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for round in 0..8_000 {
+        let depth = next() as usize % 4;
+        let piece = |next: &mut dyn FnMut() -> u64| -> String {
+            let n = 1 + next() as usize % 8;
+            (0..n)
+                .map(|_| alphabet[next() as usize % alphabet.len()])
+                .collect()
+        };
+        let mut parts: Vec<String> = (0..depth).map(|_| piece(&mut next)).collect();
+        parts.push(piece(&mut next));
+        let native = parts.join(&sep.to_string());
+        // 一半的查询取自路径里的字符（一定是子序列，走到矩阵），一半是随机字符
+        let text: String = if round % 2 == 0 {
+            let mut q = String::new();
+            for c in native.chars() {
+                if next() % 4 == 0 {
+                    q.push(if next() % 3 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    });
+                }
+            }
+            q
+        } else {
+            let n = 1 + next() as usize % 6;
+            (0..n)
+                .map(|_| alphabet[next() as usize % alphabet.len()])
+                .collect()
+        };
+        let text = match next() % 4 {
+            // 偶尔加上多段查询与引号
+            0 => format!("{text} {}", piece(&mut next)),
+            1 => format!("\"{text}\""),
+            _ => text,
+        };
+        let query = prepare_query(&text);
+        if query.normalized.is_empty() || !query.is_ascii() {
+            continue;
+        }
+        let label_start = native.rfind(sep).map_or(0, |i| i + 1);
+        let (label, description) = (
+            &native[label_start..],
+            (label_start > 0).then(|| &native[..label_start - 1]),
+        );
+        if label.is_empty() {
+            continue;
+        }
+        let target = Target::new(label, description, Some(&native));
+        let masks = ascii_masks(native.as_bytes(), label_start);
+        for allow in [true, false] {
+            assert_eq!(
+                score_ascii_summary(native.as_bytes(), label_start, masks, &query, allow, false),
+                score_target_summary(&target, &query, allow),
+                "路径 {native:?} 查询 {text:?} allow={allow}"
+            );
+        }
+    }
+}
+
 /// 参考实现：VS Code `doScoreFuzzy` 的稠密矩阵写法（逐格计算），用来核对稀疏行填充的优化。
 fn dense_reference(
     target: &str,
