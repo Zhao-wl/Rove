@@ -29,29 +29,43 @@ fn text_source() -> RopeText {
     RopeText::new(text)
 }
 
+/// 基准数据的单行内容：混合 CRLF/LF、含中文，覆盖解码与换行符统计。
+const OPEN_10MB_LINE: &str = "public class Row0000 { public int Value = 12345; } // 中文注释\r\n";
+
 /// 10 MB 的测试文件，只生成一次（`ROVE_PERF_TESTDATA` 或系统临时目录）。
 ///
 /// 基准自己在 `target/perf-testdata` 下生成这份数据（不碰 `gen-testdata` 的
 /// M0 对照文件）；每次运行都校验长度，并且先写临时文件再原子改名，
 /// 避免被中断后留下的不完整文件被当成有效数据参与测量。
+///
+/// issue #92：长度先按行数算出来再比对，缓存命中时不构造那 10 MiB 的 `String`；
+/// 临时文件名带上进程 id，同一个 `ROVE_PERF_TESTDATA` 下并发跑基准不会互相覆盖。
 fn ten_megabyte_file() -> PathBuf {
     let directory = std::env::var_os("ROVE_PERF_TESTDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("rove-perf-testdata"));
     std::fs::create_dir_all(&directory).expect("创建基准数据目录");
     let path = directory.join("open10mb.txt");
-    // 混合 CRLF/LF、含中文，覆盖解码与换行符统计；约 10 MiB。
-    let line = "public class Row0000 { public int Value = 12345; } // 中文注释\r\n";
-    let mut text = String::with_capacity(OPEN_10MB_BYTES + line.len());
-    while text.len() < OPEN_10MB_BYTES {
-        text.push_str(line);
+    // 与下面的循环同一个口径：补到不短于 OPEN_10MB_BYTES 为止的整行数。
+    let lines = OPEN_10MB_BYTES.div_ceil(OPEN_10MB_LINE.len());
+    let expected_length = (lines * OPEN_10MB_LINE.len()) as u64;
+    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() == expected_length) {
+        return path;
     }
-    let expected_length = text.len() as u64;
-    let valid = std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() == expected_length);
-    if !valid {
-        let temporary = path.with_extension("tmp");
-        std::fs::write(&temporary, text).expect("写 10 MB 基准文件");
-        std::fs::rename(&temporary, &path).expect("替换 10 MB 基准文件");
+    let mut text = String::with_capacity(expected_length as usize);
+    for _ in 0..lines {
+        text.push_str(OPEN_10MB_LINE);
+    }
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&temporary, text).expect("写 10 MB 基准文件");
+    if let Err(error) = std::fs::rename(&temporary, &path) {
+        // 并发的另一个基准进程可能正好把同样的内容改名过去并打开着它：
+        // 只要目标已经是有效数据就认，清掉自己的临时文件即可。
+        let _ = std::fs::remove_file(&temporary);
+        assert!(
+            std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() == expected_length),
+            "替换 10 MB 基准文件失败：{error}"
+        );
     }
     path
 }

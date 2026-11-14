@@ -473,9 +473,11 @@ mod tests {
     fn detected_encoding_outside_candidates_falls_back_to_files_encoding() {
         // windows-1251 的俄文：旧逻辑会退而求其次用候选 GBK“无错解码”，
         // 掩盖检测结果与 files.encoding，显示成乱码。现在必须回落到 files.encoding。
+        // `force_open = false`：回落之后还要通过二进制判定（无 NUL、无替换字符），
+        // 不允许靠“仍然打开”绕过（issue #92）。
         let text = "Привет, мир! Это тестовый файл на русском языке.\r\n";
         let bytes = encode_with(encoding_rs::WINDOWS_1251, text);
-        let decoded = decode(&bytes, &preferences(true, "windows1251"), None, true).unwrap();
+        let decoded = decode(&bytes, &preferences(true, "windows1251"), None, false).unwrap();
         assert!(
             !decoded.detection.guessed,
             "检测结果不在候选列表里时不能标记为自动识别"
