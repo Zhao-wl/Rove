@@ -591,10 +591,57 @@ impl Workbench {
                     self.discard_hot_exit_backup(document);
                     self.saved_as(document, &path);
                     self.editor.set_dirty(document, false);
-                    if let Some(Resource::Workspace(p)) =
-                        self.open_document(document).map(|d| d.resource.clone())
+                    // 写盘期间缓冲区又被编辑过（会话的历史标记已经越过保存点）：磁盘上是保存时
+                    // 的快照，缓冲区已经不是它了，这次保存不登记（理由见下）。
+                    let clean = !self.editing.saves.borrow().is_dirty(document);
+                    if let Some((Resource::Workspace(p), saved_version)) = self
+                        .open_document(document)
+                        .filter(|_| clean)
+                        .map(|d| (d.resource.clone(), d.text.version()))
                     {
-                        let _ = self.nav.router.buffers().saved(&p, hash);
+                        // #51：这两个「磁盘内容哈希」不是同一个算法。`Effect::Saved` 里的 `hash`
+                        // 是 #49 自写去重用的 `DiskStamp`（FNV-1a）；#38 的 `BufferStates` 比的是
+                        // **C# 索引文件表的 xxHash64**（`hash_bytes`）。直接把前者交过去，保存后的
+                        // 文件就永远对不上索引版本：索引重建完成后仍判为 `Diverged`，整份文件的
+                        // 查询一直停在近似，直到关掉重开。
+                        //
+                        // 这里在后台把刚写出的字节读回来算一次索引哈希（刚写完，页缓存是热的），
+                        // 并用 FNV 哈希确认读到的仍然是我们写的那一份；不是就跳过，交给文件监听
+                        // 走外部修改的路径。登记口径与 `apply_buffer_change` 的打开 / 重新载入一致。
+                        //
+                        // 登记的含义是「磁盘内容 == 当前缓冲区内容」，而保存是**异步**的：写盘与
+                        // 这次读回期间，`text_edited` 照常接受编辑。所以除了校验磁盘内容，还要确认
+                        // 缓冲区自这次保存写出的快照以来没有再变过，分两道：
+                        //
+                        // 1. 写盘期间就被改过（上面的 `clean`）→ 这次保存的快照已经不是缓冲区
+                        //    内容，根本不读回、不登记；
+                        // 2. 读回期间又被改 → 回到窗口时文档版本对不上，丢弃这次结果。
+                        //
+                        // 少了这两道守卫，就会把「只含保存快照」的哈希登记成当前内容的哈希：索引
+                        // 随后对该文件重绑时 `file_state` 命中 `current_hash == indexed`，`rebase`
+                        // 丢掉整份编辑记录并把文件判为 `Clean`，之后的跳转 / 引用 / 悬停全部按新
+                        // 文本的位置去查旧内容的索引，还标成 `Exact`——是**静默的错误结果**。
+                        // 对照 `nav_host.rs::apply_buffer_change` 里同一口径的 `still` 守卫。
+                        let expected = hash;
+                        let file = path.clone();
+                        let task = cx.background_executor().spawn(async move {
+                            let bytes = std::fs::read(&file).ok()?;
+                            (rove_buffer::save::content_hash(&bytes) == expected)
+                                .then(|| rove_lang_cs::router::hash_bytes(&bytes))
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let Some(index_hash) = task.await else { return };
+                            let _ = this.update(cx, |view, _| {
+                                let still = view.open_document(document).is_some_and(|d| {
+                                    d.text.version() == saved_version
+                                        && d.resource == Resource::Workspace(p.clone())
+                                });
+                                if still {
+                                    let _ = view.nav.router.buffers().saved(&p, index_hash);
+                                }
+                            });
+                        })
+                        .detach();
                     }
                     let name = path
                         .file_name()

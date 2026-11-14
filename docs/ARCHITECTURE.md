@@ -2142,3 +2142,37 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 真实项目那一组（`m2_real_project_ui_matches_the_query_layer`）做的是 issue 目标 2 的自动化部分：
 把索引里记下的出现位置当成光标位置，先问 `CsRouter`，再在真实窗口里按 `F12`，逐点比较落点。
 它只能证明**界面与查询层一致**；悬停签名的排版、近似标记的观感、截图对照仍然是人工事项。
+
+## 56. M3 集成验收（#51）
+
+这是**验证 + 修复接缝**型 issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约，
+也没有 `SKELETON(...)` 标记要替换（M3 的标记在 #46–#50 各自的 issue 里已经删完）。逐条结论、
+性能实测与人工清单见 [M3_ACCEPTANCE_REPORT](M3_ACCEPTANCE_REPORT.md)。
+
+位置：
+
+| 文件 | 层 | 内容 |
+|---|---|---|
+| `crates/rove-buffer/tests/m3_roundtrip.rs` | 核心层（不依赖 gpui） | 先**扫真实 Unity 项目并按编码 / 换行 / 末尾换行 / 单行大小分类**，再对每类的真实样本做「打开 → 中部行首插入 6 B → 保存 → 与原字节比较」；项目里没有的类别（这两个项目里非 UTF-8 文件为 0）用**真实文件的内容 + 构造的编码**补齐。另含 GBK emoji 的三条分支、外部修改风暴 100 次 / 连续保存 20 次、冲突 / 只读属性 / 占用 / 删除四条失败路径、1 MB / 10 MB 保存耗时 |
+| `crates/rove-ui/src/skeleton/workbench/m3_acceptance_tests.rs` | 界面层（`workbench.rs` 只追加一行 `mod m3_acceptance_tests;`） | 编辑 → 高亮 / 大纲 / 面包屑 / 索引精确度的链路；增量重解析 ≡ 全量解析；只读文档的**保存**入口；窗口里的外部修改风暴；真实项目文件在窗口里的字节级往返 |
+
+与 M3 各 issue 自己的入口测试的分工：
+
+| | 各 issue 的入口测试（#46 / #47 / #48 / #49） | #51 的验收测试 |
+|---|---|---|
+| 数据 | 临时目录里**构造**的短文件（编码干净、换行一致） | `ROVE_TEST_UNITY_MEDIUM` / `ROVE_TEST_UNITY_LARGE` 里**真实**的奇怪文件（真实 UTF-16、真实混合换行、末尾无换行、空文件、单行 230 KB 的 `.json`） |
+| 覆盖的是 | **某一层**的行为（编辑核心 / 代码视图 / 替换 / 保存） | **跨 M1–M3 的链路**：一次输入同时要走增量重解析、大纲与面包屑、`BufferStates`、保存与索引重绑 |
+| 缺项目时 | 照跑 | 真实项目那几条整组跳过并打印原因，CI 不受影响 |
+
+本次修复的接缝缺陷（细节与复现见报告 §5.1）：**保存后交给 #38 的「磁盘内容哈希」用错了算法**。
+`SaveOutcome::Saved { hash }` 是 #49 自写去重用的 `DiskStamp` 哈希（FNV-1a，`rove_buffer::save::content_hash`），
+而 `BufferStates` 比的是 C# 索引文件表的 xxHash64（`rove_lang_cs::router::hash_bytes`，
+打开 / 重新载入那两条路径用的就是它）。两者永不相等，所以索引重建完成后
+`CsRouter::file_state` 一直判为 `Diverged`，**整份文件的导航结果永远停在「近似」**。
+修复在 `skeleton/workbench/edit_host.rs::apply_save_effects`：保存成功后在后台把刚写出的字节
+读回来算一次 `hash_bytes`（并用 FNV 哈希确认读到的仍是自己写的那一份，否则跳过交给文件监听），
+再调用 `BufferStates::saved`——登记口径与 `nav_host::apply_buffer_change` 的打开 / 重新载入一致。
+
+未达标与未测的事情写在报告里，**没有改 `perf/budgets.toml` 的任何数值**：
+按键到上屏 p99 仍未达 8 ms（#215），索引换代后的 rebase 只在查询时发生（#216），
+输入法矩阵本次一条都没有实机跑（报告 §2 与人工清单）。
