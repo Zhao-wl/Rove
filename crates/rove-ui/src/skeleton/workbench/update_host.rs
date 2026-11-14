@@ -124,13 +124,23 @@ impl Workbench {
             return;
         };
         let step = service.on_check_finished(&outcome, manual);
-        let manifest = outcome.manifest().cloned();
         self.apply_update_step(step.clone(), cx);
         if step == Step::Download {
-            if let Some(manifest) = manifest {
-                self.run_update_download(manifest, cx);
-            }
+            self.start_update_download(cx);
         }
+    }
+
+    /// 下载服务记下的那一版（`UpdateService::available`），**不重新检查**。
+    fn start_update_download(&mut self, cx: &mut Context<Self>) {
+        let Some(manifest) = self
+            .updates
+            .service
+            .as_ref()
+            .and_then(|service| service.available().cloned())
+        else {
+            return;
+        };
+        self.run_update_download(manifest, cx);
     }
 
     /// 后台下载安装包并校验。
@@ -189,10 +199,10 @@ impl Workbench {
                 let Some(service) = self.updates.service.as_mut() else {
                     return;
                 };
+                // 用户确认后才下载（`start` / `manual` 模式）：下的就是提示里那一版。
                 let step = service.on_accept_download();
                 if step == Step::Download {
-                    // 用户确认后才下载（`start` / `manual` 模式）：重新检查一次拿到清单。
-                    self.run_update_check(false, cx);
+                    self.start_update_download(cx);
                 }
             }
             // 「稍后」：什么都不做。下次启动还会再提示一次（issue 第 3 节）。

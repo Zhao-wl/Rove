@@ -78,6 +78,9 @@ pub struct UpdateService {
     portable: bool,
     /// 下载好、等重启安装的那一个。
     pending: Option<Pending>,
+    /// 已经发现、还没下载的那一版清单（`start` / `manual` 模式里用户点「下载」时直接用它，
+    /// **不再重新查一遍**：那样既多一次请求，也可能拿到和提示里不一样的版本）。
+    available: Option<Box<rove_update::Manifest>>,
 }
 
 impl UpdateService {
@@ -107,7 +110,13 @@ impl UpdateService {
             state,
             portable,
             pending: None,
+            available: None,
         }
+    }
+
+    /// 已经发现、等用户确认下载的那一版清单。
+    pub fn available(&self) -> Option<&rove_update::Manifest> {
+        self.available.as_deref()
     }
 
     pub fn updater(&self) -> &Arc<Updater> {
@@ -212,6 +221,9 @@ impl UpdateService {
                     };
                     return Step::status("update.status.portable", vec![("version", version)]);
                 }
+                // 记住这一版清单：后台下载直接用它，`start` / `manual` 下用户点「下载」时
+                // 也用它，**不再重新查一遍**（那样既多一次请求，也可能拿到和提示里不一样的版本）。
+                self.available = Some(manifest.clone());
                 if self.mode().downloads_in_background() {
                     self.state = UpdateState::Downloading {
                         version: version.clone(),
@@ -236,19 +248,22 @@ impl UpdateService {
         }
     }
 
-    /// 用户在通知里点了「下载」。
+    /// 用户在通知里点了「下载」。要下载的就是**提示里那一版**（上次检查记下的清单），
+    /// 不重新检查：那样既多一次请求，也可能拿到和提示里不一样的版本。
     pub fn on_accept_download(&mut self) -> Step {
-        if let Some(version) = self.state.pending_version().map(str::to_string) {
-            self.state = UpdateState::Downloading {
-                version: version.clone(),
-            };
-            return Step::Download;
-        }
-        Step::Nothing
+        let Some(manifest) = &self.available else {
+            return Step::Nothing;
+        };
+        self.state = UpdateState::Downloading {
+            version: manifest.version.clone(),
+        };
+        Step::Download
     }
 
     /// 下载结束。
     pub fn on_download_finished(&mut self, result: Result<Pending, UpdateError>) -> Step {
+        // 下载结束之后这一版清单就没用了（成功 → 看 `pending`；失败 → 下次检查重新拿）。
+        self.available = None;
         match result {
             Ok(pending) => {
                 let version = pending.version.clone();

@@ -125,6 +125,52 @@ fn a_new_version_is_offered_as_a_notification(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| assert!(v.shell.feedback.modal().is_none()));
 }
 
+/// 点「下载」下的是**提示里那一版**：服务记着上次检查的清单，不重新查一遍。
+#[gpui::test]
+fn accepting_a_download_uses_the_manifest_from_the_prompt(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (view, cx) = open(cx);
+    attach(&view, cx, UpdateMode::Start, dir.path());
+    view.update(cx, |v, cx| {
+        let service = v.update_service_mut().unwrap();
+        let step = service.on_check_finished(
+            &Outcome::Available {
+                manifest: Box::new(manifest("0.1.1")),
+                required: false,
+            },
+            false,
+        );
+        v.apply_update_step_for_test(step, cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let service = v.update_service().unwrap();
+        assert_eq!(
+            service.available().map(|m| m.version.as_str()),
+            Some("0.1.1")
+        );
+    });
+    // 点「下载」：真的开始下这一版，而不是再弹一次「发现新版本」。
+    // 测试里的传输是 StubTransport，安装包取不到（404），所以下载会立刻以失败收尾——
+    // 关键是它**确实下过**：记下的那一版清单被消费掉了，状态也不再停在 Available。
+    view.update(cx, |v, cx| {
+        v.update_feedback_action(reg::KEY_PROMPT, reg::ACTION_DOWNLOAD, cx)
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let service = v.update_service().unwrap();
+        assert!(
+            service.available().is_none(),
+            "清单没有被消费，说明没开始下载"
+        );
+        assert!(
+            !matches!(service.state(), UpdateState::Available { .. }),
+            "状态不该还停在「发现新版本」：{:?}",
+            service.state()
+        );
+    });
+}
+
 /// 验收：下载好之后提示「重启以更新到 x.y.z」，按钮是「重启」与「稍后」。
 #[gpui::test]
 fn a_downloaded_update_offers_a_restart(cx: &mut TestAppContext) {
