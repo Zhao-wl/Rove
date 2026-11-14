@@ -4892,6 +4892,7 @@ version = "0.0.1"
 dependencies = [
  "ammonia",
  "async-channel",
+ "encoding_rs",
  "fancy-regex",
  "flate2",
  "futures-lite 2.6.1",
