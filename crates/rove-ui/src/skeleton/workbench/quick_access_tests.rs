@@ -541,3 +541,57 @@ fn preserve_input_restores_the_previous_text(cx: &mut TestAppContext) {
     assert_eq!(text, "enemy");
     assert_eq!(rows(&view, cx).len(), 1);
 }
+
+/// #30：浮层（快速打开 / 命令面板）在 100% / 125% / 150% / 200% 下位置与尺寸都是同一组逻辑像素，
+/// 并且完整落在窗口里——不越界、不被裁切。副屏上的人工复核见 `docs/DPI_CHECKLIST.md`。
+#[gpui::test]
+fn quick_input_overlay_keeps_its_place_at_every_scale(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    cx.simulate_keystrokes("ctrl-shift-p");
+    cx.run_until_parked();
+    assert!(is_open(&view, cx));
+
+    let mut baseline: Option<gpui::Bounds<gpui::Pixels>> = None;
+    for scale in [1.0f32, 1.25, 1.5, 2.0] {
+        cx.simulate_scale_factor_change(scale);
+        cx.update(|window, cx| {
+            window.refresh();
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+        assert!(is_open(&view, cx), "{scale}×：浮层不应被缩放变更关掉");
+
+        let b = cx.debug_bounds("quick-input").expect("浮层可见");
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert!(
+            f32::from(b.origin.x) >= 0.0 && f32::from(b.origin.y) >= 0.0,
+            "{scale}×：浮层越过了窗口左上角 {b:?}"
+        );
+        assert!(
+            b.right() <= viewport.width && b.bottom() <= viewport.height,
+            "{scale}×：浮层被窗口裁切 {b:?} / {viewport:?}"
+        );
+        assert!(
+            (f32::from(b.size.width) - crate::list_widget::quick_input_view::WIDTH).abs() < 1.0,
+            "{scale}×：浮层宽度应当是固定的逻辑像素值，实际 {:?}",
+            b.size.width
+        );
+        match baseline {
+            None => baseline = Some(b),
+            Some(base) => {
+                for (a, c, what) in [
+                    (b.origin.x, base.origin.x, "x"),
+                    (b.origin.y, base.origin.y, "y"),
+                    (b.size.width, base.size.width, "宽"),
+                    (b.size.height, base.size.height, "高"),
+                ] {
+                    let d = (f32::from(a) - f32::from(c)).abs();
+                    // GPUI 把布局对齐到物理像素网格，允许不到 1 逻辑像素的差。
+                    assert!(d < 1.0, "{scale}×：浮层的{what}差了 {d} 逻辑像素");
+                }
+            }
+        }
+    }
+}

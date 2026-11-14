@@ -642,3 +642,55 @@ fn top_right_notifications_have_a_title_bar_entry(cx: &mut TestAppContext) {
             .is_some());
     });
 }
+
+/// #30：工作台各部分在 100% / 125% / 150% / 200% 下是同一组逻辑像素布局，且都落在窗口里。
+/// 缩放变更（跨显示器拖动）不改变逻辑布局，也不会让某一块跑到窗口外面。
+#[gpui::test]
+fn workbench_parts_keep_their_layout_at_every_scale(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (_view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    open_first_file(cx);
+    // 面板也打开，覆盖到四块以上的部分。
+    cx.simulate_keystrokes("ctrl-j");
+    redraw(cx);
+
+    const PARTS: [&str; 5] = ["titlebar", "activitybar", "sidebar", "panel", "statusbar"];
+    let mut baseline: Option<Vec<gpui::Bounds<gpui::Pixels>>> = None;
+    for scale in [1.0f32, 1.25, 1.5, 2.0] {
+        cx.simulate_scale_factor_change(scale);
+        redraw(cx);
+        assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let got: Vec<_> = PARTS
+            .iter()
+            .map(|p| cx.debug_bounds(p).unwrap_or_else(|| panic!("{p} 应当可见")))
+            .collect();
+        for (p, b) in PARTS.iter().zip(&got) {
+            assert!(
+                f32::from(b.origin.x) >= 0.0 && f32::from(b.origin.y) >= 0.0,
+                "{scale}×：{p} 越过窗口左上角 {b:?}"
+            );
+            assert!(
+                b.right() <= viewport.width && b.bottom() <= viewport.height,
+                "{scale}×：{p} 被窗口裁切 {b:?} / {viewport:?}"
+            );
+        }
+        match &baseline {
+            None => baseline = Some(got),
+            Some(base) => {
+                for ((p, b), c) in PARTS.iter().zip(&got).zip(base) {
+                    for (x, y, what) in [
+                        (b.origin.x, c.origin.x, "x"),
+                        (b.origin.y, c.origin.y, "y"),
+                        (b.size.width, c.size.width, "宽"),
+                        (b.size.height, c.size.height, "高"),
+                    ] {
+                        // GPUI 把布局对齐到物理像素网格，允许不到 1 逻辑像素的差。
+                        let d = (f32::from(x) - f32::from(y)).abs();
+                        assert!(d < 1.0, "{scale}×：{p} 的{what}差了 {d} 逻辑像素");
+                    }
+                }
+            }
+        }
+    }
+}

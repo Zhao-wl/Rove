@@ -89,6 +89,10 @@ pub struct FakeLog {
     pub drives: BTreeSet<char>,
     pub allow_remote: bool,
     pub zoom: f64,
+    /// #30：宿主最后一次传给后端的窗口缩放系数（`RasterizationScale` 的入参）。
+    pub scale: f32,
+    /// #30：`layout` 收到的物理像素矩形（逻辑 bounds × 缩放，与 WebView2 的 `SetBounds` 同口径）。
+    pub device_rect: Option<(f32, f32, f32, f32)>,
 }
 
 /// 测试后端：创建后立即“就绪”，收到 `render` 时回一条 `rendered`。可以设置成“运行时缺失”。
@@ -155,13 +159,23 @@ impl Backend for FakeBackend {
                 })));
         }
     }
-    fn layout(&mut self, bounds: Option<Bounds<Pixels>>, _: f32) {
+    fn layout(&mut self, bounds: Option<Bounds<Pixels>>, scale: f32) {
         let mut log = self.log.borrow_mut();
         if self.visible != bounds.is_some() {
             log.visible_changes += 1;
         }
         self.visible = bounds.is_some();
         log.layout = Some(bounds);
+        // #30：和 WebView2 后端同一套换算（逻辑 bounds × 缩放 → 物理像素矩形）。
+        log.scale = scale;
+        log.device_rect = bounds.map(|b| {
+            (
+                (f32::from(b.origin.x) * scale).round(),
+                (f32::from(b.origin.y) * scale).round(),
+                (f32::from(b.origin.x + b.size.width) * scale).round(),
+                (f32::from(b.origin.y + b.size.height) * scale).round(),
+            )
+        });
     }
     fn set_zoom(&mut self, factor: f64) {
         self.log.borrow_mut().zoom = factor;

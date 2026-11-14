@@ -14,6 +14,20 @@ Vendored crates.io `gpui` **0.2.2**, copied from the local Cargo registry packag
 
 - Original `handle_ime_composition` only applied composition text. It now refreshes geometry after applying the event and releasing its context, preserving the original event return value only for non-null contexts. **Behavior change:** with a NULL HIMC the message is forwarded to the Windows default procedure (`None`) unless `lparam == 0`; see the NULL-HIMC entry below. No release is needed for NULL.
 
+## R30 — Test-platform scale factor (high DPI / multi-monitor regression tests)
+
+Scope: the **test backend only**. No production platform code is touched, so Windows DPI behaviour is unchanged.
+
+- `src/platform/test/window.rs`: `TestWindow::scale_factor` returned the constant `2.0`, so a GPUI test window could never run at 100% / 125% / 150%. `TestWindowState` now carries a `scale_factor` field (still initialised to `2.0`, which keeps every pre-existing test on its old value) and `PlatformWindow::scale_factor` reads it.
+- `src/platform/test/window.rs`: new `TestWindow::simulate_scale_factor_change(scale)` sets the field and then invokes the window's resize callback with the unchanged logical size. That callback is what drives `Window::bounds_changed`, which re-reads the scale factor from the platform window and refreshes — i.e. the same path `WM_DPICHANGED` → `handle_dpi_changed_msg` → `WM_SIZE` → `handle_size_change` takes on Windows.
+- `src/app/test_context.rs`: `TestAppContext::simulate_window_scale_factor_change(handle, scale)` and `VisualTestContext::simulate_scale_factor_change(scale)` expose it, mirroring the existing `simulate_window_resize` / `simulate_resize` pair.
+
+Why a vendor patch: the shaping cache key, hit testing and device-pixel alignment all depend on the window scale factor, and `cargo test --workspace` had no way to vary it. Upstream offers no hook. Rove's own regression tests are `crates/rove-ui/tests/code_view_dpi.rs` plus the overlay and Markdown-preview cases listed in [`docs/DPI_CHECKLIST.md`](../../docs/DPI_CHECKLIST.md) §5.
+
+Limits: this simulates "the window moved to a display with a different scale factor, logical size unchanged". It does **not** simulate a window straddling two monitors, per-monitor glyph rasterisation, or anything the compositor does. Mixed-DPI multi-monitor acceptance stays manual — see `docs/DPI_CHECKLIST.md` §2.
+
+On upgrade: check whether upstream has made the test window's scale factor configurable. If so, drop this patch and move the tests onto the upstream API; otherwise reapply all three edits together (field + getter + the two simulate helpers), keeping `2.0` as the default so unrelated tests do not shift.
+
 ## Reapplying on upgrade
 
 1. Obtain the published upstream archive; preserve its license and compare upstream IMM32 handling before carrying changes forward.
@@ -95,7 +109,7 @@ The build-time difference is **not** attributable to the patch: other sessions w
 
 Recorded for follow-up; **no code is changed for these in this PR**. The first three are expected to be covered either by the product editor (R46) calling `Window::invalidate_character_coordinates()` as a backstop, or by a dedicated follow-up issue.
 
-- **Repositioning only happens on composition messages.** Candidate/composition geometry is pushed from `WM_IME_STARTCOMPOSITION` and `WM_IME_COMPOSITION` only. `WM_DPICHANGED`, `WM_SIZE` and scrolling do not refresh it, so an open candidate window keeps stale coordinates until the next composition message.
+- **Repositioning only happens on composition messages.** Candidate/composition geometry is pushed from `WM_IME_STARTCOMPOSITION` and `WM_IME_COMPOSITION` only. `WM_DPICHANGED`, `WM_SIZE` and scrolling do not refresh it, so an open candidate window keeps stale coordinates until the next composition message. *(R30, partially closed on the Rove side: the code view already calls `Window::invalidate_character_coordinates()` whenever the caret bounds change — which covers scrolling and resizing — and now also on a scale-factor change, where the logical caret bounds stay the same but the physical client coordinates do not. The vendor hook itself is unchanged; §4 of `docs/DPI_CHECKLIST.md` still asks for manual IME acceptance after a cross-monitor drag.)*
 - **`CFS_EXCLUDE.rcArea` is one physical pixel wide for an empty selection.** `update_ime_position` widens a collapsed caret rect by exactly 1px (`caret.x.saturating_add(1)`) to keep the rectangle non-empty. It does not cover the composition string or the whole line, so the IME may still overlap the preedit. Needs real-device acceptance, not code inspection.
 - **Coordinates are not clipped to the client area.** Logical bounds are rounded into client coordinates without clamping, so a caret scrolled out of the viewport yields negative (or out-of-bounds) coordinates handed to `ImmSetCompositionWindow` / `ImmSetCandidateWindow`.
 - **Manual evidence lives on a side branch.** The runs are on `codex/manual-evidence-2026-11-10` (commits `3e46ab2` and `441136a`). Permalinks, so the evidence survives deletion of that branch:

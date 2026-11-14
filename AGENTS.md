@@ -312,3 +312,15 @@ cargo test -p rove-update -j 1                      # 版本 / 清单 / 验签 /
 cargo test -p rove-update --test rehearsal -j 1     # 本机 HTTP 服务器上的 v0.1.0 → v0.1.1 演练
 cargo run -p xtask -- check-deps                    # 网络出口与 HTTP/TLS 栈
 ```
+<!-- #30 追加：高 DPI 与多显示器 -->
+
+### 8.9 高 DPI 与多显示器（#30）
+
+- 改动绘制几何（细线、插入符、浮层位置、WebView2 bounds）时，先读 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §53：
+  GPUI 的几何量一律是**逻辑像素**，要「1 物理像素」的细线用 `rove_ui::dpi::{hairline, vline, hline, snap}`，不要写死 `px(1.)`。
+- 回归测试：`cargo test -p rove-ui --test code_view_dpi`（100% / 125% / 150% / 200% 参数化）、
+  `cargo test -p rove-ui dpi::`、`quick_input_overlay`、`preview_scale`。测试窗口的缩放系数用
+  `VisualTestContext::simulate_scale_factor_change(scale)`（vendor 补丁，见 `vendor/gpui/ROVE_PATCHES.md` 的 R30 条目）。
+- 截图与**真正的双显示器混合 DPI** 不能用模拟代替：清单与判据在 [docs/DPI_CHECKLIST.md](docs/DPI_CHECKLIST.md)，
+  发版前与改动渲染路径后重跑。
+

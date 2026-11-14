@@ -489,3 +489,82 @@ fn double_click_and_scroll_sync(cx: &mut TestAppContext) {
         assert_eq!(tab.view.cursor.line, Line(1234));
     });
 }
+
+/// #30：预览的缩放跟随宿主——`RasterizationScale` 用窗口的缩放系数（物理像素 bounds 由宿主给出），
+/// 网页缩放只来自 `window.zoomLevel`，两者不叠加成两套缩放。跨显示器拖动后两者都跟着更新。
+#[gpui::test]
+fn preview_scale_follows_the_window_and_zoom_is_not_doubled(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    open(&view, "README.md", explorer(), cx);
+    settle(cx);
+
+    /// 逻辑 bounds、宿主缩放、物理矩形与网页缩放。
+    fn probe(
+        view: &Entity<Workbench>,
+        cx: &mut VisualTestContext,
+    ) -> (Bounds<gpui::Pixels>, f32, (f32, f32, f32, f32), f64) {
+        view.read_with(cx, |v, _| {
+            let log = v.markdown.fake.borrow();
+            (
+                log.layout.flatten().expect("预览可见"),
+                log.scale,
+                log.device_rect.expect("物理矩形"),
+                log.zoom,
+            )
+        })
+    }
+
+    let (bounds_base, scale_base, _, zoom_base) = probe(&view, cx);
+    assert_eq!(scale_base, cx.update(|window, _| window.scale_factor()));
+    assert!((zoom_base - 1.0).abs() < 1e-9, "zoomLevel 0 → 缩放因子 1.0");
+
+    for scale in [1.0f32, 1.25, 1.5, 2.0] {
+        cx.simulate_scale_factor_change(scale);
+        settle(cx);
+        let (bounds, got_scale, rect, zoom) = probe(&view, cx);
+        assert_eq!(got_scale, scale, "{scale}×：宿主缩放没有传给预览");
+        // 逻辑 bounds 与缩放基本无关（窗口逻辑尺寸没变）：GPUI 把布局结果对齐到物理像素网格，
+        // 所以允许不到 1 个逻辑像素的差，但不允许按缩放成比例变化。
+        for (a, b, what) in [
+            (bounds.origin.x, bounds_base.origin.x, "x"),
+            (bounds.origin.y, bounds_base.origin.y, "y"),
+            (bounds.size.width, bounds_base.size.width, "宽"),
+            (bounds.size.height, bounds_base.size.height, "高"),
+        ] {
+            let d = (f32::from(a) - f32::from(b)).abs();
+            assert!(d < 1.0, "{scale}×：逻辑 bounds 的{what}差了 {d} 像素");
+        }
+        // 物理矩形恰好是逻辑 bounds × 缩放，没有第二套缩放叠上去。
+        let expect = (
+            (f32::from(bounds.origin.x) * scale).round(),
+            (f32::from(bounds.origin.y) * scale).round(),
+            (f32::from(bounds.origin.x + bounds.size.width) * scale).round(),
+            (f32::from(bounds.origin.y + bounds.size.height) * scale).round(),
+        );
+        assert_eq!(rect, expect, "{scale}×：物理矩形换算不对");
+        assert!(
+            (zoom - 1.0).abs() < 1e-9,
+            "{scale}×：网页缩放被系统缩放污染了"
+        );
+    }
+
+    // 窗口缩放（`window.zoomLevel`）只改网页缩放（1.2^level），不改 RasterizationScale。
+    focus_editor(&view, cx);
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                crate::shell::view::run_command(v, "workbench.action.zoomIn", window, cx)
+            })
+        });
+        settle(cx);
+    }
+    let level = view.read_with(cx, |v, _| v.shell.zoom_level());
+    assert_eq!(level, 2.0, "放大两次应当到 zoomLevel 2");
+    let (_, scale, _, zoom) = probe(&view, cx);
+    assert_eq!(scale, 2.0, "系统缩放仍然是当前显示器的");
+    assert!(
+        (zoom - 1.2f64.powi(2)).abs() < 1e-6,
+        "网页缩放应当是 1.2^2，实际 {zoom}"
+    );
+}

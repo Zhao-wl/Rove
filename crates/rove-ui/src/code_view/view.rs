@@ -501,6 +501,8 @@ pub struct CodeView {
     pub(crate) selection_anchor: Option<Position>,
     /// #47：上一帧插入符的窗口坐标；变化时让输入法候选框重新定位。
     pub(crate) last_caret: Option<Bounds<Pixels>>,
+    /// #30：窗口几何变化（跨显示器拖动、系统缩放改变）的订阅，首帧登记。
+    bounds_observer: Option<gpui::Subscription>,
     /// #52：次光标（主选区仍然是 `cursor`）。
     pub(crate) secondary: Vec<Cursor>,
     /// #52：列选择状态（`Shift+Alt+拖动`与 `cursorColumnSelect*`）。
@@ -743,6 +745,7 @@ impl CodeView {
             overtype: false,
             selection_anchor: None,
             last_caret: None,
+            bounds_observer: None,
             secondary: Vec::new(),
             column_select: None,
             match_session: None,
@@ -2887,6 +2890,10 @@ impl CodeView {
         if self.text.is_none() {
             return;
         }
+        // #30：空闲整形也要用当前缩放；缩放刚变过就先作废，别把旧度量写回缓存。
+        if self.note_scale_factor(window) {
+            cx.notify();
+        }
         let deadline = Instant::now() + self.slice_budget;
         let mut changed = false;
         // 可见行的文本与装饰先全部到位（很快），保证下一帧至少能画占位。
@@ -2977,15 +2984,48 @@ impl CodeView {
         self.decorations.retain_near(keep);
     }
 
-    pub(crate) fn line_number_ready(&mut self, window: &mut Window) {
-        if self.font.digits.is_some() && self.font.scale_factor == window.scale_factor() {
-            return;
+    /// #30：检测窗口缩放变化（跨显示器拖动、系统缩放改变、`WM_DPICHANGED`）。
+    ///
+    /// 缩放变了就把整形结果整体作废：字形光栅化、次像素定位与整形缓存键里的字体代次都跟着缩放走，
+    /// 复用旧缩放下的结果会让命中测试与插入符位置错一点。首帧（`scale_factor == 0.0`）只记录，不作废。
+    /// 帧开始与每个空闲准备切片开始时各检查一次——否则缩放变更事件与下一帧之间的那次空闲整形会用
+    /// 旧的字体代次把缓存补满。返回是否发生了变化。
+    pub(crate) fn note_scale_factor(&mut self, window: &Window) -> bool {
+        let scale = window.scale_factor();
+        if self.font.scale_factor == scale {
+            return false;
         }
-        if self.font.scale_factor != window.scale_factor() && self.font.scale_factor != 0.0 {
-            // DPI 变化：字形度量随之变化，整形结果整体失效（与 #30 协调）。
+        let changed = self.font.scale_factor != 0.0;
+        self.font.scale_factor = scale;
+        if changed {
             self.invalidate_shapes();
         }
-        self.font.scale_factor = window.scale_factor();
+        changed
+    }
+
+    /// #30：首帧登记窗口几何订阅。`CodeView::new` 拿不到 `Window`（装配时视图先于窗口存在），
+    /// 所以在第一次布局时登记：此后跨显示器拖动（`WM_DPICHANGED` → `bounds_changed`）会在**事件
+    /// 到达时**就作废整形结果，而不是等到下一帧，空闲切片不会在这中间用旧缩放补缓存。
+    pub(crate) fn watch_window_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bounds_observer.is_some() {
+            return;
+        }
+        self.bounds_observer = Some(cx.observe_window_bounds(window, |view, window, cx| {
+            if view.note_scale_factor(window) {
+                // 插入符的逻辑坐标没变，但它换算出来的物理客户区坐标变了：让输入法候选框重新
+                // 定位（`vendor/gpui/ROVE_PATCHES.md`「Known gaps」第一条——`WM_DPICHANGED`
+                // 本身不会刷新候选框几何）。
+                window.invalidate_character_coordinates();
+                cx.notify();
+            }
+        }));
+    }
+
+    pub(crate) fn line_number_ready(&mut self, window: &mut Window) {
+        self.note_scale_factor(window);
+        if self.font.digits.is_some() {
+            return;
+        }
         let ts = window.text_system();
         let runs = [TextRun {
             len: 10,
