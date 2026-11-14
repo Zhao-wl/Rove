@@ -19,8 +19,11 @@ mod deps;
 mod gen_testdata;
 mod icon;
 mod licenses;
+mod netwatch;
 mod pack;
+mod procwatch;
 mod release;
+mod release_gate;
 mod results;
 mod sign;
 mod size;
@@ -79,10 +82,25 @@ const USAGE: &str = "\
       生成多尺寸应用图标 packaging/windows/rove.ico（含 256×256）。
 
   startup [--exe PATH] [--project DIR] [--startup-tries N] [--startup-timeout SECS]
-          [--save PATH] [--require]
-      测量冷启动到首帧：启动 rove.exe，读它打印的 FIRSTFRAME_SINCE_PROCESS_MS。
+          [--startup-settle MS] [--no-memory] [--save PATH] [--require]
+      测量冷启动与空窗口内存：启动 rove.exe，读它打印的 FIRSTFRAME_SINCE_PROCESS_MS 与
+      INTERACTIVE_SINCE_PROCESS_MS（#150 的埋点，起子进程时设 ROVE_STARTUP_PROBE=1），
+      再用不带路径参数的空窗口采一次进程树内存（工作集 / 私有提交）。
       需要先 cargo build --release -p rove-app；拿不到标记时默认跳过并返回 0，
-      加 --require 则视为失败。「可交互」时间留给 #16。
+      加 --require 则视为失败。结果 id：startup/first_frame、startup/interactive、
+      startup/empty_window_working_set（metrics，MB）。
+
+  netwatch [--exe PATH] [--project DIR] [--mode none|manual|start|default]
+           [--seconds N] [--interval MS] [--require-silent]
+      一次会话的网络监视（#150）：在临时用户目录里设好 rove.update.mode，启动 rove.exe，
+      每隔一段时间用 netstat -ano 采样整棵进程树的连接，最后列出出站连接。
+      --mode none 下出现出站连接时，加 --require-silent 会以非零码退出。
+      口径是连接表采样、不是抓包（瞬时连接可能漏掉），结论要照这个口径写进报告。
+
+  check-release-gate [--coverage PATH] [--report PATH]
+      v0.1 发布门槛里**机器能判**的两条（#150）：perf/budgets.toml 没有 pending 条目；
+      docs/issues/COVERAGE.md 中「v0.1 = 是」的每一行都在 docs/V01_ACCEPTANCE_REPORT.md
+      的核对表里有「已完成 / 改判」的结论。其余门槛见报告 §8 的人工清单。
 
   check-deps [--package CRATE]
       依赖图里禁止出现 reqwest / hyper / rustls / ring / tokio 等 HTTP / TLS 栈（#74）。
@@ -113,6 +131,8 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         "gen-testdata" => gen_testdata::run(rest),
         "bench" => bench::run(rest),
         "startup" => startup::run(rest),
+        "netwatch" => netwatch::run(rest),
+        "check-release-gate" => release_gate::run(rest),
         "check-size" => size::run(rest),
         "check-deps" => deps::run(rest),
         "release" => release::run(rest),
@@ -127,7 +147,8 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
             Ok(0)
         }
         other => Err(format!(
-            "未知命令 `{other}`，可用：gen-testdata / bench / startup / check-size / check-deps / \
+            "未知命令 `{other}`，可用：gen-testdata / bench / startup / netwatch / \
+             check-release-gate / check-size / check-deps / \
              release / check-version / release-keygen / release-sign / release-verify / licenses / \
              icon"
         )

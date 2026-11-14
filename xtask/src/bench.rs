@@ -202,25 +202,19 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
             }
             let mut results = Results::from_criterion(&util::target_dir())?;
 
-            // 冷启动（首帧）用独立测量：启动 release 版 rove.exe，读它打印的
-            // FIRSTFRAME_SINCE_PROCESS_MS。没有 release 构建时跳过（不失败）。
+            // 冷启动（首帧、可交互）与空窗口内存用独立测量：启动 release 版 rove.exe，
+            // 读它打印的 FIRSTFRAME_SINCE_PROCESS_MS / INTERACTIVE_SINCE_PROCESS_MS（#150）。
+            // 没有 release 构建时跳过（不失败）。
             if !util::has_flag(args, "--no-startup") {
                 let options = crate::startup::Options::from_args(args)?;
                 if options.exe.is_file() {
                     crate::startup::ensure_project_public(&options.project)?;
                     println!("\n>>> 冷启动测量（{}）", options.exe.display());
                     let samples = crate::startup::measure(&options);
-                    if let Some(result) = crate::startup::summarize(&samples) {
-                        println!(
-                            "  首帧 median {}（n={}）",
-                            format_ns(result.mean_ns),
-                            samples.len()
-                        );
-                        results
-                            .benchmarks
-                            .insert("startup/first_frame".to_string(), result);
-                    } else {
+                    if samples.is_empty() {
                         println!("跳过 startup：没有拿到首帧标记（没有桌面会话时会这样）");
+                    } else {
+                        samples.write_into(&mut results);
                     }
                 } else {
                     println!(
@@ -238,6 +232,10 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     }
     if current.benchmarks.is_empty() {
         return Err("结果里没有任何用例，检查基准是否真的运行了".into());
+    }
+    // #150：非时间指标（空窗口内存）单独列，单位由预算条目写明。
+    for (id, value) in &current.metrics {
+        println!("  {id:<36} {value:.1}（非时间指标）");
     }
 
     if let Some(path) = &save {

@@ -140,6 +140,12 @@ mod m2_acceptance_tests;
 // 外部修改风暴在窗口里的表现，以及真实 Unity 项目文件在窗口里的字节级往返。
 #[cfg(test)]
 mod m3_acceptance_tests;
+// #150：v0.1 发布候选的集成验收——提前条目（多光标 / 自动编辑 / 粘性滚动 / 软换行 / 导航补全）
+// 与 M1–M3 叠在一起时的接缝。
+#[cfg(test)]
+mod v01_acceptance_tests;
+// #150：「可交互」冷启动埋点（`cargo xtask startup` 用，默认关闭）。
+mod startup_probe;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
 fn color(c: Color) -> Hsla {
@@ -1888,11 +1894,13 @@ impl Render for Workbench {
         if !self.first_frame {
             self.first_frame = true;
             let start = self.started;
-            window.on_next_frame(move |_, _| {
+            window.on_next_frame(move |window, cx| {
                 println!(
                     "FIRSTFRAME_SINCE_PROCESS_MS {:.3}",
                     start.elapsed().as_secs_f64() * 1000.0
                 );
+                // #150：「可交互」埋点（预算 cold_start_interactive）。
+                startup_probe::after_first_frame(start, window, cx);
             });
             // #149：第一次更新检查排在**首帧之后**（冷启动预算不受影响）。
             self.start_update_checks(cx);

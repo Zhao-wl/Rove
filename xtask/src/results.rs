@@ -20,6 +20,11 @@ pub struct Results {
     pub machine: Machine,
     #[serde(default)]
     pub benchmarks: BTreeMap<String, BenchResult>,
+    /// 非时间指标（#150）：内存、体积一类，值的单位由 `perf/budgets.toml` 里那条预算的
+    /// `unit` 决定（目前只有 MB）。criterion 不产出这些，由 `cargo xtask startup` 之类的
+    /// 测量命令写进来。旧的结果文件里没有这个字段，按空表读。
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -60,6 +65,7 @@ impl Results {
                 note: std::env::var("ROVE_PERF_MACHINE_NOTE").ok(),
             },
             benchmarks: BTreeMap::new(),
+            metrics: BTreeMap::new(),
         }
     }
 
@@ -114,6 +120,11 @@ impl Results {
 
     pub fn get(&self, id: &str) -> Option<&BenchResult> {
         self.benchmarks.get(id)
+    }
+
+    /// 非时间指标（内存等），单位由预算条目自己写明。
+    pub fn metric(&self, id: &str) -> Option<f64> {
+        self.metrics.get(id).copied()
     }
 
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {

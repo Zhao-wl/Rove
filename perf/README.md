@@ -31,18 +31,36 @@ cargo xtask bench --check-budgets
 cargo build --release -p rove-app
 cargo xtask check-size                    # 报告相对 M0 基线（6.2 MB）的变化
 
-# 5) 冷启动到首帧（读 rove.exe 打印的 FIRSTFRAME_SINCE_PROCESS_MS）
-cargo xtask startup                       # 默认启动 release 版 rove.exe 3 次，
-                                          # 用 target/perf-project 这个临时小项目
+# 5) 冷启动（首帧 + 可交互）与空窗口常驻内存
+cargo xtask startup                       # 默认启动 release 版 rove.exe 5 次，
+                                          # 用 target/perf-project 这个临时小项目，
+                                          # 再用不带路径参数的空窗口采 3 次内存
 cargo xtask startup --save target/startup.json
+cargo xtask startup --no-memory           # 只要启动耗时
+
+# 6) 一次会话的网络监视（#150；rove.update.mode = none 下必须零出站连接）
+cargo xtask netwatch --mode none --seconds 60 --project <Unity 项目> --require-silent
+
+# 7) 发布门槛里机器能判的两条（预算没有 pending、验收报告逐行有结论）
+cargo xtask check-release-gate
 ```
 
 `cargo xtask bench` 也会顺带做启动测量（`startup/first_frame`）；没有 release 构建时跳过，
 或加 `--no-startup` 显式关掉。
 
-**「可交互」还没有埋点**：口径是「首帧已呈现 + 第一个输入事件在一帧内得到响应」，
-需要在首帧后注入按键并等待重绘完成，这部分留给 #16 的启动预算；
-`budgets.toml` 里 `cold_start_interactive` 因此是 `pending`，**首帧数据单独记录、不设门槛**。
+**「可交互」的埋点在 #150 补上了**：`rove-ui` 的 `skeleton::workbench::startup_probe`
+在首帧之后注入一个无副作用的按键（`right`）并等包含这次响应的那一帧画完，打印
+`INTERACTIVE_SINCE_PROCESS_MS`。埋点**默认关闭**，`cargo xtask startup` 起子进程时才设
+`ROVE_STARTUP_PROBE=1`，普通使用的 `rove.exe` 不受影响。按键经 `Window::dispatch_keystroke`
+注入，**不含 Windows 键盘消息的排队时间**（口径同 #47 的 `typing/key_to_frame`）。
+预算 `cold_start_interactive` 因此改成 `enforced`，`bench = startup/interactive`；
+首帧（`startup/first_frame`）仍然只记录、不设门槛。
+
+**空窗口常驻内存**（`empty_window_memory`）也由 `cargo xtask startup` 采集：启动**不带任何路径参数**
+的 `rove.exe`（空窗口 + 欢迎页，临时用户目录里 `rove.update.mode = none`），首帧之后稳定 2 s
+（`--startup-settle` 可调）再按**进程树**取工作集与私有提交，取多次的中位数。
+判定用工作集（M0 的 47.7 MB 也是工作集，才能比较），私有提交记在
+`startup/empty_window_private`，两个数都要写进报告。
 
 `cargo xtask` 由 `.cargo/config.toml` 里的 alias 提供，等价于 `cargo run -p xtask --`。
 
@@ -95,8 +113,11 @@ cargo xtask startup --save target/startup.json
   可以被 `cargo xtask bench` 测到的，把 `bench` 写成 criterion 的用例 id（`<组>/<用例>`），
   `aggregate` 选 `mean`（默认）或 `p99`；
 - 暂时达不到：`status = "pending"` + `reason`，**不要**为了让 CI 绿把数值调大；
-- 单位与判定路径必须自洽：用 `bench` 判定的条目，单位只能是 `ns` / `us` / `ms` / `s`；
-  内存（MB）、体积（字节）这类指标不能用 bench 判定，写错时脚本会直接报错而不是静默按错误口径比；
+  但 **v0.1 起发布时不允许还有 `pending` 条目**（`docs/MILESTONE_v0.1.md` §5），
+  `cargo test -p xtask` 与 `cargo xtask check-release-gate` 都会挡住；
+- 单位与判定路径必须自洽：时间类条目（`ns` / `us` / `ms` / `s`）的 `bench` 指向 criterion 的用例 id；
+  **内存一类的非时间指标**（目前只有 MB）的 `bench` 指向结果文件 `metrics` 表里的 id
+  （`cargo xtask startup` 写进去的那些），单位就是条目自己的 `unit`；
 - 需要改数值：走 `PROJECT_CHARTER` 的修订流程并留下记录（像冷启动从 150 ms 改到 400 ms 那样），
   然后同步 `budgets.toml`。
 
