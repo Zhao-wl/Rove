@@ -80,14 +80,18 @@ fn scan_workspace_then_search_symbols_then_jump_to_type() {
     );
     let use_site =
         "using Game.Actors;\nnamespace Game.UI\n{\n    class Hud { PlayerController target; }\n}\n";
-    write("Assets/Scripts/Hud.cs", use_site);
+    write("Assets/Scripts/Hud.cS", use_site);
     write("Assets/readme.md", "# not code\n");
+    write("Assets/图标v2", "class NonSource {}\n");
+    write("中文.h", "class Header {}\n");
     // files.exclude 默认排除 .git 等；这个文件不应进入 L1（工作区不给出）。
     write(".git/Hidden.cs", "class Hidden {}\n");
 
     let folder = Folder::scan_root(root, config().without_watching()).expect("scan");
     let files = workspace_files(folder.as_ref());
     assert!(files.iter().all(|p| !p.as_str().starts_with(".git/")));
+    assert!(files.contains(&WorkspacePath::new("Assets/图标v2").unwrap()));
+    assert!(files.contains(&WorkspacePath::new("中文.h").unwrap()));
 
     let cache = tempfile::tempdir().unwrap();
     let index = L1Index::new(L1Options::new(folder.root()).with_cache_dir(cache.path()));
@@ -109,7 +113,7 @@ fn scan_workspace_then_search_symbols_then_jump_to_type() {
     assert_eq!(player.locations.len(), 2);
 
     // 类型跳转：Hud.cs 里的 PlayerController 经 using 解析到 Game.Actors.PlayerController。
-    let hud = WorkspacePath::new("Assets/Scripts/Hud.cs").unwrap();
+    let hud = WorkspacePath::new("Assets/Scripts/Hud.cS").unwrap();
     let at = position_of(use_site, "PlayerController target");
     let resolved = index
         .resolve_type(&hud, at, "PlayerController", &cancel)
