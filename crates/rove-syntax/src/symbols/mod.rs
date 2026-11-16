@@ -245,7 +245,8 @@ impl DocumentSymbols {
 
     /// 包含 `position` 的符号路径（由外到内）：每层在按位置排序的兄弟中二分查找，
     /// O(深度 · log 兄弟数)，不遍历整棵树（面包屑与大纲“跟随光标”的预算 < 1 ms）。
-    /// 区间按闭区间判定：光标停在 `}` 之后仍算在该成员内。
+    /// 区间按闭区间判定：光标停在 `}` 之后仍算在该成员内；
+    /// **声明行的前导空白**（行首缩进、修饰符之前）也算在该符号内，见 [`Self::descend`]（#218）。
     pub fn path_at(&self, position: Position) -> Vec<SymbolId> {
         self.descend(Vec::new(), position)
     }
@@ -263,22 +264,50 @@ impl DocumentSymbols {
         self.descend(hint[..keep].to_vec(), position)
     }
 
+    /// 逐层下降，直到没有子符号包含 `position`。
     fn descend(&self, mut path: Vec<SymbolId>, position: Position) -> Vec<SymbolId> {
         loop {
-            let siblings = self.children(path.last().copied());
-            let after = siblings
-                .partition_point(|id| self.nodes[id.0 as usize].symbol.range.start() <= position);
-            // 兄弟区间可能相接：取起点不晚于光标的最后一个，再往前找包含光标的（嵌套良好时只看一个）。
-            let found = siblings[..after]
-                .iter()
-                .rev()
-                .take(2)
-                .find(|id| contains(&self.nodes[id.0 as usize].symbol.range, position));
-            match found {
-                Some(id) => path.push(*id),
+            match self.child_at(path.last().copied(), position) {
+                Some(id) => path.push(id),
                 None => return path,
             }
         }
+    }
+
+    /// `parent` 的子符号里「光标算在哪一个作用域」的那一个。两段口径：
+    ///
+    /// 1. 先按**位置**（含列）找区间包含 `position` 的子符号；
+    /// 2. 没找到时，如果 `position` 落在某个子符号**声明行的起点之前**（行首缩进，或 C# 里
+    ///    修饰符 / 特性之前的那段空白），也算进这个子符号。
+    ///
+    /// 第 2 条是 #218：粘性滚动（#55）按**行**算作用域链，面包屑与大纲（#26）按位置算，
+    /// 插入符停在声明行的行首缩进里时两者结论不同（粘性区已经把这一行钉上去了、面包屑却只到上一级）。
+    /// 符号区间从声明本身开始，行首缩进不属于任何符号，于是这里把声明行上**声明起点左边**的
+    /// 那一段补给这个符号，两边在同一行上就给出同一条符号链。
+    ///
+    /// 第 2 条只在 `parent` 的声明**不在这一行**时生效：`parent` 起点就在这一行（整个成员写在一行里，
+    /// 如 `class A { void M() {} }` 或 `event Action E { add { } remove { } }`）说明光标落在 `parent`
+    /// 自己的声明区里，不是某个子符号前面的空白，再往下钻就钻过头了。
+    fn child_at(&self, parent: Option<SymbolId>, position: Position) -> Option<SymbolId> {
+        let siblings = self.children(parent);
+        let start_of = |id: &SymbolId| self.nodes[id.0 as usize].symbol.range.start();
+        let after = siblings.partition_point(|id| start_of(id) <= position);
+        // 兄弟区间可能相接：取起点不晚于光标的最后一个，再往前找包含光标的（嵌套良好时只看一个）。
+        let hit = siblings[..after]
+            .iter()
+            .rev()
+            .take(2)
+            .find(|id| contains(&self.nodes[id.0 as usize].symbol.range, position));
+        if hit.is_some() {
+            return hit.copied();
+        }
+        if parent.is_some_and(|p| start_of(&p).line == position.line) {
+            return None;
+        }
+        // 起点晚于光标的第一个兄弟：起点与光标在同一行，说明光标就停在它声明行的前导空白里。
+        // 兄弟按起点排序，所以这是该行上的第一个符号（一行写多个成员时取最靠前的那个）。
+        let next = siblings.get(after)?;
+        (start_of(next).line == position.line).then_some(*next)
     }
 }
 

@@ -295,6 +295,10 @@ fn outline_lines(symbols: &DocumentSymbols, first: u64, hint: &mut Vec<SymbolId>
     // 符号的 `range` 起点可能带列（C# 的成员从修饰符/特性算起，缩进后列 > 0），
     // 只比行号会把“声明行正好等于首行、却还没进入路径”的子符号当成已越过的兄弟，
     // 于是 `next` 取到再下一个兄弟、`hi` 被放宽到整个符号体，粘性区在体内丢失这一级。
+    //
+    // #218 之后 `path_from` 会把「声明行起点左边的空白」算进那个子符号，所以**起点落在首行**的
+    // 子符号已经在 `path` 里了，走不到这里；留在这里的 `next` 起点必然晚于首行，`hi` 仍然取
+    // `起点 + 1`：首行推进到它的声明行时它只是进入路径，`decl >= first` 不会被钉住，`lines` 不变。
     let starts_before = |id: &SymbolId| {
         symbols
             .node(*id)

@@ -348,10 +348,24 @@ fn index_paths_containers_and_keys() {
         Some("PlayerController<T>")
     );
     assert_eq!(doc.ancestors(update), path);
-    // 复用上一次的路径：同一成员内移动结果不变；移到类体空白处退回到类。
+    // 复用上一次的路径：同一成员内移动结果不变。
     assert_eq!(doc.path_from(&path, pos(17, 20)), path);
-    assert_eq!(doc.path_from(&path, pos(18, 0)).len(), 2);
+    // 第 18 行是 `Move` 的声明行：列 0 在行首缩进里，仍然算在 `Move` 内（#218）。
+    assert_eq!(
+        doc.path_at(pos(18, 0))
+            .iter()
+            .map(|id| name(*id))
+            .collect::<Vec<_>>(),
+        [
+            "Game.Player",
+            "PlayerController<T>",
+            "Move(Vector3, ref float, params string[])"
+        ]
+    );
     assert_eq!(doc.path_from(&path, pos(18, 0)), doc.path_at(pos(18, 0)));
+    // 类体里真正的空行（第 13 行）退回到类这一级。
+    assert_eq!(doc.path_at(pos(13, 0)).len(), 2);
+    assert_eq!(doc.path_from(&path, pos(13, 0)), doc.path_at(pos(13, 0)));
     // 文件开头不在任何符号里。
     assert!(doc.path_at(pos(0, 0)).is_empty());
     // 同名字段在同一父节点下得到不同的稳定键。
@@ -365,6 +379,69 @@ fn index_paths_containers_and_keys() {
     // 先序编号：父在子前，children 按位置。
     assert_eq!(doc.children(None).len(), 1);
     assert!(doc.iter().all(|(id, n)| n.parent.is_none_or(|p| p < id)));
+}
+
+/// #218：声明行的**行首缩进**算在这一行声明的符号内，面包屑与粘性滚动（按行判定）
+/// 因此在同一行上给出同一条符号链。
+#[test]
+fn declaration_line_indent_belongs_to_the_symbol_declared_there() {
+    let doc = DocumentSymbols::new(Version(1), "csharp".into(), symbols("csharp", UNITY).into());
+    let names = |p: Vec<SymbolId>| {
+        p.iter()
+            .map(|id| doc.node(*id).unwrap().symbol.name.to_string())
+            .collect::<Vec<_>>()
+    };
+    // 方法声明行（第 17 行 `        void Update() { }`，缩进 8 列）：列 0 与第一个非空白字符一致。
+    let at_indent = doc.path_at(pos(17, 0));
+    assert_eq!(names(at_indent.clone()), names(doc.path_at(pos(17, 8))));
+    assert_eq!(
+        names(at_indent),
+        ["Game.Player", "PlayerController<T>", "Update()"]
+    );
+    // 类型声明行：特性行（第 4 行）与 `public class`（第 5 行）的行首都算进这个类。
+    assert_eq!(
+        names(doc.path_at(pos(4, 0))),
+        ["Game.Player", "PlayerController<T>"]
+    );
+    assert_eq!(
+        names(doc.path_at(pos(5, 0))),
+        ["Game.Player", "PlayerController<T>"]
+    );
+    // 命名空间声明行（第 2 行，不缩进）仍然只有命名空间自己。
+    assert_eq!(names(doc.path_at(pos(2, 0))), ["Game.Player"]);
+    // 一行里写两个成员时取最靠前的那个：行首缩进归 `speed`，不是 `jump`。
+    assert_eq!(
+        names(doc.path_at(pos(8, 0))).last().map(String::as_str),
+        Some("speed")
+    );
+    // 整个成员写在一行里时不往下钻：第 10 行是 `public event System.Action Moved { add { } remove { } }`，
+    // 行首算在 `Moved` 上，不会再进它的访问器。
+    assert_eq!(
+        names(doc.path_at(pos(10, 0))).last().map(String::as_str),
+        Some("Moved")
+    );
+    // 声明行之外的口径不变：类体空行退回到类，文件开头不在任何符号里。
+    assert_eq!(doc.path_at(pos(13, 0)).len(), 2);
+    assert!(doc.path_at(pos(1, 0)).is_empty());
+    // `path_from` 复用上一次的路径也要给出同一条链。
+    let hint = doc.path_at(pos(17, 25));
+    assert_eq!(doc.path_from(&hint, pos(18, 0)), doc.path_at(pos(18, 0)));
+    assert_eq!(doc.path_from(&hint, pos(4, 0)), doc.path_at(pos(4, 0)));
+    assert_eq!(doc.path_from(&hint, pos(10, 0)), doc.path_at(pos(10, 0)));
+    // 类型本身写在一行里：列 0 就在 `class` 上，不是子符号前面的空白。
+    let one_line = DocumentSymbols::new(
+        Version(1),
+        "csharp".into(),
+        symbols("csharp", "class A { void M() {} }\n").into(),
+    );
+    assert_eq!(
+        one_line
+            .path_at(pos(0, 0))
+            .iter()
+            .map(|id| one_line.node(*id).unwrap().symbol.name.to_string())
+            .collect::<Vec<_>>(),
+        ["A"]
+    );
 }
 
 #[test]
