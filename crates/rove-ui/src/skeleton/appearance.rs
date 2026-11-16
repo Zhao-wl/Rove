@@ -46,6 +46,13 @@ pub fn strings() -> Result<StringTable> {
         ),
         ("editors.retry", "重试"),
         ("editors.reveal", "在资源管理器中显示"),
+        // #209：二进制 / 不支持的文本编码（UX_SPEC §3.5）。文案与操作都登记在这里，
+        // 错误页不写死；`editors.fileUnsupported` 留给虚拟资源等其他「不受支持」。
+        (
+            "editors.fileBinary",
+            "此文件是二进制文件或使用了不支持的文本编码。",
+        ),
+        ("editors.openAnyway", "仍然打开"),
     ] {
         t.register(k, Arc::from(v))?;
     }

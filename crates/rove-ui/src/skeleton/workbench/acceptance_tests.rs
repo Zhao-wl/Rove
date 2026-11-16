@@ -620,9 +620,22 @@ fn acceptance_scenario_3_quick_open_on_real_project(cx: &mut TestAppContext) {
             failed,
             "二进制文件应当以「不受支持」结束，而不是当成文本显示"
         );
+        // #209 已补上 UX_SPEC §3.5 的「仍然打开」：错误页换成「此文件是二进制文件或使用了
+        // 不支持的文本编码。」，并多一个强制打开的操作（整条链路见 `binary_tests`）。
+        let resource = view.read_with(cx, |v, _| {
+            v.editor.active().current().unwrap().resource.clone()
+        });
+        assert_eq!(
+            super::editor_panes::error_page_key(&Error::Unsupported, &resource),
+            "editors.fileBinary"
+        );
+        assert!(
+            super::editor_panes::can_open_anyway(&Error::Unsupported, &resource),
+            "二进制文件的错误页要提供「仍然打开」（UX_SPEC §3.5）"
+        );
         eprintln!(
-            "[#31 场景 3] 二进制文件（{opened}）显示「无法打开编辑器：文件格式或编码不受支持。」\
-             错误页上只有「重试」与「在资源管理器中显示」，没有 UX_SPEC §3.1 要求的「仍然打开」"
+            "[#31 场景 3] 二进制文件（{opened}）显示「此文件是二进制文件或使用了不支持的文本编码。」\
+             错误页上有「重试」「仍然打开」与「在资源管理器中显示」（#209）"
         );
     }
 }

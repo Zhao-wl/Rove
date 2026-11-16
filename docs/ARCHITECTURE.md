@@ -570,10 +570,22 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
 **共享文档**：同一文件在多个组打开时共享一个 `Document` 和一份 `TextSource`，各组的 `CodeView` 指向同一实例；
 别名（相对/绝对/非规范路径、符号链接）在加载器规范化后按文档去重，复用同组已有标签。
 
+**错误页与「仍然打开」（#209）**：`editor_panes.rs` 的 `error_page_key` / `can_open_anyway` 决定错误页的文案与操作。
+磁盘文件上的 `Unsupported` 就是 UX_SPEC §3.5 的「此文件是二进制文件或使用了不支持的文本编码。」
+（字符串 key `editors.fileBinary`），此时多一个「仍然打开」（`editors.openAnyway`）；虚拟资源（元数据视图、
+欢迎页）仍用通用的 `editors.fileUnsupported`，也没有「仍然打开」——没有字节可以 lossy 显示。
+点击走 `EditorService::open_anyway`，它与「重试」共用 `reopen_tab`，只是把 `OpenOptions::force_open` 置上，
+所以**选择留在标签上**：之后的重试继续按强制打开读。加载器那一侧只多一个 `LoadOptions::force_open`，
+缓存、别名去重、只读规则与 `Detection::guessed` 的记录都与普通打开共用同一条路径，因此状态栏的编码条目与
+只读表现和 #27 的「通过编码重新打开」完全一致（强制打开不附加只读原因）。图片预览是 #63（M4），不在这里。
+
 **入口与验证**：`Workbench::open_documents()` 返回窗口拥有的服务；`cargo test -p rove-ui editor_tests`
 覆盖调用方示例（路径 + 行列 + 来源 → 视口包含目标行、选区正确）、预览/固定/分屏/最大化、导航历史跨组往返、
 切换标签恢复滚动与选区、别名去重；`cargo test -p rove-ui expanding_a_group` 覆盖布局比例。
 切换耗时：`ROVE_EDITOR_SWITCH_TRACE=1` 运行 release 版，stdout 输出 `EDITOR_SWITCH_TO_PAINT_MS`（从命令处理到下一帧）。
+「仍然打开」的整条链路（拒绝 → 错误页 → 仍然打开 → 正文可见、状态栏编码与只读、重试仍强制、虚拟资源不提供该操作）
+由 `cargo test -p rove-ui binary_ -j 1` 覆盖（`workbench/binary_tests.rs`），其中一条跑真实 Unity 项目里的 `.png`，
+`ROVE_TEST_UNITY_MEDIUM` 未设置时跳过。
 
 ## 18. 键位与命令层（#14）
 
@@ -1537,7 +1549,8 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 - **编码**：M1 只有「通过编码重新打开」，走 #7 的 `explicit_encoding` 重读（`force_open`：用户明确选了编码，
   解不出合法文本时按 lossy 显示乱码，而不是报「二进制或不支持的编码」）。文档身份不变，滚动位置与选区由 #17 的
   快照替换保持。候选列表是 `files.encoding` → `files.candidateGuessEncodings` → 常用编码，去重后分三组。
-  「通过编码保存」等 R48 的另存接口接入后再加。
+  「通过编码保存」等 R48 的另存接口接入后再加。#209 的「仍然打开」走同一条加载路径（只多
+  `force_open`），所以强制打开的文件在这六个条目上与普通文件没有差别（见 §17）。
 - **换行符**：显示当前值；可编辑时提供「统一为 LF / CRLF」，发 `workbench.action.editor.changeEOL` 带参数，
   由 #49 的保存控制器改写（只读与超大文件不显示）。
 - **语言模式**：列出 #12 的语言，选中后只对本文件生效（会话内）：换上带新语言的 `Document` 快照，
