@@ -8,7 +8,7 @@
 //!   `true`，只在用户未设置时生效），本模块只读取；
 //! - **不登记** `markdown.preview.toggleLock`、`markdown.showLockedPreviewToSide`、
 //!   `markdown.showPreviewSecuritySelector`：Rove 的预览总是绑定到一个文件（相当于 VS Code 的锁定预览），
-//!   远程资源的放行走预览上方的提示条；未实现的命令不进命令面板（ARCHITECTURE §6）。
+//!   远程资源始终拦截；未实现的命令不进命令面板（ARCHITECTURE §6）。
 use crate::contributions::{Contribution, ContributionRegistry, Placement};
 use gpui::Action;
 use rove_base::{Error, Result};
@@ -51,7 +51,6 @@ pub const RUNTIME_MISSING: &str = "markdown.webviewMissing";
 pub const CREATE_FAILED: &str = "markdown.webviewFailed";
 pub const EXTERNAL_LINK: &str = "markdown.openExternalLink";
 /// 反馈按钮发出的动作 ID（不是命令，只在本模块的反馈订阅里处理）。
-pub const ACTION_ALLOW_REMOTE: &str = "markdown.action.allowRemote";
 pub const ACTION_DOWNLOAD_PAGE: &str = "markdown.action.openWebView2Download";
 pub const ACTION_OPEN_LINK: &str = "markdown.action.openLink";
 pub const ACTION_CANCEL: &str = "markdown.action.cancel";
@@ -72,7 +71,6 @@ pub const STRINGS: &[(&str, &str)] = &[
         "预览正显示在另一个编辑器组中。单击此处在这里显示。",
     ),
     ("markdown.remoteBlocked", "已阻止 {count} 个远程资源。"),
-    ("markdown.allowRemote", "为此文档允许"),
     (
         "markdown.webviewMissing",
         "无法显示 Markdown 预览：此计算机没有安装 Microsoft Edge WebView2 运行时，Markdown 文件已改为以源码打开。安装运行时后重新启动 Rove 即可使用预览。",
