@@ -213,26 +213,25 @@ impl UpdateService {
         Step::Nothing
     }
 
-    /// 「检查更新」命令（用户主动触发：即使没有更新也要给个回执）。
-    pub fn on_command_check(&mut self) -> Step {
-        if !self.mode().may_connect() {
+    /// 先标记检查已开始，再把任务交给后台执行器。
+    pub(crate) fn begin_check(&mut self, manual: bool) -> (Step, bool) {
+        let checking = || Step::status("update.status.checking", Vec::new());
+        let (step, start) = if !self.mode().may_connect() {
             self.state = UpdateState::Disabled;
-            return Step::status("update.status.disabled", Vec::new());
-        }
-        if self.state.is_ready_to_install() {
-            // 已经下载好了，直接提示重启，不必再查一遍。
-            let version = self.state.pending_version().unwrap_or_default().to_string();
-            return Self::restart_prompt(&version);
-        }
-        if self.state.is_busy() {
-            return Step::status("update.status.checking", Vec::new());
-        }
-        self.state = UpdateState::Checking;
-        Step::status("update.status.checking", Vec::new())
+            (Step::status("update.status.disabled", Vec::new()), false)
+        } else if let UpdateState::ReadyToInstall { version } = &self.state {
+            (Self::restart_prompt(version), false)
+        } else if self.state.is_busy() {
+            (checking(), false)
+        } else {
+            self.available = None;
+            self.state = UpdateState::Checking;
+            (checking(), true)
+        };
+        (if manual { step } else { Step::Nothing }, start)
     }
 
-    /// 一次检查有了结果。`manual` 为真表示这次检查是用户按命令触发的
-    ///（决定「已是最新」要不要给回执）。
+    /// 处理检查结果。`manual` 表示有用户命令在等这次检查的回执。
     pub fn on_check_finished(&mut self, outcome: &Outcome, manual: bool) -> Step {
         let now = rove_update::log::timestamp(std::time::SystemTime::now());
         match outcome {
@@ -309,6 +308,9 @@ impl UpdateService {
     /// 用户在通知里点了「下载」。要下载的就是**提示里那一版**（上次检查记下的清单），
     /// 不重新检查：那样既多一次请求，也可能拿到和提示里不一样的版本。
     pub fn on_accept_download(&mut self) -> Step {
+        if !matches!(self.state, UpdateState::Available { .. }) {
+            return Step::Nothing;
+        }
         let Some(manifest) = &self.available else {
             return Step::Nothing;
         };
@@ -333,9 +335,8 @@ impl UpdateService {
             }
             Err(error) => {
                 let now = rove_update::log::timestamp(std::time::SystemTime::now());
+                // 下载层已经清掉本次的临时文件，这里保留磁盘上已有的待安装记录和下载。
                 self.state = UpdateState::from_error(&error, now);
-                self.updater.discard_pending();
-                self.pending = None;
                 if error.is_silent() {
                     Step::Nothing
                 } else {
@@ -432,8 +433,8 @@ mod tests {
         let (_d, mut none) = make_service(UpdateMode::None, false);
         assert_eq!(none.state(), &UpdateState::Disabled);
         assert_eq!(
-            none.on_command_check(),
-            Step::status("update.status.disabled", Vec::new())
+            none.begin_check(true),
+            (Step::status("update.status.disabled", Vec::new()), false)
         );
         assert!(none.updater().transport().is_none());
 
