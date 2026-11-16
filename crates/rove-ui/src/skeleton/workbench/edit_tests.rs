@@ -531,6 +531,165 @@ fn revert_during_save_does_not_drop_its_later_disk_result(cx: &mut TestAppContex
     );
 }
 
+fn dirty_untitled(view: &Entity<Workbench>, cx: &mut VisualTestContext, text: &str) -> DocumentId {
+    cx.update(|window, cx| window.focus(&view.read(cx).focus));
+    save_action(cx, ids::NEW_UNTITLED);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input(text);
+    settle(cx);
+    active_doc(view, cx)
+}
+
+fn save_from_close_prompt(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    document: DocumentId,
+) {
+    let key = format!("{}{}", ids::KEY_CLOSE, document.0);
+    view.update(cx, |v, _| {
+        v.shell.feedback.act(&key, ids::ACTION_SAVE).unwrap()
+    });
+    settle(cx);
+    assert!(cx.did_prompt_for_new_path());
+}
+
+#[gpui::test]
+fn saving_an_untitled_tab_from_the_close_prompt_closes_it(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let (view, cx) = fx.open(cx);
+    let doc = dirty_untitled(&view, cx, "untitled");
+    view.update(cx, |v, cx| {
+        v.command("workbench.action.closeActiveEditor", cx)
+    });
+    save_from_close_prompt(&view, cx, doc);
+    let saved = fx.folder.path().join("saved.txt");
+    cx.simulate_new_path_selection(|_| Some(saved.clone()));
+    settle(cx);
+    assert_eq!(std::fs::read_to_string(saved).unwrap(), "untitled");
+    assert!(view.read_with(cx, |v, _| v.open_document(doc).is_none()));
+}
+
+#[gpui::test]
+fn dirty_window_continues_after_saving_untitled_documents(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let (view, cx) = fx.open(cx);
+    let window = cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            edit_host::attach_close_confirmation(v, window, cx)
+        });
+        window.window_handle()
+    });
+    let first = dirty_untitled(&view, cx, "first");
+    let second = dirty_untitled(&view, cx, "second");
+    assert!(!view.update(cx, |v, cx| v.request_window_close(cx)));
+
+    save_from_close_prompt(&view, cx, first);
+    let first_path = fx.folder.path().join("first.txt");
+    cx.simulate_new_path_selection(|_| Some(first_path.clone()));
+    settle(cx);
+    assert_eq!(std::fs::read_to_string(first_path).unwrap(), "first");
+    assert!(view.read_with(cx, |v, _| v.open_document(first).is_none()));
+    assert!(view.read_with(cx, |v, _| v.open_document(second).is_some()));
+
+    save_from_close_prompt(&view, cx, second);
+    let second_path = fx.folder.path().join("second.txt");
+    cx.simulate_new_path_selection(|_| Some(second_path.clone()));
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(second_path).unwrap(), "second");
+    assert!(window.update(&mut cx.cx, |_, _, _| ()).is_err());
+}
+
+#[gpui::test]
+fn cancelled_or_failed_untitled_save_keeps_the_document(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let (view, cx) = fx.open(cx);
+    let doc = dirty_untitled(&view, cx, "keep");
+    view.update(cx, |v, cx| {
+        v.command("workbench.action.closeActiveEditor", cx)
+    });
+    save_from_close_prompt(&view, cx, doc);
+    cx.simulate_new_path_selection(|_| None);
+    settle(cx);
+    assert_eq!(active_doc(&view, cx), doc);
+    assert!(active_tab(&view, cx, |_, tab| tab.dirty));
+
+    // 回到编辑器后主动保存，不应带上已经取消的关闭动作。
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    settle(cx);
+    save_action(cx, ids::SAVE);
+    assert!(cx.did_prompt_for_new_path());
+    let kept = fx.folder.path().join("kept.txt");
+    cx.simulate_new_path_selection(|_| Some(kept.clone()));
+    settle(cx);
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "keep");
+    assert_eq!(active_doc(&view, cx), doc);
+
+    let retry_doc = dirty_untitled(&view, cx, "retry");
+    view.update(cx, |v, cx| {
+        v.command("workbench.action.closeActiveEditor", cx)
+    });
+    save_from_close_prompt(&view, cx, retry_doc);
+    let missing = fx.folder.path().join("missing").join("out.txt");
+    cx.simulate_new_path_selection(|_| Some(missing));
+    settle(cx);
+    assert_eq!(active_doc(&view, cx), retry_doc);
+    assert!(active_tab(&view, cx, |_, tab| tab.dirty));
+
+    let key = format!("{}{}", ids::KEY_FAILED, retry_doc.0);
+    view.update(cx, |v, _| {
+        v.shell.feedback.act(&key, ids::ACTION_SAVE_AS).unwrap();
+    });
+    settle(cx);
+    assert!(cx.did_prompt_for_new_path());
+    let retried = fx.folder.path().join("retry.txt");
+    cx.simulate_new_path_selection(|_| Some(retried.clone()));
+    settle(cx);
+    assert_eq!(std::fs::read_to_string(retried).unwrap(), "retry");
+    assert!(view.read_with(cx, |v, _| v.open_document(retry_doc).is_none()));
+}
+
+#[gpui::test]
+fn cancelling_a_close_save_does_not_leave_the_window_closing(cx: &mut TestAppContext) {
+    use crate::feedback::FeedbackService;
+
+    let fx = Fixture::new();
+    let (view, cx) = fx.open(cx);
+    let window = cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            edit_host::attach_close_confirmation(v, window, cx)
+        });
+        window.window_handle()
+    });
+
+    for show_error in [false, true] {
+        let doc = dirty_untitled(&view, cx, "keep");
+        assert!(!view.update(cx, |v, cx| v.request_window_close(cx)));
+        save_from_close_prompt(&view, cx, doc);
+        let missing = fx.folder.path().join("missing").join("out.txt");
+        cx.simulate_new_path_selection(|_| show_error.then_some(missing));
+        settle(cx);
+        if show_error {
+            let key = format!("{}{}", ids::KEY_FAILED, doc.0);
+            view.update(cx, |v, _| v.shell.feedback.dismiss(&key).unwrap());
+            settle(cx);
+        }
+        assert!(active_tab(&view, cx, |_, tab| tab.dirty));
+
+        view.update(cx, |v, cx| {
+            v.command("workbench.action.closeActiveEditor", cx)
+        });
+        save_from_close_prompt(&view, cx, doc);
+        let saved = fx.folder.path().join(format!("kept-{show_error}.txt"));
+        cx.simulate_new_path_selection(|_| Some(saved.clone()));
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(saved).unwrap(), "keep");
+        assert!(window.update(&mut cx.cx, |_, _, _| ()).is_ok());
+        assert!(view.read_with(cx, |v, _| v.open_document(doc).is_none()));
+    }
+}
+
 #[gpui::test]
 fn closing_a_dirty_tab_or_the_window_asks_first(cx: &mut TestAppContext) {
     let fx = Fixture::new();

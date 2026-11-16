@@ -437,9 +437,16 @@ impl SaveController {
     /// `FeedbackEvent::Dismissed` 转给这里）：那次保存就此作罢，记住的请求一并忘掉，
     /// 免得它跨越到下一次保存（#140）。外部修改提示条与关闭确认不带保存请求，忽略。
     pub fn on_dismissed(&mut self, feedback_key: &str) {
-        let Some((prefix, document)) = parse_key(feedback_key) else {
-            return;
-        };
+        self.cancel_dismissed_action(feedback_key);
+    }
+
+    /// 返回被关闭的保存流程所属文档，以便窗口清理相应的关闭续接。
+    pub(crate) fn cancel_dismissed_action(&mut self, feedback_key: &str) -> Option<DocumentId> {
+        let (prefix, document) = parse_key(feedback_key)?;
+        if prefix == KEY_CLOSE {
+            self.close_after_save.remove(&document);
+            return Some(document);
+        }
         if !self.saving.contains_key(&document)
             && matches!(
                 prefix,
@@ -447,8 +454,18 @@ impl SaveController {
             )
         {
             self.pending.remove(&document);
-            self.close_after_save.remove(&document);
+            return self.close_after_save.remove(&document).then_some(document);
         }
+        None
+    }
+
+    /// 关闭确认所发起的另存为被取消。
+    pub(crate) fn cancel_save_as(&mut self, document: DocumentId) -> bool {
+        let cancelled_close = self.close_after_save.remove(&document);
+        if cancelled_close {
+            self.pending.remove(&document);
+        }
+        cancelled_close
     }
 
     /// 后续按钮的基础请求：最近一次未完成的保存请求（没有时是默认的原地保存）。
@@ -620,10 +637,7 @@ impl SaveController {
                     Vec::new()
                 }
             }
-            SaveOutcome::NeedsPath => {
-                self.close_after_save.remove(&document);
-                vec![Effect::PickSaveAsPath(document)]
-            }
+            SaveOutcome::NeedsPath => vec![Effect::PickSaveAsPath(document)],
             SaveOutcome::NeedsEncodingDecision { count, encoding } => {
                 let message = Message {
                     key: "save.modal.unencodable".into(),

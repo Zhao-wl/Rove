@@ -32,7 +32,7 @@ pub(super) struct Editing {
     /// 已经排了一个“安静期结束后读盘”的定时器。
     disk_timer: bool,
     /// 窗口关闭按钮触发了逐个确认。
-    closing_window: bool,
+    closing_window: Option<DocumentId>,
     /// 本窗口（全部确认完后由它关闭；#149 的「重启以更新」也用它收尾）。
     pub(super) window: Option<gpui::AnyWindowHandle>,
     /// 打开服务的具体加载器（编辑后的新快照要回填它的缓存）。
@@ -690,7 +690,7 @@ impl Workbench {
                     self.editing.deleted.remove(&document);
                     self.discard_hot_exit_backup(document);
                     self.sync_views(cx);
-                    self.continue_window_close(cx);
+                    self.continue_window_close(document, cx);
                 }
             }
         }
@@ -734,15 +734,20 @@ impl Workbench {
             .unwrap_or_else(|| self.root.clone());
         let answer = cx.prompt_for_new_path(&directory, None);
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = answer.await else {
-                return;
-            };
+            let answer = answer.await;
             let _ = this.update(cx, |view, cx| {
-                let request = SaveRequest {
-                    save_as: Some(path),
-                    ..SaveRequest::default()
-                };
-                view.start_save(document, request, cx);
+                if let Ok(Ok(Some(path))) = answer {
+                    let request = SaveRequest {
+                        save_as: Some(path),
+                        ..SaveRequest::default()
+                    };
+                    view.start_save(document, request, cx);
+                } else {
+                    let cancelled_close = view.editing.saves.borrow_mut().cancel_save_as(document);
+                    if cancelled_close {
+                        view.cancel_window_close(document);
+                    }
+                }
             });
         })
         .detach();
@@ -759,7 +764,7 @@ impl Workbench {
             return;
         };
         if action == save_ids::ACTION_CANCEL {
-            self.editing.closing_window = false;
+            self.cancel_window_close(document);
         }
         let options = self.save_options(document);
         let begun = self.editing.saves.borrow_mut().begin_action(
@@ -775,6 +780,19 @@ impl Workbench {
         match begun {
             Ok((document, job)) => self.spawn_save(document, job, cx),
             Err(effects) => self.apply_save_effects(effects, cx),
+        }
+    }
+
+    pub(super) fn save_feedback_dismissed(&mut self, key: &str) {
+        let document = self.editing.saves.borrow_mut().cancel_dismissed_action(key);
+        if let Some(document) = document {
+            self.cancel_window_close(document);
+        }
+    }
+
+    fn cancel_window_close(&mut self, document: DocumentId) {
+        if self.editing.closing_window == Some(document) {
+            self.editing.closing_window = None;
         }
     }
 
@@ -939,8 +957,8 @@ impl Workbench {
 
     /// 窗口关闭按钮：逐个确认未保存的文档；全部处理完才真正关闭。返回是否可以立即关闭。
     pub(super) fn window_should_close(&mut self, cx: &mut Context<Self>) -> bool {
-        self.editing.closing_window = true;
         if let Err(document) = self.back_up_for_window_close() {
+            self.editing.closing_window = Some(document);
             self.editing
                 .saves
                 .borrow_mut()
@@ -948,7 +966,7 @@ impl Workbench {
             cx.notify();
             return false;
         }
-        self.editing.closing_window = false;
+        self.editing.closing_window = None;
         true
     }
 
@@ -963,8 +981,8 @@ impl Workbench {
     }
 
     /// 一个文档处理完（保存或不保存）：窗口关闭流程中继续下一个，全部处理完就关窗口。
-    fn continue_window_close(&mut self, cx: &mut Context<Self>) {
-        if !self.editing.closing_window {
+    fn continue_window_close(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if self.editing.closing_window != Some(document) {
             return;
         }
         if self.request_window_close(cx) {
