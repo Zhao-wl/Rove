@@ -596,13 +596,15 @@ impl Workbench {
                     ..
                 } => {
                     self.editing.deleted.remove(&document);
-                    // #50：已经落盘了，备份没用了。
-                    self.discard_hot_exit_backup(document);
                     self.saved_as(document, &path);
                     // 写盘期间缓冲区又被编辑过（会话的历史标记已经越过保存点）：磁盘上是保存时
                     // 的快照，缓冲区已经不是它了。#159：这种情况下标签要保持脏（关闭时仍然确认），
                     // 这次保存也不登记（理由见下）；要等新的快照保存成功才算干净。
                     let clean = !self.editing.saves.borrow().is_dirty(document);
+                    // 写盘期间的新编辑可能已有备份，也可能仍在备份队列中。
+                    if clean {
+                        self.discard_hot_exit_backup(document);
+                    }
                     self.editor.set_dirty(document, !clean);
                     if let Some((Resource::Workspace(p), saved_version)) = self
                         .open_document(document)

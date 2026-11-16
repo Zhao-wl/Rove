@@ -420,6 +420,115 @@ fn backup_write_failure_keeps_the_window_open_until_retried(cx: &mut TestAppCont
 // ------------------------------------------------------------------------- 清理
 
 #[gpui::test]
+fn old_save_keeps_the_written_backup_of_newer_edits(cx: &mut TestAppContext) {
+    old_save_keeps_newer_backup(cx, true);
+}
+
+#[gpui::test]
+fn old_save_keeps_the_queued_backup_of_newer_edits(cx: &mut TestAppContext) {
+    old_save_keeps_newer_backup(cx, false);
+}
+
+fn old_save_keeps_newer_backup(cx: &mut TestAppContext, already_written: bool) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    let disk = fx.file("a.txt", "aaa\n");
+    let store = fx.store();
+    let newer;
+    {
+        let (view, cx) = fx.launch(cx);
+        let code = open_file(&view, cx, "a.txt");
+        cx.simulate_input("X");
+        settle(cx);
+        let saved = shown_text(&code, cx);
+        let (document, job) = view.update(cx, |v, _| {
+            let document = v
+                .editor
+                .active()
+                .current()
+                .unwrap()
+                .opened()
+                .unwrap()
+                .document
+                .id;
+            let job = v
+                .editing
+                .saves
+                .borrow_mut()
+                .begin_save(
+                    document,
+                    &rove_buffer::save::SaveRequest::default(),
+                    &rove_buffer::save::SaveOptions::default(),
+                    &mut v.shell.feedback,
+                    Instant::now(),
+                )
+                .unwrap();
+            (document, job)
+        });
+
+        cx.simulate_input("Y");
+        settle(cx);
+        newer = shown_text(&code, cx);
+        assert_ne!(saved, newer);
+        if already_written {
+            back_up_now(&view, cx);
+            assert_eq!(store.backups()[0].text, newer);
+        } else {
+            assert!(store.backups().is_empty());
+        }
+
+        let result = job.run();
+        view.update(cx, |v, cx| v.finish_save(document, result, cx));
+        settle(cx);
+        assert_eq!(std::fs::read_to_string(&disk).unwrap(), saved);
+        assert!(tabs(&view, cx)[0].2);
+        if !already_written {
+            back_up_now(&view, cx);
+        }
+        let backups = store.backups();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].text, newer);
+        crash(cx);
+    }
+
+    let (view, cx) = fx.launch(cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    assert_eq!(shown_text(&code, cx), newer);
+    assert!(tabs(&view, cx)[0].2);
+    // 恢复时沿用备份里的磁盘标记。用户确认覆盖后，验证成功保存会清理备份。
+    let (document, job) = view.update(cx, |v, _| {
+        let document = v
+            .editor
+            .active()
+            .current()
+            .unwrap()
+            .opened()
+            .unwrap()
+            .document
+            .id;
+        let job = v
+            .editing
+            .saves
+            .borrow_mut()
+            .begin_save(
+                document,
+                &rove_buffer::save::SaveRequest {
+                    overwrite_conflict: true,
+                    ..Default::default()
+                },
+                &rove_buffer::save::SaveOptions::default(),
+                &mut v.shell.feedback,
+                Instant::now(),
+            )
+            .unwrap();
+        (document, job)
+    });
+    let result = job.run();
+    view.update(cx, |v, cx| v.finish_save(document, result, cx));
+    assert_eq!(std::fs::read_to_string(&disk).unwrap(), newer);
+    assert!(store.backups().is_empty());
+}
+
+#[gpui::test]
 fn saving_or_closing_a_document_removes_its_backup(cx: &mut TestAppContext) {
     let fx = Fixture::new(HotExitMode::OnExit);
     let disk = fx.file("a.txt", "aaa\n");
