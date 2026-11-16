@@ -1,12 +1,19 @@
 //! 冷启动与空窗口内存的测量（issue #4、#150）。
 //!
-//! 三个数字，都由启动真实的 release 版 `rove.exe` 得到：
+//! 几个数字，都由启动真实的 release 版 `rove.exe` 得到：
 //!
 //! | 结果 id | 口径 | 预算 |
 //! |---|---|---|
 //! | `startup/first_frame` | 进程启动 → 首帧已呈现（`FIRSTFRAME_SINCE_PROCESS_MS`，#84 埋的） | `cold_start_first_frame`（只记录） |
 //! | `startup/interactive` | 进程启动 → 首帧之后的第一个输入事件被处理且包含它的那一帧画完（`INTERACTIVE_SINCE_PROCESS_MS`，#150 埋的） | `cold_start_interactive` |
-//! | `startup/empty_window_working_set`（metric，MB） | 空窗口（不带任何路径参数）稳定后 `rove.exe` 进程树的工作集 | `empty_window_memory` |
+//! | `startup/empty_window_working_set`（metric，MB） | 空窗口（不带任何路径参数）稳定后 `rove.exe` 进程树的**工作集** | `empty_window_memory`（**判定口径**） |
+//! | `startup/empty_window_private_working_set`（metric，MB） | 同一时刻的**私有工作集**（工作集里私有的那部分，#219 加的） | `empty_window_private_working_set`（只记录） |
+//! | `startup/empty_window_private`（metric，MB） | 同一时刻的**私有提交量**（commit charge，不要求驻留） | `empty_window_private_commit`（只记录） |
+//!
+//! #219 确认的内存口径：`PROJECT_CHARTER` §6 的「空窗口常驻内存 < 60 MB」判定**工作集**
+//!（M0 原型记的 47.7 MB 也是工作集，换口径等于换基线却不换数值）；私有提交与私有工作集
+//! 同时采集、只记录不设门槛，三个数都要写进报告。差值（私有提交 − 私有工作集）就是
+//! 「已提交但没有驻留」的那部分，图形栈与分配器的预留主要落在这里。
 //!
 //! 埋点默认关闭：这里启动子进程时设置 `ROVE_STARTUP_PROBE=1`（见
 //! `rove-ui/src/skeleton/workbench/startup_probe.rs`），普通使用的 `rove.exe` 不会多出一次按键。
@@ -36,6 +43,7 @@ pub const ID_FIRST_FRAME: &str = "startup/first_frame";
 pub const ID_INTERACTIVE: &str = "startup/interactive";
 pub const ID_EMPTY_WINDOW_WORKING_SET: &str = "startup/empty_window_working_set";
 pub const ID_EMPTY_WINDOW_PRIVATE: &str = "startup/empty_window_private";
+pub const ID_EMPTY_WINDOW_PRIVATE_WORKING_SET: &str = "startup/empty_window_private_working_set";
 
 pub struct Options {
     pub exe: PathBuf,
@@ -129,6 +137,13 @@ impl Samples {
             results
                 .metrics
                 .insert(ID_EMPTY_WINDOW_PRIVATE.to_string(), memory.private_mb());
+            // 私有工作集只在性能计数器可用时写进去：写个 0 会让报告读成「一点都没驻留」。
+            if memory.private_working_set > 0 {
+                results.metrics.insert(
+                    ID_EMPTY_WINDOW_PRIVATE_WORKING_SET.to_string(),
+                    memory.private_working_set_mb(),
+                );
+            }
         }
     }
 }
@@ -185,13 +200,32 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
         ),
     }
     match median_memory(&samples.empty_window) {
-        Some(memory) => println!(
-            "  空窗口常驻内存（稳定 {:?} 后）：工作集 {:.1} MB，私有提交 {:.1} MB（n={}）",
-            options.settle,
-            memory.working_set_mb(),
-            memory.private_mb(),
-            samples.empty_window.len()
-        ),
+        Some(memory) => {
+            println!(
+                "  空窗口常驻内存（稳定 {:?} 后，n={}）：",
+                options.settle,
+                samples.empty_window.len()
+            );
+            println!(
+                "    工作集     {:.1} MB  ← 判定口径（empty_window_memory，CHARTER §6 < 60 MB）",
+                memory.working_set_mb()
+            );
+            println!(
+                "    私有工作集 {}  只记录：工作集里私有的那部分",
+                match memory.private_working_set {
+                    0 => "未测到 ".to_string(),
+                    _ => format!("{:.1} MB", memory.private_working_set_mb()),
+                }
+            );
+            println!(
+                "    私有提交   {:.1} MB  只记录：已提交的私有地址空间，不要求驻留{}",
+                memory.private_mb(),
+                match memory.private_not_resident_mb() {
+                    Some(not_resident) => format!("（其中 {not_resident:.1} MB 没有驻留）"),
+                    None => String::new(),
+                }
+            );
+        }
         None if options.skip_memory => println!("  空窗口常驻内存：按 --no-memory 跳过"),
         None => println!("  空窗口常驻内存：没有采到（拿不到进程表时会这样）"),
     }
@@ -241,8 +275,12 @@ pub fn measure(options: &Options) -> Samples {
                     ..
                 }) => {
                     println!(
-                        "  空窗口第 {index} 次：工作集 {:.1} MB，私有提交 {:.1} MB",
+                        "  空窗口第 {index} 次：工作集 {:.1} MB，私有工作集 {}，私有提交 {:.1} MB",
                         memory.working_set_mb(),
+                        match memory.private_working_set {
+                            0 => "未测到".to_string(),
+                            _ => format!("{:.1} MB", memory.private_working_set_mb()),
+                        },
                         memory.private_mb()
                     );
                     samples.empty_window.push(memory);
@@ -337,8 +375,10 @@ fn measure_once(
     if has_first_frame && memory {
         std::thread::sleep(options.settle);
         let all = procwatch::snapshot();
-        let tree = procwatch::tree(&all, pid);
+        let mut tree = procwatch::tree(&all, pid);
         if !tree.is_empty() {
+            // 私有工作集来自另一个计数器类（#219）：拿不到时留 0，按「没测到」报告。
+            procwatch::apply_private_working_sets(&mut tree, &procwatch::private_working_sets());
             sample.memory = Some(procwatch::total(&tree));
         }
     }
@@ -415,14 +455,49 @@ mod tests {
         assert_eq!(marker("FIRSTFRAME_SINCE_PROCESS_MS", FIRST_FRAME), None);
     }
 
+    fn memory(working_set_mb: u64, private_working_set_mb: u64, private_mb: u64) -> Memory {
+        Memory {
+            working_set: working_set_mb << 20,
+            private: private_mb << 20,
+            private_working_set: private_working_set_mb << 20,
+        }
+    }
+
     #[test]
     fn the_median_is_taken_over_the_working_set() {
-        let memory = |ws: u64| Memory {
-            working_set: ws << 20,
-            private: ws << 20,
-        };
-        let median = median_memory(&[memory(70), memory(40), memory(50)]).unwrap();
+        let sample = |ws: u64| memory(ws, ws, ws);
+        let median = median_memory(&[sample(70), sample(40), sample(50)]).unwrap();
         assert_eq!(median.working_set_mb(), 50.0);
         assert!(median_memory(&[]).is_none());
+    }
+
+    /// #219：判定用工作集，私有工作集与私有提交同时写进 `metrics`（报告里三个数都要写）。
+    #[test]
+    fn all_three_memory_numbers_reach_the_results_table() {
+        let mut samples = Samples {
+            empty_window: vec![memory(55, 48, 121)],
+            ..Samples::default()
+        };
+        let mut results = Results::new();
+        samples.write_into(&mut results);
+        assert_eq!(results.metric(ID_EMPTY_WINDOW_WORKING_SET), Some(55.0));
+        assert_eq!(
+            results.metric(ID_EMPTY_WINDOW_PRIVATE_WORKING_SET),
+            Some(48.0)
+        );
+        assert_eq!(results.metric(ID_EMPTY_WINDOW_PRIVATE), Some(121.0));
+
+        // 性能计数器拿不到私有工作集时这一项干脆不写，不要写成 0。
+        samples.empty_window = vec![memory(55, 0, 121)];
+        let mut without_counter = Results::new();
+        samples.write_into(&mut without_counter);
+        assert_eq!(
+            without_counter.metric(ID_EMPTY_WINDOW_PRIVATE_WORKING_SET),
+            None
+        );
+        assert_eq!(
+            without_counter.metric(ID_EMPTY_WINDOW_WORKING_SET),
+            Some(55.0)
+        );
     }
 }

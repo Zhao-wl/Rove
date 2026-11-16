@@ -358,4 +358,103 @@ mod tests {
         );
         assert_eq!(check(&budgets, &wrong_table).unwrap(), 0, "未测量不算失败");
     }
+
+    /// #219：「空窗口常驻内存」只能按**工作集**判定。
+    ///
+    /// 私有提交与私有工作集同时采集、各有一条 `recorded` 条目（报告里三个数都要写），
+    /// 但都不设门槛——换成私有提交判定等于换了基线却不换 CHARTER §6 的 60 MB。
+    #[test]
+    fn only_the_working_set_judges_the_resident_memory_budget() {
+        let budgets = budgets();
+        let memory: Vec<&Budget> = budgets
+            .budget
+            .iter()
+            .filter(|b| {
+                b.bench
+                    .as_deref()
+                    .is_some_and(|bench| bench.starts_with("startup/empty_window"))
+            })
+            .collect();
+        let enforced: Vec<&str> = memory
+            .iter()
+            .filter(|b| b.status == "enforced")
+            .map(|b| b.id.as_str())
+            .collect();
+        assert_eq!(
+            enforced,
+            vec!["empty_window_memory"],
+            "空窗口内存只有工作集那条判定（#219 的口径），其余只记录"
+        );
+        let judged = memory
+            .iter()
+            .find(|b| b.id == "empty_window_memory")
+            .expect("有 empty_window_memory");
+        assert_eq!(
+            judged.bench.as_deref(),
+            Some(crate::startup::ID_EMPTY_WINDOW_WORKING_SET)
+        );
+        assert_eq!(judged.value, 60.0, "CHARTER §6 的数值不因口径确认而改动");
+        assert_eq!(judged.unit, "MB");
+
+        for (id, bench) in [
+            (
+                "empty_window_private_commit",
+                crate::startup::ID_EMPTY_WINDOW_PRIVATE,
+            ),
+            (
+                "empty_window_private_working_set",
+                crate::startup::ID_EMPTY_WINDOW_PRIVATE_WORKING_SET,
+            ),
+        ] {
+            let budget = memory
+                .iter()
+                .find(|b| b.id == id)
+                .unwrap_or_else(|| panic!("预算表里要有 `{id}`（#219：三个数都要进报告）"));
+            assert_eq!(budget.status, "recorded", "`{id}` 只记录不设门槛");
+            assert_eq!(budget.bench.as_deref(), Some(bench));
+        }
+    }
+
+    /// 私有提交再高也不会让 `--check-budgets` 失败：它是 `recorded`。
+    /// 同一次采样里工作集超了才失败。
+    #[test]
+    fn a_high_private_commit_is_reported_but_does_not_fail_the_check() {
+        let budgets = Budgets {
+            schema: SCHEMA,
+            size: None,
+            budget: budgets()
+                .budget
+                .into_iter()
+                .filter(|b| {
+                    b.bench
+                        .as_deref()
+                        .is_some_and(|bench| bench.starts_with("startup/empty_window"))
+                })
+                .collect(),
+        };
+        assert_eq!(budgets.budget.len(), 3, "工作集 + 私有工作集 + 私有提交");
+
+        let mut measured = Results::new();
+        measured
+            .metrics
+            .insert(crate::startup::ID_EMPTY_WINDOW_WORKING_SET.into(), 54.9);
+        measured
+            .metrics
+            .insert(crate::startup::ID_EMPTY_WINDOW_PRIVATE.into(), 121.6);
+        measured.metrics.insert(
+            crate::startup::ID_EMPTY_WINDOW_PRIVATE_WORKING_SET.into(),
+            48.0,
+        );
+        assert_eq!(
+            check(&budgets, &measured).unwrap(),
+            0,
+            "#150 实测的那组数字（工作集 54.9 / 私有提交 121.6 MB）按本口径是达标的"
+        );
+
+        // 工作集超了才失败。
+        measured
+            .metrics
+            .insert(crate::startup::ID_EMPTY_WINDOW_WORKING_SET.into(), 61.0);
+        assert_eq!(check(&budgets, &measured).unwrap(), 1);
+    }
 }

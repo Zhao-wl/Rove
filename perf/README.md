@@ -58,9 +58,16 @@ cargo xtask check-release-gate
 
 **空窗口常驻内存**（`empty_window_memory`）也由 `cargo xtask startup` 采集：启动**不带任何路径参数**
 的 `rove.exe`（空窗口 + 欢迎页，临时用户目录里 `rove.update.mode = none`），首帧之后稳定 2 s
-（`--startup-settle` 可调）再按**进程树**取工作集与私有提交，取多次的中位数。
-判定用工作集（M0 的 47.7 MB 也是工作集，才能比较），私有提交记在
-`startup/empty_window_private`，两个数都要写进报告。
+（`--startup-settle` 可调）再按**进程树**取三个数，取多次的中位数（按工作集排序）：
+
+| 结果 id | 计数器 | 判定 |
+|---|---|---|
+| `startup/empty_window_working_set` | `Win32_Process.WorkingSetSize` | **判定口径**：`empty_window_memory` < 60 MB |
+| `startup/empty_window_private_working_set` | `Win32_PerfRawData_PerfProc_Process.WorkingSetPrivate` | 只记录（`empty_window_private_working_set`） |
+| `startup/empty_window_private` | `Win32_Process.PrivatePageCount` | 只记录（`empty_window_private_commit`） |
+
+三个数都要写进报告。性能计数器类拿不到时（被禁用、权限不足）私有工作集这一项不写进结果，
+按「未测量」报告，**不要当成 0**。
 
 `cargo xtask` 由 `.cargo/config.toml` 里的 alias 提供，等价于 `cargo run -p xtask --`。
 
@@ -78,9 +85,19 @@ cargo xtask check-release-gate
      （`M0_UI_SPIKE_REPORT` §2.5）。
    - 帧间隔（frame interval）是另一个指标：相邻两帧「已呈现」的墙钟间隔，受 vsync 限制，
      理想值 8.33 ms。
-3. **内存区分工作集与私有提交**
+3. **内存区分工作集与私有提交**（口径 2026-11-16 由 #219 写细，数值未改）
+   - 三个数各是什么：
+     - **工作集**（`WorkingSetSize`）：当前**驻留在物理内存**里的页，含共享页（exe / DLL / 映射文件）；
+     - **私有工作集**（`WorkingSetPrivate`）：工作集里私有的那部分，任务管理器的「内存(专用工作集)」列；
+     - **私有提交**（`PrivatePageCount`，commit charge）：已向系统**预订**的私有地址空间，
+       **不要求驻留物理内存**——提交了却从未被触碰、或者已经被换出的页都算在里面。
    - 打开 1 GB 文件时，工作集包含 mmap 的**文件页**（可回收），不等于真实占用；
-   - 报告里两个数都要写，并注明采样时刻（空闲多久之后）。
+   - **「常驻内存」一类的目标判定工作集**（`PROJECT_CHARTER` §6 的「空窗口常驻内存 < 60 MB」）：
+     这条目标是按 M0 原型的 47.7 MB **工作集**定的，换成私有提交判定等于换了基线却不换数值，
+     而且私有提交不是「常驻」量。要给私有提交单独定目标值，走 `PROJECT_CHARTER` 的修订流程另开 issue；
+   - 报告里**三个数都要写**，并注明采样时刻（空闲多久之后）与当时的机器负载。
+     私有提交 − 私有工作集就是「已提交但没有驻留」的那部分（图形栈与分配器的预留主要在这里）：
+     空窗口上这个差额很大是正常的，不说明有泄漏，也不该拿它和 60 MB 比。
 
 另外：
 
