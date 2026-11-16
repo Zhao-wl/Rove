@@ -306,6 +306,71 @@ fn regex_replacement_expands_capture_groups(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn multiline_replace_one_expands_lookbehind_capture(cx: &mut TestAppContext) {
+    let fx = Fixture::new(r#"{"editor.find.seedSearchStringFromSelection": "never"}"#);
+    fx.file("code.txt", "a\nb");
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "code.txt", cx);
+    press("ctrl-f", cx);
+    press("alt-r", cx);
+    type_text(r"(?<=a\n)(b)", cx);
+    assert_eq!(matches(&view, cx), 1);
+    press("ctrl-h", cx);
+    type_text("[$1]", cx);
+    press("enter", cx);
+
+    assert_eq!(text(&view, cx), "a\n[b]");
+    press("escape", cx);
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), "a\nb");
+}
+
+#[gpui::test]
+fn multiline_replace_all_expands_lookbehind_captures_in_crlf(cx: &mut TestAppContext) {
+    let fx = Fixture::new(r#"{"editor.find.seedSearchStringFromSelection": "never"}"#);
+    let original = "a\r\nb\r\na\r\nb";
+    fx.file("code.txt", original);
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "code.txt", cx);
+    press("ctrl-f", cx);
+    press("alt-r", cx);
+    type_text(r"(?<=a\n)(b)", cx);
+    assert_eq!(matches(&view, cx), 2);
+    press("ctrl-h", cx);
+    type_text("[$1]", cx);
+    press("ctrl-alt-enter", cx);
+
+    assert_eq!(text(&view, cx), "a\r\n[b]\r\na\r\n[b]");
+    press("escape", cx);
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), original);
+}
+
+#[gpui::test]
+fn multiline_replace_all_uses_the_selection_as_capture_context(cx: &mut TestAppContext) {
+    let fx = Fixture::new(r#"{"editor.find.seedSearchStringFromSelection": "never"}"#);
+    let original = "a\r\nb\r\na\r\nb\r\na\r\nb";
+    fx.file("code.txt", original);
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "code.txt", cx);
+    select(&view, pos(1, 0), pos(3, 1), cx);
+    press("ctrl-f", cx);
+    press("alt-l", cx);
+    press("alt-r", cx);
+    type_text(r"(?<=a\n)(b)|(b)", cx);
+    assert_eq!(matches(&view, cx), 2);
+    press("ctrl-h", cx);
+    type_text("[$1][$2]", cx);
+    press("ctrl-alt-enter", cx);
+
+    // 第一处之前的 a 在选区外，只有第二处命中后行断言。
+    assert_eq!(text(&view, cx), "a\r\n[][b]\r\na\r\n[b][]\r\na\r\nb");
+    press("escape", cx);
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), original);
+}
+
+#[gpui::test]
 fn preserve_case_follows_each_match(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     fx.file("case.txt", "foo FOO Foo fOo\n");
