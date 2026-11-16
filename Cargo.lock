@@ -4727,7 +4727,7 @@ dependencies = [
 
 [[package]]
 name = "rove-app"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "embed-resource",
  "gpui",
@@ -4743,11 +4743,11 @@ dependencies = [
 
 [[package]]
 name = "rove-base"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "rove-buffer"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chardetng",
  "encoding_rs",
@@ -4767,7 +4767,7 @@ dependencies = [
 
 [[package]]
 name = "rove-commands"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "fancy-regex",
  "jsonc-parser",
@@ -4777,7 +4777,7 @@ dependencies = [
 
 [[package]]
 name = "rove-config"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "rove-base",
  "tempfile",
@@ -4785,7 +4785,7 @@ dependencies = [
 
 [[package]]
 name = "rove-docview"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "rove-base",
  "rove-syntax",
@@ -4793,21 +4793,21 @@ dependencies = [
 
 [[package]]
 name = "rove-fuzzy"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "memchr",
 ]
 
 [[package]]
 name = "rove-i18n"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "rove-base",
 ]
 
 [[package]]
 name = "rove-lang-cs"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bytemuck",
  "memchr",
@@ -4830,7 +4830,7 @@ dependencies = [
 
 [[package]]
 name = "rove-search"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "encoding_rs",
  "grep-matcher",
@@ -4849,7 +4849,7 @@ dependencies = [
 
 [[package]]
 name = "rove-syntax"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "fancy-regex",
  "futures-lite 2.6.1",
@@ -4875,11 +4875,11 @@ dependencies = [
 
 [[package]]
 name = "rove-test-support"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "rove-theme"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "jsonc-parser",
  "rove-base",
@@ -4889,7 +4889,7 @@ dependencies = [
 
 [[package]]
 name = "rove-ui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ammonia",
  "async-channel",
@@ -4928,7 +4928,7 @@ dependencies = [
 
 [[package]]
 name = "rove-update"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "flate2",
@@ -4942,7 +4942,7 @@ dependencies = [
 
 [[package]]
 name = "rove-workspace"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "globset",
  "ignore",
@@ -7309,7 +7309,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "ed25519-dalek",
