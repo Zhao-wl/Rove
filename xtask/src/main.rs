@@ -28,6 +28,10 @@ mod results;
 mod sign;
 mod size;
 mod startup;
+// #215：按键到上屏基准的采样计划与统计。实现在 `xtask/benches/typing.rs` 里用，
+// 这里声明一次是为了让它的单元测试跟着 `cargo test -p xtask` 跑。
+#[allow(dead_code)]
+mod typing_plan;
 mod util;
 
 use std::process::ExitCode;

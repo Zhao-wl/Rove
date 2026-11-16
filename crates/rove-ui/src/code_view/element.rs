@@ -405,6 +405,8 @@ impl CodeView {
         stats.visible_lines = lines.len() as u32;
         stats.first_line = first_doc;
         stats.first_line_y = y0 as f32;
+        // #215：记下这一帧画的是哪个版本的文本，基准与测试才能判定「按键有没有被紧接着的那一帧吸收」。
+        stats.text_version = self.text.as_ref().map_or(0, |t| t.version().0);
         self.last_frame = stats;
         let last = lines.last().map_or(first_doc, |l| l.line);
         self.note_visible(first..view_line.max(first + 1), top);
@@ -1433,7 +1435,10 @@ impl CodeView {
 
     pub(crate) fn finish_frame(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         if let Some(start) = self.frame_started.take() {
-            self.last_frame.cpu = start.elapsed();
+            let end = Instant::now();
+            self.last_frame.cpu = end - start;
+            // #215：按键到上屏的终点是这里（paint 结束），不是下一次帧回调。
+            self.last_frame.end = Some(end);
             self.last_frame.glyphs = self.glyphs_painted.replace(0);
             if let Some(rec) = self.recording.as_mut() {
                 rec.push(self.last_frame);

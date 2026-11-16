@@ -90,6 +90,76 @@ cargo xtask check-release-gate
   M0 结论：可见行全部重新整形时，GPUI 与自研栈都守不住 120 fps（帧间隔 p99 ≈ 16.8 ms），
   所以 `uniq.txt` 的「全唯一行滚动」是一条正式基准，不允许因为「不好看」删掉。
 
+<!-- #215 追加 -->
+
+### 按键到上屏（#215 修订，`typing` 组）
+
+`PROJECT_CHARTER` §6 的「按键到上屏 < 8 ms」在 2026-11-16 由 #215 重新定义了**口径**（走章程修订流程，
+**数值没有改动**，也没有动 `budgets.toml` 里的任何数字）。原因是：按老口径这条指标在 120 Hz 上
+**结构上不可能达到**，而 Rove 自己的开销离 8 ms 还差一个数量级。
+
+**这条路径在 Windows 上长什么样**（源码位置都在 `vendor/gpui/src/platform/windows/`）：
+
+1. `platform.rs::begin_vsync_thread` 起一条 `VSyncProvider` 线程，`DwmFlush()` 等到垂直同步，
+   然后对每个窗口 `RedrawWindow(RDW_INVALIDATE)`；
+2. UI 线程收到 `WM_PAINT` → `events.rs::draw_window` → `window.rs` 的 `request_frame`；
+3. `request_frame` 先跑 `on_next_frame` 回调，**再**绘制（`window.rs` 的 `draw` + `present`）；
+4. `directx_renderer.rs::present` 用的是 `Present(0, …)`——**不等垂直同步**，交给 DWM 合成。
+
+两个结论直接回答了 #215 的问题：
+
+- **不需要「在 prepaint 之前再采样一次输入」的钩子**。键盘消息（`WM_KEYDOWN` / `WM_CHAR`）与
+  前台任务（`dispatcher.rs` 用 `PostMessageW` 投递）在 Win32 消息队列里都**优先于 `WM_PAINT`**
+  （`WM_PAINT` 是合成出来的最低优先级消息，队列里还有别的消息时 `GetMessage` 不会返回它）。
+  也就是说：一帧开始绘制之前，这一帧之前到达的按键**已经**被吸收了。能省的半帧并不存在。
+- **省不掉的是「空等」**：按键在一帧里的哪个相位到达是随机的，到达之后必须等到下一次垂直同步
+  才会有人绘制。这段空等的均值是半个刷新间隔，p99 接近一个刷新间隔（120 Hz 下 8.33 ms）。
+
+所以一次按键的墙钟时间分成三段，基准（`xtask/benches/typing.rs`）分别记：
+
+| criterion id | 含义 | 谁决定 |
+|---|---|---|
+| `typing/key_vsync_wait` | 按键到达 → 下一次垂直同步的**空等** | 显示器刷新率 + 按键到达相位 |
+| `typing/key_handling` | 按键处理（事务 + 视图增量更新 + 事件） | Rove |
+| `typing/frame_cpu` | 这一帧里代码视图的绘制 CPU（prepaint → paint） | Rove |
+| **`typing/key_active`** | **判定口径**：处理 + 整帧绘制（帧回调开始 → 代码视图 paint 结束），不含空等 | Rove |
+| `typing/key_to_paint` | 墙钟：按键进入 → 这一帧 paint 结束（= 上面三段之和） | 两者都有 |
+| `typing/key_to_frame` | **#47 的旧口径**，终点取「这一帧之后的下一次帧回调」，只为和历史数据对比 | 两者都有 |
+
+- 预算 `keystroke_to_paint`（8 ms、p99、`enforced`）判的是 `typing/key_active`；
+- 墙钟记在 `keystroke_to_paint_wall`（`recorded`，不设门槛）；
+- 另有一条**不靠计时器**的硬要求：按键必须被**紧接着的那一帧**吸收（不多等一帧）。基准打印
+  「按键被第几帧吸收」，判定靠 `FrameStats::text_version`（这一帧画的是哪个版本的文本）；
+  与机器无关的那部分由 `cargo test -p rove-ui --test code_view_latency` 钉住。
+- 进程内测不到的部分要在报告里写清：注入走 `Window::dispatch_keystroke`，**不含** Windows 键盘消息
+  的排队时间与输入法；`Present(0)` 之后还有 DWM 合成与扫描输出（**至少再一个刷新间隔**）。
+  真·「光子到眼睛」的数字只能用外部测量，记在人工事项里。
+
+**输入采样相位**：#47 的基准在帧回调**里**注入按键，等于把相位固定在 0（刚过垂直同步、这一帧
+还没开始绘制）——真实按键不可能总落在这里，而且这个相位会让「到下一次帧回调」的旧口径正好等于
+一个完整的刷新间隔。现在默认把注入点**均匀铺开**在一个刷新间隔里（黄金比例低差异序列，上限取
+间隔的 80%，见 `xtask/src/typing_plan.rs`，单元测试跟 `cargo test -p xtask` 跑）：帧回调之后、
+这一帧绘制完成之后由前台任务自旋到目标相位再注入，所以等待不会推迟本帧的绘制。
+
+```powershell
+cargo bench -p xtask --bench typing                              # 默认：相位均匀铺开
+$env:ROVE_TYPING_PHASE = "frame-start"; cargo bench -p xtask --bench typing   # 复现 #47 的固定相位
+```
+
+开发机（120 Hz，**机器负载较高**：同时开着 Unity 与另一个构建槽）上两种相位各 400 个样本：
+
+| 口径 | #47 相位（帧回调里） | #215 相位（均匀铺开） |
+|---|---:|---:|
+| 旧口径 `key_to_frame` p99 | 10.403 ms（mean 8.326） | 16.718 ms（mean 13.335） |
+| 墙钟 `key_to_paint` p99 | 2.083 ms（mean 1.072） | 9.593 ms（mean 5.990） |
+| **判定 `key_active` p99** | **2.083 ms**（mean 1.072） | **2.289 ms**（mean 1.375） |
+| 空等 p99 | 0（相位恒为 0） | 7.859 ms（mean 4.616） |
+| 不多等一帧 | 400/400 | 400/400 |
+
+旧相位 + 旧口径跑出来的 8.326 ms / p99 10.403 ms，与改动前同一台机器上的 8.327 ms / p99 9.727 ms
+一致——说明改写没有改变旧数字测的是什么，只是把终点从「下一次帧回调」挪回了「这一帧 paint 结束」，
+并把相位铺开。绝对值只作相对比较用，空闲机器上的复测是人工事项。
+
 ## CI 里的行为
 
 - **不做绝对判定**。托管机器的波动比 15% 还大；绝对指标在本地参考设备上测量并记入报告。
