@@ -558,3 +558,100 @@ fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
     out.extend_from_slice(&0u16.to_le_bytes());
     out
 }
+
+#[gpui::test]
+fn hot_loading_update_mode_revokes_old_work_and_restarts_the_schedule(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let settings_path = user.path().join("settings.json");
+    std::fs::write(&settings_path, r#"{"rove.update.mode":"default"}"#).unwrap();
+    let mut options = rove_config::SettingsOptions::new(user.path(), user.path().join("backup"));
+    options.watch = None;
+    let settings = Arc::new(rove_config::SettingsService::open(
+        options,
+        crate::app_settings::registry().unwrap(),
+    ));
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let editor = EditorSettings::read(&*settings).unwrap();
+        Workbench::build(
+            dir.path().to_owned(),
+            Instant::now(),
+            LayoutStore::disabled(),
+            settings.clone(),
+            editor,
+            cx,
+        )
+    });
+    let components = dir.path().join("components").join("indexer-cs");
+    install_component(&components, "1.2.0.0");
+    let archive = component_package("1.3.0.0");
+    let component_get = component_url("1.3.0.0");
+    let transport = StubTransport::new().with(&component_get, archive.clone());
+    let spy = attach_with(&view, cx, UpdateMode::Default, dir.path(), transport);
+    let old = view.update(cx, |v, cx| {
+        v.start_update_checks(cx);
+        v.update_service().unwrap().updater().clone()
+    });
+    cx.run_until_parked();
+
+    std::fs::write(&settings_path, r#"{"rove.update.mode":"none"}"#).unwrap();
+    settings.reload();
+    cx.run_until_parked();
+    view.update(cx, |v, cx| {
+        assert_eq!(v.update_service().unwrap().state(), &UpdateState::Disabled);
+        v.finish_update_check(
+            &old,
+            Outcome::Available {
+                manifest: Box::new(manifest("0.1.1")),
+                required: false,
+            },
+            false,
+            cx,
+        );
+        v.update_command(reg::CHECK_FOR_UPDATES, cx);
+    });
+    cx.executor()
+        .advance_clock(rove_update::mode::STARTUP_DELAY);
+    cx.run_until_parked();
+    assert_eq!(old.check(), Outcome::Disabled);
+    assert_eq!(notification(&view, cx), None);
+    assert!(spy.requested().is_empty());
+
+    std::fs::write(&settings_path, r#"{"rove.update.mode":"default"}"#).unwrap();
+    settings.reload();
+    cx.run_until_parked();
+    view.update(cx, |v, cx| {
+        assert_eq!(v.update_service().unwrap().mode(), UpdateMode::Default);
+        // 重新启用后，旧检查回调仍不能启动下载。
+        v.finish_update_check(
+            &old,
+            Outcome::Available {
+                manifest: Box::new(manifest("0.1.1")),
+                required: false,
+            },
+            false,
+            cx,
+        );
+    });
+    assert!(spy.requested().is_empty());
+    cx.executor()
+        .advance_clock(rove_update::mode::STARTUP_DELAY);
+    cx.run_until_parked();
+    let manifest_url = rove_update::endpoint::manifest_url();
+    assert_eq!(spy.requested(), vec![manifest_url.clone()]);
+    point_components_at(&view, cx, &components);
+    let (updater, roots) = view.read_with(cx, |v, _| {
+        let service = v.update_service().unwrap();
+        (service.updater().clone(), service.component_roots().clone())
+    });
+    let manifest = manifest_with_component("0.1.1", Some(("1.3.0.0", &archive)));
+    assert!(matches!(
+        crate::update::component::follow_update(&old, &manifest, &roots),
+        crate::update::component::Followed::Skipped
+    ));
+    assert!(matches!(
+        crate::update::component::follow_update(&updater, &manifest, &roots),
+        crate::update::component::Followed::Installed(_)
+    ));
+    assert_eq!(spy.requested(), vec![manifest_url, component_get]);
+}

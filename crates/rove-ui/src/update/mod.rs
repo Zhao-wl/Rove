@@ -162,6 +162,19 @@ impl UpdateService {
         self.updater.mode()
     }
 
+    pub(crate) fn change_mode(&mut self, mode: UpdateMode) -> Step {
+        self.updater = Arc::new(self.updater.reconfigure(mode));
+        self.available = None;
+        self.pending = None;
+        if mode.may_connect() {
+            self.state = UpdateState::Idle;
+            self.on_start()
+        } else {
+            self.state = UpdateState::Disabled;
+            Step::Nothing
+        }
+    }
+
     pub fn is_portable(&self) -> bool {
         self.portable
     }
@@ -175,6 +188,9 @@ impl UpdateService {
     /// - 还比当前版本新 → 再提示一次（issue 第 3 节：用户忽略过也要再提示）；
     /// - 已经装上了 → `rove-update` 会把记录与下载清掉，这里什么都不显示。
     pub fn on_start(&mut self) -> Step {
+        if !self.mode().may_connect() {
+            return Step::Nothing;
+        }
         // 随这次更新一起装的组件版本记在 `pending.json` 里；更新装上之后
         // `take_pending_after_start` 会把记录清掉，所以要先读一次。
         let recorded = self

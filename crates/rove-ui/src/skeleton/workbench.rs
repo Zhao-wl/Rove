@@ -624,6 +624,9 @@ impl Workbench {
     fn settings_changed(&mut self, keys: &BTreeSet<Arc<str>>, cx: &mut Context<Self>) {
         // 工作台按键现读设置，只需放弃被外部改动的本窗口临时值。
         self.shell.settings_changed(keys);
+        if keys.contains(rove_update::mode::SETTING_KEY) {
+            self.update_mode_changed(cx);
+        }
         // `workbench.editor.*` 与 `workbench.editorAssociations`（#29）。
         if keys.iter().any(|k| k.starts_with("workbench.editor")) {
             match EditorSettings::read(&*self.settings) {
