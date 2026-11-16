@@ -1227,10 +1227,11 @@ impl FindHost {
                 if matches.is_empty() {
                     return Ok(Default::default());
                 }
-                let edits = replace::plan_replacements(
+                let edits = replace::plan_replacements_in_scope(
                     &**snap,
                     &searcher,
                     matches,
+                    scope.as_ref(),
                     &pattern,
                     preserve_case,
                 )?;

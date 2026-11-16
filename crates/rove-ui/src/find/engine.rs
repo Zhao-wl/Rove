@@ -454,6 +454,23 @@ fn span_bytes(text: &dyn TextSource, first: u64, end: u64) -> Result<(u64, u64)>
     Ok((a, b))
 }
 
+/// 按全量扫描的范围重建跨行正则的上下文，供替换阶段重新读取捕获组。
+pub(super) fn multiline_context(
+    text: &dyn TextSource,
+    scope: Option<&TextRange>,
+) -> Result<Haystack> {
+    let (first, end, _) = line_span(text, scope);
+    read_multiline_block(text, first, end)
+}
+
+fn read_multiline_block(text: &dyn TextSource, first: u64, end: u64) -> Result<Haystack> {
+    let (a, b) = span_bytes(text, first, end)?;
+    if b - a > MULTILINE_LIMIT_BYTES {
+        return Err(Error::Unsupported);
+    }
+    Haystack::read(text, first, end)
+}
+
 /// 在 `[first, end)` 行上按块读取并依次回调；回调返回 `false` 结束。多行查询只读一块。
 fn for_each_block(
     text: &dyn TextSource,
@@ -467,12 +484,8 @@ fn for_each_block(
         return Ok(());
     }
     if searcher.is_multiline() {
-        let (a, b) = span_bytes(text, first, end)?;
-        if b - a > MULTILINE_LIMIT_BYTES {
-            return Err(Error::Unsupported);
-        }
         cancel.check()?;
-        f(&Haystack::read(text, first, end)?);
+        f(&read_multiline_block(text, first, end)?);
         return Ok(());
     }
     let mut lines = 4096u64;

@@ -15,7 +15,7 @@
 //! - 区间全部以**事务开始前**的字节偏移给出，由 #46 的 [`Transaction`] 从后往前应用；零宽匹配
 //!   产生空区间（纯插入），首尾相接与同一位置的多次插入都是合法的。
 
-use super::engine::{Haystack, Match, Searcher};
+use super::engine::{multiline_context, Haystack, Match, Searcher};
 use rove_base::{ByteOffset, Result, Span, TextRange};
 use rove_buffer::edit::Replacement;
 use rove_buffer::TextSource;
@@ -252,7 +252,21 @@ pub fn plan_replacements(
     pattern: &ReplacePattern,
     preserve_case: bool,
 ) -> Result<Vec<Replacement>> {
+    plan_replacements_in_scope(text, searcher, matches, None, pattern, preserve_case)
+}
+
+pub(super) fn plan_replacements_in_scope(
+    text: &dyn TextSource,
+    searcher: &Searcher,
+    matches: &[Match],
+    scope: Option<&TextRange>,
+    pattern: &ReplacePattern,
+    preserve_case: bool,
+) -> Result<Vec<Replacement>> {
     let needs_text = pattern.has_parameters() || preserve_case;
+    let multiline = (needs_text && searcher.is_multiline() && !matches.is_empty())
+        .then(|| multiline_context(text, scope))
+        .transpose()?;
     let plain: Option<Arc<str>> = (!needs_text).then(|| Arc::from(pattern.build(&[], false)));
     let known = text.lines().known.max(1);
     let mut block: Option<Haystack> = None;
@@ -262,7 +276,10 @@ pub fn plan_replacements(
         let replacement: Arc<str> = match &plain {
             Some(t) => t.clone(),
             None => {
-                let hay = context_block(text, &mut block, m, known)?;
+                let hay = match &multiline {
+                    Some(hay) => hay,
+                    None => context_block(text, &mut block, m, known)?,
+                };
                 let (from, to) = (hay.offset(m.start), hay.offset(m.end));
                 let groups = searcher.capture_texts(hay, from..to);
                 Arc::from(pattern.build(&groups, preserve_case))
