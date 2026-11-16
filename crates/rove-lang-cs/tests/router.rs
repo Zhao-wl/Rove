@@ -1,5 +1,6 @@
 //! #38 入口集成测试：真实的索引生命周期（#36，假索引进程写出带符号的索引）+ L1（#37）+ 缓冲区，
-//! 走“打开文件 → 查询（精确）→ 编辑 → 查询（近似）→ 保存并重建 → 查询（精确）”，以及组件未安装时
+//! 走“打开文件 → 查询（精确）→ 编辑 → 查询（近似）→ 保存并重建 → 查询（精确）”、
+//! “保存 → 重建换代 → 一次查询都不做就继续输入 → 其余行仍然精确”（#216），以及组件未安装时
 //! 的 L1/L0 回退。
 //! 运行：`cargo test -p rove-lang-cs --test router`。
 use rove_base::{
@@ -112,6 +113,29 @@ fn start(r: &rove_lang_cs::router::RoutedTarget) -> (u64, u64) {
 fn at(text: &str, word: &str, nth: usize) -> (u64, u64) {
     let (l, c) = find_word(text, word, nth);
     (u64::from(l), u64::from(c))
+}
+
+/// 在缓冲区上做一次替换（`text` 跟着改），返回编辑后的快照。
+fn splice(
+    buffers: &BufferStates,
+    path: &WorkspacePath,
+    text: &mut String,
+    before: &Arc<RopeText>,
+    range: std::ops::Range<usize>,
+    ins: &str,
+) -> Arc<RopeText> {
+    text.replace_range(range.clone(), ins);
+    let after = Arc::new(RopeText::new(text.clone()));
+    let edit = TextEdit {
+        version: before.version(),
+        range: ByteRange::new(ByteOffset(range.start as u64), ByteOffset(range.end as u64))
+            .unwrap(),
+        inserted: ins.into(),
+    };
+    buffers
+        .edited(path, &**before, &edit, after.clone())
+        .unwrap();
+    after
 }
 
 #[test]
@@ -230,6 +254,88 @@ fn open_query_edit_query_save_rebuild_query() {
         .unwrap();
     assert_eq!(r.value.len(), 3);
     assert!(r.value.iter().all(|t| t.precision == Precision::Exact));
+}
+
+/// #216：保存 → 索引重建完成（换代）→ **一次查询都没做**就继续输入 → 查询。
+/// 真实的 `IndexLifecycle` 换代，走的是用户最常见的用法：保存后一边等索引一边接着写代码。
+#[test]
+fn typing_before_the_first_query_after_a_rebuild_keeps_other_lines_exact() {
+    let p = project();
+    let builder = Arc::new(SampleIndexer::default());
+    let lifecycle = Arc::new(IndexLifecycle::start(
+        p.root.clone(),
+        LifecycleConfig::new(true, Ok(p.cache_root.clone())),
+        builder.clone(),
+    ));
+    let status = lifecycle.wait_until(WAIT, |s| s.state == IndexState::Ready);
+    assert_eq!(status.state, IndexState::Ready, "{status:?}");
+    let generation = status.info.generation;
+    let buffers = Arc::new(BufferStates::new());
+    let semantic: Arc<dyn SemanticSource> = lifecycle.clone();
+    let router = CsRouter::new(semantic, buffers.clone())
+        .with_l1(l1(&p.root))
+        .with_root(&p.root);
+    let cancel = Cancellation::default();
+    let player = WorkspacePath::new(PLAYER_PATH).unwrap();
+
+    // 1. 打开 → 编辑（开头插入一行注释）→ 保存。
+    let disk = fs::read(p.root.join(PLAYER_PATH)).unwrap();
+    let v0: Arc<RopeText> = Arc::new(RopeText::from_text(PLAYER_CS));
+    buffers.opened(&player, v0.clone(), hash_bytes(&disk));
+    let mut text = PLAYER_CS.to_owned();
+    let v1 = splice(&buffers, &player, &mut text, &v0, 0..0, "// edited\n");
+    fs::write(p.root.join(PLAYER_PATH), &text).unwrap();
+    buffers.saved(&player, hash_bytes(text.as_bytes())).unwrap();
+    let saved = text.clone();
+
+    // 2. 索引重建完成（换代）。这中间一次查询都没有发生。
+    lifecycle.rebuild();
+    let status = lifecycle.wait_until(WAIT, |s| {
+        s.state == IndexState::Ready && s.info.generation != generation
+    });
+    assert_ne!(status.info.generation, generation, "{status:?}");
+
+    // 3. 继续输入：改掉 `var step = speed * 2;` 这一行。
+    let star = saved.find("* 2").unwrap();
+    let v2 = splice(&buffers, &player, &mut text, &v1, star..star + 3, "* 3");
+
+    // 4. 其余行仍然精确：基线已经推进到换代的那一版，只有新改的那一行降级。
+    let r = router
+        .navigate_detailed(
+            NavigationKind::Definition,
+            &point(PLAYER_PATH, v2.version(), find_word(&text, "Health", 1)),
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(r.precision, Precision::Exact, "{:?}", r.reason);
+    assert_eq!(r.value.len(), 1);
+    assert_eq!(start(&r.value[0]), at(&text, "Health", 0));
+    assert_eq!(r.index_generation, status.info.generation);
+    let r = router
+        .navigate_detailed(
+            NavigationKind::References,
+            &point(PLAYER_PATH, v2.version(), find_word(&text, "Health", 1)),
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(r.value.len(), 3);
+    assert!(r.value.iter().all(|t| t.precision == Precision::Exact));
+
+    // 5. 新改的那一行按修改区处理（不是 L2 的精确答案）。
+    let r = router
+        .navigate_detailed(
+            NavigationKind::Definition,
+            &point(PLAYER_PATH, v2.version(), find_word(&text, "speed", 1)),
+            &cancel,
+        )
+        .unwrap();
+    assert_ne!(r.precision, Precision::Exact, "{:?}", r.reason);
+
+    // 6. 登记口径：基线是索引那一代的内容，编辑记录里只剩换代之后的那一次编辑。
+    let state = buffers.get(PLAYER_PATH).unwrap();
+    assert_eq!(state.base_hash, hash_bytes(saved.as_bytes()));
+    assert_eq!(state.current_hash, None, "第 3 步之后还没保存");
+    assert_eq!(builder.builds.load(Ordering::SeqCst), 2);
 }
 
 #[test]

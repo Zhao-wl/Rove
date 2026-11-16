@@ -11,8 +11,22 @@
 //! | 关闭最后一个视图 | [`BufferStates::closed`] |
 //!
 //! 基线哈希是“编辑记录的起点”的内容哈希；索引里该文件的哈希等于它时，编辑记录就是索引版本到
-//! 当前缓冲区的完整差异，可以做位置映射。等于当前内容的哈希（保存后索引重建完成）时，编辑记录
-//! 作废、文件视为未修改。两者都不等时无法映射，查询降级为近似。
+//! 当前缓冲区的完整差异，可以做位置映射。两者不等时看**磁盘版本检查点**（见下），都对不上才
+//! 无法映射、查询降级为近似。
+//!
+//! # 磁盘版本检查点（#216）
+//!
+//! 「当前内容 = 磁盘上的某个哈希」这件事只在保存 / 载入的那一刻成立：下一次按键就把
+//! [`BufferState::current_hash`] 置为 `None`，信息随之丢失。索引是异步重建的，等它换代过来时
+//! 用户往往已经继续在打字，于是“基线哈希对不上、当前哈希又是 `None`”——整份文件被判为无法
+//! 映射，哪怕只多敲了一个字符。
+//!
+//! 所以在信息还在的那一刻就把它记下来：每次 [`BufferStates::saved`] / [`BufferStates::reloaded`]
+//! 登记一个检查点（那一刻的磁盘哈希 + 一张空的编辑表），之后每次编辑都并入**所有**检查点的编辑
+//! 表。索引换代到哈希 `h` 时，只要还留着 `h` 的检查点，就能把基线推进到 `h`、把编辑记录换成
+//! “那一刻之后的编辑”，于是只有新敲的那几行降级，其余照旧精确。检查点最多留
+//! [`MAX_CHECKPOINTS`] 个（索引可能落在中间某次保存上），超出丢最旧的；刚打开、还没保存过的
+//! 文档一个都不需要（基线哈希就是那一刻的磁盘哈希），所以这条路上没有额外开销。
 use super::mapping::{EditMap, LineEdit};
 use crate::lifecycle::hash::xxh64;
 use rove_base::{ByteOffset, ByteRange, Error, Result, TextEdit, Version, WorkspacePath};
@@ -39,10 +53,63 @@ pub struct BufferState {
     pub text: Arc<dyn TextSource>,
 }
 
+/// 最多保留的磁盘版本检查点数：索引不一定追到最新一次保存，可能落在中间某一次上。
+const MAX_CHECKPOINTS: usize = 4;
+
+/// 一个磁盘版本检查点：某一刻“缓冲区内容 = 磁盘内容”的哈希，以及从那一刻到当前内容的编辑记录。
+#[derive(Clone)]
+struct Checkpoint {
+    hash: u64,
+    edits: Arc<EditMap>,
+}
+
+/// 一个文档的登记项：对外可见的状态 + 内部的检查点。
+struct Entry {
+    state: BufferState,
+    /// 按时间从旧到新，最多 [`MAX_CHECKPOINTS`] 个。
+    checkpoints: Vec<Checkpoint>,
+}
+
+impl Entry {
+    /// 刚打开的文档不需要检查点：基线哈希就是那一刻的磁盘哈希。
+    fn new(state: BufferState) -> Self {
+        Self {
+            state,
+            checkpoints: Vec::new(),
+        }
+    }
+
+    /// 记下“当前内容就是磁盘上的 `hash`”这一刻。之后的编辑会并进它的编辑表。
+    fn checkpoint(&mut self, hash: u64) {
+        if self
+            .checkpoints
+            .last()
+            .is_some_and(|c| c.hash == hash && c.edits.is_empty())
+        {
+            return;
+        }
+        self.checkpoints.push(Checkpoint {
+            hash,
+            edits: Arc::new(EditMap::new()),
+        });
+        if self.checkpoints.len() > MAX_CHECKPOINTS {
+            self.checkpoints.remove(0);
+        }
+    }
+
+    /// 并入一次编辑：当前编辑记录与每个检查点的编辑表都要跟上。
+    fn push_edit(&mut self, edit: LineEdit) {
+        Arc::make_mut(&mut self.state.edits).push(edit);
+        for c in &mut self.checkpoints {
+            Arc::make_mut(&mut c.edits).push(edit);
+        }
+    }
+}
+
 /// 按项目相对路径登记的缓冲区状态。`Send + Sync`，内部一把短锁。
 #[derive(Default)]
 pub struct BufferStates {
-    docs: Mutex<HashMap<Arc<str>, BufferState>>,
+    docs: Mutex<HashMap<Arc<str>, Entry>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -63,7 +130,7 @@ impl BufferStates {
             edits: Arc::new(EditMap::new()),
             text,
         };
-        lock(&self.docs).insert(path.as_str().into(), state);
+        lock(&self.docs).insert(path.as_str().into(), Entry::new(state));
     }
 
     /// 一次编辑：`before` 是编辑前的快照（`edit.version` 必须等于它的版本），`after` 是编辑后的快照。
@@ -81,14 +148,14 @@ impl BufferStates {
             &edit.inserted,
         );
         let mut docs = lock(&self.docs);
-        let state = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
-        if state.version != edit.version || before.version() != edit.version {
+        let entry = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
+        if entry.state.version != edit.version || before.version() != edit.version {
             return Err(Error::Stale);
         }
-        Arc::make_mut(&mut state.edits).push(line_edit);
-        state.version = after.version();
-        state.current_hash = None;
-        state.text = after;
+        entry.push_edit(line_edit);
+        entry.state.version = after.version();
+        entry.state.current_hash = None;
+        entry.state.text = after;
         Ok(())
     }
 
@@ -102,7 +169,7 @@ impl BufferStates {
     ) -> Result<()> {
         let before = lock(&self.docs)
             .get(path.as_str())
-            .map(|s| s.text.clone())
+            .map(|e| e.state.text.clone())
             .ok_or(Error::NotFound)?;
         let (old, new) = (read_all(&*before)?, read_all(&*after)?);
         let (start, old_end, new_end) = common_affixes(old.as_bytes(), new.as_bytes());
@@ -112,26 +179,29 @@ impl BufferStates {
             &new[start..new_end],
         );
         let mut docs = lock(&self.docs);
-        let state = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
-        if !Arc::ptr_eq(&state.text, &before) {
+        let entry = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
+        if !Arc::ptr_eq(&entry.state.text, &before) {
             // 扫描期间又有编辑：编辑记录已经不是这两份文本之间的差异。
             return Err(Error::Stale);
         }
         if start != old_end || start != new_end {
-            Arc::make_mut(&mut state.edits).push(line_edit);
+            entry.push_edit(line_edit);
         }
-        state.version = after.version();
-        state.current_hash = Some(disk_hash);
-        state.text = after;
+        entry.state.version = after.version();
+        entry.state.current_hash = Some(disk_hash);
+        entry.state.text = after;
+        entry.checkpoint(disk_hash);
         Ok(())
     }
 
     /// 保存：磁盘内容变成当前缓冲区（`disk_hash` 是写出的原始字节的哈希）。编辑记录保留——
-    /// 索引重建之前，它仍然是索引版本到当前内容的差异。
+    /// 索引重建之前，它仍然是索引版本到当前内容的差异；同时登记一个磁盘版本检查点（#216），
+    /// 这样索引重建完成时即使用户已经继续输入，基线也能推进到这一版。
     pub fn saved(&self, path: &WorkspacePath, disk_hash: u64) -> Result<()> {
         let mut docs = lock(&self.docs);
-        let state = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
-        state.current_hash = Some(disk_hash);
+        let entry = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
+        entry.state.current_hash = Some(disk_hash);
+        entry.checkpoint(disk_hash);
         Ok(())
     }
 
@@ -144,17 +214,30 @@ impl BufferStates {
     }
 
     pub fn get(&self, path: &str) -> Option<BufferState> {
-        lock(&self.docs).get(path).cloned()
+        lock(&self.docs).get(path).map(|e| e.state.clone())
     }
 
-    /// 索引已经包含当前内容（重建完成）：丢弃编辑记录，以当前内容为新基线。
-    pub(crate) fn rebase(&self, path: &str, version: Version, hash: u64) {
-        if let Some(state) = lock(&self.docs).get_mut(path) {
-            if state.version == version && state.current_hash == Some(hash) {
-                state.base_hash = hash;
-                state.edits = Arc::new(EditMap::new());
-            }
+    /// 索引换代到了哈希 `hash`：把基线推进到那一版，返回**那一版到当前内容**的编辑记录
+    /// （空表示文件此刻是干净的）。
+    ///
+    /// 只有留着 `hash` 的磁盘版本检查点时才能推进（见模块注释的 #216 一节）；对不上返回
+    /// `None`，调用方按“无法映射”处理。`version` 与登记的版本对不上时同样返回 `None`：
+    /// 调用方手里的快照比登记的旧，返回的编辑记录对它不成立。
+    pub(crate) fn rebase(&self, path: &str, version: Version, hash: u64) -> Option<Arc<EditMap>> {
+        let mut docs = lock(&self.docs);
+        let entry = docs.get_mut(path)?;
+        if entry.state.version != version {
+            return None;
         }
+        if entry.state.base_hash == hash {
+            return Some(entry.state.edits.clone());
+        }
+        // 同一哈希有多个检查点（改了又改回去）时取最近的那个：编辑表最短。
+        let i = entry.checkpoints.iter().rposition(|c| c.hash == hash)?;
+        let edits = entry.checkpoints.drain(..=i).next_back()?.edits;
+        entry.state.base_hash = hash;
+        entry.state.edits = edits.clone();
+        Some(edits)
     }
 }
 
@@ -199,6 +282,72 @@ fn splits_crlf(bytes: &[u8], at: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rove_buffer::RopeText;
+
+    /// 在缓冲区开头插入一段文本（`text` 跟着改），返回编辑后的快照。
+    fn insert(
+        states: &BufferStates,
+        path: &WorkspacePath,
+        before: &Arc<RopeText>,
+        text: &mut String,
+        ins: &str,
+    ) -> Arc<RopeText> {
+        text.insert_str(0, ins);
+        let after = Arc::new(RopeText::new(text.clone()));
+        let edit = TextEdit {
+            version: before.version(),
+            range: ByteRange::new(ByteOffset(0), ByteOffset(0)).unwrap(),
+            inserted: ins.into(),
+        };
+        states
+            .edited(path, &**before, &edit, after.clone())
+            .unwrap();
+        after
+    }
+
+    /// #216：检查点按保存登记、超出上限丢最旧的；`rebase` 推进基线并交回那一版之后的编辑。
+    #[test]
+    fn rebase_advances_to_a_save_point_and_drops_the_oldest() {
+        let states = BufferStates::new();
+        let path = WorkspacePath::new("Assets/A.cs").unwrap();
+        let mut text = "class A {}\n".to_owned();
+        let mut v: Arc<RopeText> = Arc::new(RopeText::from_text(&text));
+        states.opened(&path, v.clone(), hash_bytes(text.as_bytes()));
+        // 保存 MAX_CHECKPOINTS + 1 次，每次之前都改一点。
+        let mut saved = Vec::new();
+        for i in 0..=MAX_CHECKPOINTS {
+            v = insert(&states, &path, &v, &mut text, &format!("// {i}\n"));
+            states.saved(&path, hash_bytes(text.as_bytes())).unwrap();
+            saved.push(hash_bytes(text.as_bytes()));
+        }
+        // 再敲一个字符：当前哈希作废，只剩检查点能把基线接上。
+        v = insert(&states, &path, &v, &mut text, "// typing\n");
+        let version = v.version();
+        assert_eq!(states.get("Assets/A.cs").unwrap().current_hash, None);
+        // 最旧的那次保存已经被挤掉；版本对不上也不推进。
+        assert!(states.rebase("Assets/A.cs", version, saved[0]).is_none());
+        assert!(states
+            .rebase("Assets/A.cs", Version(version.0 + 1), saved[1])
+            .is_none());
+        // 还留着的那次：基线推进过去，交回的是那之后的编辑。
+        let edits = states.rebase("Assets/A.cs", version, saved[1]).unwrap();
+        assert!(!edits.is_empty());
+        assert_eq!(states.get("Assets/A.cs").unwrap().base_hash, saved[1]);
+        // 再换一代到最后一次保存：只剩最后那次输入。
+        let edits = states
+            .rebase("Assets/A.cs", version, saved[MAX_CHECKPOINTS])
+            .unwrap();
+        assert_eq!(edits.hunks().len(), 1);
+        assert_eq!(
+            states.get("Assets/A.cs").unwrap().base_hash,
+            saved[MAX_CHECKPOINTS]
+        );
+        // 已经推进过的那一版不再认（检查点已丢弃），但基线自己仍然成立。
+        assert!(states.rebase("Assets/A.cs", version, saved[1]).is_none());
+        assert!(states
+            .rebase("Assets/A.cs", version, saved[MAX_CHECKPOINTS])
+            .is_some());
+    }
 
     #[test]
     fn affixes_respect_char_and_crlf_boundaries() {

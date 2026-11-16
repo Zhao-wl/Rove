@@ -445,29 +445,26 @@ impl CsRouter {
         // 文件在索引中的版本：覆盖层重绑过的文件取覆盖层里的哈希（#35 向 #38 暴露的“索引版本”）。
         let indexed = index.file_hash(file).unwrap_or(0);
         match doc {
-            Some(d) if d.base_hash == indexed => {
-                // 编辑记录仍然有效；磁盘已经变了（保存或外部修改后重新载入）就请求重建。
+            Some(d) => {
+                // 基线哈希对得上：编辑记录就是索引版本到当前内容的差异。对不上时看索引是不是
+                // 换代到了某个磁盘版本检查点（#216）：是就把基线推进到那一版、只保留换代之后
+                // 的编辑——换代那一刻缓冲区干净就直接回到 `Clean`，换代后又输入过也只有新敲的
+                // 那几行降级，而不是整份文件。
+                let edits = if d.base_hash == indexed {
+                    Some(d.edits.clone())
+                } else {
+                    self.buffers.rebase(rel, d.version, indexed)
+                };
+                // 磁盘内容（保存或外部修改后重新载入）与索引不同：请求重建。未保存的编辑不
+                // 请求——索引进程只读磁盘，重建也得不到缓冲区里的内容。
                 if let Some(hash) = d.current_hash.filter(|&h| h != indexed) {
                     self.request_update(rel, hash);
                 }
-                if d.edits.is_empty() {
-                    FileState::Clean
-                } else {
-                    FileState::Mapped(d.edits.clone())
+                match edits {
+                    Some(map) if map.is_empty() => FileState::Clean,
+                    Some(map) => FileState::Mapped(map),
+                    None => FileState::Diverged,
                 }
-            }
-            Some(d) if d.current_hash == Some(indexed) => {
-                // 保存后索引已经重建：编辑记录作废。
-                self.buffers.rebase(rel, d.version, indexed);
-                FileState::Clean
-            }
-            Some(d) => {
-                // 磁盘内容（保存或外部修改后）与索引不同：请求重建。未保存的编辑不请求——
-                // 索引进程只读磁盘，重建也得不到缓冲区里的内容。
-                if let Some(hash) = d.current_hash {
-                    self.request_update(rel, hash);
-                }
-                FileState::Diverged
             }
             None if has_stale && self.semantic.is_stale(rel) => FileState::Diverged,
             None => FileState::Clean,

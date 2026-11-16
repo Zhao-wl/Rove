@@ -132,6 +132,31 @@ fn edit(
     after
 }
 
+/// 保存：磁盘上写成 `text`，并按同一份字节登记给缓冲区。
+fn save(f: &Fixture, path: &str, text: &str) {
+    std::fs::write(f._dir.path().join(path), text).unwrap();
+    f.router
+        .buffers()
+        .saved(&wp(path), hash_bytes(text.as_bytes()))
+        .unwrap();
+}
+
+/// 索引换代：按 `player` 的当前内容重建示例索引，世代设为 `generation`。
+fn reindex(f: &Fixture, player: &str, generation: u64) {
+    let (index, _) = sample_index(player, HERO_CS);
+    let path = f._dir.path().join(format!("sample-{generation}.idx"));
+    index.write(&path).unwrap();
+    let holder: Arc<dyn IndexHolder> = Arc::new(CsIndex::open(&path).unwrap());
+    f.semantic.set(
+        Some(L2Snapshot {
+            holder,
+            generation,
+            trusted: true,
+        }),
+        SemanticStatus::Ready,
+    );
+}
+
 fn nav(f: &Fixture, kind: NavigationKind, p: &QueryPoint) -> QueryResult<Arc<[RoutedTarget]>> {
     f.router
         .navigate_detailed(kind, p, &Cancellation::default())
@@ -910,4 +935,117 @@ fn inactive_preprocessor_region_falls_back() {
         .unwrap();
     assert_eq!(regions.value.len(), 1);
     assert_eq!(regions.value[0].start().line.0, u64::from(line));
+}
+
+/// #216：保存 → 索引换代 → **不查询**直接继续输入。基线必须在换代的那一版上推进，
+/// 只有新敲的那几行降级，而不是整份文件。
+#[test]
+fn typing_right_after_a_reindex_only_degrades_the_new_edit() {
+    let f = fixture();
+    let v0 = open(&f, PLAYER_PATH, PLAYER_CS);
+    // ① 编辑 + 保存：磁盘与缓冲区都是 `saved`。
+    let header = "// saved\n";
+    let v1 = edit(&f, PLAYER_PATH, &v0, 0, 0, header);
+    let saved = format!("{header}{PLAYER_CS}");
+    save(&f, PLAYER_PATH, &saved);
+    // ② 索引按磁盘内容换代。这之后一次查询都没有发生。
+    reindex(&f, &saved, 2);
+    // ③ 继续输入：改掉 `var step = speed * 2;` 这一行。
+    let at = saved.find("* 2").unwrap();
+    let v2 = edit(&f, PLAYER_PATH, &v1, at, at + 3, "* 3");
+    let current = saved.replace("* 2", "* 3");
+    // ④ 没被动过的行照旧精确（基线已经推进到换代的那一版）。
+    let health = word(&current, "Health", 1);
+    let r = nav(
+        &f,
+        NavigationKind::Definition,
+        &point_in(PLAYER_PATH, &*v2, health),
+    );
+    let def = word(&current, "Health", 0);
+    assert_eq!(
+        starts(&r),
+        [(
+            PLAYER_PATH.into(),
+            u64::from(def.0),
+            u64::from(def.1),
+            EXACT
+        )],
+        "换代后继续输入，未改动的行必须仍然精确"
+    );
+    assert_eq!(r.precision, Precision::Exact, "{:?}", r.reason);
+    assert_eq!(r.index_generation, 2);
+    // ⑤ 新敲的那一行降级（局部变量由 L0 兜底，结果是“语法”而不是 L2 的精确答案）。
+    let r = nav(
+        &f,
+        NavigationKind::Definition,
+        &point_in(PLAYER_PATH, &*v2, word(&current, "speed", 1)),
+    );
+    assert_ne!(r.precision, Precision::Exact, "{:?}", r.reason);
+    // ⑥ 登记口径：基线推进到了索引那一版，编辑记录里只剩换代之后的那次编辑。
+    let state = f.router.buffers().get(PLAYER_PATH).unwrap();
+    assert_eq!(
+        state.base_hash,
+        hash_bytes(saved.as_bytes()),
+        "基线必须是索引那一代的内容"
+    );
+    assert_eq!(state.current_hash, None, "③ 之后还没保存");
+    assert_eq!(state.edits.hunks().len(), 1, "只剩换代之后的那一次编辑");
+}
+
+/// 索引落在**中间某一次**保存上（用户已经又保存过一次）：基线推进到那一次，
+/// 它之后的编辑照常参与映射。
+#[test]
+fn reindex_catching_an_older_save_still_rebases() {
+    let f = fixture();
+    let v0 = open(&f, PLAYER_PATH, PLAYER_CS);
+    let first = format!("// one\n{PLAYER_CS}");
+    let v1 = edit(&f, PLAYER_PATH, &v0, 0, 0, "// one\n");
+    save(&f, PLAYER_PATH, &first);
+    let second = format!("// two\n{first}");
+    let v2 = edit(&f, PLAYER_PATH, &v1, 0, 0, "// two\n");
+    save(&f, PLAYER_PATH, &second);
+    // 索引这一代读到的是第一次保存的内容。
+    reindex(&f, &first, 2);
+    let r = nav(
+        &f,
+        NavigationKind::Definition,
+        &point_in(PLAYER_PATH, &*v2, word(&second, "Health", 1)),
+    );
+    let def = word(&second, "Health", 0);
+    assert_eq!(
+        starts(&r),
+        [(
+            PLAYER_PATH.into(),
+            u64::from(def.0),
+            u64::from(def.1),
+            EXACT
+        )],
+        "基线推进到中间那一版后，整体平移一行仍然精确"
+    );
+    let state = f.router.buffers().get(PLAYER_PATH).unwrap();
+    assert_eq!(state.base_hash, hash_bytes(first.as_bytes()));
+    assert_eq!(state.current_hash, Some(hash_bytes(second.as_bytes())));
+    // 磁盘上还有更新的一版：请求重建。
+    assert_eq!(f.semantic.requested(), [PLAYER_PATH]);
+}
+
+/// 索引换到的内容既不是基线也不是任何检查点（例如外部进程改了磁盘）：仍然判为无法映射。
+#[test]
+fn reindex_to_unknown_content_stays_diverged() {
+    let f = fixture();
+    let v0 = open(&f, PLAYER_PATH, PLAYER_CS);
+    let v1 = edit(&f, PLAYER_PATH, &v0, 0, 0, "// mine\n");
+    let elsewhere = format!("// theirs\n{PLAYER_CS}");
+    reindex(&f, &elsewhere, 2);
+    let r = nav(
+        &f,
+        NavigationKind::Definition,
+        &point_in(PLAYER_PATH, &*v1, word(&elsewhere, "Health", 1)),
+    );
+    assert_ne!(r.precision, Precision::Exact);
+    assert_eq!(
+        f.router.buffers().get(PLAYER_PATH).unwrap().base_hash,
+        hash_bytes(PLAYER_CS.as_bytes()),
+        "对不上任何检查点时不能推进基线"
+    );
 }
