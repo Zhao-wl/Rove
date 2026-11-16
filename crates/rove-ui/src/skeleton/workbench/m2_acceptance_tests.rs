@@ -580,8 +580,9 @@ fn m2_component_missing_degrades_but_navigation_still_works(cx: &mut TestAppCont
 // --------------------------------------------------------------------- 场景 6
 
 /// 场景 6：**未保存的修改**。在界面里真的敲字（走 M3 的编辑事务 → #38 的 `BufferStates::edited`），
-/// 然后在**被修改的那一行**上查定义：结果回退为近似、界面标出来、该文件进入后台重建队列
-/// （`LANGUAGE_INTELLIGENCE` §3.2）。未修改行的位置映射由 #38 与 #41 的入口测试覆盖，这里不重复。
+/// 然后在**被修改的那一行**上查定义：结果回退为近似、界面标出来；**保存之后**该文件才进入后台
+/// 重建队列（`LANGUAGE_INTELLIGENCE` §3.2）。未修改行的位置映射由 #38 与 #41 的入口测试覆盖，
+/// 这里不重复。
 #[gpui::test]
 fn m2_unsaved_edit_falls_back_to_approximate_and_requests_a_rebuild(cx: &mut TestAppContext) {
     let project = Project::new(true);
@@ -646,13 +647,13 @@ fn m2_unsaved_edit_falls_back_to_approximate_and_requests_a_rebuild(cx: &mut Tes
         "未保存修改导致的近似也要在状态栏标出来"
     );
 
-    // 重建请求：**现状是只在保存之后才发**。`LANGUAGE_INTELLIGENCE` §3.2 的流程图写的是
-    // 「回退并触发该文件的增量重建」，#38 的实现则在 `router/mod.rs::file_state` 里明确写了
-    // 「未保存的编辑不请求——索引进程只读磁盘，重建也得不到缓冲区里的内容」。实现的理由成立，
-    // 文档没跟上。本测试按**实现**断言，口径统一走 #213；改了哪一边，这里都会红。
+    // 重建请求：**只在保存之后才发**。#44 验收时发现 `LANGUAGE_INTELLIGENCE` §3.2 的流程图写的是
+    // 「回退并触发该文件的增量重建」，而 #38 的实现在 `router/mod.rs::file_state` 里写的是
+    // 「未保存的编辑不请求——索引进程只读磁盘，重建也得不到缓冲区里的内容」。#213 已经定了口径：
+    // **实现是对的，文档改成「保存后才触发重建」**。这段断言就是那条口径的看门测试。
     assert!(
         project.semantic.requested().is_empty(),
-        "未保存的编辑不请求重建（与 LANGUAGE_INTELLIGENCE §3.2 的措辞不一致，见 #213）：{:?}",
+        "未保存的编辑不请求重建（LANGUAGE_INTELLIGENCE §3.2，口径见 #213）：{:?}",
         project.semantic.requested()
     );
 

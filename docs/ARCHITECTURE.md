@@ -896,7 +896,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 装配（#40 接入时完成；本 PR 不改 UI/app）：`CsRouter::new(lifecycle, buffers).with_l1(l1).with_root(项目根)`；文档打开时 `BufferStates::opened(path, text, hash_bytes(磁盘原始字节))`，外部修改重新载入时 `reloaded`，M3 编辑事务 `edited`，保存 `saved`，关闭 `closed`。所有查询在后台执行器上调用。
 
-验证：`cargo test -p rove-lang-cs router`（`mapping` 属性测试：随机编辑后未修改行逐字节对应、正反映射互逆；路由单元测试覆盖插入 10 行仍精确、修改所在行降级、反向映射混合干净文件与脏缓冲区、四条降级路径、L0 局部名字/lambda/局部函数/遮蔽、逐条精确度）与 `cargo test -p rove-lang-cs --test router`（真实 `IndexLifecycle`：打开 → 精确 → 编辑 → 近似 → 保存并重建 → 精确；组件未安装时 L1/L0 回退）。准确率：`cargo run -p rove-lang-cs --example nav_check -- --source router`，与 `--source l2` 逐例一致。性能：`cargo xtask bench --filter cs_router/`（合成索引，预算 `router_definition_*`）；真实索引端到端 `cs_index/router_*`（预算 `goto_definition` / `find_references`，需要 `--cs-index`）。
+验证：`cargo test -p rove-lang-cs router`（`mapping` 属性测试：随机编辑后未修改行逐字节对应、正反映射互逆；路由单元测试覆盖插入 10 行仍精确、修改所在行降级、反向映射混合干净文件与脏缓冲区、四条降级路径、L0 局部名字/lambda/局部函数/遮蔽、逐条精确度）与 `cargo test -p rove-lang-cs --test router`（真实 `IndexLifecycle`：打开 → 精确 → 编辑 → 近似 → 保存并重建 → 精确；未保存时不标记过期；组件未安装时 L1/L0 回退）、`cargo test -p rove-lang-cs --test routing_doc`（#213 的口径看门测试：重建只在保存后请求，并逐条核对 `LANGUAGE_INTELLIGENCE` §3.2 的措辞）。准确率：`cargo run -p rove-lang-cs --example nav_check -- --source router`，与 `--source l2` 逐例一致。性能：`cargo xtask bench --filter cs_router/`（合成索引，预算 `router_definition_*`）；真实索引端到端 `cs_index/router_*`（预算 `goto_definition` / `find_references`，需要 `--cs-index`）。
 
 ## 26. 外部符号元数据视图（#34）
 
