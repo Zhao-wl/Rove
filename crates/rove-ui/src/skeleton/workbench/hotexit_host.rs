@@ -8,7 +8,7 @@
 //!   （安静期 500 ms、最长等待 2 s）。**不是只在退出时备份**——那样崩溃一条都救不回来。
 //! - **清理**：恢复后保留原备份，保存或关闭时删除；工作区目录消失时整组清掉（核心层做）。
 //! - **退出**：`files.hotExit` 允许时跳过 #49 的“保存 / 不保存 / 取消”（经
-//!   `SaveController::set_hot_exit`），把全部脏文档同步备份完再写干净的退出标记。
+//!   各文档的同步备份写入）。无法备份的文档仍需确认，全部处理完才写干净的退出标记。
 //!
 //! 恢复路径分两种：磁盘上还在的文件走 #17 正常的打开流程（文档身份归加载器，之后资源管理器
 //! 再点同一个文件会复用这个标签，不会把未保存的修改冲掉），**已被删除的文件**走
@@ -19,10 +19,8 @@ use rove_buffer::edit::EditOptions;
 use rove_buffer::hotexit::{default_state_root, Backup, BackupService, HotExitOptions, Restore};
 use rove_buffer::save::TextFile;
 use rove_buffer::{DocumentMetadata, SizeClass, TextSource};
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::rc::Rc;
 
 /// 恢复出来的文档身份从这里开始，不与加载器的计数（从 1 开始）冲突，也不与 #47 的未命名
 /// 文档（`1 << 62`）冲突。只有“磁盘上已经没有了”的文档才用它。
@@ -43,11 +41,6 @@ pub(super) struct HotExit {
     activate: Option<PathBuf>,
     /// 已经排了一个“到期写备份”的定时器。
     timer: bool,
-    /// 正在走窗口关闭流程，且热退出接管了关闭确认。与 `SaveController::set_hot_exit` 的
-    /// 闭包共享：关单个标签时为假（标签关闭永远询问）。
-    closing: Rc<Cell<bool>>,
-    /// 已经装过关闭确认的开关点。
-    hooked: bool,
 }
 
 impl Workbench {
@@ -64,21 +57,7 @@ impl Workbench {
         let options = HotExitOptions::read(&*self.settings);
         let (service, restore) = BackupService::open(state_root, &self.root, options);
         self.hotexit.service = Some(service);
-        self.hook_hot_exit();
         self.apply_restore(restore, cx);
-    }
-
-    /// 把热退出接到 #49 留下的开关点上：关窗口时（且设置允许）不再确认。
-    fn hook_hot_exit(&mut self) {
-        if self.hotexit.hooked {
-            return;
-        }
-        self.hotexit.hooked = true;
-        let closing = self.hotexit.closing.clone();
-        self.editing
-            .saves
-            .borrow_mut()
-            .set_hot_exit(move |_| closing.get());
     }
 
     /// 设置热加载：`files.hotExit` / `files.restoreUndoStack` 变了就换一套选项
@@ -389,36 +368,37 @@ impl Workbench {
 
     // ------------------------------------------------------------------------- 退出
 
-    /// 窗口关闭流程开始：按 `files.hotExit` 决定要不要接管关闭确认。
-    /// Rove 一个窗口一个文件夹，所以“最后一个窗口”= 退出应用。
-    pub(super) fn begin_hot_exit_window_close(&mut self, last_window: bool) {
-        let skips = self
+    /// 关窗口前保护每份脏文档。返回第一份仍须用户确认的文档。
+    pub(super) fn back_up_for_window_close(&mut self) -> Result<(), DocumentId> {
+        let documents: Vec<_> = {
+            let saves = self.editing.saves.borrow();
+            saves.documents().filter(|d| saves.is_dirty(*d)).collect()
+        };
+        let can_back_up = self
             .hotexit
             .service
             .as_ref()
-            .is_some_and(|s| s.skips_close_confirmation(last_window));
-        self.hotexit.closing.set(skips);
-    }
-
-    /// 关闭单个标签：热退出不接管（VS Code 同样只在窗口 / 应用级别跳过询问）。
-    pub(super) fn end_hot_exit_window_close(&mut self) {
-        self.hotexit.closing.set(false);
-    }
-
-    /// 窗口真的要关了：把全部脏文档的备份同步写完，再写下干净的退出标记。
-    pub(super) fn flush_hot_exit(&mut self) {
-        let documents: Vec<DocumentId> = self.editing.saves.borrow().documents().collect();
-        let backups: Vec<Backup> = documents
-            .into_iter()
-            .filter_map(|document| self.backup_of(document))
-            .collect();
-        let Some(service) = self.hotexit.service.as_mut() else {
-            return;
-        };
-        for backup in &backups {
-            let _ = service.write(backup);
+            .is_some_and(|service| service.skips_close_confirmation(true));
+        if !can_back_up {
+            return documents.first().copied().map_or(Ok(()), Err);
         }
-        service.mark_clean_exit();
+        for document in documents {
+            let backup = self.backup_of(document).ok_or(document)?;
+            let service = self.hotexit.service.as_mut().ok_or(document)?;
+            let bytes = service.write(&backup).map_err(|error| {
+                eprintln!("hot exit: backup before closing failed: {error}");
+                document
+            })?;
+            // 后续文档可能仍需确认。关窗取消后，保存或舍弃也必须能清理这份备份。
+            service.note_written(document, &backup.path, bytes);
+        }
+        Ok(())
+    }
+
+    pub(super) fn mark_hot_exit_clean(&self) {
+        if let Some(service) = &self.hotexit.service {
+            service.mark_clean_exit();
+        }
     }
 
     /// 本次运行写出的备份次数与字节数（基准与排查用）。

@@ -896,8 +896,6 @@ impl Workbench {
             .filter(|t| t.dirty)
             .and_then(Tab::opened)
             .map(|o| o.document.id);
-        // #50：关闭单个标签永远询问，热退出只在窗口 / 应用级别接管。
-        self.end_hot_exit_window_close();
         match document {
             Some(document) => {
                 let check = self
@@ -935,36 +933,16 @@ impl Workbench {
     /// 窗口关闭按钮：逐个确认未保存的文档；全部处理完才真正关闭。返回是否可以立即关闭。
     pub(super) fn window_should_close(&mut self, cx: &mut Context<Self>) -> bool {
         self.editing.closing_window = true;
-        // #50：`files.hotExit` 允许时接管关闭确认（Rove 一个窗口一个文件夹，所以关掉本窗口
-        // 就是退出应用）。
-        self.begin_hot_exit_window_close(true);
-        let next = self
-            .editing
-            .saves
-            .borrow()
-            .documents()
-            .find(|d| self.editing.saves.borrow().is_dirty(*d));
-        match next {
-            None => {
-                self.editing.closing_window = false;
-                true
-            }
-            Some(document) => {
-                let check = self
-                    .editing
-                    .saves
-                    .borrow_mut()
-                    .request_close(document, &mut self.shell.feedback);
-                if check == CloseCheck::CloseNow {
-                    // 热退出（#50）接管：不再确认。
-                    self.editing.closing_window = false;
-                    return true;
-                }
-                self.end_hot_exit_window_close();
-                cx.notify();
-                false
-            }
+        if let Err(document) = self.back_up_for_window_close() {
+            self.editing
+                .saves
+                .borrow_mut()
+                .request_close(document, &mut self.shell.feedback);
+            cx.notify();
+            return false;
         }
+        self.editing.closing_window = false;
+        true
     }
 
     /// 窗口关闭按钮的完整流程：#49 的逐个确认 + #50 的备份与干净退出标记。
@@ -972,8 +950,7 @@ impl Workbench {
     pub(super) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
         let closing = self.window_should_close(cx);
         if closing {
-            // 窗口真的要关了：脏文档的备份同步写完，再写下干净的退出标记。
-            self.flush_hot_exit();
+            self.mark_hot_exit_clean();
         }
         closing
     }
@@ -983,9 +960,7 @@ impl Workbench {
         if !self.editing.closing_window {
             return;
         }
-        if self.window_should_close(cx) {
-            self.editing.closing_window = false;
-            self.flush_hot_exit();
+        if self.request_window_close(cx) {
             if let Some(window) = self.editing.window {
                 cx.defer(move |cx| {
                     let _ = window.update(cx, |_, window, _| window.remove_window());

@@ -353,6 +353,70 @@ fn hot_exit_on_exit_and_window_close_never_asks(cx: &mut TestAppContext) {
     assert!(fx.store().session().clean_exit);
 }
 
+#[gpui::test]
+fn window_close_asks_about_dirty_untitled_document(cx: &mut TestAppContext) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    let (view, cx) = fx.launch(cx);
+    let action = ids::action_for(ids::NEW_UNTITLED).unwrap();
+    cx.update(|window, cx| {
+        window.focus(&view.read(cx).focus);
+        window.dispatch_action(action, cx);
+    });
+    settle(cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input("未保存");
+    settle(cx);
+
+    assert!(!quit(&view, cx));
+    assert!(view.read_with(cx, |v, _| v.shell.feedback.modal().is_some()));
+    assert_eq!(shown_text(&code, cx), "未保存");
+    assert!(tabs(&view, cx).iter().any(|(_, _, dirty)| *dirty));
+    assert!(!fx.store().session().clean_exit);
+}
+
+#[gpui::test]
+fn backup_write_failure_keeps_the_window_open_until_retried(cx: &mut TestAppContext) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    let first = fx.file("a.txt", "aaa\n");
+    let second = fx.file("b.txt", "bbb\n");
+    let (view, cx) = fx.launch(cx);
+    let _ = open_file(&view, cx, "a.txt");
+    cx.simulate_input("X");
+    settle(cx);
+    let code = open_file(&view, cx, "b.txt");
+    cx.simulate_input("Y");
+    settle(cx);
+
+    let store = fx.store();
+    let blocked = store.backup_path(&second);
+    std::fs::create_dir_all(&blocked).unwrap();
+    assert!(!quit(&view, cx));
+    assert!(store.backup_path(&first).is_file());
+    assert!(!store.session().clean_exit);
+    assert_eq!(shown_text(&code, cx), "Ybbb\n");
+    let doc = view.read_with(cx, |v, _| {
+        assert!(v.shell.feedback.modal().is_some());
+        v.editor
+            .active()
+            .current()
+            .unwrap()
+            .opened()
+            .unwrap()
+            .document
+            .id
+    });
+    let key = format!("{}{}", ids::KEY_CLOSE, doc.0);
+    view.update(cx, |v, cx| {
+        v.save_feedback_action(&key, ids::ACTION_CANCEL, cx);
+        let _ = crate::feedback::FeedbackService::dismiss(&mut v.shell.feedback, &key);
+    });
+    std::fs::remove_dir(&blocked).unwrap();
+    assert!(quit(&view, cx));
+    assert!(store.session().clean_exit);
+    assert_eq!(store.backups().len(), 2);
+}
+
 // ------------------------------------------------------------------------- 清理
 
 #[gpui::test]
