@@ -136,12 +136,37 @@ pub struct Document {
     pub metadata: DocumentMetadata,
     pub text: Arc<dyn TextSource>,
 }
+/// Per-request load options for [`Documents::open_with`]. Defaults match [`Documents::open`].
+/// Added by the #209 contract change (2026-11-16); a provider that cannot honour an option
+/// ignores it rather than failing, so callers always get the plain `open` behaviour at worst.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpenRequest {
+    /// "Open anyway": a binary file, or one that does not decode to valid text, is shown as
+    /// lossy text instead of being rejected with `Unsupported` (UX_SPEC §3.5). The resulting
+    /// document is an ordinary editable text document; it carries no extra read-only reason.
+    pub force_open: bool,
+}
+
 /// Document model access, no editor-group/focus policy. O(log open documents) find; open is a
 /// cancellable background operation, returns Io/Cancelled/Unsupported rather than false success.
 /// Providers deduplicate resource aliases, publish immutable snapshots, and preserve document ID.
 pub trait Documents: Send + Sync {
     fn find(&self, resource: &Resource) -> Option<Arc<Document>>;
     fn open(&self, resource: Resource, cancel: Cancellation) -> Task<Arc<Document>>;
+    /// `open` with per-request options. The default implementation ignores them, so existing
+    /// providers keep compiling and keep their semantics; `open(r, c)` stays equivalent to
+    /// `open_with(r, OpenRequest::default(), c)`. Deduplication by resource alias is unchanged:
+    /// a force-opened document is cached like any other, so a later plain `open` of the same
+    /// file returns that same document rather than failing again.
+    fn open_with(
+        &self,
+        resource: Resource,
+        request: OpenRequest,
+        cancel: Cancellation,
+    ) -> Task<Arc<Document>> {
+        let _ = request;
+        self.open(resource, cancel)
+    }
 }
 /// No documents available; no filesystem access. #2 replaces this fixed provider.
 #[derive(Default)]
@@ -195,5 +220,28 @@ mod tests {
         assert!(EmptyDocuments
             .find(&Resource::Virtual("empty".into()))
             .is_none());
+    }
+
+    /// #209：没有实现 `open_with` 的提供方按默认实现退回 `open`，语义不变。
+    #[test]
+    fn force_open_falls_back_to_plain_open_for_providers_that_ignore_it() {
+        let request = OpenRequest { force_open: true };
+        assert_eq!(OpenRequest::default(), OpenRequest { force_open: false });
+        let task = EmptyDocuments.open_with(
+            Resource::Virtual("empty".into()),
+            request,
+            Cancellation::default(),
+        );
+        assert_eq!(block(task).err(), Some(Error::Unsupported));
+    }
+
+    /// 本 crate 没有运行时，契约测试里就地轮询一次已经就绪的任务。
+    fn block<T>(task: Task<T>) -> Result<T> {
+        use std::task::{Context, Poll, Waker};
+        let mut task = task;
+        match task.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("空提供方的任务不会挂起"),
+        }
     }
 }

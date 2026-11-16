@@ -107,8 +107,8 @@ I/O 错误保留 ErrorKind 和诊断文字，支持从 std::io::Error 转换。�
 |---|---|---|---|
 | 基础类型、事件、登记 | rove-base/src/lib.rs | #1；后续修改单独 PR | 全链；NoEvents/Registry |
 | 文本源 | rove-buffer/src/contracts.rs / TextSource | #7、#8 | #19、#9；EmptyText |
-| 文档元信息/后台打开 | 同上 / Document、Documents | #7、#8、#17 | #2、#17；EmptyDocuments |
-| 界面打开/定位/关闭 | rove-ui/src/documents.rs / OpenDocuments | #17 | #23–#26、#40；EmptyOpenDocuments |
+| 文档元信息/后台打开 | 同上 / Document、Documents、OpenRequest | #7、#8、#17；`open_with` 由 #209 追加 | #2、#17；EmptyDocuments |
+| 界面打开/定位/关闭 | rove-ui/src/documents.rs / OpenDocuments、OpenOptions | #17；`OpenOptions::force_open` 由 #209 追加 | #23–#26、#40；EmptyOpenDocuments |
 | 语法高亮/增量结果 | rove-syntax/src/contracts.rs / SyntaxSnapshot、SyntaxService | #9 | #19、#20；EmptySyntax/EmptySyntaxService |
 | 折叠/文档符号 | 同上 / Fold、Symbol | #9、#20、#26 | 大纲、面包屑、粘性滚动、篮子 |
 | 语言配置 | 同上 / LanguageConfiguration、LanguageConfigurations | #12 | #20、#26、#45、#52；EmptyLanguages |
@@ -141,6 +141,8 @@ StructureNodeId 在同一 Structure 提供器和 Version 内唯一，不能用�
 ### 打开、列表与反馈的接缝
 
 打开明确位置时必须显示源码（包括 Markdown），普通打开遵循编辑器关联。OpenRequestId 对应异步完成/失败事件；关闭脏文档返回 NeedsUserDecision，不丢弃内容。磁盘打开失败可保留错误占位页，不能出现空白成功页。
+
+**强制打开（#209 的契约变更，2026-11-16）**：`OpenOptions::force_open` 与 `Documents::open_with(resource, OpenRequest, cancel)` 把用户在错误页上做的「仍然打开」决定一路带到加载器（#7 的 `LoadOptions::force_open`），二进制或解不出合法文本的文件按 lossy 文本显示，而不是以 `Unsupported` 失败。语义约束：`open(r, c)` 恒等于 `open_with(r, OpenRequest::default(), c)`；`open_with` 有默认实现（忽略选项、退回 `open`），所以老的提供方不受影响，调用方最差也只是拿到普通打开的行为；强制打开的文档照常参与别名去重与缓存，之后对同一文件的普通 `open` 返回同一个文档而不是再失败一次；强制打开**不**附加任何只读原因，得到的是普通可编辑文本文档。`force_open` 默认为 `false`，只由显式的用户操作置上。
 
 ListModel 是展平的可见树快照；控件按可视范围取行，以稳定 ItemId 保留选择。过滤和树展开不在绘制时扫描全量数据。QuickInput 不实现模糊评分和前缀模式（#24 负责），接受与取消有不同事件。
 
@@ -188,6 +190,12 @@ M0 的热缓存查询结果不能证明冷 mmap 安全：冷 HDD 查询曾达 2.
 - 架构和共享契约以本文件为准；契约修改走独立小 PR。
 - 各功能删除自己负责的 SKELETON 标记，保持 #2 端到端测试并为入口补集成测试。
 - 核心层任何传递依赖都不得包含 gpui；只允许 rove-ui/rove-app 引入。
+
+已发生的契约变更（按时间追加，不重排）：
+
+| 日期 | 变更 | 原因 | 受影响方 | 迁移 |
+|---|---|---|---|---|
+| 2026-11-16（#209） | `rove-buffer` 增 `OpenRequest` 与 `Documents::open_with`（带默认实现）；`rove-ui` 的 `OpenOptions` 增 `force_open` | UX_SPEC §3.5 的「仍然打开」需要一条把用户决定带到加载器的打开路径，原契约没有入口 | 实现方 `FileDocuments`（#17）、`EmptyDocuments`；调用方 `EditorService`（#17） | 纯追加：`open` 的签名与语义不变，未实现 `open_with` 的提供方自动退回 `open`；`OpenOptions` 的新字段默认 `false`，用 `..Default::default()` 构造的调用方无需改动 |
 
 文件归属保持用户约束：index.rs/tools/rove-indexer-cs 属 G 链，vendor/spikes 属 C 链，.github/AGENTS.md 属 F 链。根 Cargo.toml 仅追加 workspace.dependencies。Cargo.lock 冲突取 main 后 cargo build 重新生成，不手改。
 

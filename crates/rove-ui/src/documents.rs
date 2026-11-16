@@ -51,6 +51,11 @@ pub struct OpenOptions {
     /// Half-open UTF-8 selection. Forces source presentation and reveals its start.
     /// When both fields are supplied, the selection takes precedence over location.
     pub selection: Option<TextRange>,
+    /// "Open anyway" (#209, UX_SPEC §3.5): carry `OpenRequest::force_open` down to the document
+    /// provider, so a binary file or one with an unsupported encoding loads as lossy text instead
+    /// of failing with `Unsupported`. Never set by a plain open; it is the explicit user decision
+    /// taken on the error page, and it sticks to the tab so a later retry keeps honouring it.
+    pub force_open: bool,
 }
 impl OpenOptions {
     /// The selection takes precedence, even when it is an empty range (a caret).
@@ -72,6 +77,7 @@ impl Default for OpenOptions {
             presentation: Presentation::Default,
             location: None,
             selection: None,
+            force_open: false,
         }
     }
 }
