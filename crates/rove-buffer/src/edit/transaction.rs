@@ -432,8 +432,6 @@ impl EditBuffer {
         let mut removed: Vec<String> = vec![String::new(); count];
         let mut input_edits = Vec::with_capacity(count);
         let mut text_edits = Vec::with_capacity(count);
-        // 每个区间应用后的 (起点行, 旧终点行, 新终点行)，坐标系是“前面的区间尚未应用”。
-        let mut lines = vec![(0u64, 0u64, 0u64); count];
         for index in (0..count).rev() {
             let (start, end) = spans[index];
             let inserted = &texts[index];
@@ -450,11 +448,6 @@ impl EditBuffer {
             }
             let new_end = start + inserted.len();
             let new_end_position = position_in(&rope, new_end);
-            lines[index] = (
-                start_position.line.0,
-                old_end_position.line.0,
-                new_end_position.line.0,
-            );
             input_edits.push(InputEdit {
                 start_byte: ByteOffset(start as u64),
                 old_end_byte: ByteOffset(end as u64),
@@ -474,9 +467,7 @@ impl EditBuffer {
         let mut new_ranges = Vec::with_capacity(count);
         let mut forward = Vec::with_capacity(count);
         let mut inverse = Vec::with_capacity(count);
-        let mut changes: Vec<LineChange> = Vec::with_capacity(count);
         let mut byte_delta: i64 = 0;
-        let mut line_delta: i64 = 0;
         for index in 0..count {
             let (start, end) = spans[index];
             let inserted_len = texts[index].len();
@@ -485,23 +476,6 @@ impl EditBuffer {
                 ByteOffset(new_start),
                 ByteOffset(new_start + inserted_len as u64),
             )?;
-            let (start_line, old_end_line, new_end_line) = lines[index];
-            let change = LineChange {
-                old: Span::new(Line(start_line), Line(old_end_line + 1))?,
-                new: Span::new(
-                    Line((start_line as i64 + line_delta) as u64),
-                    Line((new_end_line as i64 + line_delta) as u64 + 1),
-                )?,
-            };
-            match changes.last_mut() {
-                // 同一行上的多个区间合并成一处变化。
-                Some(previous) if change.old.start() < previous.old.end() => {
-                    previous.old = Span::new(previous.old.start(), change.old.end())?;
-                    previous.new = Span::new(previous.new.start(), change.new.end())?;
-                }
-                _ => changes.push(change),
-            }
-            line_delta += new_end_line as i64 - old_end_line as i64;
             byte_delta += inserted_len as i64 - (end - start) as i64;
             old_ranges.push(transaction.edits[index].range.clone());
             forward.push(Replacement::new(
@@ -515,16 +489,14 @@ impl EditBuffer {
             new_ranges.push(new_range);
         }
 
+        let changes = line_changes(old, &rope, &old_ranges, &new_ranges)?;
         self.text = Arc::new(RopeText::from_rope(rope));
         Ok(AppliedEdit {
             before,
             after: self.text.version(),
             input_edits,
             text_edits,
-            changes: LineChanges {
-                ranges: changes,
-                line_delta,
-            },
+            changes,
             old_ranges,
             new_ranges,
             forward: Transaction {
@@ -537,6 +509,63 @@ impl EditBuffer {
             },
         })
     }
+}
+
+/// Compare the snapshots at either end of the transaction. CR and LF can
+/// form or split a pair at an edit boundary, so an intermediate edit's
+/// line positions cannot be shifted into the final snapshot by a line delta.
+fn line_changes(
+    old: &Rope,
+    new: &Rope,
+    old_ranges: &[ByteRange],
+    new_ranges: &[ByteRange],
+) -> Result<LineChanges> {
+    let mut edits = old_ranges.iter().zip(new_ranges).peekable();
+    let mut ranges: Vec<LineChange> = Vec::new();
+    while let Some((old_range, new_range)) = edits.next() {
+        let mut old_end = old_range.end();
+        let mut new_end = new_range.end();
+        // Touching replacements have no unchanged bytes between them. Project
+        // them together, since their shared boundary can be inside a CRLF.
+        while let Some((next_old, next_new)) =
+            edits.next_if(|(next_old, _)| next_old.start() == old_end)
+        {
+            old_end = next_old.end();
+            new_end = next_new.end();
+        }
+        let mut old_start = old_range.start().0 as usize;
+        let mut new_start = new_range.start().0 as usize;
+        // If the preceding CR forms a CRLF in either snapshot, its line also
+        // changed. Include that same preceding byte in both snapshots.
+        if inside_crlf(old, old_start) || inside_crlf(new, new_start) {
+            old_start -= 1;
+            new_start -= 1;
+        }
+        let change = LineChange {
+            old: Span::new(
+                Line(old.byte_to_line(old_start) as u64),
+                Line(old.byte_to_line(old_end.0 as usize) as u64 + 1),
+            )?,
+            new: Span::new(
+                Line(new.byte_to_line(new_start) as u64),
+                Line(new.byte_to_line(new_end.0 as usize) as u64 + 1),
+            )?,
+        };
+        match ranges.last_mut() {
+            Some(previous)
+                if change.old.start() < previous.old.end()
+                    || change.new.start() < previous.new.end() =>
+            {
+                previous.old = Span::new(previous.old.start(), change.old.end())?;
+                previous.new = Span::new(previous.new.start(), change.new.end())?;
+            }
+            _ => ranges.push(change),
+        }
+    }
+    Ok(LineChanges {
+        ranges,
+        line_delta: new.len_lines() as i64 - old.len_lines() as i64,
+    })
 }
 
 fn to_usize(offset: ByteOffset) -> Result<usize> {
