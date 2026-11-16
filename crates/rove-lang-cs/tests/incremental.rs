@@ -28,6 +28,14 @@ use std::{
 
 const WAIT: Duration = Duration::from_secs(120);
 
+/// 真实索引进程自述版本（`--version` 与 hello）的期望前缀，跟随
+/// [`rove_lang_cs::lifecycle::validity::EXPECTED_INDEXER_VERSION`]，
+/// 这样递增索引进程版本时不必再改这里。
+fn expected_version_prefix() -> String {
+    let [major, minor, ..] = rove_lang_cs::lifecycle::validity::EXPECTED_INDEXER_VERSION;
+    format!("{major}.{minor}.")
+}
+
 /// 被测的索引进程：环境变量 `ROVE_INDEXER_CS`（`.exe` 或 `.dll`，例如打包后的 trim 版，#43）优先，
 /// 否则是 `dotnet build` 的产物。
 fn indexer_dll() -> Option<PathBuf> {
@@ -408,7 +416,7 @@ impl Resident {
         assert!(hello["params"]["indexer_version"]
             .as_str()
             .unwrap()
-            .starts_with("1.2."));
+            .starts_with(&expected_version_prefix()));
         // #43：hello 同时带协议区间，Rove 据此协商
         assert_eq!(hello["params"]["protocol_min"], 1);
         r
@@ -486,7 +494,10 @@ fn protocol_version_negotiation_and_component_info() {
     assert_eq!(info["protocol"], 1);
     assert_eq!(info["protocol_min"], 1);
     assert_eq!(info["index_format"], 2);
-    assert!(info["version"].as_str().unwrap().starts_with("1.2."));
+    assert!(info["version"]
+        .as_str()
+        .unwrap()
+        .starts_with(&expected_version_prefix()));
     // Rove 侧对同一份自述的判定
     let manifest = rove_lang_cs::lifecycle::Manifest::parse(&info.to_string()).unwrap();
     assert_eq!(
