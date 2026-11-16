@@ -144,6 +144,9 @@ mod m3_acceptance_tests;
 // 与 M1–M3 叠在一起时的接缝。
 #[cfg(test)]
 mod v01_acceptance_tests;
+// #209：二进制文件的错误页与「仍然打开」（拒绝 → 仍然打开 → 显示的整条链路）。
+#[cfg(test)]
+mod binary_tests;
 // #150：「可交互」冷启动埋点（`cargo xtask startup` 用，默认关闭）。
 mod startup_probe;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，

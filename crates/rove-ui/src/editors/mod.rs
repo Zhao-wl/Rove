@@ -940,9 +940,21 @@ impl EditorService {
     }
 
     pub(crate) fn retry(&mut self, group: EditorGroupId, id: TabId) {
+        self.reopen_tab(group, id, false);
+    }
+
+    /// #209：错误页上的「仍然打开」。与重试同一条路径，只是把 `force_open` 置上，让加载器按
+    /// lossy 文本读二进制 / 解不出文本的文件（UX_SPEC §3.5）。选择留在标签的选项里，之后的重试
+    /// 继续按「仍然打开」加载。
+    pub(crate) fn open_anyway(&mut self, group: EditorGroupId, id: TabId) {
+        self.reopen_tab(group, id, true);
+    }
+
+    fn reopen_tab(&mut self, group: EditorGroupId, id: TabId, force_open: bool) {
         if let Some(tab) = self.groups.get(&group).and_then(|pane| pane.tab(id)) {
             let mut options = tab.options.clone();
             options.target = OpenTarget::Group(group);
+            options.force_open |= force_open;
             let _ = self.request_open(
                 tab.resource.clone(),
                 options,
@@ -1216,7 +1228,13 @@ impl EditorService {
                 cancel.check()?;
                 let document = match &warm {
                     Some(opened) => opened.document.clone(),
-                    None => loader.open(resource, cancel.clone()).await?,
+                    // #209：「仍然打开」经 #1 的 `OpenRequest` 传到加载器；普通打开是默认值。
+                    None => {
+                        let request = rove_buffer::OpenRequest {
+                            force_open: options.force_open,
+                        };
+                        loader.open_with(resource, request, cancel.clone()).await?
+                    }
                 };
                 let position = options.reveal_position();
                 if let Some(position) = position {
