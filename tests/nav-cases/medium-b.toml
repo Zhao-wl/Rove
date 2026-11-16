@@ -479,7 +479,7 @@ col = 31
 token = "-"
 anchor = "V3 delta = target - start;"
 why = "光标在二元减号上，两侧都是 V3，期望落到 operator -(V3, V3) 而不是 operator -(V3, float)"
-source = "人工阅读：target 是方法参数 V3（MatchDribbleCommit.cs:7），start 在 25 行声明为 V3；V3 上的 - 有三个重载：V3.cs:21(V3,V3)、29(V3,float)、27(一元)，本处匹配 21 行。运算符使用处当前索引不记录，引用按约定用 refs_include 指向查询点所在行。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
+source = "人工阅读：target 是方法参数 V3（MatchDribbleCommit.cs:7），start 在 25 行声明为 V3；V3 上的 - 有三个重载：V3.cs:21(V3,V3)、29(V3,float)、27(一元)，本处匹配 21 行。运算符的引用按约定用 refs_include 指向查询点所在行。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 21, anchor = "public static V3 operator -(V3 a, V3 b) => new V3(a.X - b.X, a.Y - b.Y, a.Z - b.Z);" }]
 refs_include = [
@@ -559,7 +559,7 @@ col = 34
 token = "["
 anchor = "float value = tactics[phase, parameter];"
 why = "双参数索引器，光标在 [ 上，期望跳到 TeamTactics 的 this[TacticPhase, TacticParameter]"
-source = "人工阅读：tactics 是 171 行方法参数 TeamTactics，索引器声明在 TeamTactics.cs:12；项目里 FormationTactics.cs:27 另有一个单参数索引器，参数个数不同才区分得开。索引器使用处当前索引不记录，引用按约定用 refs_include 指向查询点所在行。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
+source = "人工阅读：tactics 是 171 行方法参数 TeamTactics，索引器声明在 TeamTactics.cs:12；项目里 FormationTactics.cs:27 另有一个单参数索引器，参数个数不同才区分得开。索引器的引用按约定用 refs_include 指向查询点所在行。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs", line = 12, anchor = "public float this[TacticPhase phase, TacticParameter parameter]" }]
 refs_include = [

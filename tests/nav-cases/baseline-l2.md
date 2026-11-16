@@ -46,6 +46,25 @@
 **下一次往出现位置里加东西之前必须先看这一条**。耗时在 90 s 的门槛附近波动，与 #44 的结论一致：
 本机负载较高时就会贴线，空闲机器上 #33 实测 72–75 s。
 
+查询侧（`cargo bench -p xtask --bench cs_index`，同一台机器上 before / after 交替各两轮，
+`--warm-up-time 1 --measurement-time 3`，大型项目索引）：
+
+| 用例 | before（两轮中位数） | after（两轮中位数） | 看法 |
+|---|---:|---:|---|
+| `cs_index/goto_definition` | 1.13 / 0.90 µs | 1.05 / 0.90 µs | 在噪声内 |
+| `cs_index/find_references` | 156 / 162 µs | 156 / 167 µs | 在噪声内 |
+| `cs_index/symbol_at` | 1.14 / 1.20 µs | 1.18 / 1.21 µs | 在噪声内 |
+| `cs_index/router_goto_definition` | 4.24 / 3.96 µs | 4.04 / 4.08 µs | 在噪声内 |
+| `cs_index/router_find_references` | 1.52 / 1.44 ms | 1.78 / 1.91 ms | +18% ~ +32% |
+| `cs_index/open` | 4.26 / 4.40 ms | 4.54 / 4.72 ms | +6% ~ +7%（索引大了 0.93%） |
+
+**这组数字只能当参考**：基准的查询点是按 `seed % 出现位置数` 采样的（`xtask/benches/cs_index.rs`），
+出现位置总数一变，before 与 after 采到的就是**两批不同的位置**，`router_find_references` 的差距
+主要来自新采到的运算符 / 索引器符号引用更多。`cargo xtask bench --check-budgets` 的绝对值仍有大量余量：
+`goto_definition` p99 **6.18 µs**（预算 16 ms）、`find_references` p99 **2.97 ms**（预算 50 ms）。
+唯一超预算的 `goto_definition_e2e`（57.99 ms / 预算 50 ms，负责 #40）在 before 的同一轮里是
+**61.10 ms**，本改动前就超，不是本次引入的，机器负载较高。
+
 查询来源：`l2`
 
 - medium：完整语义索引（格式 v2，索引进程 1.2.0.0，7718 个文件）
