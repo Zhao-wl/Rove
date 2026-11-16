@@ -871,7 +871,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 |---|---|
 | `mod.rs` | `CsRouter`：实现 `CsQueries`（#40、#41、#42、R59 的唯一数据入口）；`SemanticSource`（#36 的快照、状态、过期文件、重建请求；`IndexLifecycle` 已实现，`ManualSemantic` 供测试/基准/`nav_check`）；`navigate_detailed` 逐条精确度 |
 | `mapping.rs` | 位置映射纯函数：`EditMap` 是按位置排序、两两不相邻的修改块（旧/新两侧的半开区间），`push(LineEdit)` 按编辑记录累积，`old_to_new` / `new_to_old` 一次二分查找；行级修改判定 `line_modified_old/new` |
-| `buffers.rs` | `BufferStates`：打开中的缓冲区相对索引版本的状态（基线内容哈希、当前磁盘哈希、编辑表、文本快照），装配处在打开 / 编辑 / 重新载入 / 保存 / 关闭时调用 |
+| `buffers.rs` | `BufferStates`：打开中的缓冲区相对索引版本的状态（基线内容哈希、当前磁盘哈希、编辑表、文本快照），装配处在打开 / 编辑 / 重新载入 / 保存 / 关闭时调用；另有**磁盘版本检查点**（#216，见下） |
 | `l0.rs` | L0 兜底：当前文件语法树上的作用域查找（局部变量、参数、局部函数、lambda 参数、foreach/for/using/catch 变量、`out var`/模式变量、LINQ 范围变量），最内层优先 |
 | `testing.rs` | 测试与基准用的 RVCSIDX v2 写出器（`TestIndex`）与示例项目（`sample_index`），`#[doc(hidden)]` |
 
@@ -879,13 +879,15 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 1. 没有 L2 快照 → 回退；原因按 #36 的状态：构建中/检查中 `IndexNotReady`（界面用 `CsRouter::semantic_status()` 的百分比）、未安装 `ComponentUnavailable`、已禁用 `IndexDisabled`、失败 `Other("index-failed")`。
 2. 文件不在索引里 → 回退（`Other("file-not-indexed")`）。
-3. 文件状态：打开的缓冲区按“基线哈希 = 索引文件表里的哈希”判定编辑记录有效；“当前磁盘哈希 = 索引哈希”（保存后已重建）时丢弃编辑记录；都不等则**无法映射**。未打开的文件按 #36 的 `is_stale`。版本比对只是查表（索引文件表的哈希 + 缓冲区登记时算好的哈希），查询路径上不算哈希。
+3. 文件状态：打开的缓冲区按“基线哈希 = 索引文件表里的哈希”判定编辑记录有效；索引换代到某个**磁盘版本检查点**（#216，见下）时把基线推进到那一版、编辑记录换成那之后的编辑（换代那一刻缓冲区干净就直接回到“干净”）；对不上任何一版则**无法映射**。未打开的文件按 #36 的 `is_stale`。版本比对只是查表（索引文件表的哈希 + 缓冲区登记时算好的哈希），查询路径上不算哈希。
 4. 查询位置先映射回索引坐标：落在修改块里、或所在行被修改过 → 回退（`ModifiedRegion`）；无法映射 → 回退，并在磁盘内容与索引不同时向 #36 请求重建（`files_changed(Changed)`，由 #35 的常驻进程增量更新；未保存的编辑不请求，索引进程只读磁盘）。同一（文件, 内容哈希）只请求一次。
 5. 映射后的位置落在 `#if` 不生效的行区间里（L2 不收集这些代码）→ 回退（`Other("inactive-preprocessor-region")`），不把“没有出现位置”当成精确的空结果。
 6. L2 结果逐条反向映射到当前坐标：干净文件原样；脏缓冲区里未修改的行精确平移；落在修改行上的结果尽力平移并**标为近似**；无法映射的文件原样给出并标为近似。不可信的快照（`trusted = false`，配置变化后重建中）所有结果为近似。
 7. 回退：L0 先认局部名字（结果“语法”）；否则定义/类型定义问 L1：类型名解析（`resolve_type`），没有再列同名成员（`member_candidates`），结果“近似”；其他查询返回空结果。
 
 **修改区判定粒度：行级。** 旧文本中被任何修改块触及的行都算修改过；整行插入/删除（块的起止都在行首）不触及相邻行，所以“在开头插入 10 行”后其余行全部精确。选行级而非语句级：同一行上改类型、修饰符、实参都可能改变绑定，行级都能覆盖；语句级要语法树，跨行语句会把远处的行一起降级。已知代价：其他行的修改（如新增遮蔽字段的局部变量）可能改变本行绑定而不被发现，属于 `LANGUAGE_INTELLIGENCE` §4 代价第 2 条，保存并重建后恢复。
+
+**磁盘版本检查点（#216）。** “当前内容 = 磁盘上的某个哈希”只在保存 / 载入的那一刻成立，下一次按键就把 `current_hash` 置为 `None`。索引是异步重建的，等它换代过来时用户往往已经继续在打字，于是基线哈希对不上、当前哈希又是 `None`——整份文件被判为无法映射，哪怕只多敲了一个字符（用户可见：保存后一边等索引一边接着写代码，导航质量无声掉一档）。所以在信息还在的那一刻就记下来：`saved` / `reloaded` 各登记一个检查点（那一刻的磁盘哈希 + 一张空的编辑表），之后每次 `edited` 都并入**所有**检查点的编辑表；刚打开、还没保存过的文档一个检查点都不需要（基线哈希就是那一刻的磁盘哈希），所以这条最常见的路上没有额外开销；索引换代到哈希 `h` 时，只要还留着 `h` 的检查点就把基线推进到 `h`、编辑记录换成那之后的编辑。检查点最多留 4 个（索引不一定追到最新一次保存，可能落在中间某次上），超出丢最旧的；同一哈希有多个时取最近的（编辑表最短）。推进发生在 `BufferStates::rebase`，由 `CsRouter::file_state` 调用——**判定不依赖界面什么时候把换代通知下来**，换代后第一次查询之前发生过多少次输入都不影响结果。保存在途时又被编辑过的缓冲区不登记磁盘哈希（M3 验收的并发口径），所以也不会产生检查点，仍然按无法映射处理。
 
 精确度与契约：`navigate_detailed` 返回 `RoutedTarget { target, precision, reason, role }`，**逐条**标记（`role`：定义 / 引用 / L1 候选 / 元数据）。冻结的 `CsQueries::navigate` 只有批级精确度，按契约取最弱（精确 > 近似 > 语法）。空结果 + `Exact` 表示“确实没有”；空结果 + 非精确表示“不能确定”，`reason` 说明原因。
 
@@ -896,7 +898,7 @@ R46（编辑交互与输入法）、R47（当前文件替换）、R48（保存�
 
 装配（#40 接入时完成；本 PR 不改 UI/app）：`CsRouter::new(lifecycle, buffers).with_l1(l1).with_root(项目根)`；文档打开时 `BufferStates::opened(path, text, hash_bytes(磁盘原始字节))`，外部修改重新载入时 `reloaded`，M3 编辑事务 `edited`，保存 `saved`，关闭 `closed`。所有查询在后台执行器上调用。
 
-验证：`cargo test -p rove-lang-cs router`（`mapping` 属性测试：随机编辑后未修改行逐字节对应、正反映射互逆；路由单元测试覆盖插入 10 行仍精确、修改所在行降级、反向映射混合干净文件与脏缓冲区、四条降级路径、L0 局部名字/lambda/局部函数/遮蔽、逐条精确度）与 `cargo test -p rove-lang-cs --test router`（真实 `IndexLifecycle`：打开 → 精确 → 编辑 → 近似 → 保存并重建 → 精确；未保存时不标记过期；组件未安装时 L1/L0 回退）、`cargo test -p rove-lang-cs --test routing_doc`（#213 的口径看门测试：重建只在保存后请求，并逐条核对 `LANGUAGE_INTELLIGENCE` §3.2 的措辞）。准确率：`cargo run -p rove-lang-cs --example nav_check -- --source router`，与 `--source l2` 逐例一致。性能：`cargo xtask bench --filter cs_router/`（合成索引，预算 `router_definition_*`）；真实索引端到端 `cs_index/router_*`（预算 `goto_definition` / `find_references`，需要 `--cs-index`）。
+验证：`cargo test -p rove-lang-cs router`（`mapping` 属性测试：随机编辑后未修改行逐字节对应、正反映射互逆；路由单元测试覆盖插入 10 行仍精确、修改所在行降级、反向映射混合干净文件与脏缓冲区、四条降级路径、L0 局部名字/lambda/局部函数/遮蔽、逐条精确度）与 `cargo test -p rove-lang-cs --test router`（真实 `IndexLifecycle`：打开 → 精确 → 编辑 → 近似 → 保存并重建 → 精确；未保存时不标记过期；**保存 → 重建换代 → 一次查询都不做就继续输入 → 其余行仍然精确**（#216）；组件未安装时 L1/L0 回退）、`cargo test -p rove-lang-cs --test routing_doc`（#213 的口径看门测试：重建只在保存后请求，并逐条核对 `LANGUAGE_INTELLIGENCE` §3.2 的措辞）。准确率：`cargo run -p rove-lang-cs --example nav_check -- --source router`，与 `--source l2` 逐例一致。性能：`cargo xtask bench --filter cs_router/`（合成索引，预算 `router_definition_*`）；真实索引端到端 `cs_index/router_*`（预算 `goto_definition` / `find_references`，需要 `--cs-index`）。
 
 ## 26. 外部符号元数据视图（#34）
 
@@ -2200,8 +2202,8 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 再调用 `BufferStates::saved`——登记口径与 `nav_host::apply_buffer_change` 的打开 / 重新载入一致。
 
 未达标与未测的事情写在报告里，**没有改 `perf/budgets.toml` 的任何数值**：
-按键到上屏 p99 仍未达 8 ms（#215），索引换代后的 rebase 只在查询时发生（#216），
-输入法矩阵本次一条都没有实机跑（报告 §2 与人工清单）。
+按键到上屏 p99 仍未达 8 ms（#215），索引换代后的 rebase 只在查询时发生（#216，已由该 issue 修复：
+见 §25 的“磁盘版本检查点”），输入法矩阵本次一条都没有实机跑（报告 §2 与人工清单）。
 
 ## 57. v0.1 发布候选集成验收（#150）
 
