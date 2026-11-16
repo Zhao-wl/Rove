@@ -5,6 +5,14 @@ fn wp(p: &str) -> WorkspacePath {
     WorkspacePath::new(p).unwrap()
 }
 
+#[test]
+fn source_suffix_handles_multibyte_names() {
+    assert!(!is_cs(&wp("Assets/图标v2")));
+    assert!(!is_cs(&wp("中文.h")));
+    assert!(is_cs(&wp("Assets/玩家.cS")));
+    assert!(!is_cs(&wp(".cs")));
+}
+
 fn write(root: &Path, rel: &str, text: &str) {
     let path = root.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -83,6 +91,20 @@ fn resolve(
             }
         })
         .collect()
+}
+
+#[test]
+fn resolves_generic_type_with_multibyte_name() {
+    let file = "Assets/Player.cs";
+    let f = Fixture::new(&[(
+        file,
+        "namespace 游戏 { class 玩家<T> {} class Example { 玩家<int> field; } }",
+    )]);
+    let index = f.index();
+    assert_eq!(
+        resolve(&index, &f, file, "玩家<int>", 0, "玩家<int>"),
+        ["游戏.玩家`1"],
+    );
 }
 
 fn path_of(t: &Target) -> &str {

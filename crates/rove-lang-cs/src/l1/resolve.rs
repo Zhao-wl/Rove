@@ -35,7 +35,7 @@ impl<'a> TypeText<'a> {
             }
         }
         let mut global = false;
-        if let Some(i) = find_top(text, "::") {
+        if let Some(i) = find_top(text, b"::") {
             global = true;
             text = &text[i + 2..];
         }
@@ -91,14 +91,14 @@ impl<'a> Segment<'a> {
     }
 }
 
-fn find_top(text: &str, pat: &str) -> Option<usize> {
+fn find_top(text: &str, pat: &[u8]) -> Option<usize> {
     let mut depth = 0i32;
     let bytes = text.as_bytes();
-    for i in 0..bytes.len() {
-        match bytes[i] {
+    for (i, &byte) in bytes.iter().enumerate() {
+        match byte {
             b'<' => depth += 1,
             b'>' => depth -= 1,
-            _ if depth == 0 && text[i..].starts_with(pat) => return Some(i),
+            _ if depth == 0 && bytes[i..].starts_with(pat) => return Some(i),
             _ => {}
         }
     }

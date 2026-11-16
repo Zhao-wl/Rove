@@ -577,8 +577,8 @@ fn text_range(r: Range32) -> TextRange {
 }
 
 fn is_cs(path: &WorkspacePath) -> bool {
-    let p = path.as_str();
-    p.len() > 3 && p[p.len() - 3..].eq_ignore_ascii_case(".cs")
+    let p = path.as_str().as_bytes();
+    p.len() > 3 && p[p.len() - 3..].eq_ignore_ascii_case(b".cs")
 }
 
 /// 见 `L1Index::resolve_type`：文件名相同、目录不同的位置是源码副本，只留离 `from` 最近的。
