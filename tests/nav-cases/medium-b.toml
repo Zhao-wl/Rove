@@ -479,7 +479,7 @@ col = 31
 token = "-"
 anchor = "V3 delta = target - start;"
 why = "光标在二元减号上，两侧都是 V3，期望落到 operator -(V3, V3) 而不是 operator -(V3, float)"
-source = "人工阅读：target 是方法参数 V3（MatchDribbleCommit.cs:7），start 在 25 行声明为 V3；V3 上的 - 有三个重载：V3.cs:21(V3,V3)、29(V3,float)、27(一元)，本处匹配 21 行。运算符使用处当前索引不记录，引用按约定用 refs_include 指向查询点所在行。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+source = "人工阅读：target 是方法参数 V3（MatchDribbleCommit.cs:7），start 在 25 行声明为 V3；V3 上的 - 有三个重载：V3.cs:21(V3,V3)、29(V3,float)、27(一元)，本处匹配 21 行。运算符的引用按约定用 refs_include 指向查询点所在行。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 21, anchor = "public static V3 operator -(V3 a, V3 b) => new V3(a.X - b.X, a.Y - b.Y, a.Z - b.Z);" }]
 refs_include = [
@@ -495,7 +495,7 @@ col = 37
 token = "+"
 anchor = "V3 destination = target + offset;"
 why = "同类型两个加号重载，期望落到 operator +(V3, V3)"
-source = "人工阅读：target 是 V3 参数，offset 在 33 行声明为 V3；V3 的 + 有 V3.cs:20(V3,V3) 与 28(V3,float) 两个重载，本处是前者。引用按运算符约定用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+source = "人工阅读：target 是 V3 参数，offset 在 33 行声明为 V3；V3 的 + 有 V3.cs:20(V3,V3) 与 28(V3,float) 两个重载，本处是前者。引用按运算符约定用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 20, anchor = "public static V3 operator +(V3 a, V3 b) => new V3(a.X + b.X, a.Y + b.Y, a.Z + b.Z);" }]
 refs_include = [
@@ -511,7 +511,7 @@ col = 40
 token = "*"
 anchor = "V3 physics = nextDirection * velocity;"
 why = "乘号有四个重载（V3*float、float*V3、V3*V3、Q4*V3），右操作数是 float 才能定位"
-source = "人工阅读：nextDirection 是 V3（同方法 52 行作为 Normalized 的 fallback 实参），velocity 在 51 行声明为 float，故匹配 V3.cs:22 的 operator *(V3 a, float k)，排除 23/24 行与 Q4.cs:45。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+source = "人工阅读：nextDirection 是 V3（同方法 52 行作为 Normalized 的 fallback 实参），velocity 在 51 行声明为 float，故匹配 V3.cs:22 的 operator *(V3 a, float k)，排除 23/24 行与 Q4.cs:45。引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/V3.cs", line = 22, anchor = "public static V3 operator *(V3 a, float k) => new V3(a.X * k, a.Y * k, a.Z * k);" }]
 refs_include = [
@@ -527,7 +527,7 @@ col = 37
 token = "*"
 anchor = "V3 rotated = source * axis;"
 why = "左操作数是 Q4，期望跳到 Q4.cs 的 operator *(Q4, V3)，而不是 V3 自己的任何乘号重载"
-source = "人工阅读：source 在 18 行是 new Q4(...).Normalized()，axis 是 20 行 foreach 的 V3；匹配 Q4.cs:45 的 public static V3 operator *(Q4 q, V3 value)。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+source = "人工阅读：source 在 18 行是 new Q4(...).Normalized()，axis 是 20 行 foreach 的 V3；匹配 Q4.cs:45 的 public static V3 operator *(Q4 q, V3 value)。引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/Mathematics/Q4.cs", line = 45, anchor = "public static V3 operator *(Q4 q, V3 value)" }]
 refs_include = [
@@ -543,7 +543,7 @@ col = 44
 token = "!="
 anchor = "if (new ScenarioId(c.scenario) != BuiltinScenarioIds.Stochastic || c.episode < 1 || c.seed < 0)"
 why = "自定义值对象的 != 重载；同一行还有 || 与 < 两种内建运算符"
-source = "人工阅读：左侧 new ScenarioId(c.scenario) 与右侧 BuiltinScenarioIds.Stochastic 都是 ScenarioId，匹配 ScenarioId.cs:21 的 operator !=；项目里另有 RigNodeId/SpecialStateId/DirectionParticipantId 等多个结构声明了同形的 != 重载，按名称无法区分。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录运算符使用处，期望值按源码阅读保留"
+source = "人工阅读：左侧 new ScenarioId(c.scenario) 与右侧 BuiltinScenarioIds.Stochastic 都是 ScenarioId，匹配 ScenarioId.cs:21 的 operator !=；项目里另有 RigNodeId/SpecialStateId/DirectionParticipantId 等多个结构声明了同形的 != 重载，按名称无法区分。引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给运算符使用处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs", line = 21, anchor = "public static bool operator !=(ScenarioId left, ScenarioId right) => !left.Equals(right);" }]
 refs_include = [
@@ -559,7 +559,7 @@ col = 34
 token = "["
 anchor = "float value = tactics[phase, parameter];"
 why = "双参数索引器，光标在 [ 上，期望跳到 TeamTactics 的 this[TacticPhase, TacticParameter]"
-source = "人工阅读：tactics 是 171 行方法参数 TeamTactics，索引器声明在 TeamTactics.cs:12；项目里 FormationTactics.cs:27 另有一个单参数索引器，参数个数不同才区分得开。索引器使用处当前索引不记录，引用按约定用 refs_include 指向查询点所在行。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+source = "人工阅读：tactics 是 171 行方法参数 TeamTactics，索引器声明在 TeamTactics.cs:12；项目里 FormationTactics.cs:27 另有一个单参数索引器，参数个数不同才区分得开。索引器的引用按约定用 refs_include 指向查询点所在行。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs", line = 12, anchor = "public float this[TacticPhase phase, TacticParameter parameter]" }]
 refs_include = [
@@ -575,7 +575,7 @@ col = 61
 token = "["
 anchor = "case TacticPhase.Offense: return Offense[parameter];"
 why = "索引器内部再用另一个类型的索引器；Offense 是属性不是数组"
-source = "人工阅读：Offense 是 TeamTactics.cs:8 的 FormationTactics 属性，故 [parameter] 走 FormationTactics.cs:27 的索引器；引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+source = "人工阅读：Offense 是 TeamTactics.cs:8 的 FormationTactics 属性，故 [parameter] 走 FormationTactics.cs:27 的索引器；引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs", line = 27, anchor = "public float this[TacticParameter parameter]" }]
 refs_include = [
@@ -591,7 +591,7 @@ col = 39
 token = "["
 anchor = "double value = summary[name];"
 why = "字符串键索引器，容易被误判成字典或数组下标"
-source = "人工阅读：summary 来自 43 行 MatchMetricsRun.Execute(...)，该方法返回 MatchMetricsSummary（MatchMetricsRun.cs:26），索引器 this[string name] 声明在 MatchMetricsSummary.cs:20；它的实现体内部才是对 SortedDictionary 的索引。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+source = "人工阅读：summary 来自 43 行 MatchMetricsRun.Execute(...)，该方法返回 MatchMetricsSummary（MatchMetricsRun.cs:26），索引器 this[string name] 声明在 MatchMetricsSummary.cs:20；它的实现体内部才是对 SortedDictionary 的索引。引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs", line = 20, anchor = "public double this[string name] => m_Values[name];" }]
 refs_include = [
@@ -607,7 +607,7 @@ col = 38
 token = "["
 anchor = "yield return this[index];"
 why = "this[index] 自引用索引器，所在类型是嵌套类 EntryView"
-source = "人工阅读：本行在 SelectionTrace 的嵌套类 EntryView（SelectionTrace.cs:146）的 GetEnumerator 内，this 即 EntryView，其索引器 public string this[int index] 声明在 SelectionTrace.cs:161；同文件 156 行的 m_Entries[...] 是 List<Entry> 的索引器，不能混。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+source = "人工阅读：本行在 SelectionTrace 的嵌套类 EntryView（SelectionTrace.cs:146）的 GetEnumerator 内，this 即 EntryView，其索引器 public string this[int index] 声明在 SelectionTrace.cs:161；同文件 156 行的 m_Entries[...] 是 List<Entry> 的索引器，不能混。引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs", line = 161, anchor = "public string this[int index]" }]
 refs_include = [
@@ -623,7 +623,7 @@ col = 26
 token = "["
 anchor = ": sources[MatchConfigField.RequestedSeed]);"
 why = "枚举键索引器，接收者是三元表达式之后的 sources 变量"
-source = "人工阅读：sources 是 21 行 new MatchConfigSources(data.Sources)，索引器 this[MatchConfigField field] 声明在 MatchConfigSources.cs:30；项目里 MatchScenarioDefinition.Sources 等同名成员是 Dictionary，按名称解析会落错。引用用 refs_include。已复核：运行器报「该位置没有出现位置记录」，即 v1 索引不记录索引器 [ 处的使用，期望值按源码阅读保留"
+source = "人工阅读：sources 是 21 行 new MatchConfigSources(data.Sources)，索引器 this[MatchConfigField field] 声明在 MatchConfigSources.cs:30；项目里 MatchScenarioDefinition.Sources 等同名成员是 Dictionary，按名称解析会落错。引用用 refs_include。已复核：期望值由上述源码阅读独立得出；#212 给索引器 [ 处补上出现位置后，运行器的结果与之一致"
 [case.expect]
 defs = [{ file = "Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs", line = 30, anchor = "internal ConfigSource this[MatchConfigField field] => m_Fields[field];" }]
 refs_include = [

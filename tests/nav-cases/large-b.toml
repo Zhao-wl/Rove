@@ -493,7 +493,7 @@ refs = 4
 
 # ---------------------------------------------------------------------------
 # operator：光标放在运算符本身上，期望跳到项目里的 operator 声明
-# 当前索引不记录运算符使用处，引用一律只列查询点所在行（预期失败）。
+# 运算符的引用一律只列查询点所在行（refs_include）：同一个 operator 在整个项目里的引用远超 20 处。
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -591,7 +591,7 @@ col = 40
 token = "["
 anchor = 'layerData.Grids[i, j] = regionId;'
 why = "上一行的 layer.Grids[i, j] 是 EditorConfig 的索引器，本行是 RuntimeConfig 的，签名一模一样"
-source = "人工阅读：layerData 由第 50 行 var layerData = new GridLayer(); 得到，本文件第 1 行 using RuntimeConfig; 且没有 using EditorConfig;，所以是 RuntimeConfig.GridLayer；其 Grids 属性类型为 RuntimeConfig.GridMatrix（MapGridLayer.cs:207），索引器声明在 Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14。运算符/索引器使用处当前索引不记录，引用只列查询点所在行。"
+source = "人工阅读：layerData 由第 50 行 var layerData = new GridLayer(); 得到，本文件第 1 行 using RuntimeConfig; 且没有 using EditorConfig;，所以是 RuntimeConfig.GridLayer；其 Grids 属性类型为 RuntimeConfig.GridMatrix（MapGridLayer.cs:207），索引器声明在 Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14。索引器的引用只列查询点所在行（refs_include）。"
 [case.expect]
 defs = [{ file = "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs", line = 14, anchor = 'public int this[int x, int y]' }]
 refs_include = [

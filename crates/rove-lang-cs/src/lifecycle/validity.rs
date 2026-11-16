@@ -22,7 +22,7 @@ pub const EXPECTED_FORMAT: u32 = 2;
 /// （测试对照该文件，改版本时会提醒同步这里）。找到已安装的组件时以组件清单里的版本为准
 /// （`IndexBuilder::component_version`）：缓存索引的头部版本必须等于当前组件版本，组件更新后重建；
 /// 本常量只在版本未知（环境变量覆盖、测试替身）时作为期望值。
-pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 2, 0, 0];
+pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 3, 0, 0];
 const GENERATED_PREFIX: &str = "rove-generated://";
 
 /// 失效原因（写进日志；界面只显示“正在重建”）。

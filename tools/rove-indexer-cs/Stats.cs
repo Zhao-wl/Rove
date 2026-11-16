@@ -8,6 +8,8 @@ static class Stats
 {
     public static long Read, Parse, Compile, Generators, Emit, BindTotal, SymbolInfo, DeclaredSymbol, SymbolKey, Relations;
     public static long Names, UnresolvedNames, CandidateNames, ReadBytes, Images, ImageFailures, GeneratedTrees;
+    /// #212：用户定义的运算符与索引器在使用处产生的出现位置数。
+    public static long OperatorUses;
     public static readonly ConcurrentDictionary<string, int> Unresolved = new();
     public static readonly ConcurrentDictionary<string, int> UnresolvedByProject = new();
     public static readonly ConcurrentQueue<string> GeneratorIssues = new();
