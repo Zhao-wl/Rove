@@ -15,7 +15,7 @@ use crate::code_view::edit::EditHost;
 use crate::save::registry as save_ids;
 use crate::save::{CloseCheck, Effect, SaveController};
 use rove_buffer::edit::{EditOptions, EditSession};
-use rove_buffer::save::{DiskStamp, SaveOptions, SaveRequest, SaveResult, TextFile};
+use rove_buffer::save::{DiskStamp, SaveJob, SaveOptions, SaveRequest, SaveResult, TextFile};
 use rove_buffer::{DocumentMetadata, SizeClass, TextSource};
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
@@ -556,18 +556,20 @@ impl Workbench {
         // 保存时的变换（去行尾空白、补末尾换行）改了文本：先让视图跟上。
         self.sync_document_from_session(document, cx);
         match begun {
-            Ok(job) => {
-                let task = cx.background_executor().spawn(async move { job.run() });
-                cx.spawn(async move |this, cx| {
-                    let result = task.await;
-                    let _ = this.update(cx, |view, cx| {
-                        view.finish_save(document, result, cx);
-                    });
-                })
-                .detach();
-            }
+            Ok(job) => self.spawn_save(document, job, cx),
             Err(effects) => self.apply_save_effects(effects, cx),
         }
+    }
+
+    fn spawn_save(&mut self, document: DocumentId, job: SaveJob, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async move { job.run() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |view, cx| {
+                view.finish_save(document, result, cx);
+            });
+        })
+        .detach();
     }
 
     pub(super) fn finish_save(
@@ -760,7 +762,7 @@ impl Workbench {
             self.editing.closing_window = false;
         }
         let options = self.save_options(document);
-        let effects = self.editing.saves.borrow_mut().on_action(
+        let begun = self.editing.saves.borrow_mut().begin_action(
             key,
             action,
             &options,
@@ -768,9 +770,12 @@ impl Workbench {
             &mut self.shell.feedback,
             Instant::now(),
         );
-        // “保留本地修改”等不产生效果的动作也可能收起提示条。
+        // 保存变换和还原在窗口线程更新会话，先同步视图。
         self.sync_document_from_session(document, cx);
-        self.apply_save_effects(effects, cx);
+        match begun {
+            Ok((document, job)) => self.spawn_save(document, job, cx),
+            Err(effects) => self.apply_save_effects(effects, cx),
+        }
     }
 
     /// `ctrl+n`：新建未命名的可编辑文档（`files.encoding` / `files.eol`），首次保存走另存为。
