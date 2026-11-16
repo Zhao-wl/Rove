@@ -1,7 +1,7 @@
 [package]
 # 包名必须叫 `gpui_http_client`：workspace 的 `[patch.crates-io]` 按包名替换，改名就匹配不上。
 # 版本必须满足 gpui 0.2.2 的 `http_client = { version = "0.2.2", package = "gpui_http_client" }`，
-# 所以这里不用 workspace 的 0.0.1。目录名 `rove-gpui-http-stub` 才是它在仓库里的身份。
+# 所以这里不用 workspace 的版本号。目录名 `rove-gpui-http-stub` 才是它在仓库里的身份。
 name = "gpui_http_client"
 version = "0.2.2"
 edition.workspace = true
