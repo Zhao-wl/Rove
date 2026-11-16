@@ -6,7 +6,8 @@
 //! 本模块固化的就是这种同时打开时的接缝：
 //!
 //! 1. `v01_sticky_scroll_agrees_with_the_breadcrumb_while_soft_wrap_is_on`
-//!    （场景 3 + 4 的判据：粘性区与面包屑是同一条符号路径，软换行不改变这个结论）；
+//!    （场景 3 + 4 的判据：粘性区与面包屑是同一条符号路径，软换行不改变这个结论；
+//!    插入符停在**声明行的行首缩进**里也一样，见 #218）；
 //! 2. `v01_a_huge_document_switches_off_sticky_scroll_and_soft_wrap_together`
 //!    与 `v01_a_large_document_only_switches_off_sticky_scroll`
 //!    （场景 3「超大文件下按分级关闭」、场景 4「超大文件下禁用」是**同一张分级表**的两行）；
@@ -215,6 +216,16 @@ fn breadcrumb_text(view: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<
     })
 }
 
+/// 面包屑里属于**符号**的那几段（前面是目录与文件名，后面才是符号）。符号名按 `(` 之前的部分
+/// 比较：面包屑写成 `Method3(int)`，源码里是 `public void Method3(int value)`。
+fn symbol_names<'a>(crumbs: &'a [String], text: &str) -> Vec<&'a str> {
+    crumbs
+        .iter()
+        .map(|crumb| crumb.split('(').next().unwrap_or(crumb))
+        .filter(|name| text.contains(*name))
+        .collect()
+}
+
 /// 粘性区每一行的**文本**（粘性行是文档行号，这里取出该行的源码，便于与面包屑对照）。
 fn sticky_line_texts(code: &Entity<CodeView>, cx: &mut VisualTestContext) -> Vec<String> {
     let text = text_of(code, cx);
@@ -330,7 +341,8 @@ fn v01_sticky_scroll_agrees_with_the_breadcrumb_while_soft_wrap_is_on(cx: &mut T
     // **坐标系**：`set_scroll_position` 的 top 是屏幕行，软换行之后它和文档行不是一回事，
     // 所以这里先把文档位置换算成屏幕行（`visual_line_of`）再滚——这正是两个功能的接缝。
     let method = line_of(&text, "public void Method3(");
-    let inside = pos(method + 4, 20);
+    // 列 0（行首缩进里）：面包屑与粘性区在同一行上必须给出同一条符号链（#218）。
+    let inside = pos(method + 4, 0);
     let visual = code.update(cx, |c, _| c.visual_line_of(inside));
     assert!(
         visual > method + 4,
@@ -346,13 +358,8 @@ fn v01_sticky_scroll_agrees_with_the_breadcrumb_while_soft_wrap_is_on(cx: &mut T
         !sticky.is_empty(),
         "方法体里应当有粘性行；面包屑是 {crumbs:?}"
     );
-    // 面包屑前面是目录与文件名，后面才是符号；粘性区只有符号。符号名按 `(` 之前的部分比较
-    //（面包屑写成 `Method3(int)`，源码里是 `public void Method3(int value)`）。
-    let symbols: Vec<&str> = crumbs
-        .iter()
-        .map(|crumb| crumb.split('(').next().unwrap_or(crumb))
-        .filter(|name| text.contains(*name))
-        .collect();
+    // 粘性区只有符号；面包屑取出符号那几段来对照。
+    let symbols = symbol_names(&crumbs, &text);
     assert_eq!(
         sticky.len(),
         symbols.len(),
@@ -368,8 +375,44 @@ fn v01_sticky_scroll_agrees_with_the_breadcrumb_while_soft_wrap_is_on(cx: &mut T
     // 软换行开着时，列号仍然按**文档列**算（#58 的判据）：插入符所在的文档位置不变。
     assert_eq!(
         code.read_with(cx, |c, _| c.selection().active),
-        pos(method + 4, 20),
+        pos(method + 4, 0),
         "软换行不改变插入符的文档坐标"
+    );
+
+    // #218 的复现点：插入符停在**方法声明行的行首缩进**（列 0）里时，
+    // 面包屑曾经只到类一级，而粘性区已经把这一行钉上去了。现在两边同一条链。
+    // `sticky` 是视口停在方法体里时钉住的那条链（命名空间 → 类 → 内部类 → 方法）。
+    let pinned = sticky.clone();
+    caret(&code, pos(method, 0), cx);
+    let at_column_zero = breadcrumb_text(&view, cx);
+    let on_declaration = symbol_names(&at_column_zero, &text);
+    assert_eq!(
+        pinned.len(),
+        on_declaration.len(),
+        "声明行行首缩进处的面包屑级数应当与粘性区相同：粘性 {pinned:?} 面包屑 {on_declaration:?}"
+    );
+    for (line, name) in pinned.iter().zip(&on_declaration) {
+        assert!(
+            line.contains(name),
+            "粘性行 `{line}` 与面包屑 `{name}` 对不上（粘性 {pinned:?} 面包屑 {on_declaration:?}）"
+        );
+    }
+    assert!(
+        on_declaration.contains(&"Method3"),
+        "面包屑应当显示插入符所在的方法：{on_declaration:?}"
+    );
+    // 行首缩进与该行第一个非空白字符上的结论一致（口径只有一套）。
+    let indent = text
+        .lines()
+        .nth(method as usize)
+        .map(|line| line.len() - line.trim_start().len())
+        .unwrap_or(0) as u64;
+    caret(&code, pos(method, indent), cx);
+    let at_first_glyph = breadcrumb_text(&view, cx);
+    assert_eq!(
+        symbol_names(&at_first_glyph, &text),
+        on_declaration,
+        "列 0 与第一个非空白字符上的面包屑应当相同"
     );
 }
 
@@ -658,20 +701,11 @@ fn real_project_scenario(project: UnityProject, label: &str, cx: &mut TestAppCon
     // 面包屑给出的符号链必须和粘性区逐级相同。
     //（粘性区描述的是视口顶部那一行所在的作用域，插入符在别处时两者本来就可以不同。）
     let innermost = code.read_with(cx, |c, _| c.sticky_lines().last().copied().unwrap());
-    // 插入符放在声明行的**第一个非空白字符**上：符号区间从声明本身开始，
-    // 行首缩进处不属于任何符号（见 §5.1 的记录）。
-    let indent = text
-        .lines()
-        .nth(innermost.line as usize)
-        .map(|line| line.len() - line.trim_start().len())
-        .unwrap_or(0) as u64;
-    caret(&code, pos(innermost.line, indent), cx);
+    // 插入符放在声明行的**列 0**（行首缩进里）：#218 之后缩进归这一行声明的符号，
+    // 面包屑与粘性区是同一套口径。
+    caret(&code, pos(innermost.line, 0), cx);
     let crumbs = breadcrumb_text(&view, cx);
-    let symbols: Vec<&str> = crumbs
-        .iter()
-        .map(|crumb| crumb.split('(').next().unwrap_or(crumb))
-        .filter(|name| text.contains(*name))
-        .collect();
+    let symbols = symbol_names(&crumbs, &text);
     assert_eq!(
         sticky.len(),
         symbols.len(),
