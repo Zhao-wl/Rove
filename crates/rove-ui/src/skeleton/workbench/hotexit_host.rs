@@ -6,7 +6,7 @@
 //!   （第 1 级反馈，3 秒；**不弹通知、不弹模态框**）。
 //! - **持续备份**：代码视图每发出一次编辑就 `note_edit`，到期后在后台原子写出一份备份
 //!   （安静期 500 ms、最长等待 2 s）。**不是只在退出时备份**——那样崩溃一条都救不回来。
-//! - **清理**：保存、关闭、恢复消费完都删掉对应备份；工作区目录消失时整组清掉（核心层做）。
+//! - **清理**：恢复后保留原备份，保存或关闭时删除；工作区目录消失时整组清掉（核心层做）。
 //! - **退出**：`files.hotExit` 允许时跳过 #49 的“保存 / 不保存 / 取消”（经
 //!   `SaveController::set_hot_exit`），把全部脏文档同步备份完再写干净的退出标记。
 //!
@@ -35,7 +35,7 @@ pub(super) struct HotExit {
     service: Option<BackupService>,
     /// 还没恢复到标签上的备份，按规范化后的路径索引。
     pending: BTreeMap<String, Backup>,
-    /// 已经恢复到标签上的备份路径（全部恢复完后一次性清理）。
+    /// 本次尝试恢复的路径，全部恢复结束时据此清理未挂载的备份。
     consumed: Vec<PathBuf>,
     /// 上次是意外退出：恢复完提示一次。
     crashed: bool,
@@ -163,6 +163,9 @@ impl Workbench {
         let path = backup.path.clone();
         let file = self.restored_file(backup);
         let id = DocumentId(DELETED_BASE + self.hotexit.consumed.len() as u64);
+        if let Some(service) = &mut self.hotexit.service {
+            service.note_restored(id, &path);
+        }
         let document = Arc::new(Document {
             id,
             resource: Resource::File(path.clone()),
@@ -205,12 +208,19 @@ impl Workbench {
     }
 
     /// `load_text_file` 的岔路：这个路径有待恢复的备份时，不读盘，直接用备份建文件。
-    pub(super) fn take_restored_file(&mut self, path: &Path) -> Option<TextFile> {
+    pub(super) fn take_restored_file(
+        &mut self,
+        document: DocumentId,
+        path: &Path,
+    ) -> Option<TextFile> {
         let backup = self.hotexit.pending.remove(&hot_exit_key(path))?;
+        if let Some(service) = &mut self.hotexit.service {
+            service.note_restored(document, &backup.path);
+        }
         Some(self.restored_file(backup))
     }
 
-    /// 全部备份都落到标签上了：激活原来的活动标签、清理已消费的备份、按需提示。
+    /// 恢复结束：激活原来的活动标签、清理未挂载的备份、按需提示。
     pub(super) fn finish_restore_if_done(&mut self, cx: &mut Context<Self>) {
         if self.hotexit.consumed.is_empty() {
             return;
@@ -240,15 +250,6 @@ impl Workbench {
         }
         if let Some(service) = &self.hotexit.service {
             service.finish_restore(&consumed);
-        }
-        // 消费掉的备份文件已经删了，但恢复出来的文档仍然是脏的：立刻重新排进去抖队列，
-        // 否则“恢复完马上再崩一次”会把刚救回来的修改弄丢。
-        let dirty: Vec<DocumentId> = {
-            let saves = self.editing.saves.borrow();
-            saves.documents().filter(|d| saves.is_dirty(*d)).collect()
-        };
-        for document in dirty {
-            self.note_hot_exit_edit(document, cx);
         }
         if std::mem::take(&mut self.hotexit.crashed) {
             // UX_SPEC §6.4：第 1 级反馈，3 秒后消失，不弹通知、不弹模态框。
