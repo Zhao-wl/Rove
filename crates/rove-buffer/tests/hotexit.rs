@@ -145,6 +145,74 @@ fn save(file: &mut TextFile) -> SaveOutcome {
 
 const DOC: DocumentId = DocumentId(1);
 
+#[test]
+fn pending_backup_cannot_revive_saved_or_discarded_edits() {
+    for (save_first, had_backup) in [(true, false), (false, false), (true, true), (false, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let (project, state) = workspace(temp.path());
+        let path = project.join("source.cs");
+        std::fs::write(&path, "class Original {}").unwrap();
+        let mut file = load(&path, &defaults());
+        let (mut service, _) = open(&state, &project, HotExitMode::OnExit);
+
+        if had_backup {
+            edit(&mut file, "Original", "Written");
+            back_up(&mut service, DOC, &file, 0);
+            edit(&mut file, "Written", "Pending");
+        } else {
+            edit(&mut file, "Original", "Pending");
+        }
+        let backup = file.to_backup(service.undo_limit(), 0, true).unwrap();
+        let pending = service.prepare_write(DOC, backup).unwrap();
+
+        if save_first {
+            assert!(matches!(save(&mut file), SaveOutcome::Saved { .. }));
+        }
+        service.discard(DOC);
+        assert_eq!(
+            pending().unwrap_err().kind(),
+            std::io::ErrorKind::Interrupted
+        );
+
+        let (_, restored) = open(&state, &project, HotExitMode::OnExit);
+        assert!(restored.backups.is_empty());
+        let expected = if save_first {
+            "class Pending {}"
+        } else {
+            "class Original {}"
+        };
+        assert_eq!(std::fs::read_to_string(path).unwrap(), expected);
+    }
+}
+
+#[test]
+fn out_of_order_backup_jobs_keep_the_latest_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let (project, state) = workspace(temp.path());
+    let path = project.join("source.cs");
+    std::fs::write(&path, "class Original {}").unwrap();
+    let mut file = load(&path, &defaults());
+    let (mut service, _) = open(&state, &project, HotExitMode::OnExit);
+
+    edit(&mut file, "Original", "Old");
+    let backup = file.to_backup(service.undo_limit(), 0, true).unwrap();
+    let old = service.prepare_write(DOC, backup).unwrap();
+    edit(&mut file, "Old", "New");
+    let backup = file.to_backup(service.undo_limit(), 0, true).unwrap();
+    let new = service.prepare_write(DOC, backup).unwrap();
+
+    new().unwrap();
+    assert_eq!(old().unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+    let (_, restored) = open(&state, &project, HotExitMode::OnExit);
+    assert_eq!(restored.backups.len(), 1);
+    assert_eq!(
+        restore(restored.backups.into_iter().next().unwrap())
+            .session()
+            .contents(),
+        "class New {}"
+    );
+}
+
 // --------------------------------------------------------------------------------- 强杀进程
 
 fn child_role() -> Option<String> {

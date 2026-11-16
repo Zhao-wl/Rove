@@ -22,12 +22,15 @@
 //! **读不到就当没有**：备份目录可能被杀毒软件锁住、被清理工具删掉，或者 `%LOCALAPPDATA%`
 //! 根本没设置。所有读取路径在失败时都退化成“这个工作区没有备份”，绝不让启动失败。
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::codec::{DecodeError, DecodeResult, Reader, Writer};
 use super::record::Backup;
-use crate::save::{write_atomic, WriteOptions};
+use crate::save::write::write_atomic_guarded;
+use crate::save::{write_atomic, WriteError, WriteOptions};
 
 pub const BACKUPS_DIR: &str = "backups";
 pub const FAILED_DIR: &str = "backups-failed";
@@ -135,6 +138,60 @@ pub struct BackupStore {
     dir: PathBuf,
     key: String,
     write: WriteOptions,
+    writes: Arc<Mutex<BackupWrites>>,
+}
+
+#[derive(Default)]
+struct BackupWrites {
+    next: u64,
+    current: BTreeMap<PathBuf, u64>,
+}
+
+/// 在派发后台任务前为备份路径排定次序，避免任务执行顺序决定哪份快照落盘。
+pub(super) struct BackupWrite {
+    store: BackupStore,
+    target: PathBuf,
+    generation: u64,
+}
+
+impl BackupWrite {
+    fn lock_current(&self) -> Result<MutexGuard<'_, BackupWrites>, WriteError> {
+        let writes = self.store.lock_writes();
+        if writes.current.get(&self.target) == Some(&self.generation) {
+            Ok(writes)
+        } else {
+            Err(WriteError::Io(rove_base::Error::Cancelled))
+        }
+    }
+
+    pub(super) fn run(self, backup: &Backup) -> std::io::Result<u64> {
+        let bytes = backup.encode();
+        {
+            let _guard = self.lock_current().map_err(write_error)?;
+            std::fs::create_dir_all(&self.store.dir)?;
+        }
+        write_atomic_guarded(&self.target, &bytes, &self.store.write, &|| {
+            self.lock_current()
+        })
+        .map_err(write_error)?;
+        Ok(bytes.len() as u64)
+    }
+}
+
+impl Drop for BackupWrite {
+    fn drop(&mut self) {
+        if let Ok(mut writes) = self.lock_current() {
+            writes.current.remove(&self.target);
+        }
+    }
+}
+
+fn write_error(error: WriteError) -> std::io::Error {
+    match error {
+        WriteError::Io(rove_base::Error::Cancelled) => std::io::ErrorKind::Interrupted.into(),
+        WriteError::Io(error) => std::io::Error::other(error.to_string()),
+        other => std::io::Error::other(format!("{other:?}")),
+    }
 }
 
 /// `WriteOptions` 里有不可打印的故障注入点，所以只打印目录与工作区。
@@ -157,6 +214,7 @@ impl BackupStore {
             workspace: workspace.to_owned(),
             key,
             write: WriteOptions::default(),
+            writes: Arc::default(),
         }
     }
 
@@ -195,14 +253,32 @@ impl BackupStore {
 
     /// 写一份文档备份（原子写入）。返回写出的字节数（I/O 统计用）。
     pub fn write_backup(&self, backup: &Backup) -> std::io::Result<u64> {
-        let bytes = backup.encode();
-        self.write_file(&self.backup_path(&backup.path), &bytes)?;
-        Ok(bytes.len() as u64)
+        self.reserve_backup_write(&backup.path).run(backup)
+    }
+
+    pub(super) fn reserve_backup_write(&self, document_path: &Path) -> BackupWrite {
+        let target = self.backup_path(document_path);
+        let mut writes = self.lock_writes();
+        writes.next += 1;
+        let generation = writes.next;
+        writes.current.insert(target.clone(), generation);
+        BackupWrite {
+            store: self.clone(),
+            target,
+            generation,
+        }
+    }
+
+    fn lock_writes(&self) -> MutexGuard<'_, BackupWrites> {
+        self.writes.lock().expect("backup write registry poisoned")
     }
 
     /// 删除一份文档备份（文档被保存或关闭、恢复消费完）。不存在时成功。
     pub fn remove_backup(&self, document_path: &Path) -> std::io::Result<()> {
-        remove_file(&self.backup_path(document_path))
+        let target = self.backup_path(document_path);
+        let mut writes = self.lock_writes();
+        writes.current.remove(&target);
+        remove_file(&target)
     }
 
     /// 读出本组全部备份，按标签顺序排列。读不出来的单份跳过（按“没有这份备份”处理）。
@@ -230,6 +306,8 @@ impl BackupStore {
 
     /// 整组删除（`files.hotExit = off`、工作区消失、恢复完且没有新的脏文档）。
     pub fn remove_group(&self) -> std::io::Result<()> {
+        let mut writes = self.lock_writes();
+        writes.current.clear();
         match std::fs::remove_dir_all(&self.dir) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             other => other,
@@ -283,10 +361,7 @@ impl BackupStore {
         }
         write_atomic(path, bytes, &self.write)
             .map(|_| ())
-            .map_err(|error| match error {
-                crate::save::WriteError::Io(error) => std::io::Error::other(error.to_string()),
-                other => std::io::Error::other(format!("{other:?}")),
-            })
+            .map_err(write_error)
     }
 }
 

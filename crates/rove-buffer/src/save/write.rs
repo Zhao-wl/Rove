@@ -125,12 +125,22 @@ pub fn write_atomic_with<E: From<WriteError>>(
     options: &WriteOptions,
     before_replace: &dyn Fn() -> Result<(), E>,
 ) -> Result<Written, E> {
+    write_atomic_guarded(path, bytes, options, before_replace)
+}
+
+/// 持有调用方的守卫直到本次替换结束。临时文件刷盘和占用后的等待均在守卫外。
+pub(crate) fn write_atomic_guarded<E: From<WriteError>, G>(
+    path: &Path,
+    bytes: &[u8],
+    options: &WriteOptions,
+    before_replace: &dyn Fn() -> Result<G, E>,
+) -> Result<Written, E> {
     let parent = parent_dir(path);
     if !parent.is_dir() {
         return Err(WriteError::DirectoryMissing.into());
     }
     // 先检查一次再动目标的属性：冲突时不能先清掉只读属性再中止（替换前每次仍会再检查）。
-    before_replace()?;
+    drop(before_replace()?);
     let existing = std::fs::metadata(path).ok();
     if let Some(metadata) = &existing {
         if metadata.permissions().readonly() {
@@ -150,10 +160,13 @@ pub fn write_atomic_with<E: From<WriteError>>(
     loop {
         attempts += 1;
         // 替换前检查（#139）：重试要等待，期间外部程序可能写入新内容，每次都要重新检查。
-        if let Err(error) = before_replace() {
-            let _ = std::fs::remove_file(&temp);
-            return Err(error);
-        }
+        let guard = match before_replace() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(error);
+            }
+        };
         let injected = options
             .replace_fail_point
             .as_ref()
@@ -168,6 +181,7 @@ pub fn write_atomic_with<E: From<WriteError>>(
             }
             .map_err(|error| classify(path, error)),
         };
+        drop(guard);
         match result {
             Ok(()) => break,
             Err(WriteError::Busy { .. }) if attempts <= options.busy_retries => {

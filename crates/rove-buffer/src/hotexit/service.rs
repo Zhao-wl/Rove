@@ -52,8 +52,10 @@ pub struct BackupService {
     store: BackupStore,
     schedule: BackupSchedule,
     options: HotExitOptions,
-    /// 已经写出备份的文档（关闭 / 保存时据此决定要不要删文件）。
+    /// 宿主同步写出或恢复时登记的备份。
     written: std::collections::BTreeMap<DocumentId, PathBuf>,
+    /// 后台写入在派发时登记。另存为可能改变同一文档的路径。
+    dispatched: std::collections::BTreeMap<DocumentId, std::collections::BTreeSet<PathBuf>>,
     /// 本次运行写出的备份次数与字节数（I/O 统计，PR 里报这两个数）。
     writes: u64,
     bytes: u64,
@@ -107,6 +109,7 @@ impl BackupService {
             schedule: BackupSchedule::default(),
             options,
             written: Default::default(),
+            dispatched: Default::default(),
             writes: 0,
             bytes: 0,
         }
@@ -122,6 +125,7 @@ impl BackupService {
         if options.mode == HotExitMode::Off {
             self.schedule.clear();
             self.written.clear();
+            self.dispatched.clear();
             let _ = self.store.remove_group();
         }
     }
@@ -177,9 +181,31 @@ impl BackupService {
         self.store.write_backup(backup)
     }
 
-    /// 记下某个文档的备份已经写出（UI 线程），用于保存 / 关闭时删除。
+    /// 先登记路径和发布次序，再把快照交给后台写盘。
+    pub fn prepare_write(
+        &mut self,
+        document: DocumentId,
+        backup: Backup,
+    ) -> Option<impl FnOnce() -> std::io::Result<u64> + Send + use<>> {
+        if !self.options.mode.backs_up() {
+            return None;
+        }
+        let write = self.store.reserve_backup_write(&backup.path);
+        self.dispatched
+            .entry(document)
+            .or_default()
+            .insert(backup.path.clone());
+        Some(move || write.run(&backup))
+    }
+
+    /// 记下同步写出的备份路径与 I/O 统计。
     pub fn note_written(&mut self, document: DocumentId, path: &Path, bytes: u64) {
         self.written.insert(document, path.to_owned());
+        self.note_backup_written(bytes);
+    }
+
+    /// 后台写入的路径已在派发时登记。完成回调只更新统计，避免已丢弃的路径重新登记。
+    pub fn note_backup_written(&mut self, bytes: u64) {
         self.writes += 1;
         self.bytes += bytes;
     }
@@ -187,7 +213,9 @@ impl BackupService {
     /// 文档已保存或已关闭：出队并删掉它的备份。
     pub fn discard(&mut self, document: DocumentId) {
         self.schedule.forget(document);
-        if let Some(path) = self.written.remove(&document) {
+        let mut paths = self.dispatched.remove(&document).unwrap_or_default();
+        paths.extend(self.written.remove(&document));
+        for path in paths {
             let _ = self.store.remove_backup(&path);
         }
     }

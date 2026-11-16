@@ -331,24 +331,20 @@ impl Workbench {
                 continue;
             };
             // 写盘在后台执行器上（原子写入要刷盘）；UI 线程只做一次文本快照复制。
-            let Some(store) = self
+            let Some(write) = self
                 .hotexit
                 .service
-                .as_ref()
-                .filter(|service| service.options().mode.backs_up())
-                .map(|service| service.store().clone())
+                .as_mut()
+                .and_then(|service| service.prepare_write(document, backup))
             else {
                 continue;
             };
-            let path = backup.path.clone();
-            let task = cx
-                .background_executor()
-                .spawn(async move { store.write_backup(&backup) });
+            let task = cx.background_executor().spawn(async move { write() });
             cx.spawn(async move |this, cx| {
                 let written = task.await;
                 let _ = this.update(cx, |view, _| {
                     if let (Some(service), Ok(bytes)) = (view.hotexit.service.as_mut(), written) {
-                        service.note_written(document, &path, bytes);
+                        service.note_backup_written(bytes);
                     }
                 });
             })
