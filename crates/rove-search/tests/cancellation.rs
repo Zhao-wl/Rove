@@ -109,3 +109,47 @@ fn cancellation_stops_all_workers_within_50_ms() {
         "取消挂住：{samples:?}"
     );
 }
+
+#[test]
+fn cancellation_interrupts_matches_within_a_dense_long_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dense.txt");
+    // 单文件单行，取消不能等到下一个文件或分块。优化构建用更多命中，确保取消时仍在搜索。
+    let hits = if cfg!(debug_assertions) {
+        1 << 16
+    } else {
+        1 << 20
+    };
+    std::fs::write(&path, "hit ".repeat(hits)).unwrap();
+    std::fs::read(path).unwrap();
+    let cfg = config(&[
+        (settings::MAX_RESULTS, Value::Null),
+        (settings::MAX_THREADS, Value::Number(1.0)),
+    ]);
+    let query = SearchQuery::new("hit");
+    let compiled = Instant::now();
+    rove_search::query::compile(&query, false).unwrap();
+    let compile = compiled.elapsed();
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let cancel = Cancellation::default();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let result = search(dir.path(), &query, &cfg, &cancel, |_| {});
+                (result, Instant::now())
+            });
+            std::thread::sleep(compile + Duration::from_millis(10));
+            assert!(!worker.is_finished(), "搜索在取消前就已结束");
+            let at = Instant::now();
+            cancel.cancel();
+            let (result, stopped) = worker.join().unwrap();
+            assert_eq!(result.unwrap_err(), Error::Cancelled);
+            samples.push(stopped - at);
+        });
+    }
+    samples.sort();
+    let median = samples[samples.len() / 2];
+    eprintln!("密集长行取消到全部线程结束：{samples:?}，中位数 {median:?}");
+    assert!(median < Duration::from_millis(50), "取消耗时 {samples:?}");
+    assert!(samples.iter().all(|d| *d < Duration::from_secs(1)));
+}

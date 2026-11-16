@@ -283,6 +283,44 @@ fn max_results_truncates_exactly_and_reports_the_limit() {
     let (_, summary) = run(root, &SearchQuery::new("hit"), &cfg);
     assert_eq!(summary.matches, 20 * 15);
     assert!(!summary.limit_hit);
+    // 公开 API 也允许调用者直接构造零配额。
+    let cfg = SearchConfig {
+        max_results: Some(0),
+        ..cfg
+    };
+    let (files, summary) = run(root, &SearchQuery::new("hit"), &cfg);
+    assert!(files.is_empty());
+    assert_eq!(summary.matches, 0);
+    assert!(summary.limit_hit);
+}
+
+#[test]
+fn max_results_stops_with_one_match_on_a_dense_long_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "dense.txt", "hit ".repeat(1 << 16));
+    let cfg = config(&[
+        (settings::MAX_RESULTS, Value::Number(1.0)),
+        (settings::MAX_THREADS, Value::Number(1.0)),
+    ]);
+    let query = SearchQuery::new("hit");
+    let mut samples = Vec::new();
+    for _ in 0..3 {
+        let started = Instant::now();
+        let (files, summary) = run(root, &query, &cfg);
+        samples.push(started.elapsed());
+        assert_eq!(summary.matches, 1);
+        assert!(summary.limit_hit);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].lines.len(), 1);
+        assert_eq!(files[0].lines[0].line, 0);
+        let ranges = &files[0].lines[0].ranges;
+        assert_eq!(ranges, &[0..3]);
+        // 先收集整行再 truncate 的旧实现会保留数万个区间的 Vec 容量。
+        assert!(ranges.capacity() <= 4);
+    }
+    samples.sort();
+    eprintln!("密集长行、结果上限 1：{samples:?}，中位数 {:?}", samples[1]);
 }
 
 #[test]
@@ -382,12 +420,28 @@ fn matches_are_found_on_both_sides_of_the_binary_probe_boundary() {
 fn multiline_regex() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, "a.cs", "void A()\n{\n}\nvoid B() {}\n");
+    write(
+        root,
+        "a.cs",
+        "void A()\n{\n}\nvoid B() {}\nvoid C()\r\n{\r\n}\r\n",
+    );
     let q = SearchQuery {
         is_regex: true,
-        ..SearchQuery::new(r"\(\)\n\{")
+        ..SearchQuery::new(r"\(\)\r?\n\{")
     };
-    let (files, _) = run(root, &q, &config(&[]));
+    let (files, summary) = run(root, &q, &config(&[]));
+    assert_eq!(summary.matches, 2);
+    assert!(!summary.limit_hit);
+    assert_eq!(files[0].lines.len(), 2);
+    assert_eq!(files[0].lines[0].line, 0);
+    assert_eq!(files[0].lines[0].ranges, vec![6..8]);
+    assert_eq!(files[0].lines[1].line, 4);
+    assert_eq!(files[0].lines[1].ranges, vec![6..8]);
+
+    let cfg = config(&[(settings::MAX_RESULTS, Value::Number(1.0))]);
+    let (files, summary) = run(root, &q, &cfg);
+    assert_eq!(summary.matches, 1);
+    assert!(summary.limit_hit);
     assert_eq!(files[0].lines.len(), 1);
     assert_eq!(files[0].lines[0].line, 0);
     assert_eq!(files[0].lines[0].ranges, vec![6..8]);
