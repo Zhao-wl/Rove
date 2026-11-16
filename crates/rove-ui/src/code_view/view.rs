@@ -204,6 +204,12 @@ pub struct FrameStats {
     /// 首个可见行相对文本区顶边的 y（像素）。占位与正式结果替换前后必须相同。
     pub first_line_y: f32,
     pub first_line: u64,
+    /// #215：本帧**实际绘制所用**文本快照的版本（`TextSource::version()`，prepaint 时取）。
+    /// 用来判定「这一帧有没有包含刚才那次按键」，不必靠字形数之类的间接信号。
+    pub text_version: u64,
+    /// #215：本帧 paint 结束的时刻（`finish_frame` 里取）。按键到上屏的测量用它当终点，
+    /// 而不是「下一次帧回调」——后者要再等一个垂直同步间隔，会把显示器的等待算进 Rove 头上。
+    pub end: Option<Instant>,
 }
 
 /// 一行的显示与装饰（行缓存条目，随文本版本失效）。
