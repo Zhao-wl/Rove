@@ -2222,3 +2222,33 @@ M2 的精确度传递、M3 的编码往返与保存 / 重绑），#150 看的是
 （面包屑按位置含列判定、粘性区按行判定）开了跟进 issue，没有在本 PR 里顺手改。
 未做的事情（干净机器安装、真实自动更新、`default` 模式的网络监视、实机输入法、空闲机器上的完整基准）
 全部写在报告 §8 的人工清单与 §9 的阻塞项里，**一条都没有记成通过**。
+
+## 58. 大型 Unity 项目全量扫描的性能（#210）
+
+这是**性能型** issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约
+（`contracts.rs` 的 `Workspace` / `Entry` / `Entries` 原样不动），也没有 `SKELETON(...)` 标记要替换
+（`workspace` 那一行在 #15 里就已经替换，见 §22 的对照表）。**没有改 `perf/budgets.toml` 的任何数值**，
+`workspace_full_scan_large` 仍然是 1000 ms / `enforced`。
+
+起因是 #31 的 M1 集成验收：`workspace/full_scan_large` 实测 2.83 s，超预算 182%。瓶颈不在「文件多」，
+而在**每个目录项都被重复加工了好几遍**。改动全在 `rove-workspace` 内部，四处：
+
+| 文件 | 改了什么 | 为什么快 |
+|---|---|---|
+| `src/path.rs` | `fold_key` 对**纯 ASCII** 路径走 `str::to_ascii_lowercase`；`identity_cmp` 降级成只给测试用的参考实现 | 没有一个 ASCII 字符的默认小写映射是非 ASCII 或多字符的，所以按字节折叠与逐字符折叠结果逐字节相同；Unity 项目的路径几乎全是 ASCII |
+| `src/snapshot.rs` | `add` 每个条目只折叠**一次**身份键（父键直接取折叠键的前缀），父目录已知时不再向上走；新增 `add_scanned` 把只读属性合进同一次折叠；`finish` 先把每个条目折成排序键再 `sort_unstable`，不在比较器里反复折叠 | 原来每个条目要折叠 3–4 次、查 4 次 `BTreeMap`；排序的比较器原来每次比较都要把两边整条路径逐字符转小写，17.5 万个条目就是几百万次 |
+| `src/scan.rs` | `filter_entry` 只对**目录**求值（剪枝靠的就是它），文件的排除与 reparse 判定移进 visitor；只读属性与 reparse 属性改从 walker 已有的元数据读；`threads` 为 `0` 时按核数的 1.5 倍（上限 32）起线程 | 文件的工作区相对路径从每条算两遍变成一遍；Windows 上 `ignore` 把 `FindNextFileW` 的属性缓存在 `DirEntry` 里，省掉每个目录一次 `symlink_metadata`、以及 `files.readonlyFromPermissions` 打开时每个文件一次 `metadata`；扫描卡在内核的目录枚举而不是 CPU，超额起线程能把请求压满（#133 在全局搜索上是同一个结论） |
+
+**口径没有变**：身份键的折叠规则、排序顺序、排除规则、只读规则、不读 `.gitignore`、junction 不跟随、
+`skipped()` 的计数口径全部与改前一致。关键不变量用测试钉住：`path.rs` 的
+`folding_the_ascii_fast_path_matches_the_per_character_mapping` 与
+`folding_order_matches_the_per_character_mapping` 用一份含 `İ`、`K`（U+212A）、`ß`、中文的语料
+逐对比较快路径与逐字符参考实现；`crates/rove-workspace/tests/scan_perf_it.rs` 在真实大型项目上把扫描
+结果与本地另写的递归 `read_dir` 遍历对齐（测试项目是活的，所以遍历在扫描前后各跑一次，只对两次都认的
+稳定集下断言），另有排除规则、只读属性与折叠排序三条合成用例。
+
+`WorkspaceConfig::threads` 仍然是实现内部的旋钮，不是登记的设置项：`0` 继续表示「由实现决定」，
+只是实现从 `ignore` 的 `min(核数, 12)` 换成了 `scan::default_threads()`。
+
+实测方法见 PR：同一台机器、同一轮负载下跑改前 / 改后两份基准程序。**本机同时开着 Unity 等程序，
+负载较高**，绝对值偏高，只有相对对比可靠；空闲机器上的复测留在人工清单里。

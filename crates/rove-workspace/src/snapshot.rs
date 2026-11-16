@@ -62,17 +62,36 @@ impl Snapshot {
 
     /// Adds one entry, creating missing ancestor directories so `children` works regardless of
     /// the walker's arrival order. Returns `false` when the entry is already known.
+    ///
+    /// The identity key is folded **once** per entry (#210): [`identity_key`] maps every
+    /// character on its own and leaves `/` alone, so the key of a parent path is exactly the
+    /// parent slice of the child's key and `parent_key(&key)` can be used directly.
     pub(crate) fn add(&mut self, path: WorkspacePath, kind: EntryKind) -> bool {
         let key = identity_key(path.as_str());
+        self.add_with_key(key, path, kind)
+    }
+
+    fn add_with_key(&mut self, key: String, path: WorkspacePath, kind: EntryKind) -> bool {
         if self.existing.contains_key(&key) {
             return false;
         }
-        self.ensure_parents(path.as_str());
-        let parent = identity_key(parent_key(path.as_str()));
-        self.dirs.entry(parent).or_default().push(Entry {
+        let parent = parent_key(&key);
+        // Walking up only pays off when the parent is genuinely unknown; the walker usually
+        // reports a directory before its children, so this is the rare case.
+        if !parent.is_empty() && !self.existing.contains_key(parent) {
+            self.ensure_parents(path.as_str());
+        }
+        let entry = Entry {
             path: path.clone(),
             kind: kind.clone(),
-        });
+        };
+        let parent = parent_key(&key);
+        match self.dirs.get_mut(parent) {
+            Some(bucket) => bucket.push(entry),
+            None => {
+                self.dirs.insert(parent.to_string(), vec![entry]);
+            }
+        }
         if matches!(kind, EntryKind::Directory) {
             // Empty directories still need their own bucket (children() => empty, not NotFound).
             self.dirs.entry(key.clone()).or_default();
@@ -84,6 +103,23 @@ impl Snapshot {
         }
         self.existing.insert(key, (path, kind));
         true
+    }
+
+    /// Adds one scanned entry together with its on-disk read-only attribute.
+    ///
+    /// The scan publishes through this instead of `add` + [`Snapshot::set_permission_read_only`]
+    /// so the path is folded once rather than twice (#210).
+    pub(crate) fn add_scanned(
+        &mut self,
+        path: WorkspacePath,
+        kind: EntryKind,
+        read_only: bool,
+    ) -> bool {
+        let key = identity_key(path.as_str());
+        if read_only {
+            self.permission_read_only.insert(key.clone());
+        }
+        self.add_with_key(key, path, kind)
     }
 
     /// Synthesizes missing ancestor directories using the **display** path (the child's spelling),
@@ -263,21 +299,47 @@ impl Snapshot {
     }
 
     /// Sorts the snapshot once the initial scan finished.
+    ///
+    /// Both sorts fold each path **once** into a sort key instead of folding it inside the
+    /// comparator (#210): a full Unity project means ~175k entries and therefore millions of
+    /// comparator calls, and a `str` comparison of two prepared keys is a memcmp. The order is
+    /// the same one `identity_cmp` defines — `add` keys on the identity key, so two entries
+    /// can never share one and the unstable sort stays deterministic.
     pub(crate) fn finish(&mut self) -> Version {
-        self.files
-            .sort_by(|a, b| identity_cmp(a.path.as_str(), b.path.as_str()));
+        sort_by_identity(&mut self.files, false);
         for entries in self.dirs.values_mut() {
-            entries.sort_by(|a, b| {
-                let a_dir = matches!(a.kind, EntryKind::Directory);
-                let b_dir = matches!(b.kind, EntryKind::Directory);
-                b_dir
-                    .cmp(&a_dir)
-                    .then_with(|| identity_cmp(a.path.as_str(), b.path.as_str()))
-            });
+            sort_by_identity(entries, true);
         }
         self.complete = true;
         self.bump()
     }
+}
+
+/// Sorts entries by identity key, optionally putting directories first.
+///
+/// UTF-8 compares byte-wise in code-point order, so comparing two [`identity_key`] strings is
+/// the same ordering `identity_cmp` defines, only without re-folding both sides on every
+/// comparison.
+fn sort_by_identity(entries: &mut Vec<Entry>, directories_first: bool) {
+    if entries.len() < 2 {
+        return;
+    }
+    let mut keyed: Vec<(String, Entry)> = entries
+        .drain(..)
+        .map(|entry| (identity_key(entry.path.as_str()), entry))
+        .collect();
+    if directories_first {
+        keyed.sort_unstable_by(|(left_key, left), (right_key, right)| {
+            let left_dir = matches!(left.kind, EntryKind::Directory);
+            let right_dir = matches!(right.kind, EntryKind::Directory);
+            right_dir
+                .cmp(&left_dir)
+                .then_with(|| left_key.cmp(right_key))
+        });
+    } else {
+        keyed.sort_unstable_by(|(left_key, _), (right_key, _)| left_key.cmp(right_key));
+    }
+    entries.extend(keyed.into_iter().map(|(_, entry)| entry));
 }
 
 fn page(entries: &[Entry], range: std::ops::Range<usize>, complete: bool) -> Result<Entries> {
@@ -292,8 +354,6 @@ fn page(entries: &[Entry], range: std::ops::Range<usize>, complete: bool) -> Res
         complete,
     })
 }
-
-use crate::path::identity_cmp;
 
 #[cfg(test)]
 mod tests {

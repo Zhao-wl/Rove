@@ -94,10 +94,7 @@ pub(crate) fn collect(folder: &Folder, cancel: &Cancellation) -> Result<Snapshot
 
     let mut snapshot = Snapshot::new();
     for (path, kind, read_only) in receiver {
-        snapshot.add(path.clone(), kind);
-        if read_only {
-            snapshot.set_permission_read_only(&path, true);
-        }
+        snapshot.add_scanned(path, kind, read_only);
     }
     let skipped = walker.join().map_err(|_| Error::Unsupported)?;
     folder.note_skipped(skipped);
@@ -121,24 +118,36 @@ fn walk(
     let skipped = Arc::new(AtomicU64::new(0));
 
     let mut builder = base_builder(root);
-    if threads > 0 {
-        builder.threads(threads);
-    }
+    builder.threads(if threads > 0 {
+        threads
+    } else {
+        default_threads()
+    });
     {
+        // Only directories are decided up front: `filter_entry` is what stops the walker from
+        // ever reading an excluded subtree. Files are decided in the visitor instead, so their
+        // workspace-relative path is built once per entry rather than twice (#210).
         let root = root.to_path_buf();
         let exclude = exclude.clone();
         let cancel = cancel.clone();
-        builder.filter_entry(move |entry| should_visit(&root, &exclude, &cancel, entry));
+        builder.filter_entry(move |entry| {
+            !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_dir())
+                || should_visit(&root, &exclude, &cancel, entry)
+        });
     }
 
     let root_for_visitor = root.to_path_buf();
     let cancel_for_visitor = cancel.clone();
+    let exclude_for_visitor = exclude.clone();
     let skipped_for_visitor = Arc::clone(&skipped);
     builder.build_parallel().run(move || {
         let sender = sender.clone();
         let skipped = Arc::clone(&skipped_for_visitor);
         let cancel = cancel_for_visitor.clone();
         let root = root_for_visitor.clone();
+        let exclude = exclude_for_visitor.clone();
         Box::new(
             move |result: std::result::Result<DirEntry, ignore::Error>| {
                 if cancel.check().is_err() {
@@ -158,17 +167,26 @@ fn walk(
                     skipped.fetch_add(1, Ordering::Relaxed);
                     return WalkState::Continue;
                 };
+                let is_directory = matches!(kind, EntryKind::Directory);
+                // A name that cannot be a `WorkspacePath` is dropped without counting, exactly
+                // as the `filter_entry` predicate used to drop it: the root listing is the one
+                // place that counts such a name (`Folder::publish_root_listing`), and counting
+                // it here too would report it twice.
                 let Some(relative) = relative_str(&root, entry.path()) else {
-                    skipped.fetch_add(1, Ordering::Relaxed);
                     return WalkState::Continue;
                 };
                 let Ok(path) = WorkspacePath::new(&relative) else {
-                    skipped.fetch_add(1, Ordering::Relaxed);
                     return WalkState::Continue;
                 };
-                let read_only = track_permissions
-                    && matches!(kind, EntryKind::File)
-                    && is_read_only_attribute(entry.path());
+                if !is_directory {
+                    if exclude.matches_self(path.as_str()) == Some(true) {
+                        return WalkState::Continue;
+                    }
+                    if is_reparse_entry(&entry) {
+                        return WalkState::Continue;
+                    }
+                }
+                let read_only = track_permissions && !is_directory && entry_read_only(&entry);
                 if sender.send((path, kind, read_only)).is_err() {
                     return WalkState::Quit;
                 }
@@ -178,6 +196,18 @@ fn walk(
     });
 
     skipped.load(Ordering::Relaxed)
+}
+
+/// Walker threads used when `WorkspaceConfig::threads` is left at `0`.
+///
+/// A full scan is bound by the kernel's directory enumeration, not by CPU: on the reference
+/// machine the walk of the large Unity project takes ~590 ms with `ignore`'s own default
+/// (`min(cores, 12)`) and ~290 ms at 24 threads, because the extra threads keep requests in
+/// flight while others wait on the file system. #133 measured the same shape on global search.
+/// The cap keeps the oversubscription bounded on machines with very many cores.
+fn default_threads() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    cores.saturating_mul(3).div_ceil(2).clamp(1, 32)
 }
 
 /// Scans one directory subtree serially and returns the visible entries below it plus the
@@ -217,9 +247,8 @@ pub(crate) fn subtree(
         let Ok(path) = WorkspacePath::new(&relative) else {
             continue;
         };
-        let read_only = track_permissions
-            && matches!(kind, EntryKind::File)
-            && is_read_only_attribute(entry.path());
+        let read_only =
+            track_permissions && matches!(kind, EntryKind::File) && entry_read_only(&entry);
         if matches!(kind, EntryKind::Directory) {
             dirs.push(path.clone());
         }
@@ -264,7 +293,7 @@ fn should_visit(root: &Path, exclude: &RuleSet, cancel: &Cancellation, entry: &D
     if exclude.matches_self(path.as_str()) == Some(true) {
         return false;
     }
-    if is_reparse_reentry(entry) {
+    if is_reparse_entry(entry) {
         return false;
     }
     true
@@ -283,11 +312,32 @@ fn entry_kind(entry: &DirEntry) -> Option<EntryKind> {
 
 /// Skips symlinks and Windows reparse points (junctions) so the scan never walks out of the
 /// workspace or recurses through a cycle.
-fn is_reparse_reentry(entry: &DirEntry) -> bool {
+///
+/// Reads the attributes the directory enumeration already returned (`ignore` keeps them on
+/// Windows) instead of a second `symlink_metadata` call per directory (#210); the fallback keeps
+/// the old behaviour on platforms or entries that carry no cached metadata.
+fn is_reparse_entry(entry: &DirEntry) -> bool {
     let Some(file_type) = entry.file_type() else {
         return true;
     };
-    is_reparse_path(entry.path(), &file_type)
+    if file_type.is_symlink() {
+        return true;
+    }
+    if !file_type.is_dir() {
+        return false;
+    }
+    match entry.metadata() {
+        Ok(metadata) => is_reparse_metadata(&metadata),
+        Err(_) => is_reparse_attribute(entry.path()),
+    }
+}
+
+/// On-disk read-only attribute of a walked entry, from the cached metadata where there is one.
+fn entry_read_only(entry: &DirEntry) -> bool {
+    match entry.metadata() {
+        Ok(metadata) => metadata.permissions().readonly(),
+        Err(_) => is_read_only_attribute(entry.path()),
+    }
 }
 
 /// True for symlinks and Windows reparse points (junctions, mount points).
@@ -303,11 +353,21 @@ pub(crate) fn is_reparse_path(path: &Path, file_type: &std::fs::FileType) -> boo
 }
 
 #[cfg(windows)]
-fn is_reparse_attribute(path: &Path) -> bool {
+fn is_reparse_metadata(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_metadata(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn is_reparse_attribute(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .map(|metadata| is_reparse_metadata(&metadata))
         .unwrap_or(false)
 }
 

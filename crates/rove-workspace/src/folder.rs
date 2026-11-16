@@ -283,10 +283,7 @@ impl Folder {
             let mut events = Vec::new();
             let mut added = 0usize;
             for (path, kind, read_only) in entries {
-                if read_only {
-                    snapshot.set_permission_read_only(&path, true);
-                }
-                if snapshot.add(path.clone(), kind) {
+                if snapshot.add_scanned(path.clone(), kind, read_only) {
                     added += 1;
                     if emit_events {
                         events.push(FileEvent::Created(path));
