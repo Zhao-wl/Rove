@@ -25,6 +25,33 @@ fn id(part: &str, group: EditorGroupId, tab: TabId) -> SharedString {
     format!("{part}-{}-{tab}", group.0).into()
 }
 
+/// #209：错误页的提示文案（登记在 `skeleton::appearance`，这里只选 key）。磁盘文件上的
+/// `Unsupported` 就是 UX_SPEC §3.5 的「二进制文件或使用了不支持的文本编码」，虚拟资源
+/// （元数据视图、欢迎页等）仍用通用的「格式或编码不受支持」。
+pub(crate) fn error_page_key(error: &Error, resource: &Resource) -> &'static str {
+    match error {
+        Error::NotFound
+        | Error::Io {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        } => "editors.fileMissing",
+        Error::Io {
+            kind: std::io::ErrorKind::PermissionDenied,
+            ..
+        } => "editors.fileDenied",
+        Error::Unsupported if can_open_anyway(error, resource) => "editors.fileBinary",
+        Error::Unsupported => "editors.fileUnsupported",
+        Error::OutOfBounds => "editors.invalidLocation",
+        _ => "editors.fileUnavailable",
+    }
+}
+
+/// #209：能不能给这个错误提供「仍然打开」。只有磁盘上的文件被判成二进制 / 不支持的编码时
+/// 才有这条路径（强制打开要重新读盘）；虚拟资源没有字节可以 lossy 显示。
+pub(crate) fn can_open_anyway(error: &Error, resource: &Resource) -> bool {
+    matches!(error, Error::Unsupported) && !matches!(resource, Resource::Virtual(_))
+}
+
 impl Workbench {
     pub(super) fn editor_grid(&self, cx: &mut Context<Self>) -> Div {
         let content = if let Some(group) = self.editor.maximized {
@@ -600,20 +627,21 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> Div {
         let tab_id = tab.id;
-        let key = match error {
-            Error::NotFound
-            | Error::Io {
-                kind: std::io::ErrorKind::NotFound,
-                ..
-            } => "editors.fileMissing",
-            Error::Io {
-                kind: std::io::ErrorKind::PermissionDenied,
-                ..
-            } => "editors.fileDenied",
-            Error::Unsupported => "editors.fileUnsupported",
-            Error::OutOfBounds => "editors.invalidLocation",
-            _ => "editors.fileUnavailable",
-        };
+        let key = error_page_key(error, &tab.resource);
+        // #209：二进制 / 不支持的文本编码时多一个「仍然打开」（UX_SPEC §3.5）。
+        let open_anyway = can_open_anyway(error, &tab.resource).then(|| {
+            div()
+                .id(id("open-anyway", group, tab_id))
+                .cursor_pointer()
+                .px_2()
+                .py_1()
+                .bg(self.ui_color("tab.hoverBackground"))
+                .child(self.label("editors.openAnyway", &[]))
+                .on_click(cx.listener(move |v, _, _, cx| {
+                    v.editor.open_anyway(group, tab_id);
+                    cx.notify();
+                }))
+        });
         let path = match &tab.resource {
             Resource::File(path) => Some(path.clone()),
             Resource::Workspace(path) => Some(self.root.join(path.as_str())),
@@ -662,6 +690,7 @@ impl Workbench {
                                 cx.notify();
                             })),
                     )
+                    .children(open_anyway)
                     .children(reveal),
             )
     }
