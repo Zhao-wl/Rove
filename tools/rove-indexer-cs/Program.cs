@@ -196,6 +196,7 @@ static class Program
             unresolved_names = Stats.UnresolvedNames,
             unresolved_ratio = namesTotal == 0 ? 0 : (double)Stats.UnresolvedNames / namesTotal,
             candidate_names = Stats.CandidateNames,
+            operator_uses = Stats.OperatorUses,
             symbols = stats.symbols,
             occurrences = stats.occurrences,
             relations = stats.relations,

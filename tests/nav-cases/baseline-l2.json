@@ -3,7 +3,7 @@
   "source": "l2",
   "sources": [
     "medium：完整语义索引（格式 v2，索引进程 1.2.0.0，7718 个文件）",
-    "large：完整语义索引（格式 v2，索引进程 1.2.0.0，21908 个文件）"
+    "large：完整语义索引（格式 v2，索引进程 1.2.0.0，21677 个文件）"
   ],
   "skipped": [],
   "summary": [
@@ -114,16 +114,16 @@
     {
       "project": "large",
       "category": "operator",
-      "pass": 0,
-      "fail": 5,
+      "pass": 5,
+      "fail": 0,
       "stale": 0,
       "unsupported": 0
     },
     {
       "project": "large",
       "category": "indexer",
-      "pass": 0,
-      "fail": 5,
+      "pass": 5,
+      "fail": 0,
       "stale": 0,
       "unsupported": 0
     },
@@ -242,16 +242,16 @@
     {
       "project": "medium",
       "category": "operator",
-      "pass": 0,
-      "fail": 5,
+      "pass": 5,
+      "fail": 0,
       "stale": 0,
       "unsupported": 0
     },
     {
       "project": "medium",
       "category": "indexer",
-      "pass": 0,
-      "fail": 5,
+      "pass": 5,
+      "fail": 0,
       "stale": 0,
       "unsupported": 0
     },
@@ -1946,220 +1946,210 @@
       "id": "m-operator-01",
       "project": "medium",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/V3.cs:21]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:26]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:26:31",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/Mathematics/V3.cs:21"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/V3.cs:21"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "V3 V3.operator -(V3 a, V3 b) [Football.Core|M:Football.Core.V3.op_Subtraction(Football.Core.V3,Football.Core.V3)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 467,
       "source_newer_than_index": false
     },
     {
       "id": "m-operator-02",
       "project": "medium",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/V3.cs:20]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:35]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/MatchComposition/Skills/MatchDribbleCommit.cs:35:37",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/Mathematics/V3.cs:20"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/V3.cs:20"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "V3 V3.operator +(V3 a, V3 b) [Football.Core|M:Football.Core.V3.op_Addition(Football.Core.V3,Football.Core.V3)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 468,
       "source_newer_than_index": false
     },
     {
       "id": "m-operator-03",
       "project": "medium",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/V3.cs:22]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/FootballActions/Calculations/BallControlCalculator.cs:53]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/FootballActions/Calculations/BallControlCalculator.cs:53:40",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/Mathematics/V3.cs:22"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/V3.cs:22"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "V3 V3.operator *(V3 a, float k) [Football.Core|M:Football.Core.V3.op_Multiply(Football.Core.V3,System.Single)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 520,
       "source_newer_than_index": false
     },
     {
       "id": "m-operator-04",
       "project": "medium",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/Mathematics/Q4.cs:45]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Tests/Editor/MatchPresentation/MatchRootMappingTests.cs:22]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Tests/Editor/MatchPresentation/MatchRootMappingTests.cs:22:37",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/Mathematics/Q4.cs:45"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/Mathematics/Q4.cs:45"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "V3 Q4.operator *(Q4 q, V3 value) [Football.Core|M:Football.Core.Q4.op_Multiply(Football.Core.Q4,Football.Core.V3)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 26,
       "source_newer_than_index": false
     },
     {
       "id": "m-operator-05",
       "project": "medium",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs:21]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/Activation.cs:58]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/Activation.cs:58:44",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs:21"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/ScenarioId.cs:21"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "bool ScenarioId.operator !=(ScenarioId left, ScenarioId right) [Football.Core|M:Football.Core.ScenarioId.op_Inequality(Football.Core.ScenarioId,Football.Core.ScenarioId)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 3,
       "source_newer_than_index": false
     },
     {
       "id": "m-indexer-01",
       "project": "medium",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:12]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/TeamAI/Formation/AdaptedFormation.cs:173]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/TeamAI/Formation/AdaptedFormation.cs:173:34",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:12"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:12"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "float TeamTactics.this[TacticPhase phase, TacticParameter parameter] [Football.Core|P:Football.Core.TeamTactics.Item(Football.Core.TacticPhase,Football.Core.TacticParameter)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 11,
       "source_newer_than_index": false
     },
     {
       "id": "m-indexer-02",
       "project": "medium",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs:27]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:18]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/TeamAI/Tactics/TeamTactics.cs:18:61",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs:27"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/TeamAI/Tactics/FormationTactics.cs:27"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "float FormationTactics.this[TacticParameter parameter] [Football.Core|P:Football.Core.FormationTactics.Item(Football.Core.TacticParameter)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 9,
       "source_newer_than_index": false
     },
     {
       "id": "m-indexer-03",
       "project": "medium",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs:20]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Tests/Editor/MatchAnalytics/MatchMetricsCollectorTests.cs:54]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Tests/Editor/MatchAnalytics/MatchMetricsCollectorTests.cs:54:39",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs:20"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchAnalytics/MatchMetricsSummary.cs:20"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "double MatchMetricsSummary.this[string name] [Football.Core|P:Football.Core.MatchMetricsSummary.Item(System.String)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 31,
       "source_newer_than_index": false
     },
     {
       "id": "m-indexer-04",
       "project": "medium",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:161]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:205]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:205:38",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:161"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/ActionSelection/SelectionTrace.cs:161"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "string EntryView.this[int index] [Football.Core|P:Football.Core.SelectionTrace.EntryView.Item(System.Int32)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 1,
       "source_newer_than_index": false
     },
     {
       "id": "m-indexer-05",
       "project": "medium",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs:30]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Football/Runtime/Core/MatchConfiguration/MatchConfigResolver.cs:57]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Football/Runtime/Core/MatchConfiguration/MatchConfigResolver.cs:57:26",
       "relocated": false,
       "expected_defs": [
         "Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs:30"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Football/Runtime/Core/MatchConfiguration/Provenance/MatchConfigSources.cs:30"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "ConfigSource MatchConfigSources.this[MatchConfigField field] [Football.Core|P:Football.Core.MatchConfigSources.Item(Football.Core.MatchConfigField)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 1,
       "source_newer_than_index": false
     },
     {
@@ -2474,7 +2464,7 @@
       "actual_external": null,
       "actual_symbol": "void UIContainer.SetEnable(bool enable, bool isNotify = true) [Framework|M:TFW.UI.UIContainer.SetEnable(System.Boolean,System.Boolean)]",
       "expected_refs": null,
-      "actual_refs": 433,
+      "actual_refs": 426,
       "source_newer_than_index": false
     },
     {
@@ -2726,7 +2716,7 @@
       "actual_external": null,
       "actual_symbol": "void UIPlayerAvatar.SetAvatar(UnifyPlayerHead playerHead, bool showFrame = true, long unionId = 0, Action<long, int, long, GameObject> onCustomClick = null, bool showRaftLevel = true, bool flip = false) [ScriptGame|M:UI.UIPlayerAvatar.SetAvatar(cspb.UnifyPlayerHead,System.Boolean,System.Int64,System.Action{System.Int64,System.Int32,System.Int64,UnityEngine.GameObject},System.Boolean,System.Boolean)]",
       "expected_refs": null,
-      "actual_refs": 183,
+      "actual_refs": 177,
       "source_newer_than_index": false
     },
     {
@@ -2852,7 +2842,7 @@
       "actual_external": null,
       "actual_symbol": "long LCityEntity.ID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.ID]",
       "expected_refs": null,
-      "actual_refs": 519,
+      "actual_refs": 508,
       "source_newer_than_index": false
     },
     {
@@ -2873,7 +2863,7 @@
       "actual_external": null,
       "actual_symbol": "int LCityEntity.CfgID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.CfgID]",
       "expected_refs": null,
-      "actual_refs": 214,
+      "actual_refs": 207,
       "source_newer_than_index": false
     },
     {
@@ -2894,7 +2884,7 @@
       "actual_external": null,
       "actual_symbol": "long LCityEntity.ID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.ID]",
       "expected_refs": null,
-      "actual_refs": 519,
+      "actual_refs": 508,
       "source_newer_than_index": false
     },
     {
@@ -2915,7 +2905,7 @@
       "actual_external": null,
       "actual_symbol": "UIPlayerAvatar [ScriptGame|T:UI.UIPlayerAvatar]",
       "expected_refs": null,
-      "actual_refs": 290,
+      "actual_refs": 278,
       "source_newer_than_index": false
     },
     {
@@ -2936,7 +2926,7 @@
       "actual_external": null,
       "actual_symbol": "ScrollRectFilter [Framework|T:TFW.ScrollRectFilter]",
       "expected_refs": null,
-      "actual_refs": 634,
+      "actual_refs": 619,
       "source_newer_than_index": false
     },
     {
@@ -2957,7 +2947,7 @@
       "actual_external": null,
       "actual_symbol": "TFWText [Framework|T:TFW.UI.TFWText]",
       "expected_refs": null,
-      "actual_refs": 4867,
+      "actual_refs": 4697,
       "source_newer_than_index": false
     },
     {
@@ -3571,7 +3561,7 @@
       "actual_external": null,
       "actual_symbol": "int LCityEntity.CfgID [ScriptGame|P:X1.ScriptGame.City.LCityEntity.CfgID]",
       "expected_refs": null,
-      "actual_refs": 214,
+      "actual_refs": 207,
       "source_newer_than_index": false
     },
     {
@@ -3717,7 +3707,7 @@
       "actual_external": "M:UnityEngine.Component.GetComponent``1",
       "actual_symbol": "T Component.GetComponent<T>() [UnityEngine.CoreModule|M:UnityEngine.Component.GetComponent``1]",
       "expected_refs": null,
-      "actual_refs": 1599,
+      "actual_refs": 1544,
       "source_newer_than_index": false
     },
     {
@@ -3751,7 +3741,7 @@
       "actual_external": "M:UnityEngine.GameObject.SetActive(System.Boolean)",
       "actual_symbol": "void GameObject.SetActive(bool value) [UnityEngine.CoreModule|M:UnityEngine.GameObject.SetActive(System.Boolean)]",
       "expected_refs": null,
-      "actual_refs": 8159,
+      "actual_refs": 7991,
       "source_newer_than_index": false
     },
     {
@@ -3768,7 +3758,7 @@
       "actual_external": "P:UnityEngine.Transform.position",
       "actual_symbol": "Vector3 Transform.position [UnityEngine.CoreModule|P:UnityEngine.Transform.position]",
       "expected_refs": null,
-      "actual_refs": 2040,
+      "actual_refs": 2025,
       "source_newer_than_index": false
     },
     {
@@ -3785,7 +3775,7 @@
       "actual_external": "T:UnityEngine.MonoBehaviour",
       "actual_symbol": "MonoBehaviour [UnityEngine.CoreModule|T:UnityEngine.MonoBehaviour]",
       "expected_refs": null,
-      "actual_refs": 964,
+      "actual_refs": 963,
       "source_newer_than_index": false
     },
     {
@@ -4061,220 +4051,210 @@
       "id": "l-operator-01",
       "project": "large",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/X1/ScriptGame/Prop/PropValue.cs:44]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/X1/ScriptGame/Buff/BuffHolder.cs:72]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptGame/Buff/BuffHolder.cs:72:52",
       "relocated": false,
       "expected_defs": [
         "Assets/X1/ScriptGame/Prop/PropValue.cs:44"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Prop/PropValue.cs:44"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "PropValue PropValue.operator +(PropValue v1, PropValue v2) [ScriptGame|M:X1.ScriptGame.Prop.PropValue.op_Addition(X1.ScriptGame.Prop.PropValue,X1.ScriptGame.Prop.PropValue)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 47,
       "source_newer_than_index": false
     },
     {
       "id": "l-operator-02",
       "project": "large",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/X1/ScriptGame/Prop/PropValue.cs:50]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/X1/ScriptGame/Buff/BuffHolder.cs:112]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptGame/Buff/BuffHolder.cs:112:52",
       "relocated": false,
       "expected_defs": [
         "Assets/X1/ScriptGame/Prop/PropValue.cs:50"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Prop/PropValue.cs:50"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "PropValue PropValue.operator -(PropValue v1, PropValue v2) [ScriptGame|M:X1.ScriptGame.Prop.PropValue.op_Subtraction(X1.ScriptGame.Prop.PropValue,X1.ScriptGame.Prop.PropValue)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 3,
       "source_newer_than_index": false
     },
     {
       "id": "l-operator-03",
       "project": "large",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/X1/ScriptGame/Prop/PropValue.cs:44]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/X1/ScriptGame/Prop/PropMgr.Get.cs:163]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptGame/Prop/PropMgr.Get.cs:163:24",
       "relocated": false,
       "expected_defs": [
         "Assets/X1/ScriptGame/Prop/PropValue.cs:44"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/X1/ScriptGame/Prop/PropValue.cs:44"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "PropValue PropValue.operator +(PropValue v1, PropValue v2) [ScriptGame|M:X1.ScriptGame.Prop.PropValue.op_Addition(X1.ScriptGame.Prop.PropValue,X1.ScriptGame.Prop.PropValue)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 47,
       "source_newer_than_index": false
     },
     {
       "id": "l-operator-04",
       "project": "large",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:523]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:342]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:342:29",
       "relocated": false,
       "expected_defs": [
         "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:523"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/X1/ScriptGame/City/CityEntity/Worker/LWorker.cs:523"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "bool WorkerSeat.operator !=(WorkerSeat a, WorkerSeat b) [ScriptGame|M:X1.ScriptGame.City.WorkerSeat.op_Inequality(X1.ScriptGame.City.WorkerSeat,X1.ScriptGame.City.WorkerSeat)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 1,
       "source_newer_than_index": false
     },
     {
       "id": "l-operator-05",
       "project": "large",
       "category": "operator",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/Launch/Script/Common/Version.cs:43]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/Launch/Script/Common/Version.cs:50]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/Launch/Script/Common/Version.cs:50:24",
       "relocated": false,
       "expected_defs": [
         "Assets/Launch/Script/Common/Version.cs:43"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/Launch/Script/Common/Version.cs:43"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "bool Version.operator <(Version lhs, Version rhs) [Launch|M:TFW.Version.op_LessThan(TFW.Version,TFW.Version)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 1,
       "source_newer_than_index": false
     },
     {
       "id": "l-indexer-01",
       "project": "large",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs:71]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/ContentProviderGridLayerEditor.Export.cs:71:40",
       "relocated": false,
       "expected_defs": [
         "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "int GridMatrix.this[int x, int y] [Framework|P:RuntimeConfig.GridMatrix.Item(System.Int32,System.Int32)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 3,
       "source_newer_than_index": false
     },
     {
       "id": "l-indexer-02",
       "project": "large",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:11]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs:23]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridFlagLabelUtility.cs:23:35",
       "relocated": false,
       "expected_defs": [
         "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:11"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/TFWCore/Script/Editor/Map/LayerGrid/GridMatrix.cs:11"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "int GridMatrix.this[int x, int y] [Framework.Editor|P:EditorConfig.GridMatrix.Item(System.Int32,System.Int32)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 42,
       "source_newer_than_index": false
     },
     {
       "id": "l-indexer-03",
       "project": "large",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/TFWCore/Script/Map/Layer/GridLayer.cs:36]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/TFWCore/Script/Map/Layer/GridLayer.cs:36:23",
       "relocated": false,
       "expected_defs": [
         "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/TFWCore/Script/Map/Layer/GridMatrix.cs:14"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "int GridMatrix.this[int x, int y] [Framework|P:RuntimeConfig.GridMatrix.Item(System.Int32,System.Int32)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 3,
       "source_newer_than_index": false
     },
     {
       "id": "l-indexer-04",
       "project": "large",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/X1/ScriptCore/Common/Timer/TimerMgr.cs:349]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptCore/Common/Timer/TimerMgr.cs:349:31",
       "relocated": false,
       "expected_defs": [
         "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "T ExtendArray<T>.this[int index] [ScriptCore|P:X1.ScriptCore.Common.ExtendArray`1.Item(System.Int32)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 39,
       "source_newer_than_index": false
     },
     {
       "id": "l-indexer-05",
       "project": "large",
       "category": "indexer",
-      "status": "fail",
-      "reasons": [
-        "定义：期望 [Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36]，实际 []；绑定到 <该位置没有出现位置记录>",
-        "引用：缺少 [Assets/X1/ScriptCore/Common/Collections/SwapExtendArray.cs:95]（实际共 0 处）"
-      ],
+      "status": "pass",
+      "reasons": [],
       "query": "Assets/X1/ScriptCore/Common/Collections/SwapExtendArray.cs:95:30",
       "relocated": false,
       "expected_defs": [
         "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36"
       ],
       "expected_external": null,
-      "actual_defs": [],
+      "actual_defs": [
+        "Assets/X1/ScriptCore/Common/Collections/ExtendArray.cs:36"
+      ],
       "actual_external": null,
-      "actual_symbol": "<该位置没有出现位置记录>",
+      "actual_symbol": "T ExtendArray<T>.this[int index] [ScriptCore|P:X1.ScriptCore.Common.ExtendArray`1.Item(System.Int32)]",
       "expected_refs": null,
-      "actual_refs": 0,
+      "actual_refs": 39,
       "source_newer_than_index": false
     },
     {

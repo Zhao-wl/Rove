@@ -101,6 +101,20 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
                 Symbols.CollectRelations(ds, ctx.Relations, s => ctx.Symbols.Canonical(Key(s)));
                 Stats.Add(ref Stats.Relations, t);
             }
+            else if (Symbols.UseToken(node) is { } use)
+            {
+                // #212：用户定义的运算符与索引器在使用处的出现位置。语法上过不了筛的节点压根不查语义，
+                // 过了筛的大多是内建运算符，绑定后再按符号种类丢掉。
+                long t = Stats.Now();
+                var info = model.GetSymbolInfo(node);
+                Stats.Add(ref Stats.SymbolInfo, t);
+                var sym = info.Symbol;
+                var role = Role.Ref;
+                if (sym == null && info.CandidateSymbols.Length > 0) { sym = info.CandidateSymbols[0]; role |= Role.Candidate; }
+                if (!Symbols.IsUserDefinedOperatorOrIndexer(sym)) continue;
+                Interlocked.Increment(ref Stats.OperatorUses);
+                Add(use.Span, Symbols.Norm(sym!), role);
+            }
         }
 
         Interlocked.Add(ref Stats.Names, names);

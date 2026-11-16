@@ -2342,3 +2342,36 @@ Rove 自己的处理只有 0.35 ms、绘制 CPU 0.36 ms。结论是**测量口�
 的那一帧画出来，外加 `text_version` 与 `end` 的不变量）。绝对耗时与相位分布见
 `perf/README.md`「按键到上屏」一节与 PR 里的前后对比；**本机负载较高**，数字只作相对比较，
 空闲机器与实机（经系统消息队列与输入法）的复测记在人工事项里。
+## 61. 运算符重载与索引器的出现位置（#212）
+
+这是**补收集范围**型 issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约，
+也没有 `SKELETON(...)` 标记要替换；索引格式（RVCSIDX v2）与 `query.rs` 的冻结契约都没有变化，
+只是出现位置列表里多了两类位置。
+
+位置：全在索引进程里——`tools/rove-indexer-cs/Symbols.cs`（`DeclIdentifier` 补运算符与转换运算符的声明记号；
+新增 `UseToken` 给出使用处的记号、`IsUserDefinedOperatorOrIndexer` 判定要不要记）与
+`ProjectBinder.Bind`（遍历时多一个分支，查 `SemanticModel.GetSymbolInfo` 后按符号种类取舍）。
+Rust 侧一行没改：这些位置和标识符的出现位置同构，`CsIndex` 的二分查找、`CsRouter` 的映射与精确度都照旧。
+
+| | 使用处 | 声明处 |
+|---|---|---|
+| 运算符重载 | 二元 / 前缀 / 后缀运算符与复合赋值的运算符记号 | `OperatorDeclarationSyntax` 的运算符记号 |
+| 转换运算符 | 不记（`(T)x` 的类型名本来就是类型引用） | `ConversionOperatorDeclarationSyntax` 的 `operator` 关键字 |
+| 索引器 | `x[i]`、`x?[i]` 与对象初始化器里 `[k] = v` 的 `[` | `IndexerDeclarationSyntax` 的 `this`（原本就有） |
+
+口径与取舍：
+
+- **位置取记号本身**，与 `tests/nav-cases` 的用例一致（运算符用例的查询点写的就是运算符，索引器写 `[`）。
+- **只记用户定义的**（`MethodKind.UserDefinedOperator` / `Conversion`、`IPropertySymbol.IsIndexer`）。
+  内建运算符（`int + int`）与数组下标没有可跳转的声明，记了只会让列表白白变大。
+- `is` / `as` / `??` / `??=` / 简单赋值在**语法层**就跳过，不查语义；其余节点查一次 `GetSymbolInfo`
+  再按符号种类丢掉——同一方法体的语义绑定在收集标识符时已经做过，这里多数是缓存命中。
+- 转换运算符的声明记号用 `operator` 关键字而不是目标类型名，避免和类型名自己的类型引用出现位置重叠
+  （同一位置只能有一条出现位置）。
+
+验证：`cargo test -p rove-lang-cs --test operators`（合成的最小 C# 项目，真实索引进程跑一次全量：
+二元 / 一元 / `!=` / 复合赋值与索引器读写都能跳到声明并互查引用，声明处反查引用，
+内建 `1 + 2`、`arr[0]` 与索引器实现体里的 `m_Items[i]` **没有**出现位置）；
+准确率 `cargo run --release -p rove-lang-cs --example nav_check -- --build`（`operator` 与 `indexer`
+两类在两个真实项目上 5/5，总体 194/200，基线见 `tests/nav-cases/baseline-l2.md`）。
+全量索引的前后对比（体积、耗时、峰值内存）见 `tests/nav-cases/baseline-l2.md` 的「索引前后对比」一节。
