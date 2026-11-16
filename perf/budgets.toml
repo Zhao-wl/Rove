@@ -61,7 +61,30 @@ unit = "MB"
 owner = "#16"
 status = "enforced"
 bench = "startup/empty_window_working_set"
-reason = "M0 的 GPUI 原型工作集 47.7 MB；#16 的工作台落地后由 #150 补上采集：`cargo xtask startup` 启动不带任何路径参数的 rove.exe（空窗口 + 欢迎页，临时用户目录里 rove.update.mode = none），首帧之后稳定 2 s 再按进程树取工作集与私有提交，取多次的中位数。判定用工作集；私有提交同时记在 startup/empty_window_private（见 perf/README.md）。取数走 Get-CimInstance Win32_Process，拿不到进程表时未测量、不算失败"
+reason = "M0 的 GPUI 原型工作集 47.7 MB；#16 的工作台落地后由 #150 补上采集：`cargo xtask startup` 启动不带任何路径参数的 rove.exe（空窗口 + 欢迎页，临时用户目录里 rove.update.mode = none），首帧之后稳定 2 s 再按进程树取工作集、私有工作集与私有提交，取多次的中位数。**判定用工作集**（#219 于 2026-11-16 确认的口径：CHARTER §6 的 60 MB 是按 M0 的 47.7 MB 工作集定的，换成私有提交等于换了基线却不换数值；而且私有提交含从未驻留的提交页，不是「常驻」量）；私有提交与私有工作集同时记在下面两条 recorded 条目里，报告三个数都要写（见 perf/README.md 采集口径第 3 条）。取数走 Get-CimInstance Win32_Process，拿不到进程表时未测量、不算失败"
+
+# #219：空窗口内存的另外两个数，只记录、不设门槛（value = 0 表示没有门槛，口径同 cold_start_first_frame）。
+# 它们和上面那条是**同一次采样**的同一时刻，用来解释工作集与私有提交为什么差一倍多。
+
+[[budget]]
+id = "empty_window_private_working_set"
+metric = "空窗口私有工作集（工作集里私有的那部分）"
+value = 0
+unit = "MB"
+owner = "#16"
+status = "recorded"
+bench = "startup/empty_window_private_working_set"
+reason = "#219：Win32_PerfRawData_PerfProc_Process 的 WorkingSetPrivate（任务管理器的「内存(专用工作集)」列），由 cargo xtask startup 与工作集同一时刻采集。它是「私有提交里真正驻留了多少」的证据：私有提交 − 私有工作集就是已提交但没有驻留的部分。性能计数器被禁用或拿不到时这一项不写进结果（不是 0），check-budgets 显示「未测量」"
+
+[[budget]]
+id = "empty_window_private_commit"
+metric = "空窗口私有提交量（commit charge，不要求驻留）"
+value = 0
+unit = "MB"
+owner = "#16"
+status = "recorded"
+bench = "startup/empty_window_private"
+reason = "#219：Win32_Process 的 PrivatePageCount，#150 起就在采集（startup/empty_window_private），这里给它一条正式的 recorded 条目，让 --check-budgets 的输出里三个内存数并排可见。只记录不设门槛的理由同 empty_window_memory 的 reason：CHARTER §6 的「常驻内存」判定工作集。#150 实测私有提交 121.6 MB / 工作集 54.9 MB；#219 加上第三个数后本机实测工作集 53.6 MB、私有工作集 19.8 MB、私有提交 97.2 MB（负载较高，3 次中位数）——私有提交里真正驻留的只有约 20 MB，其余是提交后未驻留的地址空间。要给私有提交单独立目标值必须走 CHARTER 修订流程另开 issue"
 
 # ---------------------------------------------------------------- 工作区
 

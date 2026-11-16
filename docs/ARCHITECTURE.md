@@ -2215,7 +2215,7 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 |---|---|---|
 | `crates/rove-ui/src/skeleton/workbench/v01_acceptance_tests.rs` | 界面层（`workbench.rs` 只追加一行 `mod v01_acceptance_tests;`） | 提前条目（#52 多光标、#53 自动编辑、#55 粘性滚动、#58 软换行）与 M1–M3 **叠在一起**时的接缝：粘性区 = 面包屑符号链（软换行开着）、分级关闭（大文件只关粘性、超大文件两个都关）、多光标编辑在软换行下仍是一个撤销单元、GBK 文件上注释切换保存零额外差异、「编辑 → 近似 → 保存 + 重绑 → 精确」在两项功能开着时不变；另有两条真实 Unity 项目（中型 / 大型）的同一条路径 |
 | `crates/rove-ui/src/skeleton/workbench/startup_probe.rs` | 界面层（同上，追加 `mod startup_probe;`） | 「可交互」冷启动埋点：首帧之后注入一个无副作用的按键（`right`）并等那一帧画完，打印 `INTERACTIVE_SINCE_PROCESS_MS`。**默认关闭**，只有 `ROVE_STARTUP_PROBE=1` 时才注入 |
-| `xtask/src/startup.rs` | 开发工具 | 一次启动同时测首帧、可交互与**空窗口内存**；结果 id：`startup/first_frame`、`startup/interactive`（耗时）与 `startup/empty_window_working_set`、`startup/empty_window_private`（`metrics`，MB） |
+| `xtask/src/startup.rs` | 开发工具 | 一次启动同时测首帧、可交互与**空窗口内存**；结果 id：`startup/first_frame`、`startup/interactive`（耗时）与 `startup/empty_window_working_set`、`startup/empty_window_private`（`metrics`，MB；#219 又加了 `startup/empty_window_private_working_set`，见 §62） |
 | `xtask/src/procwatch.rs` | 开发工具 | 进程树的内存与连接采样（`Get-CimInstance Win32_Process` + `netstat -ano`），给上面两条和 `netwatch` 共用 |
 | `xtask/src/netwatch.rs` | 开发工具 | `cargo xtask netwatch`：在临时用户目录里设好 `rove.update.mode`，启动 `rove.exe`，按间隔采样整棵进程树的连接并汇总出站连接；`--mode none` 下有出站连接时 `--require-silent` 以 1 退出 |
 | `xtask/src/release_gate.rs` | 开发工具 | `cargo xtask check-release-gate`：发布门槛里机器能判的两条（预算没有 `pending`；COVERAGE 的每一行在验收报告里都有「已完成 / 改判」的结论），同样的判定也在 `cargo test -p xtask` 里 |
@@ -2376,3 +2376,65 @@ Rust 侧一行没改：这些位置和标识符的出现位置同构，`CsIndex`
 准确率 `cargo run --release -p rove-lang-cs --example nav_check -- --build`（`operator` 与 `indexer`
 两类在两个真实项目上 5/5，总体 194/200，基线见 `tests/nav-cases/baseline-l2.md`）。
 全量索引的前后对比（体积、耗时、峰值内存）见 `tests/nav-cases/baseline-l2.md` 的「索引前后对比」一节。
+## 62. 「空窗口常驻内存」的判定口径（#219）
+
+这是**口径型** issue：不新增 crate、命令、设置项、颜色键与界面字符串，不改 #1 的契约，
+也没有 `SKELETON(...)` 标记要替换；**没有改 `perf/budgets.toml` 的任何预算数值**
+（`empty_window_memory` 仍然是 60 MB / `MB` / `enforced` / `bench = startup/empty_window_working_set`）。
+
+起因见 #150 的验收（[V01_ACCEPTANCE_REPORT](V01_ACCEPTANCE_REPORT.md) §6.2）：空窗口工作集 54.9 MB
+（达标），私有提交 121.6 MB（按它算超标一倍）；`PROJECT_CHARTER` §6 只写「空窗口常驻内存 < 60 MB」，
+没写是哪一个。
+
+**结论：判定工作集，私有提交与私有工作集只记录。** 三条理由：
+
+1. 60 MB 这个数值是按 M0 原型的 **47.7 MB 工作集**定的。换成私有提交判定等于换了基线却不换数值，
+   相当于静默改预算——而改数值只能走 `PROJECT_CHARTER` 的修订流程；
+2. 私有提交是 commit charge：**已向系统预订**的私有地址空间，不要求驻留物理内存。
+   提交了却从未被触碰、以及已经被换出的页都算在里面，它不是「常驻」量；
+3. `perf/README.md` 的采集口径第 3 条本来就要求「工作集与私有提交分开看、两个数都写进报告」，
+   本 issue 只是把「判定用哪个」写死，并把第三个数（私有工作集）补上，让差额有解释。
+
+落地（都在 `xtask`，不碰产品代码）：
+
+| 文件 | 改了什么 |
+|---|---|
+| `xtask/src/procwatch.rs` | `Memory` 多一个 `private_working_set`，来自 `Win32_PerfRawData_PerfProc_Process` 的 `WorkingSetPrivate`（任务管理器的「内存(专用工作集)」列），按 pid 并进同一棵进程树；单独一次查询，不让 `netwatch` 的轮询多付开销。计数器拿不到时留 0 并按「未测到」报告，`private_not_resident_mb()` 返回 `None`，绝不拿 0 当真值算差值 |
+| `xtask/src/startup.rs` | 多写一个结果 id `startup/empty_window_private_working_set`（`metrics`，MB；没测到就不写这一项）；输出把三个数分行列出，并标出哪一个是判定口径 |
+| `perf/budgets.toml` | `empty_window_memory` 的 `metric` / `reason` 写清判定口径；新增两条 `recorded`（`value = 0`，口径同 `cold_start_first_frame`）：`empty_window_private_working_set` 与 `empty_window_private_commit` |
+| `docs/PROJECT_CHARTER.md` §6、§9 | §6 的指标行写明「常驻」判定工作集、另两个数只记录；§9 留下待维护者最终确认的条目 |
+| `perf/README.md` | 采集口径第 3 条展开成三个计数器各是什么、为什么判定工作集、报告要写三个数 |
+
+本机实测（`cargo xtask startup --startup-tries 3`，空窗口每轮 3 次取中位数，稳定 2 s 后采样；
+背靠背跑了两轮。**机器负载较高**，同时开着 Unity 与另一个构建槽，`rove.exe` 是 11-14 的 release 构建）：
+
+| 数 | 第一轮中位数 | 第二轮中位数 | 两轮全部样本的范围（n=6） |
+|---|---:|---:|---|
+| 工作集（判定口径，< 60 MB） | **53.6 MB** | **54.1 MB** | 52.3 – 54.3 MB |
+| 私有工作集 | 19.8 MB | 20.2 MB | 19.4 – 20.2 MB |
+| 私有提交 | 97.2 MB | 118.1 MB | 97.2 – 119.4 MB |
+
+工作集与私有工作集两轮几乎不动，私有提交却在 97 – 119 MB 之间跳——这本身就说明它不适合当判定口径。
+
+这组数把 #150 留下的问题答清楚了：**私有提交里真正驻留的只有约 20 MB，其余 77 – 98 MB 是提交了
+但从未落到物理内存上的地址空间**（图形栈与分配器的预留）；工作集 54 MB 里私有的 20 MB 之外
+是 exe / DLL / 字体等共享映射页。所以 121 MB 这个数不是「占了 121 MB 物理内存」，
+按它判定「常驻内存 < 60 MB」没有意义。
+
+同一次 `cargo xtask bench --check-budgets --from <startup 结果>` 的输出（新增两条只记录的条目并排可见）：
+
+```
+  OK      empty_window_memory            目标    60.00 MB  实测    54.1 MB [median]  (#16)
+  record  empty_window_private_working_set 只记录不设门槛：实测 20.2 MB  （负责 #16）
+  record  empty_window_private_commit    只记录不设门槛：实测 118.1 MB  （负责 #16）
+  合计：pending 0 条，未测量 28 条。
+```
+
+守卫测试：`xtask/src/budgets.rs` 的 `only_the_working_set_judges_the_resident_memory_budget`
+（空窗口内存只有工作集那条是 `enforced`，数值仍是 60 MB，另两条是 `recorded` 且指向各自的结果 id）、
+`a_high_private_commit_is_reported_but_does_not_fail_the_check`（拿 #150 实测的 54.9 / 121.6 MB 跑一遍
+`check`：通过；把工作集改成 61 MB 才失败）；`xtask/src/procwatch.rs` 与 `xtask/src/startup.rs`
+各有三个数的并表、缺计数器与单行 JSON 的用例。
+
+**没有做的事**：私有提交若最终改判，需要为它**单独定一个目标值**（不能沿用 60 MB）并另开 issue；
+空闲机器上的复测（#150 与本次都在负载较高的本机）留在人工清单里。
