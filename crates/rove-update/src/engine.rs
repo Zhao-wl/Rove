@@ -29,7 +29,11 @@ use crate::{
     version::Version,
     Result, UpdateError,
 };
-use std::{sync::Arc, time::SystemTime};
+use rove_base::Cancellation;
+use std::{
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
 /// 一次检查的结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,11 +61,15 @@ impl Outcome {
 }
 
 /// 更新流程。
+#[derive(Clone)]
 pub struct Updater {
+    active: Cancellation,
+    download_slot: Arc<Mutex<()>>,
     current: Version,
     mode: UpdateMode,
     paths: Option<UpdatePaths>,
     log: Arc<UpdateLog>,
+    source_transport: Option<Arc<dyn Transport>>,
     transport: Option<Arc<dyn Transport>>,
     /// 演练用的验签公钥。**只在调试构建里存在**，见
     /// [`Updater::set_test_public_key`]；发布构建里这个字段根本不存在，
@@ -75,23 +83,7 @@ impl Updater {
     ///
     /// **`mode` 为 `none` 时传输层根本不会被构造**：这是「零连接」最直接的保证。
     pub fn new(current: Version, mode: UpdateMode, paths: Option<UpdatePaths>) -> Self {
-        let log = Arc::new(UpdateLog::new(paths.as_ref().map(|p| p.logs_dir())));
-        let transport: Option<Arc<dyn Transport>> = if mode.may_connect() {
-            Some(Arc::new(http::WinHttp::new(&http::user_agent(
-                &current.to_string(),
-            ))))
-        } else {
-            None
-        };
-        Self {
-            current,
-            mode,
-            paths,
-            log,
-            transport,
-            #[cfg(debug_assertions)]
-            test_public_key: None,
-        }
+        Self::with_optional_transport(current, mode, paths, None)
     }
 
     /// 自带传输层（集成测试用本机 HTTP 服务器，单元测试用 [`crate::http::StubTransport`]）。
@@ -101,17 +93,30 @@ impl Updater {
         paths: Option<UpdatePaths>,
         transport: Arc<dyn Transport>,
     ) -> Self {
+        Self::with_optional_transport(current, mode, paths, Some(transport))
+    }
+
+    fn with_optional_transport(
+        current: Version,
+        mode: UpdateMode,
+        paths: Option<UpdatePaths>,
+        source_transport: Option<Arc<dyn Transport>>,
+    ) -> Self {
         let log = Arc::new(UpdateLog::new(paths.as_ref().map(|p| p.logs_dir())));
-        Self {
+        let mut updater = Self {
+            active: Cancellation::default(),
+            download_slot: Arc::default(),
             current,
             mode,
             paths,
             log,
-            // `none` 时即使调用方给了传输层也不用它。
-            transport: mode.may_connect().then_some(transport),
+            source_transport,
+            transport: None,
             #[cfg(debug_assertions)]
             test_public_key: None,
-        }
+        };
+        updater.bind_transport();
+        updater
     }
 
     /// 演练「v0.1.0 → v0.1.1」时换掉验签公钥（本地 HTTP 服务器 + 临时密钥对）。
@@ -137,6 +142,30 @@ impl Updater {
         &self.current
     }
 
+    /// 替换模式并使旧任务失效。保留缓存、传输替身和同一下载目录的写入锁。
+    pub fn reconfigure(&self, mode: UpdateMode) -> Self {
+        self.active.cancel();
+        let mut next = self.clone();
+        next.active = Cancellation::default();
+        next.mode = mode;
+        next.bind_transport();
+        next
+    }
+
+    fn bind_transport(&mut self) {
+        self.transport = self.mode.may_connect().then(|| {
+            let source = self.source_transport.get_or_insert_with(|| {
+                Arc::new(http::WinHttp::new(&http::user_agent(
+                    &self.current.to_string(),
+                )))
+            });
+            Arc::new(http::ActiveTransport::new(
+                source.clone(),
+                self.active.clone(),
+            )) as Arc<dyn Transport>
+        });
+    }
+
     pub fn mode(&self) -> UpdateMode {
         self.mode
     }
@@ -151,7 +180,11 @@ impl Updater {
 
     /// 本次会话实际可用的传输层。`none` 模式下永远是 `None`。
     pub fn transport(&self) -> Option<&Arc<dyn Transport>> {
-        self.transport.as_ref()
+        if self.mode.may_connect() && self.active.check().is_ok() {
+            self.transport.as_ref()
+        } else {
+            None
+        }
     }
 
     fn now(&self) -> String {
@@ -172,7 +205,7 @@ impl Updater {
 
     /// 检查有没有更新。
     pub fn check(&self) -> Outcome {
-        let Some(transport) = self.transport.as_ref() else {
+        let Some(transport) = self.transport() else {
             // `none`：连传输层都没有，这里是唯一的出口。
             self.log.line("check skipped: rove.update.mode = none");
             return Outcome::Disabled;
@@ -231,13 +264,10 @@ impl Updater {
 
     /// 下载清单里的安装包并校验。成功后写下待安装记录并返回它。
     ///
-    /// **同时只保留一个待安装版本**：下载前把下载目录里别的东西清掉（第 5 节）。
+    /// **同时只保留一个待安装版本**：验证下载结果后清理目录（第 5 节）。
     pub fn download(&self, manifest: &Manifest) -> Result<Pending> {
-        let transport = self
-            .transport
-            .as_ref()
-            .ok_or(UpdateError::Disabled)?
-            .clone();
+        let _slot = self.download_slot.lock().unwrap_or_else(|e| e.into_inner());
+        let transport = self.transport().ok_or(UpdateError::Disabled)?;
         let paths = self
             .paths
             .as_ref()
@@ -248,7 +278,6 @@ impl Updater {
             .ok_or_else(|| UpdateError::Unavailable("这个版本没有安装包".into()))?;
 
         let dir = paths.ensure_updates_dir()?;
-        paths.clear_downloads(&[]);
         self.log.line(&format!(
             "download start: {} ({} 字节)",
             installer.file, installer.size
@@ -269,6 +298,8 @@ impl Updater {
             },
         );
         result?;
+        self.active.check().map_err(|_| UpdateError::Disabled)?;
+        paths.clear_downloads(&[&installer.file]);
 
         let pending = Pending::from_manifest(manifest, self.now())
             .ok_or_else(|| UpdateError::Unavailable("这个版本没有安装包".into()))?;
@@ -312,6 +343,29 @@ mod tests {
     use crate::http::StubTransport;
     use crate::manifest::tests::sample;
     use crate::signature;
+
+    #[test]
+    fn a_transport_already_captured_by_old_work_is_revoked() {
+        let spy = StubTransport::new();
+        let old = Updater::with_transport(
+            Version::parse("0.1.0").unwrap(),
+            UpdateMode::Default,
+            None,
+            Arc::new(spy.clone()),
+        );
+        let captured = old.transport().unwrap().clone();
+        let disabled = old.reconfigure(UpdateMode::None);
+        let enabled = disabled.reconfigure(UpdateMode::Default);
+        assert_eq!(old.check(), Outcome::Disabled);
+        assert_eq!(disabled.check(), Outcome::Disabled);
+        assert!(matches!(
+            http::get_bytes(captured.as_ref(), &endpoint::manifest_url(), 100),
+            Err(UpdateError::Disabled)
+        ));
+        assert!(spy.requested().is_empty());
+        assert!(matches!(enabled.check(), Outcome::Failed { .. }));
+        assert_eq!(spy.requested(), vec![endpoint::manifest_url()]);
+    }
 
     fn paths() -> (tempfile::TempDir, UpdatePaths) {
         let dir = tempfile::tempdir().unwrap();

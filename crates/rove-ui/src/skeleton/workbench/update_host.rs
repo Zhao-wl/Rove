@@ -26,6 +26,7 @@ pub(super) struct Updates {
     pub(super) service: Option<UpdateService>,
     /// 已经排过「首帧之后的第一次检查」。
     scheduled: bool,
+    scheduled_check: Option<gpui::Task<()>>,
 }
 
 impl Workbench {
@@ -57,6 +58,29 @@ impl Workbench {
     #[cfg(test)]
     pub(crate) fn apply_update_step_for_test(&mut self, step: Step, cx: &mut Context<Self>) {
         self.apply_update_step(step, cx);
+    }
+
+    pub(super) fn update_mode_changed(&mut self, cx: &mut Context<Self>) {
+        let mode = crate::update::mode_from_settings(&*self.settings);
+        let Some(service) = self.updates.service.as_mut() else {
+            return;
+        };
+        if service.mode() == mode {
+            return;
+        }
+        let step = service.change_mode(mode);
+        self.updates.scheduled_check = None;
+        for key in [
+            update_registry::KEY_STATUS,
+            update_registry::KEY_PROMPT,
+            update_registry::KEY_FAILED,
+        ] {
+            let _ = crate::feedback::FeedbackService::dismiss(&mut self.shell.feedback, key);
+        }
+        self.apply_update_step(step, cx);
+        if let Some(delay) = mode.startup_check().filter(|_| self.updates.scheduled) {
+            self.schedule_update_check(delay, mode, cx);
+        }
     }
 
     /// 首帧画完之后才排第一次检查（冷启动预算不受影响）。
@@ -108,7 +132,7 @@ impl Workbench {
         mode: UpdateMode,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn(async move |this, cx| {
+        self.updates.scheduled_check = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
             loop {
                 if this
@@ -123,8 +147,7 @@ impl Workbench {
                 };
                 cx.background_executor().timer(interval).await;
             }
-        })
-        .detach();
+        }));
     }
 
     /// 跑一次检查（在后台执行器上）。`manual` 为真表示是「检查更新」命令触发的。
@@ -132,25 +155,40 @@ impl Workbench {
         let Some(service) = &self.updates.service else {
             return;
         };
-        if service.state().is_busy() && !manual {
+        if !service.mode().may_connect()
+            || service.state().is_ready_to_install()
+            || (service.state().is_busy() && !manual)
+        {
             return;
         }
         let updater = service.updater().clone();
         cx.spawn(async move |this, cx| {
             // 网络 I/O 放后台线程，UI 线程一帧都不等。
+            let worker = updater.clone();
             let outcome = cx
                 .background_executor()
-                .spawn(async move { updater.check() })
+                .spawn(async move { worker.check() })
                 .await;
-            let _ = this.update(cx, |view, cx| view.finish_update_check(outcome, manual, cx));
+            let _ = this.update(cx, |view, cx| {
+                view.finish_update_check(&updater, outcome, manual, cx)
+            });
         })
         .detach();
     }
 
-    fn finish_update_check(&mut self, outcome: Outcome, manual: bool, cx: &mut Context<Self>) {
+    pub(super) fn finish_update_check(
+        &mut self,
+        updater: &Arc<rove_update::Updater>,
+        outcome: Outcome,
+        manual: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(service) = self.updates.service.as_mut() else {
             return;
         };
+        if !Arc::ptr_eq(service.updater(), updater) {
+            return;
+        }
         let step = service.on_check_finished(&outcome, manual);
         self.apply_update_step(step.clone(), cx);
         if step == Step::Download {
@@ -179,14 +217,15 @@ impl Workbench {
         let updater = service.updater().clone();
         let roots = service.component_roots().clone();
         cx.spawn(async move |this, cx| {
+            let worker = updater.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let result = updater.download(&manifest);
+                    let result = worker.download(&manifest);
                     // 安装包下好了，C# 索引组件跟着一起升级（#149 第 4 节）：
                     // **装了才下，没装不下**；组件这一步失败只写日志，不影响主程序这条主线。
                     if result.is_ok() {
-                        crate::update::component::follow_update(&updater, &manifest, &roots);
+                        crate::update::component::follow_update(&worker, &manifest, &roots);
                     }
                     result
                 })
@@ -195,6 +234,9 @@ impl Workbench {
                 let Some(service) = view.updates.service.as_mut() else {
                     return;
                 };
+                if !Arc::ptr_eq(service.updater(), &updater) {
+                    return;
+                }
                 let step = service.on_download_finished(result);
                 view.apply_update_step(step, cx);
             });

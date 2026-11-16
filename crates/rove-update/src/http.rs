@@ -43,6 +43,28 @@ pub trait Transport: Send + Sync {
     fn get(&self, url: &str, sink: &mut dyn Write, limit: u64) -> Result<u64>;
 }
 
+/// 排队的任务在实际发送请求前再次检查当前更新模式。
+pub(crate) struct ActiveTransport {
+    source: std::sync::Arc<dyn Transport>,
+    active: rove_base::Cancellation,
+}
+
+impl ActiveTransport {
+    pub(crate) fn new(
+        source: std::sync::Arc<dyn Transport>,
+        active: rove_base::Cancellation,
+    ) -> Self {
+        Self { source, active }
+    }
+}
+
+impl Transport for ActiveTransport {
+    fn get(&self, url: &str, sink: &mut dyn Write, limit: u64) -> Result<u64> {
+        self.active.check().map_err(|_| UpdateError::Disabled)?;
+        self.source.get(url, sink, limit)
+    }
+}
+
 /// GET 到内存（清单与签名这种小文本）。
 pub fn get_bytes(transport: &dyn Transport, url: &str, limit: u64) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
