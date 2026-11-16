@@ -15,7 +15,7 @@ use crate::code_view::edit::EditHost;
 use crate::save::registry as save_ids;
 use crate::save::{CloseCheck, Effect, SaveController};
 use rove_buffer::edit::{EditOptions, EditSession};
-use rove_buffer::save::{DiskStamp, SaveOptions, SaveRequest, TextFile};
+use rove_buffer::save::{DiskStamp, SaveOptions, SaveRequest, SaveResult, TextFile};
 use rove_buffer::{DocumentMetadata, SizeClass, TextSource};
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
@@ -561,19 +561,28 @@ impl Workbench {
                 cx.spawn(async move |this, cx| {
                     let result = task.await;
                     let _ = this.update(cx, |view, cx| {
-                        let effects = view.editing.saves.borrow_mut().complete_save(
-                            document,
-                            result,
-                            &mut view.shell.feedback,
-                            Instant::now(),
-                        );
-                        view.apply_save_effects(effects, cx);
+                        view.finish_save(document, result, cx);
                     });
                 })
                 .detach();
             }
             Err(effects) => self.apply_save_effects(effects, cx),
         }
+    }
+
+    pub(super) fn finish_save(
+        &mut self,
+        document: DocumentId,
+        result: SaveResult,
+        cx: &mut Context<Self>,
+    ) {
+        let effects = self.editing.saves.borrow_mut().complete_save(
+            document,
+            result,
+            &mut self.shell.feedback,
+            Instant::now(),
+        );
+        self.apply_save_effects(effects, cx);
     }
 
     /// 把控制器的 [`Effect`] 反映到标签、视图与 #38。
@@ -590,10 +599,11 @@ impl Workbench {
                     // #50：已经落盘了，备份没用了。
                     self.discard_hot_exit_backup(document);
                     self.saved_as(document, &path);
-                    self.editor.set_dirty(document, false);
                     // 写盘期间缓冲区又被编辑过（会话的历史标记已经越过保存点）：磁盘上是保存时
-                    // 的快照，缓冲区已经不是它了，这次保存不登记（理由见下）。
+                    // 的快照，缓冲区已经不是它了。#159：这种情况下标签要保持脏（关闭时仍然确认），
+                    // 这次保存也不登记（理由见下）；要等新的快照保存成功才算干净。
                     let clean = !self.editing.saves.borrow().is_dirty(document);
+                    self.editor.set_dirty(document, !clean);
                     if let Some((Resource::Workspace(p), saved_version)) = self
                         .open_document(document)
                         .filter(|_| clean)
