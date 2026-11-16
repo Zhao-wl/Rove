@@ -6,7 +6,7 @@
 //! - 恢复后直接保存，GBK + CRLF、UTF-8 带 BOM、混合换行符三类文件除改动处外字节完全一致；
 //! - 外部修改落到 #49 的保存冲突路径、外部删除恢复成“已删除”状态；
 //! - `files.restoreUndoStack` 的真假两条路径与撤销栈超限截断；
-//! - 备份清理（保存后、关闭后、恢复消费后、工作区消失后）；
+//! - 备份清理（保存后、关闭后、工作区消失后）；
 //! - 连续两次恢复失败的备份被隔离到 `backups-failed\`，不进入无限恢复循环；
 //! - 崩溃日志写在本地，且整个流程**没有任何网络访问**（见 `no_network_handles_during_backup`）；
 //! - 持续备份的 I/O 开销与 UI 线程开销（见 `continuous_typing_io_cost`，加 `-- --nocapture` 看数据）。
@@ -513,10 +513,16 @@ fn backups_are_cleaned_up_after_save_close_restore_and_workspace_removal() {
     service.discard(DOC);
     assert!(!service.store().backup_path(&path).exists());
 
-    // 恢复消费后：finish_restore 清掉。
+    // 恢复后的备份仍可用，关闭恢复出来的文档时才删除。
     edit(&mut file, "closed", "restored");
     back_up(&mut service, DOC, &file, 0);
+    let (mut service, restored) = open(&state, &ws, HotExitMode::OnExit);
+    assert_eq!(restored.backups.len(), 1);
+    service.note_restored(DOC, &path);
     service.finish_restore(std::slice::from_ref(&path));
+    assert!(service.store().backup_path(&path).is_file());
+    assert_eq!(service.io_stats(), (0, 0));
+    service.discard(DOC);
     assert!(!service.store().backup_path(&path).exists());
 
     // 工作区目录已经不存在：整组清理。

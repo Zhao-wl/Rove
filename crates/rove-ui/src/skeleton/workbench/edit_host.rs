@@ -171,7 +171,7 @@ impl Workbench {
     /// 后台读盘建 `TextFile`（编码识别同打开路径），回到窗口后挂到控制器，并把文件的快照换进文档。
     fn load_text_file(&mut self, document: Arc<Document>, path: PathBuf, cx: &mut Context<Self>) {
         // #50：这个路径有待恢复的热退出备份时不读盘，内容直接取自备份（标记为脏）。
-        if let Some(file) = self.take_restored_file(&path) {
+        if let Some(file) = self.take_restored_file(document.id, &path) {
             self.attach_text_file(document, file, cx);
             self.finish_restore_if_done(cx);
             return;

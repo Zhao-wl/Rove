@@ -239,8 +239,16 @@ fn a_crash_restores_every_dirty_document_with_its_tab_order_and_a_status_message
         assert!(v.shell.feedback.modal().is_none());
         assert!(v.shell.feedback.notifications().is_empty());
     });
-    // 消费完的备份被清掉。
-    assert!(fx.store().backups().is_empty());
+    // 恢复结束后不做编辑、不等后台写入，立刻再次异常退出。
+    assert_eq!(fx.store().session().attempts, 0);
+    assert_eq!(fx.store().backups().len(), 3);
+    assert_eq!(view.read_with(cx, |v, _| v.hot_exit_io_stats()), (0, 0));
+    crash(cx);
+
+    let (view, cx) = fx.launch(cx);
+    assert_eq!(tabs(&view, cx).len(), 3);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    assert_eq!(shown_text(&code, cx), "Xbbb\n");
 }
 
 #[gpui::test]
@@ -425,4 +433,8 @@ fn a_file_deleted_while_backed_up_restores_as_a_deleted_tab(cx: &mut TestAppCont
     cx.update(|window, cx| window.dispatch_action(action, cx));
     settle(cx);
     assert_eq!(std::fs::read_to_string(&disk).unwrap(), "Xaaa\n");
+    assert!(
+        !fx.store().backup_path(&disk).exists(),
+        "恢复后保存会清理原备份"
+    );
 }

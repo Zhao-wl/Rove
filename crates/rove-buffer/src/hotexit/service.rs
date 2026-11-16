@@ -10,7 +10,7 @@
 //! 3. 否则把失败次数 +1、退出标记清成“未正常退出”并立刻落盘——**这一步必须在恢复之前**，
 //!    否则恢复过程中再崩一次就没人记得曾经试过；
 //! 4. 宿主按 [`Restore`] 打开标签；成功后调用 [`BackupService::finish_restore`] 清零失败次数
-//!    并删掉已消费的备份。
+//!    并保留已恢复文档的备份，直到它被原子覆盖，或文档被保存、关闭。
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -130,10 +130,19 @@ impl BackupService {
         &self.store
     }
 
-    /// 恢复成功：失败次数清零，已消费的备份删掉（宿主之后的编辑会重新写出备份）。
-    pub fn finish_restore(&self, consumed: &[PathBuf]) {
-        for path in consumed {
-            let _ = self.store.remove_backup(path);
+    /// 登记已恢复的文档及其现有备份，用于保存或关闭时清理。不增加写盘统计。
+    pub fn note_restored(&mut self, document: DocumentId, path: &Path) {
+        self.written.insert(document, path.to_owned());
+    }
+
+    /// 恢复完成：失败次数清零，仅清理未挂载到标签的备份。
+    pub fn finish_restore(&self, attempted: &[PathBuf]) {
+        let retained: std::collections::BTreeSet<_> =
+            self.written.values().map(PathBuf::as_path).collect();
+        for path in attempted {
+            if !retained.contains(path.as_path()) {
+                let _ = self.store.remove_backup(path);
+            }
         }
         let _ = self.store.write_session(&Session {
             workspace: self.store.workspace().to_owned(),
