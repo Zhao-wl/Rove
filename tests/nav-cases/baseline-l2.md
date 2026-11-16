@@ -1,7 +1,7 @@
 # C# 导航准确率基线（#39 建立，#44 复测，#212 补齐运算符与索引器后重测）
 
 > 生成：2026-11-16，`cargo run --release -p rove-lang-cs --example nav_check`，查询来源 `l2`（完整语义索引）。
-> 索引用本分支的 `tools/rove-indexer-cs`（RVCSIDX **v2**，索引进程 **1.2.0.0**）重建。
+> 索引用本分支的 `tools/rove-indexer-cs`（RVCSIDX **v2**，索引进程 **1.3.0.0**）重建。
 > 机器可读的同一份结果：[`baseline-l2.json`](baseline-l2.json)，下次运行可用 `--baseline tests/nav-cases/baseline-l2.json` 对比。
 > 近似层（L0/L1）的同一组用例见 [`baseline-l1.md`](baseline-l1.md)。
 
@@ -67,8 +67,8 @@
 
 查询来源：`l2`
 
-- medium：完整语义索引（格式 v2，索引进程 1.2.0.0，7718 个文件）
-- large：完整语义索引（格式 v2，索引进程 1.2.0.0，21677 个文件）
+- medium：完整语义索引（格式 v2，索引进程 1.3.0.0，7718 个文件）
+- large：完整语义索引（格式 v2，索引进程 1.3.0.0，21677 个文件）
 
 ## 分类准确率
 
