@@ -195,6 +195,12 @@ fn open_query_edit_query_save_rebuild_query() {
     assert_eq!(r.precision, Precision::Exact);
     let s = r.value[0].selection.start();
     assert_eq!((s.line.0, s.column.0), at(&text, "Move", 0));
+    // 未保存的编辑**不**请求重建：索引进程只读磁盘，重建也拿不到缓冲区里的内容
+    // （`LANGUAGE_INTELLIGENCE` §3.2，口径见 #213）。
+    assert!(
+        !lifecycle.is_stale(PLAYER_PATH),
+        "未保存的编辑不该把文件标记为过期"
+    );
 
     // 4. 保存并重建。
     fs::write(p.root.join(PLAYER_PATH), &text).unwrap();

@@ -397,7 +397,7 @@ rove-indexer-cs <大型项目> target/generators/large-gen.idx --generators --re
 | issue | 标题 | 为什么不在本 PR 里修 |
 |---|---|---|
 | [#212](https://github.com/Zhao-wl/Rove/issues/212) | 运算符重载与索引器没有出现位置，20 个导航用例必然失败 | 要改 `tools/rove-indexer-cs` 的绑定阶段收集范围（#33 的核心实现），并重测索引体积与全量耗时（大型项目的体积已经贴着 200 MB 的线）。超出「只修接缝性质的小缺陷」的范围 |
-| [#213](https://github.com/Zhao-wl/Rove/issues/213) | `LANGUAGE_INTELLIGENCE` §3.2 写「未保存修改也触发重建」，实现只在保存后触发 | 两边各有道理（实现的理由成立：索引进程只读磁盘），该改的是设计文档的口径，需要维护者定。本 issue 只把**实现的现状**写成测试，改哪一边都会红 |
+| [#213](https://github.com/Zhao-wl/Rove/issues/213) | `LANGUAGE_INTELLIGENCE` §3.2 写「未保存修改也触发重建」，实现只在保存后触发 | 两边各有道理（实现的理由成立：索引进程只读磁盘），该改的是设计文档的口径，需要维护者定。本 issue 只把**实现的现状**写成测试，改哪一边都会红。**已在 #213 定案：实现为准，§3.2 改成「保存后才触发重建」**，看门测试 `cargo test -p rove-lang-cs --test routing_doc` |
 
 ### 6.4 本 PR 没有改 #1 的契约
 
