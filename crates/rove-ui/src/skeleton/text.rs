@@ -1,6 +1,6 @@
 //! 文档加载走 `rove-buffer`（编码识别、BOM、换行符与 rope 快照）。
 use rove_base::*;
-use rove_buffer::{open_file, Document, Documents, LoadOptions, ReadOnlyReason};
+use rove_buffer::{open_file, Document, Documents, LoadOptions, OpenRequest, ReadOnlyReason};
 use rove_config::Settings;
 use std::{
     collections::BTreeMap,
@@ -229,6 +229,17 @@ impl Documents for FileDocuments {
         self.cache.lock().unwrap().find(r)
     }
     fn open(&self, resource: Resource, cancel: Cancellation) -> Task<Arc<Document>> {
+        self.open_with(resource, OpenRequest::default(), cancel)
+    }
+    /// #209：`request.force_open` 就是错误页上的「仍然打开」，原样转成 #7 的
+    /// `LoadOptions::force_open`。其余（缓存、别名去重、只读规则、`guessed` 记录）与普通打开
+    /// 共用同一条路径，所以状态栏的编码条目与只读表现与 #27 的「通过编码重新打开」一致。
+    fn open_with(
+        &self,
+        resource: Resource,
+        request: OpenRequest,
+        cancel: Cancellation,
+    ) -> Task<Arc<Document>> {
         let root = self.root.clone();
         let settings = self.settings.clone();
         let cache = self.cache.clone();
@@ -281,7 +292,8 @@ impl Documents for FileDocuments {
                 }
             }
             let language = rove_syntax::highlight::language_for_path(&path, Some(&*settings));
-            let options = LoadOptions::new(&language, &*settings);
+            let mut options = LoadOptions::new(&language, &*settings);
+            options.force_open = request.force_open;
             // 分级（普通/大文件/超大文件）与超大文件的内存映射都在 rove-buffer（#8）。
             let policy = rove_buffer::SizePolicy {
                 huge_bytes: policy.huge_bytes,
