@@ -1773,6 +1773,7 @@ impl ShellHost for Workbench {
     fn render_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("editor")
+            .debug_selector(|| "editor".into())
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus)
@@ -1853,6 +1854,19 @@ impl Render for Workbench {
         // Groups, active tabs and reveals change through commands, clicks and the open service;
         // load them into the per-group code views before drawing.
         self.sync_views(cx);
+        let hide_line_numbers = self.shell.zen_hides_line_numbers();
+        for slot in self
+            .views
+            .values()
+            .flat_map(|views| std::iter::once(&views.primary).chain(views.secondary.iter()))
+        {
+            if slot.code.read(cx).suppress_line_numbers != hide_line_numbers {
+                slot.code.update(cx, |code, cx| {
+                    code.suppress_line_numbers = hide_line_numbers;
+                    cx.notify();
+                });
+            }
+        }
         // #47：可保存文件与代码视图的编辑入口。
         self.sync_editing(cx);
         // A tab that finished loading in the background reports Ready once it is shown here.
@@ -1927,9 +1941,13 @@ impl Render for Workbench {
             window,
             cx,
         );
-        let context = editor_actions::context(&self.editor)
+        let mut context = editor_actions::context(&self.editor)
             + self.breadcrumbs_context()
             + &self.nav_context();
+        if let Some(zen) = self.shell.zen_context() {
+            context.push(' ');
+            context.push_str(zen);
+        }
         div()
             .size_full()
             .font_family("Segoe UI")

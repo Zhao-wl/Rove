@@ -93,6 +93,7 @@ pub struct LayoutState {
     pub active_panel_view: Option<String>,
     pub collapsed_sections: BTreeSet<String>,
     pub window: Option<WindowPlacement>,
+    pub zen_mode: bool,
 }
 impl Default for LayoutState {
     /// 新工作区：侧边栏显示资源管理器，面板默认隐藏（UX_SPEC §1.4）。
@@ -107,6 +108,7 @@ impl Default for LayoutState {
             active_panel_view: None,
             collapsed_sections: BTreeSet::new(),
             window: None,
+            zen_mode: false,
         }
     }
 }
@@ -120,6 +122,9 @@ impl LayoutState {
             "collapsedSections": self.collapsed_sections.iter().collect::<Vec<_>>(),
         });
         let o = v.as_object_mut().unwrap();
+        if self.zen_mode {
+            o.insert("zenMode".into(), json!(true));
+        }
         if let Some(l) = self.panel_location {
             o["panel"]["location"] = json!(l.as_setting());
         }
@@ -165,6 +170,7 @@ impl LayoutState {
                         .collect()
                 })
                 .unwrap_or_default(),
+            zen_mode: v["zenMode"].as_bool().unwrap_or(false),
             window: match (
                 num(&window["x"]),
                 num(&window["y"]),
@@ -315,6 +321,7 @@ mod tests {
             active_container: Some("workbench.view.search".into()),
             active_panel_view: Some("workbench.panel.markers".into()),
             collapsed_sections: ["workbench.explorer.fileView".to_owned()].into(),
+            zen_mode: true,
             window: Some(WindowPlacement {
                 x: 10.0,
                 y: 20.0,

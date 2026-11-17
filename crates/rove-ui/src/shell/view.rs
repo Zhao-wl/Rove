@@ -12,6 +12,7 @@ use super::{
         WindowPlacement, MIN_PANEL_SIZE, MIN_SIDEBAR_WIDTH,
     },
     menus::{visible_items, visible_menus, MenuId, MenuRegistry},
+    presentation::Presentation,
     status::{Alignment, StatusBar, StatusEntry, StatusKind},
 };
 use crate::{
@@ -98,6 +99,7 @@ pub struct Shell {
     pub status_bar: StatusBar,
     pub feedback: FeedbackHub,
     pub layout: LayoutState,
+    pub(super) presentation: Presentation,
     settings: Arc<dyn Settings>,
     overrides: BTreeMap<&'static str, Value>,
     colors: ColorRegistry,
@@ -203,6 +205,7 @@ impl Shell {
             status_bar: StatusBar::default(),
             feedback,
             layout,
+            presentation: Presentation::default(),
             settings,
             overrides: BTreeMap::new(),
             colors,
@@ -240,6 +243,7 @@ impl Shell {
 
     /// 窗口打开后调用：跟踪窗口位置与大小，关闭前保存布局。
     pub fn attach_window<T: ShellHost>(host: &mut T, window: &mut Window, cx: &mut Context<T>) {
+        host.shell_mut().restore_presentation(window);
         let bounds = cx.observe_window_bounds(window, |host: &mut T, window, cx| {
             host.shell_mut().record_window(window);
             host.shell_mut().schedule_save(cx);
@@ -326,7 +330,7 @@ impl Shell {
         self.overrides.insert(key, value);
     }
     pub fn status_bar_visible(&self) -> bool {
-        self.setting_bool("workbench.statusBar.visible")
+        !self.presentation.hides_status_bar() && self.setting_bool("workbench.statusBar.visible")
     }
 
     // ------------------------------------------------------------- 缩放
@@ -392,7 +396,8 @@ impl Shell {
     pub fn record_window(&mut self, window: &Window) {
         let (bounds, maximized) = match window.window_bounds() {
             WindowBounds::Windowed(b) => (b, false),
-            WindowBounds::Maximized(b) | WindowBounds::Fullscreen(b) => (b, true),
+            WindowBounds::Maximized(b) => (b, true),
+            WindowBounds::Fullscreen(_) => return,
         };
         self.layout.window = Some(WindowPlacement {
             x: bounds.origin.x.into(),
@@ -405,11 +410,13 @@ impl Shell {
     fn snapshot(&self) -> Snapshot {
         let global = serde_json::json!({
             "feedback.suppressed": self.feedback.suppressed().map(|s| s.to_string()).collect::<Vec<_>>(),
-            "notifications.doNotDisturb": self.feedback.do_not_disturb(),
+            "notifications.doNotDisturb": self.feedback.saved_do_not_disturb(),
         });
         (
             self.store.layout_path(),
-            self.layout.to_json(),
+            self.presentation
+                .layout_to_save(&self.layout, self.setting_bool("zenMode.restore"))
+                .to_json(),
             self.store.global_path(),
             global,
         )
@@ -469,7 +476,8 @@ impl Shell {
             Part::Panel => self.layout.panel_visible,
             Part::StatusBar => self.status_bar_visible(),
             Part::TitleBar => false,
-            Part::ActivityBar | Part::Editor => true,
+            Part::ActivityBar => !self.presentation.hides_activity_bar(),
+            Part::Editor => true,
         }
     }
     pub fn sidebar_focus(&self) -> &FocusHandle {
@@ -618,6 +626,10 @@ shell_actions! {
     FocusPreviousToast => "notifications.focusPreviousToast",
     HideToasts => "notifications.hideToasts",
     HideList => "notifications.hideList",
+    ToggleFullScreen => "workbench.action.toggleFullScreen",
+    ToggleZenMode => "workbench.action.toggleZenMode",
+    ExitZenMode => "workbench.action.exitZenMode",
+    ToggleCenteredLayout => "workbench.action.toggleCenteredLayout",
 }
 
 /// 执行一条命令：工作台实现的在这里处理，其余交给宿主。
@@ -632,6 +644,18 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
     shell.open_menu = None;
     let mut layout_changed = false;
     match id {
+        "workbench.action.toggleFullScreen" => shell.toggle_full_screen(window),
+        "workbench.action.toggleCenteredLayout" => shell.presentation.toggle_centered(),
+        "workbench.action.toggleZenMode" | "workbench.action.exitZenMode" => {
+            if shell.presentation.in_zen() {
+                shell.exit_zen(window);
+                layout_changed = true;
+            } else if id == "workbench.action.toggleZenMode" {
+                shell.enter_zen(window);
+                window.focus(&editor);
+                layout_changed = true;
+            }
+        }
         "workbench.action.toggleSidebarVisibility" => {
             shell.layout.sidebar_visible = !shell.layout.sidebar_visible;
             if !shell.layout.sidebar_visible && part == Part::SideBar {
@@ -814,7 +838,7 @@ pub fn run_command<T: ShellHost>(host: &mut T, id: &str, window: &mut Window, cx
         }
         "notifications.clearAll" => shell.feedback.clear_all_notifications(),
         "notifications.toggleDoNotDisturbMode" => {
-            let v = !shell.feedback.do_not_disturb();
+            let v = !shell.feedback.saved_do_not_disturb();
             shell.feedback.set_do_not_disturb(v);
             layout_changed = true;
         }
@@ -1023,7 +1047,8 @@ pub fn progress_bar(shell: &Shell, theme: &dyn Theme, visible: bool) -> gpui::Di
 pub fn render<T: ShellHost>(host: &mut T, window: &mut Window, cx: &mut Context<T>) -> AnyElement {
     ensure_timers(host, cx);
     let shell = host.shell();
-    let custom_title = shell.custom_title_bar();
+    let full_screen = window.is_fullscreen();
+    let custom_title = shell.custom_title_bar() && !full_screen;
     let status_visible = shell.status_bar_visible();
     let sidebar_visible = shell.layout.sidebar_visible;
     let panel_visible = shell.layout.panel_visible;
@@ -1034,7 +1059,9 @@ pub fn render<T: ShellHost>(host: &mut T, window: &mut Window, cx: &mut Context<
         theme: host.theme(),
     };
     let active = window.is_window_active();
-    let border = if active {
+    let border = if full_screen {
+        None
+    } else if active {
         p.get("window.activeBorder")
     } else {
         p.get("window.inactiveBorder")
@@ -1054,8 +1081,9 @@ pub fn render<T: ShellHost>(host: &mut T, window: &mut Window, cx: &mut Context<
         }
     }
 
+    let show_activity = !shell.presentation.hides_activity_bar();
     let title_bar = custom_title.then(|| render_title_bar(host, window, cx));
-    let activity = render_activity_bar(host, cx);
+    let activity = show_activity.then(|| render_activity_bar(host, cx));
     let sidebar = sidebar_visible.then(|| render_sidebar(host, window, cx));
     let editor_area = render_editor_area(host, panel_visible, window, cx);
     let status = status_visible.then(|| render_status_bar(host, window, cx));
@@ -1064,7 +1092,7 @@ pub fn render<T: ShellHost>(host: &mut T, window: &mut Window, cx: &mut Context<
 
     let mut middle = div().flex().flex_row().flex_1().min_h_0().w_full();
     let sash = sidebar.as_ref().map(|_| sash_vertical(host, cx, true));
-    let mut side: Vec<AnyElement> = vec![activity];
+    let mut side: Vec<AnyElement> = activity.into_iter().collect();
     if let Some(sidebar) = sidebar {
         side.push(sidebar);
         side.push(sash.unwrap());
@@ -2002,6 +2030,38 @@ fn render_editor_area<T: ShellHost>(
     cx: &mut Context<T>,
 ) -> AnyElement {
     let editor = host.render_editor(window, cx);
+    let editor = if host.shell().presentation.centered() {
+        let background = host.shell().color(host.theme(), "editorPane.background");
+        // VS Code starts with equal 19.09% margins and a 60 px minimum. For a narrow
+        // Rove editor grid (for example with a side panel), keep the center usable.
+        let margin = || {
+            div()
+                .w(gpui::relative(0.1909))
+                .min_w(px(60.0))
+                .max_w(gpui::relative(0.25))
+                .flex_shrink_0()
+        };
+        div()
+            .id("centered-editor-layout")
+            .debug_selector(|| "centered-editor-layout".into())
+            .size_full()
+            .flex()
+            .when_some(background, |element, color| element.bg(color))
+            .child(margin())
+            .child(
+                div()
+                    .id("centered-editor-grid")
+                    .debug_selector(|| "centered-editor-grid".into())
+                    .flex_1()
+                    .h_full()
+                    .min_w_0()
+                    .child(editor),
+            )
+            .child(margin())
+            .into_any_element()
+    } else {
+        editor
+    };
     let bars = render_editor_bars(host, cx);
     let hint = render_cursor_hint(host);
     let editor = div()
@@ -2698,7 +2758,14 @@ fn render_notifications<T: ShellHost>(
         })
         .map(|d| match position.as_str() {
             "bottom-left" => d.bottom(bottom).left(shell.z(8.0)),
-            "top-right" => d.top(shell.z(TITLE_BAR_HEIGHT + 8.0)).right(shell.z(8.0)),
+            "top-right" => {
+                let title_height = if !window.is_fullscreen() {
+                    TITLE_BAR_HEIGHT
+                } else {
+                    0.0
+                };
+                d.top(shell.z(title_height + 8.0)).right(shell.z(8.0))
+            }
             _ => d.bottom(bottom).right(shell.z(8.0)),
         })
         .child(column);

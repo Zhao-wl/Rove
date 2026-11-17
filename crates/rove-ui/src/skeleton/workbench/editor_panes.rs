@@ -182,7 +182,8 @@ impl Workbench {
             );
 
         let mut tabs = div().flex_1().min_w_0().flex().flex_col();
-        match settings.tabs {
+        let tab_mode = self.shell.zen_tabs().unwrap_or(settings.tabs);
+        match tab_mode {
             Tabs::None => {}
             Tabs::Single => {
                 if let Some(tab) = pane.current() {
@@ -213,7 +214,7 @@ impl Workbench {
             .items_start()
             .min_h(px(settings.tab_height))
             .flex_shrink_0()
-            .bg(self.ui_color(if settings.tabs == Tabs::None {
+            .bg(self.ui_color(if tab_mode == Tabs::None {
                 "editorGroupHeader.noTabsBackground"
             } else {
                 "editorGroupHeader.tabsBackground"
@@ -344,7 +345,12 @@ impl Workbench {
         }
         // #26: breadcrumbs between the tab strip and the editor body.
         let breadcrumbs = self.render_breadcrumbs(group, cx);
-        result.child(header).children(breadcrumbs).child(body)
+        result
+            .when(self.shell.zen_tabs() != Some(Tabs::None), |pane| {
+                pane.child(header)
+            })
+            .children(breadcrumbs)
+            .child(body)
     }
 
     fn tab_strip<'a>(
@@ -504,7 +510,7 @@ impl Workbench {
                     .bg(self.ui_color(key)),
             );
         }
-        if settings.tabs == Tabs::Multiple {
+        if self.shell.zen_tabs().unwrap_or(settings.tabs) == Tabs::Multiple {
             header = match settings.sizing {
                 Sizing::Fit => header.flex_shrink_0(),
                 Sizing::Shrink => header.min_w(px(54.0)),
@@ -554,7 +560,7 @@ impl Workbench {
         if settings.actions_left {
             header = header.children(button.take());
         }
-        if settings.show_index && settings.tabs == Tabs::Multiple {
+        if settings.show_index && self.shell.zen_tabs().unwrap_or(settings.tabs) == Tabs::Multiple {
             let index = pane.tabs.iter().position(|t| t.id == tab_id).unwrap() + 1;
             header = header.child(self.label("editors.index", &[("index", index.to_string())]));
         }
