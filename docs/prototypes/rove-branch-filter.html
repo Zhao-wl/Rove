@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rove · 分支变更筛选草图</title>
+<style>
+* { box-sizing:border-box; }
+:root { color-scheme:dark; --editor:#141414; --side:#191919; --border:#2b2b2b; --text:#ccc; --muted:#969696; --hover:#262626; --active:#333; --focus:#73b9d9; }
+body { margin:0; background:var(--editor); color:var(--text); font:13px/1.4 "Segoe UI","Microsoft YaHei UI",sans-serif; }
+button,select { font:inherit; color:inherit; }
+button { cursor:pointer; border:0; background:transparent; }
+button:disabled { cursor:default; opacity:.45; }
+button:hover:not(:disabled), summary:hover { background:var(--hover); }
+:focus-visible { outline:1px solid var(--focus); outline-offset:-1px; }
+svg { width:16px; height:16px; vertical-align:middle; }
+.top { position:relative; height:35px; display:flex; align-items:center; padding:0 12px; gap:15px; border-bottom:1px solid var(--border); }
+.command { position:absolute; left:50%; transform:translateX(-50%); width:min(32%,400px); text-align:center; background:var(--side); border:1px solid #363636; border-radius:6px; color:var(--muted); }
+.window-controls { margin-left:auto; color:var(--muted); letter-spacing:7px; }
+.layout { display:grid; grid-template-columns:48px 300px minmax(0,1fr); height:calc(100dvh - 57px); min-height:320px; }
+.activity { background:var(--side); border-right:1px solid var(--border); display:flex; flex-direction:column; align-items:center; color:var(--muted); }
+.activity span { width:100%; display:grid; place-items:center; height:48px; }
+.activity svg { width:23px; height:23px; }
+.activity .current { color:var(--text); background:#292929; border-left:2px solid var(--text); }
+aside { background:var(--side); border-right:1px solid var(--border); position:relative; display:flex; flex-direction:column; min-height:0; }
+.explorer { height:36px; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 8px 0 19px; border-bottom:1px solid var(--border); }
+.actions { display:flex; gap:2px; }
+.icon { position:relative; width:23px; height:23px; padding:0; border-radius:4px; color:var(--muted); }
+.icon[aria-expanded=true], .icon.active { background:var(--active); color:#eee; }
+.icon.active::after { content:''; position:absolute; top:3px; right:3px; width:4px; height:4px; border-radius:50%; background:var(--focus); }
+.root { padding:3px 7px; font-size:11px; font-weight:600; }
+.scope { display:flex; align-items:center; justify-content:space-between; width:100%; flex:none; height:23px; gap:8px; padding:0 10px 0 20px; color:var(--muted); font-size:11px; }
+.scope span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+[hidden] { display:none!important; }
+.tree { overflow:auto; flex:1; }
+details { margin:0; }
+summary,.row { height:22px; line-height:22px; padding:0 11px 0 calc(9px + var(--level,0) * 14px); }
+summary { list-style:none; cursor:pointer; }
+summary::before { display:inline-block; width:15px; content:'›'; color:var(--muted); }
+details[open]>summary::before { content:'⌄'; }
+.row { display:flex; align-items:center; gap:6px; text-align:left; width:100%; border-radius:0; }
+.row[aria-current=true] { background:#303030; }
+.file { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file-icon { width:13px; color:#a1a1a1; text-align:center; }
+.marker { font:11px Consolas,monospace; }
+.A { color:#81b88b; }.M { color:#e2c08d; }.D { color:#c98585; }
+.empty { color:var(--muted); margin:8px 20px; }
+.outline { border-top:1px solid var(--border); height:25px; flex:none; padding:3px 7px; font-size:11px; font-weight:600; }
+.menu { position:absolute; top:33px; right:7px; width:258px; z-index:2; padding:9px; background:#202020; border:1px solid #414141; border-radius:5px; box-shadow:0 5px 14px #0006; }
+.menu label { display:block; margin:0 0 8px; color:var(--muted); font-size:11px; }
+.menu select { width:100%; display:block; margin-top:3px; height:24px; background:#2a2a2a; border:1px solid #464646; border-radius:3px; }
+.menu .mode { display:flex; align-items:center; gap:7px; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid #373737; color:var(--text); font-size:12px; }
+.mode input { margin:0; accent-color:#73b9d9; }
+.menu select:disabled { opacity:.55; }
+.menu footer { display:flex; justify-content:space-between; align-items:center; gap:4px; font-size:11px; color:var(--muted); }
+.menu footer button { padding:2px 5px; }
+.editor { min-width:0; overflow:auto; }
+.tabs { height:36px; display:flex; align-items:stretch; background:var(--side); border-bottom:1px solid var(--border); }
+.tab { display:flex; align-items:center; gap:10px; padding:0 12px; background:var(--editor); border-top:1px solid #4e9ec1; border-right:1px solid var(--border); }
+.crumb { height:26px; padding:5px 15px; color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.code { margin:1px 0; font:13px/22px Consolas,monospace; }
+.code div { display:flex; min-height:22px; white-space:pre; }
+.code b { width:49px; flex:none; padding-right:14px; text-align:right; font-weight:normal; color:#777; user-select:none; }
+.code span { color:#c9d2de; }
+.note { color:var(--muted); margin:24px 18px; }
+.status { height:22px; display:flex; align-items:center; justify-content:space-between; padding:0 10px; border-top:1px solid var(--border); background:var(--side); color:var(--muted); font-size:11px; }
+@media(max-width:650px) { .layout { grid-template-columns:36px minmax(225px,44vw) minmax(0,1fr); }.window-controls { display:none; }.menu{width:min(258px,calc(100% - 14px));} }
+@media(max-width:470px) { .layout {grid-template-columns:36px minmax(0,1fr);height:auto;min-height:calc(100dvh - 57px)}.editor{grid-column:2;min-height:180px}.tree{max-height:50vh} }
+</style>
+</head>
+<body>
+<header class="top"><span>文件</span><span>查看</span><span>帮助</span><div class="command"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg> Rove</div><span class="window-controls" aria-hidden="true">− □ ×</span></header>
+<div class="layout">
+  <nav class="activity" aria-label="活动栏"><span class="current"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 2h6l3 3v8H5zM2 5v10h9M10 2v4h4"/></svg></span><span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg></span></nav>
+  <aside aria-label="资源管理器">
+    <div class="explorer">
+      <span>资源管理器</span>
+      <div class="actions">
+        <button class="icon" id="filter" aria-expanded="false" aria-controls="filters" title="分支筛选" aria-label="分支筛选"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5v5m0-1c0-2 8-1.5 8-4"/><circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><circle cx="12" cy="4" r="1.5"/></svg></button>
+      </div>
+    </div>
+    <div class="root">⌄ Rove</div>
+    <div class="scope" id="scopeRow"><span id="scope"></span><span id="count" role="status"></span></div>
+    <section class="menu" id="filters" aria-label="筛选分支变更" hidden>
+      <label class="mode"><input type="checkbox" id="mode">只看分支变更</label>
+      <label>提交者<select id="author"><option value="">全部提交者</option><option>林晨</option><option>周宁</option><option>王琪</option></select></label>
+      <label>分支提交<select id="commit"></select></label>
+      <footer><span id="base"></span><button id="clear">清除</button></footer>
+    </section>
+    <div class="tree" id="tree" aria-label="文件树"></div>
+    <div class="outline">› 大纲</div>
+  </aside>
+  <main class="editor"><div class="tabs"><div class="tab" id="tab"></div></div><div class="crumb" id="crumb"></div><div id="editor"></div></main>
+</div>
+<footer class="status"><span>⊗ 0　△ 0</span><span>UTF-8　LF</span></footer>
+<script>
+const $=id=>document.getElementById(id);
+const ui='crates/rove-ui/src/', docs='docs/UX_SPEC.md';
+const commits=[
+ ['ce20a14','林晨','移除旧入口',[[ui+'legacy_tree.rs','D'],[docs,'M']]],
+ ['ad913cb','周宁','补充分支文案',[[docs,'M']]],
+ ['b42f69d','林晨','新增筛选面板',[[ui+'branch_filter.rs','A'],[ui+'explorer.rs','M']]],
+ ['7b40ea1','王琪','添加实验笔记',[['docs/experiment.md','A']]],
+ ['2b11ac9','王琪','移除实验笔记',[['docs/experiment.md','D']]]
+];
+const net=[...commits[0][3],...commits[2][3]];
+const all=[...net.filter(([,s])=>s!=='D').map(([p])=>[p,'']),['Cargo.toml',''],[ui+'lib.rs',''],['docs/FEATURES.md','']];
+const labels={A:'新增',M:'修改',D:'删除'};
+let enabled=false, selected=ui+'explorer.rs', visible=[];
+function options(){
+ const old=$('commit').value;
+ $('commit').replaceChildren(new Option('整个分支',''));
+ for(const [id,by,title] of commits){
+  if(!$('author').value||$('author').value===by){
+   const o=new Option(title+' · '+id,id);o.title=by+' · '+title+' · '+id;$('commit').add(o);
+  }
+ }
+ $('commit').value=[...$('commit').options].some(o=>o.value===old)?old:'';
+}
+function detail(){
+  const item=visible.find(([path])=>path===selected);
+  for(const row of document.querySelectorAll('.row')){
+    row.setAttribute('aria-current',String(row.dataset.path===selected));
+  }
+  $('tab').textContent=item?selected.split('/').pop():'';
+  $('tab').hidden=!item;
+  $('crumb').textContent=item?selected.split('/').join(' › '):'';
+  const editor=$('editor');
+  editor.replaceChildren();
+  if(!item||item[1]==='D'){
+    const note=document.createElement('p');
+    note.className='note';
+    note.textContent=item?'该文件在所选范围内已删除。':visible.length?'从资源管理器选择文件。':'没有匹配的文件。';
+    editor.append(note);
+    return;
+  }
+  const sample={
+    rs:['use gpui::{div, prelude::*};','','pub fn explorer_row(name: &str) -> impl IntoElement {','    div().text_sm().child(name.to_owned())','}'],
+    md:['# '+selected.split('/').pop().replace('.md',''),'','资源管理器保留工作区的目录层级。'],
+    toml:['[workspace]','resolver = "2"']
+  };
+  const code=document.createElement('pre');
+  code.className='code';
+  for(const [index,line] of (sample[selected.split('.').pop()]||[]).entries()){
+    const row=document.createElement('div'),number=document.createElement('b'),content=document.createElement('span');
+    number.textContent=index+1;
+    content.textContent=line;
+    row.append(number,content);
+    code.append(row);
+  }
+  editor.append(code);
+}
+function render(){
+ const by=$('author').value,c=commits.find(x=>x[0]===$('commit').value);
+ const touched=new Set(commits.filter(x=>x[1]===by).flatMap(x=>x[3].map(([p])=>p)));
+ visible=!enabled?all:c?c[3]:by?net.filter(([p])=>touched.has(p)):net;
+ if(!visible.some(([p])=>p===selected))selected='';
+ $('scopeRow').hidden=!enabled;
+ $('filter').classList.toggle('active',enabled);
+ $('mode').checked=enabled;
+ $('author').disabled=$('commit').disabled=!enabled;
+ $('count').textContent=visible.length+' 文件';
+ $('base').textContent=c?'相对父提交':'相对 main 分叉点 · 仅已提交';
+ $('clear').disabled=!enabled||(!by&&!c);
+ $('scope').textContent=c?c[0]+' · '+c[2]+(by?' · '+by:''):by?'feature/explorer-filter · '+by:'feature/explorer-filter';
+ $('scopeRow').title=c?'相对父提交':by?'相对 main 分叉点 · 此提交者触及的文件':'相对 main 分叉点 · 仅已提交';
+ const tree=$('tree'), dirs=new Map([['',tree]]), closed=new Set([...tree.querySelectorAll('details:not([open])')].map(d=>d.dataset.path));
+ tree.replaceChildren();
+ if(!visible.length){const s=document.createElement('div');s.className='empty';s.textContent='没有匹配的文件';tree.append(s);}
+ for(const [path,status] of [...visible].sort((a,b)=>a[0].localeCompare(b[0]))){
+  const parts=path.split('/'), name=parts.pop();let key='';
+  for(const part of parts){
+   const next=key+part+'/';
+   if(!dirs.has(next)){
+    const d=document.createElement('details'),s=document.createElement('summary');
+    s.style.setProperty('--level',key.split('/').filter(Boolean).length);d.dataset.path=next;d.open=!closed.has(next);s.textContent=part;d.append(s);dirs.get(key).append(d);dirs.set(next,d);
+   }key=next;
+  }
+  const b=document.createElement('button'), badge=document.createElement('span');
+  b.className='row';b.dataset.path=path;badge.className='marker '+status;badge.textContent=status;badge.title=labels[status]||'';
+  b.setAttribute('aria-label',name+(status?'，'+labels[status]:''));
+  const icon=document.createElement('span'), filename=document.createElement('span');
+  icon.className='file-icon';
+  icon.textContent=name.endsWith('.rs')?'◇':name.endsWith('.md')?'≡':'·';
+  icon.setAttribute('aria-hidden','true');
+  filename.className='file';
+  filename.textContent=name;
+  b.style.setProperty('--level',parts.length);
+  b.append(icon,filename,badge);b.onclick=()=>{selected=path;detail();};dirs.get(key).append(b);
+ }detail();
+}
+function setMenu(open){
+  $('filters').hidden=!open;
+  $('filter').setAttribute('aria-expanded',String(open));
+}
+$('filter').onclick=()=>{
+  const open=$('filters').hidden;
+  setMenu(open);
+  if(open)$('mode').focus();
+};
+document.addEventListener('click',event=>{
+  if(!event.target.closest('#filters,#filter'))setMenu(false);
+});
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&!$('filters').hidden){
+    setMenu(false);
+    $('filter').focus();
+  }
+});
+$('mode').onchange=()=>{enabled=$('mode').checked;render();};
+$('author').onchange=()=>{options();render();};
+$('commit').onchange=render;
+$('clear').onclick=()=>{$('author').value='';options();$('commit').value='';render();};
+options();render();
+</script>
+</body>
+</html>
