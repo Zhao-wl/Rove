@@ -295,5 +295,7 @@ self-contained 的唯一有效验证是在没有 .NET 的机器上跑（开发�
 4. 看 `out\smoke.txt`：应依次出现 `version: {…}`、`full index: …`、`hello: protocol=1 min=1 …`、`changed: files=…`、最后一行 `SMOKE OK`；`dotnet-check.txt` 应为空（确认沙盒里没有 .NET）。
 
 `smoke-indexer.ps1` 做三件事：`--version`、全量索引、`--serve` 里读 `hello` → `initialize` → `changed`（改一个源文件）→ `shutdown`。不带 `-Project` 时它自己生成一个最小项目，适合快速冒烟。
+脚本检查增量回复包含目标文件、目标未被锁定且无需重建，再按回复位置读取覆盖层日志，核对段头、基础索引标识与 FNV-1a-64 校验和。关闭回复成功且进程退出码为 0 后才打印 `SMOKE OK`。
+可用 `pwsh -NoProfile -File scripts/components/test-smoke-indexer.ps1` 运行使用本地测试替身的 RPC 与日志校验回归。
 
 **本次验证状态：** 本机没有启用 Windows Sandbox，也没有虚拟机，所以**干净机器与断网验证没有在 #43 的 PR 里实跑**。已经做的：在开发机上用同一个脚本对打包产物（trim 版）跑通了 `SMOKE OK`；两个真实项目的全量索引与 `incremental` 测试套件对打包产物通过；Rove 与组件之间没有任何网络代码（索引进程源码里没有 `System.Net` / `HttpClient` / `Socket`，Rust 侧的组件发现只读本地目录）。干净机器与断网验证需要有 Sandbox 的机器按上面的步骤跑一次。
