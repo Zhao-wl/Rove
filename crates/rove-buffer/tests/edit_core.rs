@@ -406,6 +406,44 @@ fn line_changes_merge_ranges_on_the_same_line() {
 }
 
 #[test]
+fn undo_and_redo_multirange_edit_that_forms_crlf() {
+    let initial = "ab\n中\r\n";
+    let edited = "\r\n中\r\n";
+    let mut session = EditSession::new(
+        EditBuffer::new(initial, LineEndings::Mixed { preferred: Eol::Cr }),
+        EditOptions::default(),
+    );
+    session
+        .edit(
+            Transaction::new(vec![
+                Replacement::new(span(0, 1), "\r\n"),
+                Replacement::delete(span(1, 2)),
+            ])
+            .unwrap(),
+            Instant::now(),
+        )
+        .unwrap();
+    assert_eq!(session.contents(), edited);
+
+    assert!(session.can_undo());
+    let undone = session.undo().unwrap();
+    assert_eq!(session.contents(), initial);
+    assert_eq!(undone[0].changes.line_delta, 0);
+    assert_eq!(
+        undone[0].changes.ranges,
+        vec![LineChange {
+            old: lines(0, 1),
+            new: lines(0, 1),
+        }]
+    );
+
+    assert!(session.can_redo());
+    let redone = session.redo().unwrap();
+    assert_eq!(session.contents(), edited);
+    assert_eq!(redone[0].changes, undone[0].changes);
+}
+
+#[test]
 fn mixed_line_endings_keep_every_other_terminator() {
     // 多数派是 CRLF（2 个），另有 LF 与单独 CR 各一个。
     let original = "a\r\nb\nc\rd\r\ne";
