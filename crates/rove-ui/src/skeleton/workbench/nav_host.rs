@@ -11,7 +11,9 @@
 //! #41（速览窗口）合并后在 [`Workbench::open_peek`] 里打开窗口；在那之前多候选按 `goto` 处理
 //! （跳到第一个并进入符号导航模式）。#42（元数据视图）合并后在 [`Workbench::open_metadata`] 里打开。
 
+use super::link_host::{LinkMenu, LinkOrigin};
 use super::*;
+use crate::code_view::links::Link;
 use crate::code_view::{priority, InlineDecoration, LayerId, LineDecorations, TextStyle};
 use crate::documents::OpenTarget;
 use crate::nav::{
@@ -137,7 +139,12 @@ pub(super) struct Nav {
     pending_peek: Option<PendingPeek>,
     pub(super) buffers: OpenBuffers,
     pub(super) settings: NavSettings,
-    colors: NavColors,
+    pub(super) colors: NavColors,
+    pub(super) link_menu: Option<LinkMenu>,
+    pub(super) link_epoch: u64,
+    #[cfg(test)]
+    pub(super) opened_link_urls: Vec<String>,
+    pub(super) link_confirmation: Option<gpui::Task<()>>,
     epoch: u64,
     pub(super) symbols: Option<SymbolNavigation>,
     notices: ApproxNotices,
@@ -180,6 +187,11 @@ impl Nav {
             buffers: OpenBuffers::default(),
             settings: NavSettings::read(settings, Some("csharp")),
             colors: NavColors::resolve(theme, kind),
+            link_menu: None,
+            link_epoch: 0,
+            #[cfg(test)]
+            opened_link_urls: Vec::new(),
+            link_confirmation: None,
             epoch: 0,
             symbols: None,
             notices: ApproxNotices::default(),
@@ -603,6 +615,17 @@ impl Workbench {
                 self.clear_link(cx);
                 self.pointer_off_word(cx);
             }
+            CodeViewEvent::LinkMenuRequested { position, point } => {
+                if let Some((origin, link)) = self.link_intent(group, secondary, *position, cx) {
+                    self.hide_hover(cx);
+                    self.nav.link_menu = Some(LinkMenu {
+                        origin,
+                        target: link.target,
+                        point: *point,
+                    });
+                    cx.notify();
+                }
+            }
             CodeViewEvent::LinkClicked { position, side } => {
                 self.clear_link(cx);
                 self.hide_hover(cx);
@@ -624,6 +647,8 @@ impl Workbench {
                 self.refresh_highlights(group, secondary, false, false, cx);
             }
             CodeViewEvent::TextChanged => {
+                self.nav.link_menu = None;
+                self.clear_link(cx);
                 self.hide_hover(cx);
                 self.refresh_highlights(group, secondary, true, false, cx);
             }
@@ -645,6 +670,16 @@ impl Workbench {
     pub(super) fn nav_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (group, secondary) = self.focused_slot(window, cx);
         match id {
+            nav_registry::OPEN_LINK => {
+                if let Some(position) = self
+                    .group_code(group, secondary)
+                    .map(|code| code.read(cx).selection().active)
+                {
+                    if let Some((origin, link)) = self.link_intent(group, secondary, position, cx) {
+                        self.open_editor_link(origin, link.target, false, cx);
+                    }
+                }
+            }
             nav_registry::REVEAL_DEFINITION => self.navigate(
                 NavKind::Definition,
                 group,
@@ -717,6 +752,21 @@ impl Workbench {
         (group, secondary)
     }
 
+    fn link_intent(
+        &self,
+        group: EditorGroupId,
+        secondary: bool,
+        position: Position,
+        cx: &App,
+    ) -> Option<(LinkOrigin, Link)> {
+        let origin = self.link_origin(group, secondary, position)?;
+        let link = self
+            .group_code(group, secondary)?
+            .read(cx)
+            .link_at(position)?;
+        Some((origin, link))
+    }
+
     // ------------------------------------------------------------------ 转到定义 / 声明 / 实现
 
     fn origin(
@@ -758,7 +808,11 @@ impl Workbench {
         peek: bool,
         cx: &mut Context<Self>,
     ) {
+        let link = position.and_then(|pos| self.link_intent(group, secondary, pos, cx));
         let Some(origin) = self.origin(group, secondary, position, cx) else {
+            if let Some((source, link)) = link {
+                self.open_editor_link(source, link.target, aside, cx);
+            }
             return;
         };
         let started = Instant::now();
@@ -783,6 +837,14 @@ impl Workbench {
             let _ = this.update(cx, |view, cx| {
                 if view.nav.epoch != epoch {
                     return;
+                }
+                if !result.as_ref().is_ok_and(|r| !r.value.is_empty()) {
+                    if let Some((source, link)) = link {
+                        if !matches!(result, Err(Error::Cancelled | Error::Stale)) {
+                            view.open_editor_link(source, link.target, aside, cx);
+                        }
+                        return;
+                    }
                 }
                 view.apply_navigation(kind, origin, result, aside, peek, started, query_ms, cx);
                 cx.notify();
@@ -1484,15 +1546,45 @@ impl Workbench {
         let Some(code) = self.group_code(group, secondary).cloned() else {
             return;
         };
-        let document = self
-            .shown_document(group, secondary)
-            .filter(|d| is_csharp(&d.metadata.language));
+        let document = self.shown_document(group, secondary);
+        let link = code.read(cx).link_at(position);
         let Some(document) = document else {
             self.clear_link(cx);
             self.pointer_off_word(cx);
             return;
         };
         let line = position.line.0;
+        let fallback = link.filter(|link| {
+            code.update(cx, |code, _| {
+                let start = code.point_for_position(model::pos(line, link.range.start.into()))?;
+                let end = code.point_for_position(model::pos(line, link.range.end.into()))?;
+                Some(
+                    (point.y > start.y || point.x >= start.x)
+                        && (point.y < end.y || point.x < end.x),
+                )
+            })
+            .unwrap_or(false)
+        });
+        let hover_link = ctrl || self.nav.settings.hover_enabled == HoverEnabled::On;
+        if !is_csharp(&document.metadata.language) {
+            if let Some(link) = fallback.filter(|_| hover_link) {
+                self.show_editor_link_hover(
+                    LinkOrigin {
+                        group,
+                        secondary,
+                        document,
+                        position,
+                    },
+                    link,
+                    ctrl,
+                    cx,
+                );
+            } else {
+                self.clear_link(cx);
+                self.pointer_off_word(cx);
+            }
+            return;
+        }
         // 指针真的落在单词上（不是行尾空白钳制过来的位置）。
         let word = code.update(cx, |c, _| {
             let (a, b, _) = c.word_range_at(position)?;
@@ -1501,8 +1593,22 @@ impl Workbench {
             (point.x >= start.x && point.x < end.x).then_some((a, b, start, c.line_height()))
         });
         let Some((a, b, start, line_height)) = word else {
-            self.clear_link(cx);
-            self.pointer_off_word(cx);
+            if let Some(link) = fallback.filter(|_| hover_link) {
+                self.show_editor_link_hover(
+                    LinkOrigin {
+                        group,
+                        secondary,
+                        document,
+                        position,
+                    },
+                    link,
+                    ctrl,
+                    cx,
+                );
+            } else {
+                self.clear_link(cx);
+                self.pointer_off_word(cx);
+            }
             return;
         };
         let anchor = Anchor {
@@ -1519,15 +1625,81 @@ impl Workbench {
         };
         if ctrl {
             self.set_link(group, secondary, line, a as u32..b as u32, cx);
-            self.show_hover(anchor, true, false, cx);
+            self.show_hover(anchor, true, false, fallback, cx);
             return;
         }
         self.clear_link(cx);
         if self.nav.settings.hover_enabled == HoverEnabled::On {
-            self.show_hover(anchor, false, false, cx);
+            self.show_hover(anchor, false, false, fallback, cx);
         } else {
             self.pointer_off_word(cx);
         }
+    }
+
+    fn show_editor_link_hover(
+        &mut self,
+        origin: LinkOrigin,
+        link: Link,
+        underlined: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let LinkOrigin {
+            group,
+            secondary,
+            document,
+            position,
+        } = origin;
+        let Some(code) = self.group_code(group, secondary).cloned() else {
+            return;
+        };
+        let line = position.line.0;
+        let anchor = code.update(cx, |code, _| {
+            Some(Anchor {
+                group,
+                secondary,
+                document: document.id,
+                version: document.text.version(),
+                resource: document.resource.clone(),
+                line,
+                start: link.range.start.into(),
+                end: link.range.end.into(),
+                point: code.point_for_position(position)?,
+                line_height: code.line_height(),
+            })
+        });
+        let Some(anchor) = anchor else { return };
+        let hover = &self.nav.hover;
+        if hover.definition == underlined
+            && hover.anchor.as_ref().is_some_and(|a| a.same_word(&anchor))
+        {
+            return;
+        }
+        if underlined {
+            self.set_link(group, secondary, line, link.range.clone(), cx);
+        } else {
+            self.clear_link(cx);
+        }
+        let key = if code
+            .read(cx)
+            .multi_cursor_modifier()
+            .goes_to_definition(true, false)
+        {
+            "editor.link.followCtrl"
+        } else {
+            "editor.link.followAlt"
+        };
+        let mut content = HoverContent {
+            signature: Arc::from(link.target.display()),
+            ..Default::default()
+        };
+        content.doc.summary = self.strings.text(&Message::key(key)).unwrap_or_default();
+        let hover = &mut self.nav.hover;
+        hover.epoch += 1;
+        hover.anchor = Some(anchor);
+        hover.definition = underlined;
+        hover.scroll = HoverScroll::default();
+        hover.phase = Phase::Shown(content);
+        cx.notify();
     }
 
     fn set_link(
@@ -1584,6 +1756,7 @@ impl Workbench {
         anchor: Anchor,
         definition: bool,
         immediate: bool,
+        fallback: Option<Link>,
         cx: &mut Context<Self>,
     ) {
         let hover = &mut self.nav.hover;
@@ -1658,6 +1831,29 @@ impl Workbench {
             let _ = this.update(cx, |view, cx| {
                 if view.nav.hover.epoch != epoch {
                     return;
+                }
+                let (content, resolved_definition) = content.unwrap_or_default();
+                if (definition && !resolved_definition)
+                    || (!definition && content.as_ref().is_none_or(HoverContent::is_empty))
+                {
+                    if let Some(link) = fallback {
+                        if let Some(document) = view.shown_document(anchor.group, anchor.secondary)
+                        {
+                            view.nav.hover.anchor = None;
+                            view.show_editor_link_hover(
+                                LinkOrigin {
+                                    group: anchor.group,
+                                    secondary: anchor.secondary,
+                                    document,
+                                    position: model::pos(anchor.line, anchor.start),
+                                },
+                                link,
+                                definition,
+                                cx,
+                            );
+                        }
+                        return;
+                    }
                 }
                 view.nav.hover.phase = match content {
                     Some(c) if !c.is_empty() => Phase::Shown(c),
@@ -1765,7 +1961,7 @@ impl Workbench {
             point: start,
             line_height,
         };
-        self.show_hover(anchor, false, true, cx);
+        self.show_hover(anchor, false, true, None, cx);
     }
 
     fn scroll_hover(&mut self, m: HoverMove, cx: &mut Context<Self>) {
@@ -1796,6 +1992,9 @@ impl Workbench {
 
     /// 悬停卡片浮层（没有卡片时为 `None`）。
     pub(super) fn nav_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some(menu) = self.editor_link_menu(cx) {
+            return Some(menu);
+        }
         let hover = &self.nav.hover;
         let anchor = hover.anchor.clone()?;
         let (content, loading) = match &hover.phase {
@@ -1915,7 +2114,7 @@ fn hover_content(
     definition: bool,
     root: &std::path::Path,
     long_line: bool,
-) -> Option<HoverContent> {
+) -> Option<(Option<HoverContent>, bool)> {
     let cancel = Cancellation::default();
     let mut content = HoverContent {
         long_line,
@@ -1928,10 +2127,12 @@ fn hover_content(
             content.doc = parse_xml_doc(&h.documentation);
         }
     }
+    let mut resolved_definition = false;
     if definition {
         let result = router
             .navigate_detailed(NavigationKind::Definition, point, &cancel)
             .ok()?;
+        resolved_definition = !result.value.is_empty();
         let target = result
             .value
             .iter()
@@ -1947,7 +2148,7 @@ fn hover_content(
             }
         }
     }
-    Some(content)
+    Some((Some(content), resolved_definition))
 }
 
 /// 定义处开始的最多 [`PREVIEW_LINES`] 行（打开中的缓冲区优先，否则读盘）。

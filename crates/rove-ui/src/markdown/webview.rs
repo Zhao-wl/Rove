@@ -518,6 +518,17 @@ fn create_controller(
     }
 }
 
+/// A mapped network drive also has a drive letter. Check before passing a path to
+/// a subsystem that could access the filesystem.
+pub(crate) fn is_local_drive(drive: u8) -> bool {
+    let folder = HSTRING::from(format!("{}:\\", (drive as char).to_ascii_uppercase()));
+    let kind = unsafe { GetDriveTypeW(PCWSTR(folder.as_ptr())) };
+    matches!(
+        kind,
+        DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_CDROM | DRIVE_RAMDISK
+    )
+}
+
 /// 为需要的盘符建立 `https://<盘符>.rove-file.local/` → `<盘符>:\` 映射（DENY_CORS：页面脚本不能读取）。
 fn apply_drives(inner: &Rc<RefCell<Inner>>) {
     let (webview, missing) = {
@@ -534,12 +545,7 @@ fn apply_drives(inner: &Rc<RefCell<Inner>>) {
     for drive in missing {
         let host = HSTRING::from(format!("{drive}{}", super::render::FILE_HOST_SUFFIX));
         let folder = HSTRING::from(format!("{}:\\", drive.to_ascii_uppercase()));
-        // A mapped network drive also looks like a drive letter to the renderer.
-        let kind = unsafe { GetDriveTypeW(PCWSTR(folder.as_ptr())) };
-        if !matches!(
-            kind,
-            DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_CDROM | DRIVE_RAMDISK
-        ) {
+        if !is_local_drive(drive as u8) {
             continue;
         }
         let mapped = unsafe {

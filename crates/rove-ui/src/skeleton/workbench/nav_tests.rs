@@ -641,6 +641,70 @@ fn hover_phase(view: &Entity<Workbench>, cx: &VisualTestContext) -> Phase {
 }
 
 #[gpui::test]
+fn definition_takes_priority_over_the_editor_link_at_the_same_position(cx: &mut TestAppContext) {
+    const USE: &str = "class Use { string Name = \"Destination.txt\"; }";
+    const DECLARATION: &str = "class Destination { }";
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("Use.cs"), USE).unwrap();
+    std::fs::write(folder.path().join("Destination.cs"), DECLARATION).unwrap();
+    std::fs::write(
+        folder.path().join("Destination.txt"),
+        "local path would open this file",
+    )
+    .unwrap();
+    let mut data = TestIndex::default();
+    let decl = data.file("Destination.cs", hash_bytes(DECLARATION.as_bytes()));
+    let file = data.file("Use.cs", hash_bytes(USE.as_bytes()));
+    let symbol = data.symbol("Game|T:Destination", "Destination", KIND_TYPE, None);
+    let (line, column) = find_word(DECLARATION, "Destination", 0);
+    data.def(symbol, decl, line, column);
+    let (line, column) = find_word(USE, "Destination", 0);
+    data.reference(symbol, file, line, column);
+    let path = folder.path().join("index.idx");
+    data.write(&path).unwrap();
+    let project = Project {
+        folder,
+        index: Arc::new(CsIndex::open(&path).unwrap()),
+    };
+    let (view, cx) = project.open(project.exact(), cx);
+    open_file(&view, "Use.cs", cx);
+    let target = word(USE, "Destination", 0);
+    let at = point_at(&view, target, cx);
+    cx.update(|_, app| {
+        assert!(view
+            .read(app)
+            .code_view()
+            .read(app)
+            .link_at(target)
+            .is_some())
+    });
+    cx.simulate_mouse_move(at, None, Modifiers::control());
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    refresh(cx);
+    view.read_with(cx, |view, app| {
+        let color = view.nav.colors_link().unwrap();
+        let decorate = view
+            .code_view()
+            .read(app)
+            .merged_decorations(target.line.0)
+            .unwrap();
+        let underlines: Vec<_> = decorate
+            .runs
+            .iter()
+            .filter(|run| run.style.underline == Some(color))
+            .map(|run| run.range.clone())
+            .collect();
+        let expected = target.column.0 as u32..target.column.0 as u32 + "Destination".len() as u32;
+        assert_eq!(underlines.as_slice(), std::slice::from_ref(&expected));
+    });
+    cx.simulate_click(at, Modifiers::control());
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(location(&view, cx).0, "Destination.cs");
+}
+
+#[gpui::test]
 fn ctrl_hover_underlines_and_ctrl_click_jumps(cx: &mut TestAppContext) {
     let project = Project::new();
     let (view, cx) = project.open(project.exact(), cx);

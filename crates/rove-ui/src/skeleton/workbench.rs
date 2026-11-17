@@ -149,6 +149,7 @@ mod v01_acceptance_tests;
 #[cfg(test)]
 mod binary_tests;
 // #150：「可交互」冷启动埋点（`cargo xtask startup` 用，默认关闭）。
+mod link_host;
 mod startup_probe;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
 // 窗口缩放（#16）在 `zoom_changed` 里乘到选项上；骨架不再自己定义常量。
@@ -1163,6 +1164,7 @@ impl Workbench {
             | CodeViewEvent::PointerMoved { .. }
             | CodeViewEvent::PointerLeft
             | CodeViewEvent::LinkClicked { .. }
+            | CodeViewEvent::LinkMenuRequested { .. }
             | CodeViewEvent::Edited(_) => {}
             // #22：截断标记的点击由 `large_file_host` 处理（不是视图状态）。
             CodeViewEvent::OverlayClicked { .. } => {}
@@ -1969,6 +1971,12 @@ impl Render for Workbench {
             .size_full()
             .font_family("Segoe UI")
             .key_context(context.as_str())
+            .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && view.nav.link_menu.take().is_some() {
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(
                 cx.listener(|v, action: &editor_actions::EditorAction, _, cx| {
                     v.command(action.0, cx)

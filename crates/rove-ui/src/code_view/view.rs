@@ -120,6 +120,10 @@ pub enum CodeViewEvent {
         position: Position,
         side: bool,
     },
+    LinkMenuRequested {
+        position: Position,
+        point: Point<Pixels>,
+    },
     /// #47：本视图里的一次编辑（或撤销 / 重做）已经写进会话；宿主据此同步同一文档的其他视图、
     /// 语法增量解析、`BufferStates` 与标签脏标记。
     Edited(super::edit::EditNotice),
@@ -143,6 +147,7 @@ pub enum Feature {
     Folding,
     /// 软换行（仅超大文件，#58）。
     WordWrap,
+    Links,
 }
 
 impl Feature {
@@ -156,6 +161,7 @@ impl Feature {
             Feature::SyntaxHighlighting => "codeView.feature.syntaxHighlighting",
             Feature::Folding => "codeView.feature.folding",
             Feature::WordWrap => "codeView.feature.wordWrap",
+            Feature::Links => "codeView.feature.links",
         }
     }
 }
@@ -192,6 +198,8 @@ pub struct FrameStats {
     pub cpu: Duration,
     /// 其中布局（prepaint）部分。
     pub layout: Duration,
+    /// Cache lookup and dispatch time for viewport link detection.
+    pub links_cpu: Duration,
     /// 本帧绘制的字形数（已按水平可见范围裁剪）。
     pub glyphs: u32,
     pub visible_lines: u32,
@@ -463,6 +471,7 @@ pub struct CodeView {
     pub(crate) drag: Option<Drag>,
     pub(crate) decorations: DecorationStore,
     pub(crate) lines: Lru<u64, Rc<LineEntry>>,
+    pub(super) links: super::links::LinkCache,
     pub(crate) shapes: Lru<ShapeKey, Rc<Shaped>>,
     pub(crate) font: FontState,
     pub(crate) layout: FrameLayout,
@@ -494,6 +503,7 @@ pub struct CodeView {
     semantic_words: Option<bool>,
     /// #40：上一次在文本区上的指针位置（窗口坐标），修饰键变化时据此重发 `PointerMoved`。
     pointer: Option<Point<Pixels>>,
+    link_pointer_modifier: bool,
     /// #40：指针下是可跳转的链接（`Ctrl+悬停`），文本区显示手形光标。
     pub(crate) link_cursor: bool,
     /// #47：编辑入口（宿主借出会话）；`None` 时视图只读阅读。
@@ -720,6 +730,7 @@ impl CodeView {
             drag: None,
             decorations,
             lines: Lru::new(DEFAULT_LINE_CACHE_BYTES),
+            links: super::links::LinkCache::default(),
             shapes: Lru::new(DEFAULT_SHAPE_CACHE_BYTES),
             font,
             layout: FrameLayout::default(),
@@ -746,6 +757,7 @@ impl CodeView {
             top_inset: 0.0,
             semantic_words: None,
             pointer: None,
+            link_pointer_modifier: false,
             link_cursor: false,
             edit_host: None,
             composition: None,
@@ -776,6 +788,7 @@ impl CodeView {
         cx: &mut Context<Self>,
     ) {
         self.text = text;
+        self.links.reset();
         self.lines.clear();
         self.content_width = 0.0;
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
@@ -832,6 +845,7 @@ impl CodeView {
     pub fn set_language(&mut self, language: Option<Arc<str>>, cx: &mut Context<Self>) {
         if self.language != language {
             self.language = language;
+            self.links.reset();
             self.reload_options(cx);
             self.recompute_folds(cx);
             self.update_highlights(cx);
@@ -1270,7 +1284,13 @@ impl CodeView {
             || options.selection_highlight_multiline != self.options.selection_highlight_multiline
             || options.selected_text_case_sensitive != self.options.selected_text_case_sensitive
             || options.word_separators != self.options.word_separators;
+        let links_changed = options.links != self.options.links
+            || options.stop_rendering_line_after != self.options.stop_rendering_line_after;
         self.options = options;
+        if links_changed {
+            self.links.reset();
+            self.refresh_link_pointer(cx);
+        }
         if layout_changed {
             self.lines.clear();
             self.content_width = 0.0;
@@ -1459,6 +1479,8 @@ impl CodeView {
     pub fn set_line_render_limit(&mut self, limit: Option<Option<usize>>, cx: &mut Context<Self>) {
         if self.render_limit_override != limit {
             self.render_limit_override = limit;
+            self.links.reset();
+            self.refresh_link_pointer(cx);
             self.lines.clear();
             // #58：截断点变了，换行点整体重算。
             self.wrap.applied = None;
@@ -2166,6 +2188,21 @@ impl CodeView {
         cx.emit(CodeViewEvent::LinkClicked { position: p, side });
     }
 
+    pub(super) fn mouse_down_link_menu(
+        &mut self,
+        point: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(position) = self.position_for_point(point) else {
+            return false;
+        };
+        if self.link_at(position).is_none() {
+            return false;
+        }
+        cx.emit(CodeViewEvent::LinkMenuRequested { position, point });
+        true
+    }
+
     /// #55：指针落在粘性区里的第几行（按上一帧布局）。不在粘性区里时为 `None`。
     pub fn sticky_index_at(&self, point: Point<Pixels>) -> Option<usize> {
         let band = self.layout.sticky?;
@@ -2238,6 +2275,7 @@ impl CodeView {
         match point {
             Some(point) => {
                 self.pointer = Some(point);
+                self.link_pointer_modifier = ctrl;
                 if let Some(position) = self.position_for_point(point) {
                     cx.emit(CodeViewEvent::PointerMoved {
                         position,
@@ -2252,6 +2290,10 @@ impl CodeView {
                 }
             }
         }
+    }
+
+    pub(super) fn refresh_link_pointer(&mut self, cx: &mut Context<Self>) {
+        self.modifiers_changed(self.link_pointer_modifier, cx);
     }
 
     /// #40：修饰键变化时，在上一次的指针位置重发 `PointerMoved`（按下 Ctrl 不动鼠标也出现下划线）。
@@ -3149,6 +3191,10 @@ impl CodeView {
             return;
         }
         self.level = level;
+        if level == SizeClass::Huge {
+            self.links.reset();
+            self.refresh_link_pointer(cx);
+        }
         self.apply_feature_options();
         // #55：大文件与超大文件关闭粘性滚动。
         self.sticky.clear();
@@ -3164,7 +3210,7 @@ impl CodeView {
     }
 
     /// `editor.largeFileOptimizations` 为假时不启用“大文件”这一级。
-    fn effective_level(&self) -> SizeClass {
+    pub(super) fn effective_level(&self) -> SizeClass {
         match self.level {
             SizeClass::Large if !self.options.large_file_optimizations => SizeClass::Normal,
             l => l,
@@ -3187,6 +3233,7 @@ impl CodeView {
                 Feature::SyntaxHighlighting,
                 Feature::Folding,
                 Feature::WordWrap,
+                Feature::Links,
             ],
         }
     }
@@ -3258,6 +3305,7 @@ impl CodeView {
 
     /// 折叠或行数变化后：重建视觉行映射与嵌入区域，保持视口首行稳定。
     pub(crate) fn sync_fold_map(&mut self) {
+        self.links.revisit_viewport();
         let doc_lines = self.doc_line_count();
         // #55：折叠会改变「屏幕行 ↔ 文档行」的对应，粘性行的有效区间随之失效
         //（被折叠掉的父级仍然要出现在粘性区，所以只是重算，不清空）。
