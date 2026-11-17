@@ -31,6 +31,14 @@ pub fn indent_px(options: &ListOptions, depth: u32) -> f32 {
     options.indent * depth as f32
 }
 
+/// List rows are single-line: their height is fixed ([`super::widget::RowHeight`]), so wrapped
+/// text would overflow the row box — centered on it, clipped, and invisible, leaving the row
+/// looking blank. VS Code's rows do not wrap either; overflowing text ends in an ellipsis.
+/// Applied on the row container so every text element inside a row inherits it.
+pub fn single_line<E: Styled>(el: E) -> E {
+    el.whitespace_nowrap().text_ellipsis()
+}
+
 /// `workbench.tree.renderIndentGuides`: `onHover` shows guides while the pointer is over the
 /// tree (or it has keyboard focus).
 pub fn guides_visible(options: &ListOptions, hovering_or_focused: bool) -> bool {
@@ -517,19 +525,21 @@ impl ListView {
         };
         // Rows carry no listeners or hitboxes: the list root maps pointer positions to rows,
         // which keeps per-frame element work proportional to visible rows only.
-        let mut el = div()
-            .absolute()
-            .top(px(top))
-            .left(px(-w.scroll_left()))
-            .h(px(height))
-            .when(w.options().horizontal_scrolling, |d| d.min_w_full())
-            .when(!w.options().horizontal_scrolling, |d| d.w_full())
-            .flex()
-            .items_center()
-            .pl(px(6.0 + indent))
-            .pr(px(12.0))
-            .overflow_hidden()
-            .child(content);
+        let mut el = single_line(
+            div()
+                .absolute()
+                .top(px(top))
+                .left(px(-w.scroll_left()))
+                .h(px(height))
+                .when(w.options().horizontal_scrolling, |d| d.min_w_full())
+                .when(!w.options().horizontal_scrolling, |d| d.w_full())
+                .flex()
+                .items_center()
+                .pl(px(6.0 + indent))
+                .pr(px(12.0))
+                .overflow_hidden(),
+        )
+        .child(content);
         if let Some(bg) = bg {
             el = el.bg(bg);
         }
@@ -883,33 +893,36 @@ impl Render for ListView {
                     None => default_row(&ctx, window, cx),
                 };
                 band.push(
-                    div()
-                        .id(("list-sticky", k))
-                        .absolute()
-                        .top(px(y))
-                        .h(px(h))
-                        .w_full()
-                        .pl(px(6.0 + indent))
-                        .flex()
-                        .items_center()
-                        .border_1()
-                        .border_color(if focused {
-                            colors.focus_outline.unwrap_or(gpui::transparent_black())
-                        } else {
-                            gpui::transparent_black()
-                        })
-                        .when_some(colors.sticky_bg, |d, c| d.bg(c))
-                        .child(content)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |v, _: &MouseDownEvent, window, cx| {
-                                window.focus(&v.focus);
-                                v.widget.click_sticky(k);
-                                cx.stop_propagation();
-                                v.flush(cx);
-                            }),
-                        )
-                        .into_any_element(),
+                    single_line(
+                        div()
+                            .id(("list-sticky", k))
+                            .absolute()
+                            .top(px(y))
+                            .h(px(h))
+                            .w_full()
+                            .pl(px(6.0 + indent))
+                            .flex()
+                            .items_center()
+                            .overflow_hidden(),
+                    )
+                    .border_1()
+                    .border_color(if focused {
+                        colors.focus_outline.unwrap_or(gpui::transparent_black())
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .when_some(colors.sticky_bg, |d, c| d.bg(c))
+                    .child(content)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |v, _: &MouseDownEvent, window, cx| {
+                            window.focus(&v.focus);
+                            v.widget.click_sticky(k);
+                            cx.stop_propagation();
+                            v.flush(cx);
+                        }),
+                    )
+                    .into_any_element(),
                 );
                 y += h;
             }

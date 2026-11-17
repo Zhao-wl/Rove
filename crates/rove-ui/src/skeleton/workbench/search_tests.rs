@@ -303,3 +303,36 @@ fn add_cursors_at_search_results_opens_the_file_with_one_cursor_per_match(cx: &m
         assert_eq!(s.end().column.0 - s.start().column.0, 4, "选中的是 Move");
     }
 }
+
+// 回归（#18 列表行）：结果行高固定为 22px，预览文本必须单行——换行时文本块比行高大得多，
+// 被行容器居中后整段落在可见区之外，界面上只剩文件行与大片空白。
+#[gpui::test]
+fn long_match_lines_stay_on_a_single_row(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let long = format!("// {} zzqneedle {}", "x".repeat(400), "y".repeat(400));
+    std::fs::write(
+        fixture.folder.path().join("src/Long.cs"),
+        format!("class Long {{ }}\n{long}\n"),
+    )
+    .unwrap();
+    let (view, cx) = fixture.open(cx);
+    find_in_files(&view, "zzqneedle", cx);
+    let matches: Vec<String> = rows(&view, cx)
+        .into_iter()
+        .filter(|(depth, _)| *depth == 1)
+        .map(|(_, label)| label)
+        .collect();
+    assert_eq!(matches.len(), 1, "只有 Long.cs 的那一行匹配：{matches:?}");
+    assert!(matches[0].contains("zzqneedle"));
+    // 第 0 行是文件行，第 1 行是这处匹配。
+    refresh(cx);
+    refresh(cx);
+    let bounds = cx
+        .debug_bounds("search-match-preview-1")
+        .expect("匹配行已经画出来了");
+    assert!(
+        f32::from(bounds.size.height) < 44.0,
+        "长行必须单行显示（省略号截断），实测高度 {:?} 说明又换行了",
+        bounds.size.height
+    );
+}

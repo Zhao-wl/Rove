@@ -21,6 +21,23 @@ impl Render for DragLabel {
     }
 }
 
+/// 标签拖到编辑器正文上的落点（`x`、`y` 是光标在正文里的相对位置，0..1）：
+/// 离某条边不到三分之一就在那一侧拆分，否则移进这个组（与 VS Code 的手感一致：
+/// 拆分区足够宽，不用贴着窗口边缘找）。
+pub(super) fn tab_drop_zone(x: f32, y: f32) -> Option<Direction> {
+    const SPLIT: f32 = 1.0 / 3.0;
+    [
+        (x, Direction::Left),
+        (1.0 - x, Direction::Right),
+        (y, Direction::Up),
+        (1.0 - y, Direction::Down),
+    ]
+    .into_iter()
+    .filter(|(d, _)| *d < SPLIT)
+    .min_by(|a, b| a.0.total_cmp(&b.0))
+    .map(|(_, direction)| direction)
+}
+
 fn id(part: &str, group: EditorGroupId, tab: TabId) -> SharedString {
     format!("{part}-{}-{tab}", group.0).into()
 }
@@ -116,70 +133,7 @@ impl Workbench {
             .h(px(settings.tab_height))
             // #29：`Placement::EditorTitle` 登记的按钮（显示源码 / 显示预览）。
             .children(self.markdown_title_actions(group, cx))
-            .children(
-                [
-                    (
-                        "splitLeft",
-                        "editors.splitLeft",
-                        "workbench.action.splitEditorLeft",
-                    ),
-                    (
-                        "splitUp",
-                        "editors.splitUp",
-                        "workbench.action.splitEditorUp",
-                    ),
-                    (
-                        "splitDown",
-                        "editors.splitDown",
-                        "workbench.action.splitEditorDown",
-                    ),
-                    (
-                        "splitRight",
-                        "editors.splitRight",
-                        "workbench.action.splitEditorRight",
-                    ),
-                    (
-                        "lock",
-                        if pane.locked {
-                            "editors.unlock"
-                        } else {
-                            "editors.lock"
-                        },
-                        "workbench.action.toggleEditorGroupLock",
-                    ),
-                    (
-                        "max",
-                        if self.editor.maximized.is_some() {
-                            "editors.restore"
-                        } else {
-                            "editors.maximize"
-                        },
-                        "workbench.action.toggleMaximizeEditorGroup",
-                    ),
-                ]
-                .map(|(key, label, command)| {
-                    div()
-                        .id(id(key, group, 0))
-                        .h_full()
-                        .px_1()
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .hover(|style| style.bg(self.ui_color("tab.hoverBackground")))
-                        .child(self.label(label, &[]))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.focus_group_code(group, window, cx);
-                            // Maximize needs to see the previous maximized group to decide whether to restore.
-                            if command == "workbench.action.toggleMaximizeEditorGroup" {
-                                view.editor.toggle_maximize(group);
-                                cx.notify();
-                            } else {
-                                view.editor.focus(group);
-                                view.command(command, cx);
-                            }
-                        }))
-                }),
-            );
+            .children(self.title_controls(group, cx));
 
         let mut tabs = div().flex_1().min_w_0().flex().flex_col();
         let tab_mode = self.shell.zen_tabs().unwrap_or(settings.tabs);
@@ -234,6 +188,7 @@ impl Workbench {
         });
         let mut body = div()
             .id(id("editor-body", group, 0))
+            .debug_selector(move || format!("editor-body-{}", group.0))
             .relative()
             .flex_1()
             .min_h_0()
@@ -249,8 +204,37 @@ impl Workbench {
                     cx.notify();
                 }),
             )
+            // 拖动标签经过编辑器正文：按光标离哪条边近决定落点（见 `tab_drop_zone`），
+            // 预览层画出新组会占的那一半（移进本组时是整块）。
+            .on_drag_move(
+                cx.listener(move |v, e: &gpui::DragMoveEvent<TabDrag>, _, cx| {
+                    let inside = e.bounds.contains(&e.event.position);
+                    let next = if inside {
+                        let size = e.bounds.size;
+                        let x =
+                            f32::from(e.event.position.x - e.bounds.left()) / f32::from(size.width);
+                        let y =
+                            f32::from(e.event.position.y - e.bounds.top()) / f32::from(size.height);
+                        Some((group, tab_drop_zone(x, y)))
+                    } else if v.tab_drop.is_some_and(|(g, _)| g == group) {
+                        None
+                    } else {
+                        return;
+                    };
+                    if v.tab_drop != next {
+                        v.tab_drop = next;
+                        cx.notify();
+                    }
+                }),
+            )
             .on_drop(cx.listener(move |v, drag: &TabDrag, _, cx| {
-                v.editor.drop_tab(drag.group, drag.tab, group, None, None);
+                let direction = v
+                    .tab_drop
+                    .take()
+                    .filter(|(g, _)| *g == group)
+                    .and_then(|(_, d)| d);
+                v.editor
+                    .drop_tab(drag.group, drag.tab, group, None, direction);
                 cx.stop_propagation();
                 cx.notify();
             }));
@@ -307,37 +291,23 @@ impl Workbench {
             },
         }
         body = body.children(progress);
-        let drop_color = self.ui_color("editorGroup.dropBackground");
-        for (direction, name) in [
-            (Direction::Left, "left"),
-            (Direction::Right, "right"),
-            (Direction::Up, "top"),
-            (Direction::Down, "bottom"),
-        ] {
-            let edge = div().id(id(name, group, 0)).absolute();
-            let edge = match direction {
-                Direction::Left => edge.left_0().top_0().bottom_0().w(relative(0.18)),
-                Direction::Right => edge.right_0().top_0().bottom_0().w(relative(0.18)),
-                Direction::Up => edge
-                    .top_0()
-                    .left(relative(0.18))
-                    .right(relative(0.18))
-                    .h(relative(0.2)),
-                Direction::Down => edge
-                    .bottom_0()
-                    .left(relative(0.18))
-                    .right(relative(0.18))
-                    .h(relative(0.2)),
+        if let Some((_, direction)) = self
+            .tab_drop
+            .filter(|(g, _)| *g == group && cx.has_active_drag())
+        {
+            let hint = div()
+                .id(id("drop-hint", group, 0))
+                .debug_selector(move || format!("drop-hint-{}", group.0))
+                .absolute()
+                .bg(self.ui_color("editorGroup.dropBackground"));
+            let hint = match direction {
+                None => hint.inset_0(),
+                Some(Direction::Left) => hint.left_0().top_0().bottom_0().w(relative(0.5)),
+                Some(Direction::Right) => hint.right_0().top_0().bottom_0().w(relative(0.5)),
+                Some(Direction::Up) => hint.top_0().left_0().right_0().h(relative(0.5)),
+                Some(Direction::Down) => hint.bottom_0().left_0().right_0().h(relative(0.5)),
             };
-            body = body.child(
-                edge.drag_over::<TabDrag>(move |style, _, _, _| style.bg(drop_color))
-                    .on_drop(cx.listener(move |v, drag: &TabDrag, _, cx| {
-                        v.editor
-                            .drop_tab(drag.group, drag.tab, group, None, Some(direction));
-                        cx.stop_propagation();
-                        cx.notify();
-                    })),
-            );
+            body = body.child(hint);
         }
         let mut result = div().flex().flex_col().size_full().min_w_0().min_h_0();
         if focused && pane.tabs.is_empty() && self.editor.groups.len() > 1 {
@@ -353,6 +323,96 @@ impl Workbench {
             })
             .children(breadcrumbs)
             .child(body)
+    }
+
+    /// 标签栏右侧的编辑器组按钮：codicon 图标，悬停显示作用和快捷键（与 VS Code 一样，
+    /// 常驻的只有「向右拆分」「向下拆分」和「最大化 / 还原」；锁定后才出现锁图标，点它解锁）。
+    /// 向左、向上拆分和锁定仍可从命令面板或快捷键使用。
+    fn title_controls(&self, group: EditorGroupId, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let pane = &self.editor.groups[&group];
+        let maximized = self.editor.maximized.is_some();
+        let mut buttons = vec![
+            (
+                "splitRight",
+                "split-horizontal",
+                "editors.tip.splitRight",
+                "workbench.action.splitEditorRight",
+            ),
+            (
+                "splitDown",
+                "split-vertical",
+                "editors.tip.splitDown",
+                "workbench.action.splitEditorDown",
+            ),
+            if maximized {
+                (
+                    "max",
+                    "screen-normal",
+                    "editors.tip.restore",
+                    "workbench.action.toggleMaximizeEditorGroup",
+                )
+            } else {
+                (
+                    "max",
+                    "screen-full",
+                    "editors.tip.maximize",
+                    "workbench.action.toggleMaximizeEditorGroup",
+                )
+            },
+        ];
+        if pane.locked {
+            buttons.insert(
+                0,
+                (
+                    "lock",
+                    "lock",
+                    "editors.tip.unlock",
+                    "workbench.action.toggleEditorGroupLock",
+                ),
+            );
+        }
+        let size = px(16.0 * self.shell.zoom());
+        let fg = self.ui_color("tab.activeForeground");
+        let hover = self.ui_color("tab.hoverBackground");
+        buttons
+            .into_iter()
+            .map(|(key, glyph, tip, command)| {
+                let mut text = self.label(tip, &[]);
+                if let Some(keys) = crate::keys::key_label(command, cx) {
+                    text = format!("{text} ({keys})");
+                }
+                div()
+                    .id(id(key, group, 0))
+                    .debug_selector(move || format!("editor-title-{key}-{}", group.0))
+                    .h_full()
+                    .px(px(5.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_color(fg)
+                    .rounded(px(4.0))
+                    .hover(move |style| style.bg(hover))
+                    .child(crate::shell::view::icon_label(&format!("$({glyph})"), size))
+                    .tooltip(crate::metadata::tooltip::tab_tooltip(
+                        text,
+                        self.ui_color("editorHoverWidget.background"),
+                        self.ui_color("editorHoverWidget.foreground"),
+                        self.ui_color("editorHoverWidget.border"),
+                    ))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.focus_group_code(group, window, cx);
+                        // Maximize needs to see the previous maximized group to decide whether to restore.
+                        if command == "workbench.action.toggleMaximizeEditorGroup" {
+                            view.editor.toggle_maximize(group);
+                            cx.notify();
+                        } else {
+                            view.editor.focus(group);
+                            view.command(command, cx);
+                        }
+                    }))
+                    .into_any_element()
+            })
+            .collect()
     }
 
     fn tab_strip<'a>(
@@ -431,6 +491,7 @@ impl Workbench {
         let drag_fg = self.ui_color("tab.activeForeground");
         let mut header = div()
             .id(id("editor-tab", group, tab_id))
+            .debug_selector(move || format!("editor-tab-{}-{tab_id}", group.0))
             .flex()
             .items_center()
             .gap_1()

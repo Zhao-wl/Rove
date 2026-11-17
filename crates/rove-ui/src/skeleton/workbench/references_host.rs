@@ -419,6 +419,8 @@ impl Workbench {
                         .flex()
                         .items_center()
                         .gap(px(6.))
+                        // 占满整行，片段才按整行宽度单行截断（行高固定，不能换行）。
+                        .w_full()
                         .min_w_0()
                         .overflow_hidden()
                         .pl(px(16.))
@@ -430,6 +432,7 @@ impl Workbench {
                         )
                         .child(
                             div()
+                                .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()
                                 .child(SharedString::from(ctx.row.label.to_string())),

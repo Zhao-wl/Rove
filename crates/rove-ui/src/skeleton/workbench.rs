@@ -229,6 +229,8 @@ pub struct Workbench {
     views: BTreeMap<EditorGroupId, GroupViews>,
     /// The group whose code view last received keyboard focus from the editor area.
     focus_group: Option<EditorGroupId>,
+    /// 拖动标签时光标所在的编辑器组与落点（`None` 方向 = 移进这个组，否则在那一侧拆分）。
+    tab_drop: Option<(EditorGroupId, Option<Direction>)>,
     trace_switch: bool,
     switch_started: Option<(TabId, Instant)>,
     theme: Arc<dyn Theme>,
@@ -495,6 +497,7 @@ impl Workbench {
             root: root.clone(),
             views: BTreeMap::new(),
             focus_group: None,
+            tab_drop: None,
             trace_switch: std::env::var_os("ROVE_EDITOR_SWITCH_TRACE").is_some(),
             switch_started: None,
             theme,
@@ -1885,6 +1888,10 @@ impl Render for Workbench {
                 });
             }
         }
+        // 拖动结束（落在别处或取消）后不再显示分屏落点预览。
+        if self.tab_drop.is_some() && !cx.has_active_drag() {
+            self.tab_drop = None;
+        }
         // #47：可保存文件与代码视图的编辑入口。
         self.sync_editing(cx);
         // A tab that finished loading in the background reports Ready once it is shown here.
@@ -1970,6 +1977,10 @@ impl Render for Workbench {
         div()
             .size_full()
             .font_family("Segoe UI")
+            // 从资源管理器拖进窗口的文件在本窗口打开，文件夹按「打开文件夹」处理（与 VS Code 相同）。
+            .on_drop(cx.listener(|view, paths: &gpui::ExternalPaths, _, cx| {
+                view.open_dropped(paths.paths().to_vec(), cx);
+            }))
             .key_context(context.as_str())
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" && view.nav.link_menu.take().is_some() {

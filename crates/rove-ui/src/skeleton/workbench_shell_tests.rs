@@ -10,7 +10,7 @@ use crate::{
         view::{run_command, Part},
     },
 };
-use gpui::{Modifiers, TestAppContext, VisualTestContext};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use std::time::Duration;
 
 fn open_workbench<'a>(
@@ -56,6 +56,11 @@ fn redraw(cx: &mut VisualTestContext) {
         cx.refresh_windows();
     });
     cx.run_until_parked();
+}
+
+/// `debug_bounds` 只收 `&'static str`；按组 / 标签拼出来的选择器在测试里泄漏一次即可。
+fn selector(name: String) -> &'static str {
+    Box::leak(name.into_boxed_str())
 }
 
 fn none() -> Arc<[FeedbackAction]> {
@@ -155,6 +160,160 @@ fn sidebar_location_right_moves_activity_bar_too(cx: &mut TestAppContext) {
     assert!(activity.origin.x > sidebar.origin.x, "活动栏在侧边栏外侧");
 }
 
+/// 齿轮在活动栏最底部，菜单必须向上展开、贴着活动栏外侧，整块都在窗口里。
+#[gpui::test]
+fn the_gear_menu_opens_upward_beside_the_activity_bar(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    let check = |cx: &mut VisualTestContext, right: bool| {
+        redraw(cx);
+        let gear = cx.debug_bounds("activity-manage").unwrap();
+        cx.simulate_click(gear.center(), Modifiers::default());
+        redraw(cx);
+        let window = cx.update(|window, _| window.viewport_size());
+        let bar = cx.debug_bounds("activitybar").unwrap();
+        let menu = cx.debug_bounds("menu-dropdown").expect("齿轮菜单已打开");
+        assert!(
+            menu.bottom() <= gear.bottom(),
+            "{menu:?} 应在齿轮 {gear:?} 上方展开"
+        );
+        assert!(
+            menu.top() >= px(0.0) && menu.bottom() <= window.height,
+            "{menu:?}"
+        );
+        if right {
+            // 右侧活动栏左边还有 1px 分隔线，所以和齿轮本身比。
+            assert!(
+                menu.right() <= gear.left(),
+                "{menu:?} 应在右侧活动栏 {bar:?} 左边"
+            );
+            assert!(menu.left() >= px(0.0), "{menu:?}");
+        } else {
+            assert!(
+                menu.left() >= bar.right(),
+                "{menu:?} 应在活动栏 {bar:?} 右边"
+            );
+            assert!(menu.right() <= window.width, "{menu:?}");
+        }
+        // 再点一次收起，下一轮从关闭状态开始。
+        cx.simulate_click(gear.center(), Modifiers::default());
+        redraw(cx);
+    };
+    check(cx, false);
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            run_command(v, "workbench.action.toggleSidebarPosition", window, cx)
+        })
+    });
+    cx.run_until_parked();
+    check(cx, true);
+}
+
+#[test]
+fn tab_drop_zone_splits_near_an_edge_and_merges_in_the_middle() {
+    use super::editor_panes::tab_drop_zone;
+    use crate::editors::Direction;
+    assert_eq!(tab_drop_zone(0.5, 0.5), None);
+    assert_eq!(tab_drop_zone(0.1, 0.5), Some(Direction::Left));
+    // 拆分区有三分之一宽，不用贴着边缘。
+    assert_eq!(tab_drop_zone(0.7, 0.5), Some(Direction::Right));
+    assert_eq!(tab_drop_zone(0.5, 0.2), Some(Direction::Up));
+    assert_eq!(tab_drop_zone(0.5, 0.9), Some(Direction::Down));
+    // 角落里取更近的那条边。
+    assert_eq!(tab_drop_zone(0.05, 0.2), Some(Direction::Left));
+}
+
+/// 把标签拖到编辑器右侧：预览层盖住右半边（新组会占的位置），松手后在右边拆出新组。
+#[gpui::test]
+fn dragging_a_tab_to_the_right_previews_and_splits_the_right_half(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    // 组里要有两个标签：只有一个标签时把它拖出去，原来的组变空会被关掉。
+    let second = folder.path().join("B.cs");
+    std::fs::write(
+        &second,
+        "public class B {}
+",
+    )
+    .unwrap();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    open_first_file(cx);
+    view.update(cx, |v, cx| v.open_path(second.clone(), cx));
+    cx.run_until_parked();
+    redraw(cx);
+    let (group, tab) = view.read_with(cx, |v, _| {
+        let group = v.editor.focused;
+        (group, v.editor.groups[&group].active.unwrap())
+    });
+    let tab_bounds = cx
+        .debug_bounds(selector(format!("editor-tab-{}-{tab}", group.0)))
+        .expect("标签已绘制");
+    let body = cx
+        .debug_bounds(selector(format!("editor-body-{}", group.0)))
+        .unwrap();
+    let target = point(
+        body.left() + body.size.width * 0.75,
+        body.top() + body.size.height * 0.5,
+    );
+    cx.simulate_mouse_down(tab_bounds.center(), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+    redraw(cx);
+    let hint = cx
+        .debug_bounds(selector(format!("drop-hint-{}", group.0)))
+        .expect("拖动时显示落点预览");
+    let half = body.size.width * 0.5;
+    assert!(
+        (hint.left() - (body.left() + half)).abs() < px(2.0),
+        "{hint:?} vs {body:?}"
+    );
+    assert!(
+        (hint.size.width - half).abs() < px(2.0),
+        "{hint:?} vs {body:?}"
+    );
+    assert!(
+        (hint.size.height - body.size.height).abs() < px(2.0),
+        "{hint:?}"
+    );
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    redraw(cx);
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.groups.len(), 2, "松手后拆出新组");
+        assert!(v.tab_drop.is_none());
+    });
+    // gpui 的 debug_bounds 跨帧不清空，所以看状态：拖动结束、落点清空后预览层不会再画。
+    let state = view.read_with(cx, |v, cx| (v.tab_drop, cx.has_active_drag()));
+    assert_eq!(state, (None, false));
+}
+
+/// 从系统资源管理器拖进来：文件在本窗口打开，文件夹按「打开文件夹」处理。
+#[gpui::test]
+fn dropping_files_and_folders_from_the_os_opens_them(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let other = tempfile::tempdir().unwrap();
+    let file = other.path().join("B.cs");
+    std::fs::write(
+        &file,
+        "class B {}
+",
+    )
+    .unwrap();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    view.update(cx, |v, cx| {
+        v.open_dropped(vec![file.clone(), other.path().to_path_buf()], cx)
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let opened = v.editor.groups.values().any(|g| {
+            g.tabs
+                .iter()
+                .any(|t| matches!(&t.resource, Resource::File(p) if *p == file))
+        });
+        assert!(opened, "拖进来的文件已打开");
+        assert_eq!(v.folder_request(), Some(other.path()));
+    });
+}
+
 #[gpui::test]
 fn zoom_scales_ui_without_rescan_or_reparse(cx: &mut TestAppContext) {
     let folder = csharp_folder();
@@ -250,17 +409,9 @@ fn menus_only_show_implemented_commands(cx: &mut TestAppContext) {
     let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
     view.read_with(cx, |v, _| {
         let commands = v.commands.registry();
-        // #16 自己实现的命令，加上其他 issue 在装配期声明的（#24：快速打开、命令面板、转到行）。
-        let implemented = |id: &str| {
-            catalog::is_implemented(id)
-                || crate::quick_access::registry::COMMANDS
-                    .iter()
-                    .any(|(cmd, _, _)| *cmd == id)
-                // #28：齿轮菜单的设置、键盘快捷方式、颜色主题。
-                || crate::welcome::registry::COMMANDS
-                    .iter()
-                    .any(|(cmd, _, _)| *cmd == id)
-        };
+        // 菜单的可见性判定：#16 自己实现的，加上实现该命令的模块给出的 GPUI action。
+        let implemented =
+            |id: &str| catalog::is_implemented(id) || crate::keys::implemented_by_module(id);
         let mut shown = 0;
         let mut expected = 0;
         for menu in [
