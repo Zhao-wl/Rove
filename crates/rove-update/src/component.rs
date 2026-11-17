@@ -143,14 +143,17 @@ pub fn install_archive(archive: &[u8], installed: &Installed, version: &str) -> 
 
 /// 启动时清理旧版本：`keep` 以外的版本目录能删就删，删不掉（进程还在用）就留着。
 /// 返回删掉的目录数。
-pub fn cleanup_old(installed: &Installed, keep: &str) -> usize {
+///
+/// `keep` 可以有多个：推迟安装时，正在用的旧版组件与随新版下载好的待用组件要同时留着
+/// （issue #237）。
+pub fn cleanup_old(installed: &Installed, keep: &[&str]) -> usize {
     let Ok(entries) = fs::read_dir(&installed.root) else {
         return 0;
     };
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == keep {
+        if keep.contains(&name.as_str()) {
             continue;
         }
         if !entry.path().is_dir() {
@@ -286,7 +289,7 @@ mod tests {
             fs::write(dir.path().join(name).join("component.json"), b"{}").unwrap();
         }
         let target = installed(dir.path(), Some("1.3.0.0"));
-        assert_eq!(cleanup_old(&target, "1.3.0.0"), 3);
+        assert_eq!(cleanup_old(&target, &["1.3.0.0"]), 3);
         let left: Vec<String> = fs::read_dir(dir.path())
             .unwrap()
             .flatten()

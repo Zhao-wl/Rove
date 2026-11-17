@@ -15,7 +15,8 @@
 //! |---|---|
 //! | 「检查更新」的即时回执、已是最新、正在下载 | 1 状态栏临时消息 |
 //! | 「重启以更新到 x.y.z」、发现新版本待确认 | 4 通知（带按钮，不会自动消失） |
-//! | 校验失败、安装失败 | 4 通知（警告） |
+//! | 校验失败 | 4 通知（警告） |
+//! | 安装失败（#235） | 4 通知（警告，带「重试」「稍后」） |
 //! | 网络不通、超时、404 / 403 | **什么都不显示**，只写日志 |
 //!
 //! 更新**永远不弹模态框**：模态框留给数据丢失与安全确认。
@@ -27,8 +28,8 @@ use rove_base::Error;
 use rove_config::{Key, Scope, Settings};
 use rove_lang_cs::lifecycle::component as cs_component;
 use rove_update::{
-    install, mode::UpdateMode, paths::Pending, state::UpdateState, Outcome, UpdateError, Updater,
-    Version,
+    install, mode::UpdateMode, paths::Pending, state::UpdateState, Outcome, Startup, UpdateError,
+    Updater, Version,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -145,6 +146,12 @@ impl UpdateService {
         self.installed_component.as_deref()
     }
 
+    /// 随还没装上的新版一起下载好的待用组件版本（issue #237）。
+    /// 推迟安装时，启动清理要连它一起留着。
+    pub fn pending_component(&self) -> Option<&str> {
+        self.pending.as_ref()?.component_version.as_deref()
+    }
+
     /// 已经发现、等用户确认下载的那一版清单。
     pub fn available(&self) -> Option<&rove_update::Manifest> {
         self.available.as_deref()
@@ -183,34 +190,35 @@ impl UpdateService {
         self.pending.as_ref()
     }
 
-    /// 启动时：上次留下的待安装版本还在吗？
+    /// 启动时结算上一次的安装请求（issue #149 第 3 节、issue #235）。
     ///
-    /// - 还比当前版本新 → 再提示一次（issue 第 3 节：用户忽略过也要再提示）；
-    /// - 已经装上了 → `rove-update` 会把记录与下载清掉，这里什么都不显示。
+    /// - 下载好了还没装 → 再提示一次（用户忽略过也要再提示）；
+    /// - 已经装上了 → 记录与下载已被清掉，这里什么都不显示；
+    /// - **拉起过安装器却没装上** → 展示这次失败，提示里带「重试」按钮；
+    ///   记录与下载已经清掉，所以不会再按原记录提示装同一个包。
     pub fn on_start(&mut self) -> Step {
         if !self.mode().may_connect() {
             return Step::Nothing;
         }
-        // 随这次更新一起装的组件版本记在 `pending.json` 里；更新装上之后
-        // `take_pending_after_start` 会把记录清掉，所以要先读一次。
-        let recorded = self
-            .updater
-            .paths()
-            .and_then(|paths| paths.read_pending())
-            .and_then(|pending| pending.component_version);
-        if let Some(pending) = self.updater.take_pending_after_start() {
-            let version = pending.version.clone();
-            self.pending = Some(pending);
-            self.state = UpdateState::ReadyToInstall {
-                version: version.clone(),
-            };
-            // 还没装上：正在跑的仍是旧版本的 Rove，这时不拿新组件当「要保留的那一版」，
-            // 清理退回到 #43 的发现规则（留着正在用的那一个）。
-            return Self::restart_prompt(&version);
+        match self.updater.after_start() {
+            Startup::Nothing => Step::Nothing,
+            Startup::Pending(pending) => {
+                let version = pending.version.clone();
+                self.pending = Some(pending);
+                self.state = UpdateState::ReadyToInstall {
+                    version: version.clone(),
+                };
+                Self::restart_prompt(&version)
+            }
+            Startup::Installed {
+                component_version, ..
+            } => {
+                // 随更新装上的那一版组件：启动清理时留它、删别的。
+                self.installed_component = component_version;
+                Step::Nothing
+            }
+            Startup::Failed { version, reason } => self.install_failed(version, reason),
         }
-        // 没有待安装版本了 → 上次记下的组件版本就是「刚随更新装上的那一版」，清理时留它。
-        self.installed_component = recorded;
-        Step::Nothing
     }
 
     /// 先标记检查已开始，再把任务交给后台执行器。
@@ -359,18 +367,32 @@ impl UpdateService {
         Step::status("update.status.restarting", Vec::new())
     }
 
-    /// 安装失败（安装器退出码非 0、重启后版本号没变）：通知并保留旧版本。
+    /// 安装失败（拉不起安装器）：通知并保留旧版本。记录与下载一起清掉，
+    /// 用户可以用通知上的「重试」按钮明确重来一次（issue #235）。
     pub fn on_install_failed(&mut self, reason: &str) -> Step {
+        let version = self
+            .pending
+            .as_ref()
+            .map(|pending| pending.version.clone())
+            .unwrap_or_default();
         self.updater.discard_pending();
+        self.install_failed(version, reason.to_string())
+    }
+
+    /// 一次安装请求以失败告终：状态、提示与「这次请求到此结束」都在这里收口。
+    fn install_failed(&mut self, version: String, reason: String) -> Step {
         self.pending = None;
-        self.state = UpdateState::Failed {
+        self.available = None;
+        self.state = UpdateState::InstallFailed {
             at: rove_update::log::timestamp(std::time::SystemTime::now()),
-            reason: reason.to_string(),
+            version: version.clone(),
+            reason: reason.clone(),
         };
         Step::Prompt {
             key: "update.notify.installFailed",
-            args: vec![("reason", reason.to_string())],
-            actions: Vec::new(),
+            args: vec![("version", version), ("reason", reason)],
+            // 「重试」= 重新检查一次，再走一遍下载与安装（不复用失败的那份下载）。
+            actions: vec![registry::ACTION_RETRY, registry::ACTION_LATER],
             warning: true,
         }
     }

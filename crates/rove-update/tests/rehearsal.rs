@@ -25,9 +25,9 @@ use rove_update::{
     http::{Transport, WinHttp},
     install,
     mode::UpdateMode,
-    paths::UpdatePaths,
+    paths::{Attempt, UpdatePaths},
     version::Version,
-    Outcome, UpdateError, Updater,
+    Outcome, Startup, UpdateError, Updater,
 };
 use std::{
     collections::BTreeMap,
@@ -358,16 +358,26 @@ fn v0_1_0_updates_to_v0_1_1_over_a_local_server() {
     let line = install::command_line(
         &pending.installer_path(&paths),
         &pending.silent_args,
+        &paths.exit_code_file(),
         std::path::Path::new(r"C:\Local\Programs\Rove\rove.exe"),
     );
     assert!(line.contains("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP-"));
+    assert!(line.contains(install::EXIT_CODE_SNIPPET));
     assert!(line.contains(r#"start "" "C:\Local\Programs\Rove\rove.exe""#));
 
     // 4. 没重启之前：下次启动还会再提示一次（issue 第 3 节）。
-    let again = updater.take_pending_after_start();
-    assert_eq!(again.map(|p| p.version), Some("0.1.1".into()));
+    assert_eq!(
+        updater.after_start(),
+        Startup::Pending(pending.clone()),
+        "只是推迟安装，待安装记录要留着"
+    );
 
-    // 5. 重启之后真的是 0.1.1：记录与下载被清掉，不再提示。
+    // 5. 点了「重启以更新」：先写下安装尝试记录，再拉起安装器（这里不真的拉）。
+    paths
+        .write_attempt(&Attempt::new(&pending, "now".into()))
+        .unwrap();
+
+    // 6. 重启之后真的是 0.1.1：记录与下载被清掉，不再提示。
     let after = make_updater(
         &server.base_url,
         "0.1.1",
@@ -375,12 +385,19 @@ fn v0_1_0_updates_to_v0_1_1_over_a_local_server() {
         paths.clone(),
         public_key,
     );
-    assert_eq!(after.take_pending_after_start(), None);
+    assert_eq!(
+        after.after_start(),
+        Startup::Installed {
+            version: "0.1.1".into(),
+            component_version: Some("1.3.0.0".into()),
+        }
+    );
     assert_eq!(paths.read_pending(), None);
+    assert_eq!(paths.read_attempt(), None);
     // 再检查一次就是「已经最新」。
     assert_eq!(after.check(), Outcome::UpToDate);
 
-    // 6. 日志里每次请求都有一行。
+    // 7. 日志里每次请求都有一行。
     let log = std::fs::read_to_string(after.log().path().unwrap()).unwrap();
     assert!(log.contains("request GET http://127.0.0.1"), "{log}");
     assert!(log.contains("latest.json.sig"), "{log}");
@@ -433,7 +450,7 @@ fn an_installed_component_is_upgraded_and_the_old_one_is_cleaned_up() {
     assert!(dir.join("rove-indexer-cs.exe").is_file());
     // 新旧并存，直到下次启动清理旧的。
     assert!(root.join("1.2.0.0").is_dir());
-    assert_eq!(component::cleanup_old(&installed, "1.3.0.0"), 1);
+    assert_eq!(component::cleanup_old(&installed, &["1.3.0.0"]), 1);
     assert!(!root.join("1.2.0.0").exists());
 
     // 没装组件的机器不下载任何组件。

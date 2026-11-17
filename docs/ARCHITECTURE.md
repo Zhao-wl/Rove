@@ -2056,10 +2056,10 @@ RFC 8032 测试向量、`.ico` 的六种尺寸与 256×256、提交的图标与�
 | `rove-update::manifest` | `latest.json`（`schema = 1`）：严格校验 `schema` / `product` / `version`，不认识的字段忽略（向前兼容）；`min_version` 可选 |
 | `rove-update::version` | 2–4 段版本号 + 可选预发布标签；**解析不了就当没有更新** |
 | `rove-update::download` | 边写边算 SHA-256：先落 `.part`，`size` 与 `sha256` 都对上才改名；失败删文件 |
-| `rove-update::paths` | `%LOCALAPPDATA%\Rove\updates\`（`pending.json` + 一个安装包）、`logs\update.log` |
+| `rove-update::paths` | `%LOCALAPPDATA%\Rove\updates\`（`pending.json` + 一个安装包 + `install-attempt.json` / `install-exit-code.txt`）、`logs\update.log` |
 | `rove-update::mode` | `rove.update.mode` 的四个取值 → 启动检查延迟、周期、是否后台下载 |
-| `rove-update::engine` | `Updater::check / download / take_pending_after_start`；**`none` 时根本不构造传输层** |
-| `rove-update::install` | 静默安装参数来自清单；`cmd /D /C "<安装包> <参数> & start "" "<rove.exe>""`；便携版判定 |
+| `rove-update::engine` | `Updater::check / download / after_start`（启动时按「有没有安装尝试记录」+「版本号变没变」结算上一次的安装请求）；**`none` 时根本不构造传输层** |
+| `rove-update::install` | 静默安装参数来自清单；`cmd /D /C "<安装包> <参数> & (call echo %^ERRORLEVEL%)> <退出码文件> & start "" "<rove.exe>""`，拉起之前先写安装尝试记录；便携版判定 |
 | `rove-update::component` | #43 索引组件的跟随更新：只在已安装时下载，解到 `.staging` 校验后整体改名，旧版本下次启动清理 |
 | `rove-update::zip` | 自写只读 zip（存储 + deflate）：路径穿越整包作废、解压总量有上限，不为这点需求再加依赖 |
 | `rove-ui::update` | 命令 `update.checkForUpdates` / `update.restartToUpdate`、界面字符串、齿轮菜单项（**状态栏不加常驻条目**）；`UpdateService` 把检查结果翻译成 `Step`（状态栏消息 / 带按钮的通知 / 开始下载） |

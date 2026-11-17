@@ -227,6 +227,141 @@ fn a_downloaded_update_offers_a_restart(cx: &mut TestAppContext) {
     });
 }
 
+// ------------------------------------------------- #235：静默安装失败后报告结果并结束请求
+
+/// 写下「上一次会话下载好了 0.1.1」的现场。
+fn downloaded(dir: &std::path::Path) -> (UpdatePaths, rove_update::paths::Pending) {
+    let paths = UpdatePaths::new(dir.join("Rove"));
+    let pending = rove_update::paths::Pending::from_manifest(
+        &manifest_with_component("0.1.1", None),
+        "now".into(),
+    )
+    .unwrap();
+    paths.ensure_updates_dir().unwrap();
+    paths.write_pending(&pending).unwrap();
+    std::fs::write(pending.installer_path(&paths), INSTALLER).unwrap();
+    (paths, pending)
+}
+
+/// 验收（#235 第 1 条）：安装器替身返回非零 → 重启后展示本次失败，
+/// 失败的待安装记录与下载都清掉，用户可以明确重试。
+#[gpui::test]
+fn a_failed_install_is_reported_on_the_next_start_and_can_be_retried(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (paths, pending) = downloaded(dir.path());
+    // 上一次会话点了「重启以更新」：先写下安装尝试记录，安装器替身随后退出码 3。
+    paths
+        .write_attempt(&rove_update::paths::Attempt::new(&pending, "now".into()))
+        .unwrap();
+    std::fs::write(paths.exit_code_file(), b"3").unwrap();
+
+    let (view, cx) = open(cx);
+    // 这次启动跑的还是 0.1.0（`attach_with` 构造的版本）= 没装上。
+    let spy = attach_with(
+        &view,
+        cx,
+        UpdateMode::Start,
+        dir.path(),
+        StubTransport::new(),
+    );
+    view.update(cx, |v, cx| {
+        let step = v.update_service_mut().unwrap().on_start();
+        v.apply_update_step_for_test(step, cx);
+    });
+    cx.run_until_parked();
+
+    let (text, actions) = notification(&view, cx).expect("要展示本次失败");
+    assert_eq!(
+        text,
+        "Rove 0.1.1 没有安装成功，仍在使用当前版本（安装器退出码 3）"
+    );
+    assert_eq!(actions, [reg::ACTION_RETRY, reg::ACTION_LATER]);
+    // 不是模态框（UX_SPEC §6.1）。
+    view.read_with(cx, |v, _| assert!(v.shell.feedback.modal().is_none()));
+
+    // 失败的记录与下载都清掉了：不会再按原记录提示装同一个包。
+    assert_eq!(paths.read_pending(), None);
+    assert_eq!(paths.read_attempt(), None);
+    assert!(!pending.installer_path(&paths).exists());
+    view.read_with(cx, |v, _| {
+        let service = v.update_service().unwrap();
+        assert!(!service.can_restart_to_update(), "没有可以重启安装的东西了");
+        assert!(
+            matches!(service.state(), UpdateState::InstallFailed { .. }),
+            "{:?}",
+            service.state()
+        );
+    });
+    assert!(spy.requested().is_empty(), "失败之后不自己重来");
+
+    // 用户点「重试」：这才重新检查一次（明确重试）。
+    view.update(cx, |v, cx| {
+        v.update_feedback_action(reg::KEY_FAILED, reg::ACTION_RETRY, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(spy.requested(), [rove_update::endpoint::manifest_url()]);
+}
+
+/// 验收（#235 第 2 条）：正常安装重启后清理下载与记录，没有重复的重启提示。
+#[gpui::test]
+fn a_finished_install_leaves_nothing_behind(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (paths, pending) = downloaded(dir.path());
+    paths
+        .write_attempt(&rove_update::paths::Attempt::new(&pending, "now".into()))
+        .unwrap();
+    std::fs::write(paths.exit_code_file(), b"0").unwrap();
+
+    let (view, cx) = open(cx);
+    // 这次启动的版本就是 0.1.1 = 装上了。
+    let updater = Updater::with_transport(
+        Version::parse("0.1.1").unwrap(),
+        UpdateMode::Start,
+        Some(paths.clone()),
+        Arc::new(StubTransport::new()),
+    );
+    view.update(cx, |v, _| {
+        v.set_update_service(UpdateService::with_updater(updater, false))
+    });
+    view.update(cx, |v, cx| {
+        let step = v.update_service_mut().unwrap().on_start();
+        v.apply_update_step_for_test(step, cx);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(notification(&view, cx), None, "装上了就不该再提示重启");
+    assert_eq!(paths.read_pending(), None);
+    assert_eq!(paths.read_attempt(), None);
+    assert!(!pending.installer_path(&paths).exists());
+    view.read_with(cx, |v, _| {
+        assert!(!v.update_service().unwrap().can_restart_to_update())
+    });
+}
+
+/// 验收（#235 第 3 条）：只推迟安装、普通重启时，有效的待安装记录继续保留。
+#[gpui::test]
+fn deferring_the_install_keeps_the_pending_record(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (paths, pending) = downloaded(dir.path());
+
+    let (view, cx) = open(cx);
+    attach(&view, cx, UpdateMode::Start, dir.path());
+    view.update(cx, |v, cx| {
+        let step = v.update_service_mut().unwrap().on_start();
+        v.apply_update_step_for_test(step, cx);
+    });
+    cx.run_until_parked();
+
+    let (text, actions) = notification(&view, cx).expect("还要再提示一次");
+    assert_eq!(text, "已下载 Rove 0.1.1，重启以更新");
+    assert_eq!(actions, [reg::ACTION_RESTART, reg::ACTION_LATER]);
+    assert_eq!(paths.read_pending(), Some(pending.clone()));
+    assert!(pending.installer_path(&paths).is_file());
+    view.read_with(cx, |v, _| {
+        assert!(v.update_service().unwrap().can_restart_to_update())
+    });
+}
+
 /// 验收：「关于」对话框显示更新状态。
 #[gpui::test]
 fn the_about_dialog_shows_the_update_state(cx: &mut TestAppContext) {

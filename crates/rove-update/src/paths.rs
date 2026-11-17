@@ -4,6 +4,8 @@
 //! %LOCALAPPDATA%\Rove\
 //!     updates\
 //!         pending.json                     待安装版本的记录（同时只保留一个）
+//!         install-attempt.json             已经拉起过安装器的记录（见 Attempt）
+//!         install-exit-code.txt            安装器的退出码（由 cmd 在重启 Rove 之前写）
 //!         Rove-0.1.1-win-x64-setup.exe     下载好的安装包
 //!         <下载中的临时文件>.part
 //!     logs\update.log                      更新日志（见 crate::log）
@@ -30,6 +32,10 @@ pub const UPDATES_DIR: &str = "updates";
 pub const LOGS_DIR: &str = "logs";
 /// 待安装记录的文件名。
 pub const PENDING_FILE: &str = "pending.json";
+/// 「已经拉起过安装器」的记录文件名（issue #235）。
+pub const ATTEMPT_FILE: &str = "install-attempt.json";
+/// 安装器退出码的落点：`cmd` 在把 Rove 拉回来**之前**往这里写一行（issue #235）。
+pub const EXIT_CODE_FILE: &str = "install-exit-code.txt";
 /// 下载中的临时文件后缀。
 pub const PART_SUFFIX: &str = ".part";
 
@@ -68,6 +74,16 @@ impl UpdatePaths {
 
     pub fn pending_file(&self) -> PathBuf {
         self.updates_dir().join(PENDING_FILE)
+    }
+
+    /// 「这次启动之前拉起过安装器」的记录（issue #235）。
+    pub fn attempt_file(&self) -> PathBuf {
+        self.updates_dir().join(ATTEMPT_FILE)
+    }
+
+    /// 安装器退出码的落点（issue #235）。
+    pub fn exit_code_file(&self) -> PathBuf {
+        self.updates_dir().join(EXIT_CODE_FILE)
     }
 
     /// 下载目录；不存在就建出来。
@@ -120,9 +136,76 @@ impl UpdatePaths {
     }
 
     /// 丢弃待安装版本（校验失败、安装失败、已经装上了）。
+    ///
+    /// 下载目录整个清空，所以安装尝试的记录与退出码也一起没了：
+    /// **一次安装请求到此结束**，不会在下次启动又提示装同一个包（issue #235）。
     pub fn discard_pending(&self) {
         let _ = fs::remove_file(self.pending_file());
         self.clear_downloads(&[]);
+    }
+
+    /// 读「这次启动之前拉起过安装器」的记录。没有、读不出来或内容坏了都返回 `None`。
+    pub fn read_attempt(&self) -> Option<Attempt> {
+        let text = fs::read_to_string(self.attempt_file()).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// 写安装尝试记录。**拉起安装器之前**写：只有写下来了，下次启动才分得清
+    /// 「装失败了」与「用户只是点了稍后」（issue #235）。
+    pub fn write_attempt(&self, attempt: &Attempt) -> Result<()> {
+        self.ensure_updates_dir()?;
+        // 上一轮留下的退出码不能混进这一次。
+        let _ = fs::remove_file(self.exit_code_file());
+        let text = serde_json::to_string_pretty(attempt)
+            .map_err(|e| UpdateError::Storage(format!("安装尝试记录无法序列化：{e}")))?;
+        fs::write(self.attempt_file(), text)
+            .map_err(|e| UpdateError::Storage(format!("写安装尝试记录失败：{e}")))
+    }
+
+    /// 安装器留下的退出码（没有文件、是空的或者不是数字都返回 `None`）。
+    pub fn read_exit_code(&self) -> Option<i32> {
+        let text = fs::read_to_string(self.exit_code_file()).ok()?;
+        text.trim().parse().ok()
+    }
+}
+
+/// 「已经为这个版本拉起过安装器」的记录（issue #235）。
+///
+/// 没有它就分不清下面这两件事，旧版本会按原记录一遍遍提示装同一个包：
+///
+/// - 用户点了「稍后」然后普通重启 → 待安装记录仍然有效，继续提示；
+/// - 点了「重启以更新」，安装器非零退出 → 这次安装失败了，要报告并结束这次安装请求。
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Attempt {
+    /// 这次要装成哪个版本。
+    pub version: String,
+    /// 拉起的安装包文件名（只给日志看）。
+    pub file: String,
+    /// 拉起安装器的时间（UTC 字符串）。
+    #[serde(default)]
+    pub started_at: String,
+    /// 跟这次更新一起装的组件版本（记在这里，装完之后即使 `pending.json`
+    /// 读不出来也还知道该留哪一版组件）。
+    #[serde(default)]
+    pub component_version: Option<String>,
+}
+
+impl Attempt {
+    /// 从待安装记录生成。
+    pub fn new(pending: &Pending, started_at: String) -> Self {
+        Self {
+            version: pending.version.clone(),
+            file: pending.file.clone(),
+            started_at,
+            component_version: pending.component_version.clone(),
+        }
+    }
+
+    /// 这次要装的版本是否仍然比当前版本新（= 重启之后版本号没变 = 没装上）。
+    pub fn is_newer_than(&self, current: &Version) -> bool {
+        Version::parse(&self.version)
+            .map(|v| v.is_newer_than(current))
+            .unwrap_or(false)
     }
 }
 
@@ -253,6 +336,38 @@ mod tests {
         assert_eq!(paths.read_pending(), None);
     }
 
+    /// 安装尝试记录：写得下、读得回，丢弃待安装版本时跟着一起消失（issue #235）。
+    #[test]
+    fn an_install_attempt_is_recorded_and_discarded_with_the_pending_version() {
+        let (_dir, paths) = paths();
+        let manifest = Manifest::parse(sample("0.1.1").as_bytes()).unwrap();
+        let pending = Pending::from_manifest(&manifest, String::new()).unwrap();
+        paths.write_pending(&pending).unwrap();
+        fs::write(pending.installer_path(&paths), b"setup").unwrap();
+
+        // 上一轮留下的退出码不会混进这一次。
+        fs::write(paths.exit_code_file(), b"7").unwrap();
+        let attempt = Attempt::new(&pending, "2026-11-17 10:00:00Z".into());
+        paths.write_attempt(&attempt).unwrap();
+        assert_eq!(paths.read_exit_code(), None);
+        assert_eq!(paths.read_attempt(), Some(attempt.clone()));
+        assert_eq!(attempt.component_version.as_deref(), Some("1.2.0.0"));
+        assert!(attempt.is_newer_than(&Version::parse("0.1.0").unwrap()));
+        assert!(!attempt.is_newer_than(&Version::parse("0.1.1").unwrap()));
+
+        fs::write(paths.exit_code_file(), b" 3\r\n").unwrap();
+        assert_eq!(paths.read_exit_code(), Some(3));
+        fs::write(paths.exit_code_file(), b"not a number").unwrap();
+        assert_eq!(paths.read_exit_code(), None);
+
+        // 一次安装请求到此结束：记录、退出码、安装包一起清掉。
+        paths.discard_pending();
+        assert_eq!(paths.read_attempt(), None);
+        assert_eq!(paths.read_exit_code(), None);
+        assert_eq!(paths.read_pending(), None);
+        assert!(!pending.installer_path(&paths).exists());
+    }
+
     /// 记录写坏了（手工编辑、断电）就当作没有，不让更新流程崩掉。
     #[test]
     fn a_corrupt_record_reads_as_nothing_pending() {
@@ -260,5 +375,7 @@ mod tests {
         paths.ensure_updates_dir().unwrap();
         fs::write(paths.pending_file(), b"{ not json").unwrap();
         assert_eq!(paths.read_pending(), None);
+        fs::write(paths.attempt_file(), b"{ not json").unwrap();
+        assert_eq!(paths.read_attempt(), None);
     }
 }

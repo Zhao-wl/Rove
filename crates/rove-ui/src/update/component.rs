@@ -115,8 +115,12 @@ fn failed(log: &rove_update::log::UpdateLog, reason: &str) -> Followed {
 ///
 /// `keep` 是上次更新随包装上的那一版（`pending.json` 里的 `component_version`）；
 /// 没有就按 #43 的发现规则取「正在用的那一版」。两样都定不下来时**一个目录都不删**：
-/// 宁可多留一份，也不能删掉用户正在用的组件。返回删掉的目录数。
-pub fn cleanup(roots: &cs::Roots, keep: Option<&str>) -> usize {
+/// 宁可多留一份，也不能删掉用户正在用的组件。
+///
+/// `pending` 是随**还没装上**的新版下载好的待用组件（issue #237）：用户推迟安装、
+/// 普通重开旧版时，旧版用的那一版与它要同时留着——它可能只兼容新版主程序，
+/// 旧版的发现规则选不中它，删掉了新版装上后就没有组件可用。返回删掉的目录数。
+pub fn cleanup(roots: &cs::Roots, keep: Option<&str>, pending: Option<&str>) -> usize {
     let Some(installed) = installed(roots) else {
         return 0;
     };
@@ -127,7 +131,9 @@ pub fn cleanup(roots: &cs::Roots, keep: Option<&str>) -> usize {
     else {
         return 0;
     };
-    component::cleanup_old(&installed, &keep)
+    let mut kept = vec![keep.as_str()];
+    kept.extend(pending.filter(|version| installed.version_dir(version).is_dir()));
+    component::cleanup_old(&installed, &kept)
 }
 
 /// #43 的发现规则选中的那一版，且必须落在用户目录里。
@@ -208,7 +214,7 @@ mod tests {
         let mut roots = roots(dir.path());
         roots.env_override = Some(dir.path().join("rove-indexer-cs.exe"));
         assert_eq!(installed(&roots), None);
-        assert_eq!(cleanup(&roots, Some("1.2.0.0")), 0);
+        assert_eq!(cleanup(&roots, Some("1.2.0.0"), None), 0);
     }
 
     /// 验收：旧版本在下次启动后清理，正在用的那一版留着。
@@ -219,7 +225,7 @@ mod tests {
         install_version(dir.path(), "1.3.0.0");
         std::fs::create_dir_all(dir.path().join("1.3.0.0.staging")).unwrap();
         // 没有提示时按 #43 的发现规则：选中的是最高的兼容版本。
-        assert_eq!(cleanup(&roots(dir.path()), None), 2);
+        assert_eq!(cleanup(&roots(dir.path()), None, None), 2);
         assert_eq!(names(dir.path()), ["1.3.0.0"]);
     }
 
@@ -229,7 +235,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         install_version(dir.path(), "1.2.0.0");
         install_version(dir.path(), "1.3.0.0");
-        assert_eq!(cleanup(&roots(dir.path()), Some("1.2.0.0")), 1);
+        assert_eq!(cleanup(&roots(dir.path()), Some("1.2.0.0"), None), 1);
+        assert_eq!(names(dir.path()), ["1.2.0.0"]);
+    }
+
+    /// 验收（#237）：推迟安装、普通重开旧版时，旧版在用的组件与随新版下载好的
+    /// 待用组件都留着。待用的那一版只兼容新版主程序，旧版的发现规则选不中它。
+    #[test]
+    fn a_deferred_update_keeps_both_the_component_in_use_and_the_pending_one() {
+        let dir = tempfile::tempdir().unwrap();
+        install_version(dir.path(), "1.1.0.0");
+        install_version(dir.path(), "1.2.0.0");
+        // 只兼容新版主程序：协议高于本 Rove 支持的范围，#43 的发现规则跳过它。
+        let pending = dir.path().join("1.3.0.0");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(pending.join(cs::EXE_FILE), b"MZ").unwrap();
+        std::fs::write(
+            pending.join(cs::MANIFEST_FILE),
+            format!(
+                r#"{{"component":"indexer-cs","version":"1.3.0.0","protocol":{p},"protocol_min":{p},"index_format":{}}}"#,
+                rove_lang_cs::lifecycle::validity::EXPECTED_FORMAT,
+                p = rove_lang_cs::lifecycle::resident::PROTOCOL + 1,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            in_use_version(&roots(dir.path()), dir.path()).as_deref(),
+            Some("1.2.0.0")
+        );
+
+        assert_eq!(cleanup(&roots(dir.path()), None, Some("1.3.0.0")), 1);
+        assert_eq!(names(dir.path()), ["1.2.0.0", "1.3.0.0"]);
+
+        // 待用组件没下成（目录不在）时，照旧只留正在用的那一版。
+        assert_eq!(cleanup(&roots(dir.path()), None, Some("1.4.0.0")), 1);
         assert_eq!(names(dir.path()), ["1.2.0.0"]);
     }
 
@@ -240,7 +279,7 @@ mod tests {
         // 只有不带可执行文件的目录：#43 发现不了它，提示的版本也不存在。
         std::fs::create_dir_all(dir.path().join("1.2.0.0")).unwrap();
         std::fs::create_dir_all(dir.path().join("1.3.0.0")).unwrap();
-        assert_eq!(cleanup(&roots(dir.path()), Some("9.9.9.9")), 0);
+        assert_eq!(cleanup(&roots(dir.path()), Some("9.9.9.9"), None), 0);
         assert_eq!(names(dir.path()), ["1.2.0.0", "1.3.0.0"]);
     }
 
@@ -255,7 +294,7 @@ mod tests {
             env_override: None,
             dirs: vec![user.path().to_path_buf(), beside_exe.path().to_path_buf()],
         };
-        assert_eq!(cleanup(&roots, None), 0);
+        assert_eq!(cleanup(&roots, None, None), 0);
         assert_eq!(names(user.path()), ["1.2.0.0"]);
         assert_eq!(names(beside_exe.path()), ["1.3.0.0"]);
     }

@@ -26,6 +26,13 @@ pub enum UpdateState {
     ReadyToInstall { version: String },
     /// 上次检查失败：时间与原因。
     Failed { at: String, reason: String },
+    /// 上次安装失败：时间、没装上的版本与原因（issue #235）。
+    /// 这次安装请求已经结束（记录与下载都清掉了），用户可以明确重试。
+    InstallFailed {
+        at: String,
+        version: String,
+        reason: String,
+    },
 }
 
 impl UpdateState {
@@ -40,6 +47,7 @@ impl UpdateState {
             Self::Downloading { .. } => "update.state.downloading",
             Self::ReadyToInstall { .. } => "update.state.ready",
             Self::Failed { .. } => "update.state.failed",
+            Self::InstallFailed { .. } => "update.state.installFailed",
         }
     }
 
@@ -53,6 +61,15 @@ impl UpdateState {
             Self::Failed { at, reason } => {
                 vec![("time", at.clone()), ("reason", reason.clone())]
             }
+            Self::InstallFailed {
+                at,
+                version,
+                reason,
+            } => vec![
+                ("time", at.clone()),
+                ("version", version.clone()),
+                ("reason", reason.clone()),
+            ],
             _ => Vec::new(),
         }
     }
@@ -122,6 +139,11 @@ mod tests {
                 at: "2026-11-14 10:00:00Z".into(),
                 reason: "网络不可用".into(),
             },
+            UpdateState::InstallFailed {
+                at: "2026-11-14 10:00:00Z".into(),
+                version: "0.1.1".into(),
+                reason: "安装器退出码 3".into(),
+            },
         ];
         let mut keys: Vec<&str> = states.iter().map(UpdateState::string_key).collect();
         keys.sort_unstable();
@@ -147,6 +169,29 @@ mod tests {
             UpdateState::from_error(&UpdateError::Disabled, String::new()),
             UpdateState::Disabled
         );
+    }
+
+    /// 安装失败和检查失败是两回事：「关于」对话框要说清楚是哪个版本没装上（#235）。
+    #[test]
+    fn a_failed_install_names_the_version_that_did_not_make_it() {
+        let state = UpdateState::InstallFailed {
+            at: "2026-11-17 10:00:00Z".into(),
+            version: "0.1.1".into(),
+            reason: "安装器退出码 3".into(),
+        };
+        assert_eq!(state.string_key(), "update.state.installFailed");
+        assert_eq!(
+            state.args(),
+            [
+                ("time", "2026-11-17 10:00:00Z".to_string()),
+                ("version", "0.1.1".to_string()),
+                ("reason", "安装器退出码 3".to_string())
+            ]
+        );
+        // 安装失败之后没有可以重启安装的东西了。
+        assert!(!state.is_ready_to_install());
+        assert!(!state.is_busy());
+        assert_eq!(state.pending_version(), None);
     }
 
     #[test]
