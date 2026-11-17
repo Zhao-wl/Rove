@@ -240,7 +240,7 @@ cargo test -p rove-update --test rehearsal -j 1
 
 这 337 KiB 是 ed25519-dalek + curve25519-dalek + sha2 + WinHTTP 绑定 + 本 crate 自己的代码。
 **注意**：本机为了省内存把 `CARGO_PROFILE_RELEASE_LTO` 设成了 `off`，两边都是这么测的；
-CI 用仓库里的 `lto = "thin"` + `codegen-units = 1`，绝对值会小一截，预算判定以 CI 为准。
+CI 用仓库里的 release 配置（当时是 `lto = "thin"`，#193 起改为 `"fat"`）+ `codegen-units = 1`，绝对值会小一截，预算判定以 CI 为准。
 
 冷启动（`cargo xtask startup`，首帧，n = 5，**本机同时开着 Unity 等程序，负载较高**，
 只作前后对比）：

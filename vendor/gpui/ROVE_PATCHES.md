@@ -225,3 +225,18 @@ Recorded for follow-up; **no code is changed for these in this PR**. The first t
    （`cargo tree -i <包> --target all -e normal,build`），再决定扩大 patch 还是写白名单——不要直接改 `DENIED`。
 5. 重跑 `cargo test -p gpui_http_client` 与 `cargo test -p rove-ui --test no_network`，
    并更新上面的前后对照表（注明机器负载）。
+
+## #193：`image` 只留 gpui 自身代码要的解码器（发布包体积）
+
+`Cargo.toml` 的 `[dependencies.image]` 加了 `default-features = false` 与
+`features = ["png", "gif", "webp", "bmp", "ico"]`。上游默认打开 image 的全部格式
+（jpeg / exr / tiff / avif / hdr / dds / qoi …），Rove v0.1 不显示图片，这些解码器只是体积：
+配合根 `Cargo.toml` 改用 fat LTO，`rove.exe` 从 30.92 MB 降到 29.66 MB，进入 CHARTER §6 的 30 MB 预算
+（对照表见 `docs/RELEASE.md` §5）。`gif` 与 `webp` 不能去：`src/elements/img.rs` 直接用了
+`GifDecoder` / `WebPDecoder`。
+
+### 升级 GPUI 时如何重新应用
+
+1. 整包替换 `vendor/gpui` 后，在新的 `[dependencies.image]` 下重新加上这两行。
+2. `cargo build -p rove-app`：新版若用了别的 `image::codecs::*`，编译器会直接报未解析的导入，按需把对应格式加回。
+3. 按 release 配置构建后跑 `cargo xtask check-size`。

@@ -159,6 +159,21 @@ powershell -NoProfile -File target\release-dist\<版本>\upload.ps1
 
 C# 索引组件是独立的可选包，**不计入** 30 MB：用 `--component <zip>` 让它只被报告。
 
+**体积的两项约定（#193，2026-11-17 实测，同一棵树、本机 MSVC）**：
+
+| 配置 | `rove.exe` |
+|---|---|
+| `lto = "thin"`，`image` 默认全部格式 | 31,773,696 B（超预算 5.9%） |
+| `lto = "fat"` | 30,922,752 B（超预算 3.1%） |
+| `lto = "fat"` + `image` 只留 png / gif / webp / bmp / ico | **29,661,184 B**（发布包占预算 99.0%） |
+
+1. release 用 **fat LTO**（根 `Cargo.toml`）；`[profile.bench]` 仍是 thin，基准只做相对比较。
+2. gpui 对 `image` 的依赖**关掉默认格式**（`vendor/gpui/Cargo.toml`），只留 gpui 自身代码要的
+   解码器。Rove v0.1 不显示图片；R63 图片预览要加格式时，在那里按需加回并复测本命令。
+
+另外，`panic = "abort"` **不能用**：`rove-syntax` 靠 `catch_unwind` 兜住单个高亮任务的 panic。
+余量只有约 1%（≈ 340 KB）：新增依赖或嵌入资产前先跑 `cargo xtask check-size`。
+
 ## 6. 依赖许可
 
 `cargo xtask licenses --check`（CI 的「依赖许可汇总」任务）：
