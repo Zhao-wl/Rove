@@ -319,6 +319,18 @@ impl Workbench {
         cx.notify();
     }
 
+    /// 从系统资源管理器拖进窗口的路径：文件逐个打开（遵守 `window.openFilesInNewWindow`），
+    /// 文件夹按「打开文件夹」处理。一个窗口只装一个文件夹，所以只取第一个文件夹。
+    pub fn open_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (folders, files): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.is_dir());
+        for file in files {
+            self.open_path(file, cx);
+        }
+        if let Some(folder) = folders.into_iter().next() {
+            self.open_folder(folder, cx);
+        }
+    }
+
     /// 最近一次「打开文件夹」的目标（测试与装配用）。
     pub fn folder_request(&self) -> Option<&std::path::Path> {
         self.welcome

@@ -60,6 +60,11 @@ pub struct MenuItem {
 pub type MenuRegistry = Registry<MenuItem>;
 
 /// 某个菜单里实际显示的项：命令必须已登记且已实现。结果按 (group, order, id) 排序。
+///
+/// “已实现”有两个来源，满足其一即可：调用方给的 `implemented`（工作台自己实现的命令，以及宿主在
+/// 装配期用 `Shell::mark_implemented` 声明的），或者实现该命令的模块给了它 GPUI action
+/// （[`crate::keys::implemented_by_module`]，与命令面板的判定一致）。这样各 issue 在自己的登记表里
+/// 加菜单项时，不必再去装配代码里补一行声明。
 pub fn visible_items<'a>(
     menus: &'a MenuRegistry,
     menu: MenuId,
@@ -69,7 +74,9 @@ pub fn visible_items<'a>(
     let mut items: Vec<_> = menus
         .entries()
         .filter(|(_, item)| {
-            item.menu == menu && commands.get(&item.command).is_some() && implemented(&item.command)
+            item.menu == menu
+                && commands.get(&item.command).is_some()
+                && (implemented(&item.command) || crate::keys::implemented_by_module(&item.command))
         })
         .collect();
     items.sort_by(|a, b| {

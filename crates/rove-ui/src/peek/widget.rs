@@ -763,10 +763,13 @@ impl PeekWidget {
                             )]);
                         }
                     }
+                    let index = ctx.index;
                     div()
                         .flex()
                         .items_center()
                         .gap(px(6.))
+                        // 占满整行，片段才按整行宽度单行截断（行高固定，不能换行）。
+                        .w_full()
                         .min_w_0()
                         .overflow_hidden()
                         .pl(px(16.))
@@ -776,7 +779,14 @@ impl PeekWidget {
                                 .text_color(colors.line_fg)
                                 .child(SharedString::from(line)),
                         )
-                        .child(div().min_w_0().overflow_hidden().child(text))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .debug_selector(move || format!("peek-result-snippet-{index}"))
+                                .child(text),
+                        )
                         .into_any_element()
                 }
                 None => div().into_any_element(),

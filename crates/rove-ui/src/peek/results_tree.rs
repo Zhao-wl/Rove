@@ -179,4 +179,38 @@ mod tests {
         assert_eq!(tree.count(), 3000 + r.files[0].count + r.files[1].count);
         assert_eq!(source.snippet(r.files[1].start).unwrap().text.as_ref(), "x");
     }
+
+    /// 回归：结果行（文件的子行）带的是那一行的代码片段，不是行号——行号只是渲染时额外加的
+    /// 前缀，片段丢了的话速览右侧就只剩一串数字。
+    #[test]
+    fn child_rows_carry_the_line_preview() {
+        let r = results(2, 4);
+        let snippets: Arc<FileSnippets> = Arc::new(
+            r.items[r.files[0].items()]
+                .iter()
+                .enumerate()
+                .map(|(k, i)| Snippet {
+                    line: i.range.start().line.0,
+                    text: format!("player.Move({k});").into(),
+                    highlight: 7..11,
+                })
+                .collect(),
+        );
+        let (send, _receive) = async_channel::unbounded();
+        let source = Arc::new(ResultsTree::new(r.clone(), [(0, snippets)], send));
+        let mut tree = TreeModel::new(source);
+        tree.set_expanded(&ItemId(Node::File(0).id()), true)
+            .unwrap();
+        let rows = tree.rows(0..tree.count()).unwrap();
+        let children: Vec<String> = rows
+            .iter()
+            .filter(|row| row.depth == 1)
+            .map(|row| row.label.to_string())
+            .collect();
+        assert_eq!(children.len(), r.files[0].count);
+        assert!(
+            children.iter().all(|c| c.starts_with("player.Move(")),
+            "子行的标签应是代码片段：{children:?}"
+        );
+    }
 }

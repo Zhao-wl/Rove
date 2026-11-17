@@ -1051,11 +1051,14 @@ fn row_renderer(
     Rc::new(move |ctx: &RowContext, _: &mut Window, _: &mut App| {
         let rows = rows.borrow();
         let target = parse_id(&ctx.row.id);
+        // 行容器占满整行：文件行的目录（`flex_1`）才有空间伸展，计数徽章才落在右端，
+        // 匹配行的预览才按整行宽度截断（VS Code 的结果行就是这样）。
         let base = div()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(4.0))
+            .w_full()
             .min_w_0()
             .overflow_hidden()
             .pl(px(ctx.indent));
@@ -1133,8 +1136,17 @@ fn row_renderer(
                             .child(SharedString::from(format!("{}:", l.line + 1))),
                     );
                 }
-                el.child(div().min_w_0().overflow_hidden().child(styled))
-                    .into_any_element()
+                // 行高固定，预览只占一行（#18 的行容器已设不换行 + 省略号）。
+                let index = ctx.index;
+                el.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .debug_selector(move || format!("search-match-preview-{index}"))
+                        .child(styled),
+                )
+                .into_any_element()
             }
             None => base.into_any_element(),
         }

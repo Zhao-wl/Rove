@@ -312,15 +312,222 @@ pub fn key_label(id: &str, cx: &gpui::App) -> Option<String> {
 
 // ------------------------------------------------------------------ 菜单
 
-/// (菜单, 组, 顺序, 命令, 菜单标题 key)。只登记工作台自己实现的命令；
-/// 其余菜单项由各 issue 在实现命令时追加登记（未实现的不显示）。
+/// (菜单, 组, 顺序, 命令, 菜单标题 key)。组名与组内顺序照搬 VS Code 的菜单贡献
+/// （`1_new` / `2_open` / `4_save` / `6_close`……），标题取 VS Code 中文语言包的措辞。
+///
+/// 这里只登记**本仓库真正实现了的**命令：命令由各模块在自己的登记表里登记（`crate::keys`
+/// 的命令表），菜单项只引用 ID。没实现的命令（跨文件替换、问题导航、展开/缩小选定内容……）
+/// 一律不写，写了也不会显示（[`super::menus::visible_items`]）。
 const MENU_ITEMS: &[(MenuId, &str, i32, &str, &str)] = &[
+    // ---------------------------------------------------------------- 文件
+    (
+        MenuId::File,
+        "1_new",
+        10,
+        "workbench.action.files.newUntitledFile",
+        "menu.newUntitledFile",
+    ),
+    (
+        MenuId::File,
+        "2_open",
+        10,
+        "workbench.action.files.openFile",
+        "menu.openFile",
+    ),
+    (
+        MenuId::File,
+        "2_open",
+        20,
+        "workbench.action.files.openFolder",
+        "menu.openFolder",
+    ),
+    (
+        MenuId::File,
+        "2_open",
+        30,
+        "workbench.action.openRecent",
+        "menu.openRecent",
+    ),
+    (
+        MenuId::File,
+        "4_save",
+        10,
+        "workbench.action.files.save",
+        "menu.save",
+    ),
+    (
+        MenuId::File,
+        "4_save",
+        20,
+        "workbench.action.files.saveAs",
+        "menu.saveAs",
+    ),
+    (
+        MenuId::File,
+        "4_save",
+        30,
+        "workbench.action.files.saveAll",
+        "menu.saveAll",
+    ),
     (
         MenuId::File,
         "6_close",
         10,
+        "workbench.action.files.revert",
+        "menu.revertFile",
+    ),
+    (
+        MenuId::File,
+        "6_close",
+        20,
+        "workbench.action.closeActiveEditor",
+        "menu.closeEditor",
+    ),
+    (
+        MenuId::File,
+        "6_close",
+        30,
         "workbench.action.closeWindow",
         "menu.closeWindow",
+    ),
+    // ---------------------------------------------------------------- 编辑
+    (MenuId::Edit, "1_do", 10, "undo", "menu.undo"),
+    (MenuId::Edit, "1_do", 20, "redo", "menu.redo"),
+    (
+        MenuId::Edit,
+        "2_ccp",
+        10,
+        "editor.action.clipboardCutAction",
+        "menu.cut",
+    ),
+    (
+        MenuId::Edit,
+        "2_ccp",
+        20,
+        "editor.action.clipboardCopyAction",
+        "menu.copy",
+    ),
+    (
+        MenuId::Edit,
+        "2_ccp",
+        30,
+        "editor.action.clipboardPasteAction",
+        "menu.paste",
+    ),
+    (MenuId::Edit, "3_find", 10, "actions.find", "menu.find"),
+    (
+        MenuId::Edit,
+        "3_find",
+        20,
+        "editor.action.startFindReplaceAction",
+        "menu.replace",
+    ),
+    (
+        MenuId::Edit,
+        "4_find_global",
+        10,
+        "workbench.action.findInFiles",
+        "menu.findInFiles",
+    ),
+    (
+        MenuId::Edit,
+        "5_insert",
+        10,
+        "editor.action.commentLine",
+        "menu.toggleLineComment",
+    ),
+    (
+        MenuId::Edit,
+        "5_insert",
+        20,
+        "editor.action.blockComment",
+        "menu.toggleBlockComment",
+    ),
+    // ---------------------------------------------------------------- 选择
+    (
+        MenuId::Selection,
+        "1_basic",
+        10,
+        "editor.action.selectAll",
+        "menu.selectAll",
+    ),
+    (
+        MenuId::Selection,
+        "2_line",
+        10,
+        "editor.action.copyLinesUpAction",
+        "menu.copyLinesUp",
+    ),
+    (
+        MenuId::Selection,
+        "2_line",
+        20,
+        "editor.action.copyLinesDownAction",
+        "menu.copyLinesDown",
+    ),
+    (
+        MenuId::Selection,
+        "2_line",
+        30,
+        "editor.action.moveLinesUpAction",
+        "menu.moveLinesUp",
+    ),
+    (
+        MenuId::Selection,
+        "2_line",
+        40,
+        "editor.action.moveLinesDownAction",
+        "menu.moveLinesDown",
+    ),
+    (
+        MenuId::Selection,
+        "3_multi",
+        10,
+        "editor.action.insertCursorAbove",
+        "menu.insertCursorAbove",
+    ),
+    (
+        MenuId::Selection,
+        "3_multi",
+        20,
+        "editor.action.insertCursorBelow",
+        "menu.insertCursorBelow",
+    ),
+    (
+        MenuId::Selection,
+        "3_multi",
+        30,
+        "editor.action.insertCursorAtEndOfEachLineSelected",
+        "menu.insertCursorAtEndOfLines",
+    ),
+    (
+        MenuId::Selection,
+        "3_multi",
+        40,
+        "editor.action.addSelectionToPreviousFindMatch",
+        "menu.addSelectionToPreviousFindMatch",
+    ),
+    (
+        MenuId::Selection,
+        "3_multi",
+        50,
+        "editor.action.addSelectionToNextFindMatch",
+        "menu.addSelectionToNextFindMatch",
+    ),
+    (
+        MenuId::Selection,
+        "3_multi",
+        60,
+        "editor.action.selectHighlights",
+        "menu.selectHighlights",
+    ),
+    // ---------------------------------------------------------------- 查看
+    (
+        MenuId::View,
+        "1_open",
+        10,
+        "workbench.action.showCommands",
+        "menu.commandPalette",
     ),
     (
         MenuId::View,
@@ -393,6 +600,99 @@ const MENU_ITEMS: &[(MenuId, &str, i32, &str, &str)] = &[
         "menu.zoomReset",
     ),
     (
+        MenuId::View,
+        "6_editor",
+        10,
+        "editor.action.toggleWordWrap",
+        "menu.toggleWordWrap",
+    ),
+    // ---------------------------------------------------------------- 转到
+    (
+        MenuId::Go,
+        "1_history_nav",
+        10,
+        "workbench.action.navigateBack",
+        "menu.navigateBack",
+    ),
+    (
+        MenuId::Go,
+        "1_history_nav",
+        20,
+        "workbench.action.navigateForward",
+        "menu.navigateForward",
+    ),
+    (
+        MenuId::Go,
+        "1_history_nav",
+        30,
+        "workbench.action.navigateToLastEditLocation",
+        "menu.lastEditLocation",
+    ),
+    (
+        MenuId::Go,
+        "3_global_nav",
+        10,
+        "workbench.action.quickOpen",
+        "menu.gotoFile",
+    ),
+    (
+        MenuId::Go,
+        "3_global_nav",
+        20,
+        "workbench.action.showAllSymbols",
+        "menu.gotoSymbolInWorkspace",
+    ),
+    (
+        MenuId::Go,
+        "4_symbol_nav",
+        10,
+        "editor.action.revealDefinition",
+        "menu.gotoDefinition",
+    ),
+    (
+        MenuId::Go,
+        "4_symbol_nav",
+        20,
+        "editor.action.goToDeclaration",
+        "menu.gotoDeclaration",
+    ),
+    (
+        MenuId::Go,
+        "4_symbol_nav",
+        30,
+        "editor.action.goToTypeDefinition",
+        "menu.gotoTypeDefinition",
+    ),
+    (
+        MenuId::Go,
+        "4_symbol_nav",
+        40,
+        "editor.action.goToImplementation",
+        "menu.gotoImplementation",
+    ),
+    (
+        MenuId::Go,
+        "4_symbol_nav",
+        50,
+        "editor.action.goToReferences",
+        "menu.gotoReferences",
+    ),
+    (
+        MenuId::Go,
+        "5_infile_nav",
+        10,
+        "workbench.action.gotoSymbol",
+        "menu.gotoSymbolInEditor",
+    ),
+    (
+        MenuId::Go,
+        "5_infile_nav",
+        20,
+        "workbench.action.gotoLine",
+        "menu.gotoLine",
+    ),
+    // ---------------------------------------------------------------- 齿轮与帮助
+    (
         MenuId::Manage,
         "1_commands",
         10,
@@ -401,7 +701,14 @@ const MENU_ITEMS: &[(MenuId, &str, i32, &str, &str)] = &[
     ),
     (
         MenuId::Help,
-        "1_notifications",
+        "1_welcome",
+        10,
+        "workbench.action.showWelcomePage",
+        "menu.welcome",
+    ),
+    (
+        MenuId::Help,
+        "2_notifications",
         10,
         "notifications.toggleDoNotDisturbMode",
         "menu.toggleDnd",
@@ -844,7 +1151,53 @@ const STRINGS: &[(&str, &str)] = &[
     ("menubar.help", "帮助"),
     ("menubar.compact", "应用程序菜单"),
     ("activityBar.manage", "管理"),
+    // 菜单项标题：取 VS Code 中文语言包的措辞（与命令标题可以不同，例如命令是「关闭活动标签」，
+    // 菜单上写「关闭编辑器」）。
+    ("menu.newUntitledFile", "新建文本文件"),
+    ("menu.openFile", "打开文件..."),
+    ("menu.openFolder", "打开文件夹..."),
+    ("menu.openRecent", "打开最近的文件"),
+    ("menu.save", "保存"),
+    ("menu.saveAs", "另存为..."),
+    ("menu.saveAll", "全部保存"),
+    ("menu.revertFile", "还原文件"),
+    ("menu.closeEditor", "关闭编辑器"),
     ("menu.closeWindow", "关闭窗口"),
+    ("menu.undo", "撤消"),
+    ("menu.redo", "恢复"),
+    ("menu.cut", "剪切"),
+    ("menu.copy", "复制"),
+    ("menu.paste", "粘贴"),
+    ("menu.find", "查找"),
+    ("menu.replace", "替换"),
+    ("menu.findInFiles", "在文件中查找"),
+    ("menu.toggleLineComment", "切换行注释"),
+    ("menu.toggleBlockComment", "切换块注释"),
+    ("menu.selectAll", "全选"),
+    ("menu.copyLinesUp", "向上复制行"),
+    ("menu.copyLinesDown", "向下复制行"),
+    ("menu.moveLinesUp", "向上移动行"),
+    ("menu.moveLinesDown", "向下移动行"),
+    ("menu.insertCursorAbove", "在上面添加光标"),
+    ("menu.insertCursorBelow", "在下面添加光标"),
+    ("menu.insertCursorAtEndOfLines", "在行尾添加光标"),
+    ("menu.addSelectionToPreviousFindMatch", "添加上一个匹配项"),
+    ("menu.addSelectionToNextFindMatch", "添加下一个匹配项"),
+    ("menu.selectHighlights", "选择所有匹配项"),
+    ("menu.navigateBack", "后退"),
+    ("menu.navigateForward", "前进"),
+    ("menu.lastEditLocation", "上次编辑位置"),
+    ("menu.gotoFile", "转到文件..."),
+    ("menu.gotoSymbolInWorkspace", "转到工作区中的符号..."),
+    ("menu.gotoDefinition", "转到定义"),
+    ("menu.gotoDeclaration", "转到声明"),
+    ("menu.gotoTypeDefinition", "转到类型定义"),
+    ("menu.gotoImplementation", "转到实现"),
+    ("menu.gotoReferences", "转到引用"),
+    ("menu.gotoSymbolInEditor", "转到编辑器中的符号..."),
+    ("menu.gotoLine", "转到行/列..."),
+    ("menu.toggleWordWrap", "切换自动换行"),
+    ("menu.welcome", "欢迎使用"),
     ("menu.explorer", "资源管理器"),
     ("menu.search", "搜索"),
     ("menu.problems", "问题"),
@@ -942,6 +1295,117 @@ mod tests {
                 assert!(commands.get(c).is_some(), "{c} 未登记");
             }
         }
+    }
+
+    /// UX_SPEC §1.2：菜单栏是文件、编辑、选择、查看、转到、帮助（没有运行与终端），
+    /// 每个菜单里的项与 VS Code 的菜单一致，并且只有本仓库真正实现了的命令才会出现。
+    /// 以后再实现新命令、往菜单里加项，就在这张期望表里追加一行。
+    #[test]
+    fn the_menu_bar_lists_the_vscode_menus_in_order() {
+        use crate::shell::menus::{visible_items, visible_menus};
+        gpui::TestAppContext::single().update(|_cx| {
+            let menus = crate::shell::view::default_menus();
+            let center = crate::keys::default_commands().unwrap();
+            let commands = center.registry();
+            // 与界面一样的判定：工作台自己实现的，加上实现该命令的模块给出的 GPUI action。
+            let implemented = |id: &str| is_implemented(id);
+            let items = |menu: MenuId| -> Vec<String> {
+                visible_items(&menus, menu, commands, &implemented)
+                    .into_iter()
+                    .map(|(_, item)| item.command.to_string())
+                    .collect()
+            };
+            assert_eq!(
+                visible_menus(&menus, commands, &implemented),
+                MenuId::MENU_BAR.to_vec(),
+                "六个菜单都至少有一项可用"
+            );
+            assert_eq!(
+                items(MenuId::File),
+                [
+                    "workbench.action.files.newUntitledFile",
+                    "workbench.action.files.openFile",
+                    "workbench.action.files.openFolder",
+                    "workbench.action.openRecent",
+                    "workbench.action.files.save",
+                    "workbench.action.files.saveAs",
+                    "workbench.action.files.saveAll",
+                    "workbench.action.files.revert",
+                    "workbench.action.closeActiveEditor",
+                    "workbench.action.closeWindow",
+                ]
+            );
+            assert_eq!(
+                items(MenuId::Edit),
+                [
+                    "undo",
+                    "redo",
+                    "editor.action.clipboardCutAction",
+                    "editor.action.clipboardCopyAction",
+                    "editor.action.clipboardPasteAction",
+                    "actions.find",
+                    "editor.action.startFindReplaceAction",
+                    "workbench.action.findInFiles",
+                    "editor.action.commentLine",
+                    "editor.action.blockComment",
+                ]
+            );
+            assert_eq!(
+                items(MenuId::Selection),
+                [
+                    "editor.action.selectAll",
+                    "editor.action.copyLinesUpAction",
+                    "editor.action.copyLinesDownAction",
+                    "editor.action.moveLinesUpAction",
+                    "editor.action.moveLinesDownAction",
+                    "editor.action.insertCursorAbove",
+                    "editor.action.insertCursorBelow",
+                    "editor.action.insertCursorAtEndOfEachLineSelected",
+                    "editor.action.addSelectionToPreviousFindMatch",
+                    "editor.action.addSelectionToNextFindMatch",
+                    "editor.action.selectHighlights",
+                ]
+            );
+            assert_eq!(
+                items(MenuId::Go),
+                [
+                    "workbench.action.navigateBack",
+                    "workbench.action.navigateForward",
+                    "workbench.action.navigateToLastEditLocation",
+                    "workbench.action.quickOpen",
+                    "workbench.action.showAllSymbols",
+                    "editor.action.revealDefinition",
+                    "editor.action.goToDeclaration",
+                    "editor.action.goToTypeDefinition",
+                    "editor.action.goToImplementation",
+                    "editor.action.goToReferences",
+                    "workbench.action.gotoSymbol",
+                    "workbench.action.gotoLine",
+                ]
+            );
+            assert_eq!(
+                items(MenuId::Help),
+                [
+                    "workbench.action.showWelcomePage",
+                    "notifications.toggleDoNotDisturbMode",
+                ]
+            );
+            // 查看菜单：命令面板在最前，其余是 #16 自己的视图 / 外观 / 缩放项。
+            let view = items(MenuId::View);
+            assert_eq!(
+                view.first().map(String::as_str),
+                Some("workbench.action.showCommands")
+            );
+            assert!(view.iter().any(|c| c == "editor.action.toggleWordWrap"));
+            // 没实现的命令不许出现在菜单里（跨文件替换、问题导航、展开选定内容……）。
+            for (_, item) in menus.entries() {
+                assert!(
+                    commands.get(&item.command).is_some(),
+                    "{} 未登记",
+                    item.command
+                );
+            }
+        });
     }
 
     #[test]

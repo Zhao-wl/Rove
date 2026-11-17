@@ -175,6 +175,13 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::update::registry::action_for(id))
 }
 
+/// Whether the module that owns `id` implements it, i.e. it provides a GPUI action
+/// ([`action_for`]). Unlike [`is_implemented`] this needs no [`App`], so the menu registry can use
+/// it to decide visibility (`shell::menus::visible_items`).
+pub fn implemented_by_module(id: &str) -> bool {
+    action_for(id).is_some()
+}
+
 /// Whether a command can run (for menus and the command palette): it has a handler in the
 /// command table or a module action. Registered-but-unimplemented commands are excluded.
 pub fn is_implemented(id: &str, cx: &App) -> bool {

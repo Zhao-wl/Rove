@@ -1675,16 +1675,32 @@ fn render_menubar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElement {
         };
         if is_open {
             let menus_to_show = if compact { menus.clone() } else { vec![menu] };
-            button = button.child(render_menu_dropdown(host, &menus_to_show, cx));
+            button = button.child(render_menu_dropdown(
+                host,
+                &menus_to_show,
+                DropdownAnchor::Below,
+                cx,
+            ));
         }
         bar = bar.child(button);
     }
     bar.into_any_element()
 }
 
+/// 下拉菜单相对锚点的弹出方向。
+#[derive(Clone, Copy)]
+enum DropdownAnchor {
+    /// 菜单栏：在按钮下方展开，左边对齐。
+    Below,
+    /// 活动栏底部的齿轮：菜单底边对齐锚点向上展开（左侧活动栏向右长，右侧活动栏向左长），
+    /// 否则会画到窗口外面。
+    Above { toward_left: bool },
+}
+
 fn render_menu_dropdown<T: ShellHost>(
     host: &T,
     menus: &[MenuId],
+    anchor: DropdownAnchor,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let shell = host.shell();
@@ -1698,10 +1714,15 @@ fn render_menu_dropdown<T: ShellHost>(
     let sep = p.or("menu.separatorBackground", "menu.border");
     let mut list = div()
         .id("menu-dropdown")
+        .debug_selector(|| "menu-dropdown".into())
         .occlude()
-        .absolute()
-        .top(shell.z(28.0))
-        .left_0()
+        .absolute();
+    list = match anchor {
+        DropdownAnchor::Below => list.top(shell.z(28.0)).left_0(),
+        DropdownAnchor::Above { toward_left: false } => list.bottom_0().left_0(),
+        DropdownAnchor::Above { toward_left: true } => list.bottom_0().right_0(),
+    };
+    list = list
         .min_w(shell.z(240.0))
         .py(shell.z(4.0))
         .flex()
@@ -1763,6 +1784,15 @@ fn render_menu_dropdown<T: ShellHost>(
                     .children(catalog::key_label(&command, cx).map(|k| div().opacity(0.8).child(k)))
                     .on_click(cx.listener(move |host: &mut T, _, window, cx| {
                         host.shell_mut().open_menu = None;
+                        cx.notify();
+                        // 撤销、复制、查找、转到定义这类命令由各模块的 GPUI action 处理（键位走的也是它），
+                        // 与命令面板一样派发给当前焦点（代码视图等）；菜单不抢焦点，所以焦点还在原处。
+                        if !catalog::is_implemented(&command) {
+                            if let Some(action) = crate::keys::action_for(&command) {
+                                window.dispatch_action(action, cx);
+                                return;
+                            }
+                        }
                         run_command(host, &command, window, cx);
                     })),
             );
@@ -1853,6 +1883,7 @@ fn render_activity_bar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElemen
     let open = shell.open_menu == Some(MenuId::Manage);
     let mut manage = div()
         .id("activity-manage")
+        .debug_selector(|| "activity-manage".into())
         .relative()
         .w(shell.z(ACTIVITY_BAR_WIDTH))
         .h(shell.z(ACTIVITY_BAR_WIDTH))
@@ -1875,13 +1906,19 @@ fn render_activity_bar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElemen
     if open {
         let implemented = |id: &str| catalog::is_implemented(id) || shell.external_implemented(id);
         if !visible_items(&shell.menus, MenuId::Manage, host.commands(), &implemented).is_empty() {
-            manage = manage.child(
-                div()
-                    .absolute()
-                    .bottom(shell.z(ACTIVITY_BAR_WIDTH - 28.0))
-                    .left(shell.z(ACTIVITY_BAR_WIDTH))
-                    .child(render_menu_dropdown(host, &[MenuId::Manage], cx)),
-            );
+            // 锚点是贴着齿轮底边、紧挨活动栏外侧的零尺寸点，菜单从这里向上展开。
+            let anchor = div().absolute().bottom_0();
+            let anchor = if right {
+                anchor.right(shell.z(ACTIVITY_BAR_WIDTH))
+            } else {
+                anchor.left(shell.z(ACTIVITY_BAR_WIDTH))
+            };
+            manage = manage.child(anchor.child(render_menu_dropdown(
+                host,
+                &[MenuId::Manage],
+                DropdownAnchor::Above { toward_left: right },
+                cx,
+            )));
         }
     }
     div()

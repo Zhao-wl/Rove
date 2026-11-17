@@ -1,3 +1,6 @@
+// 发布版是窗口程序：双击启动时不再附带一个控制台窗口。埋点仍写到 stdout，
+// 由 `xtask startup` 这类把 stdout 接成管道的调用方读取；没有控制台时写入被丢弃。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 fn main() {
     let started = process_start();

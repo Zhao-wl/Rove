@@ -103,12 +103,14 @@ fn index_status_registers_a_status_bar_entry() {
 
 #[test]
 fn feature_registers_a_menu_item_that_shows_only_when_implemented() {
-    // 例：#24 实现快速打开后，在“转到”菜单登记一项。
+    // 例：某个 issue 先在“转到”菜单登记一项，命令实现之前这一项不显示。
+    // （命令用一个本仓库没有的 ID：已实现的命令都由各自的模块给出 GPUI action，一登记就会显示。）
+    const SAMPLE: &str = "rove.sample.gotoSomething";
     let mut commands = CommandRegistry::default();
     catalog::register_commands(&mut commands).unwrap();
     commands
         .register(
-            "workbench.action.quickOpen",
+            SAMPLE,
             Command {
                 title_key: "commands.quickOpen".into(),
                 category_key: None,
@@ -118,22 +120,23 @@ fn feature_registers_a_menu_item_that_shows_only_when_implemented() {
     let mut menus = default_menus();
     menus
         .register(
-            "menubar.go.workbench.action.quickOpen",
+            "menubar.go.rove.sample.gotoSomething",
             MenuItem {
                 menu: MenuId::Go,
-                group: Arc::from("1_files"),
+                group: Arc::from("9_sample"),
                 order: 10,
-                command: "workbench.action.quickOpen".into(),
+                command: SAMPLE.into(),
                 title: None,
             },
         )
         .unwrap();
+    // `commands` 里只有工作台自己的命令，“转到”菜单的其余项都因命令未登记而不显示。
     let before = |id: &str| catalog::is_implemented(id);
     assert!(visible_items(&menus, MenuId::Go, &commands, &before).is_empty());
-    let after = |id: &str| catalog::is_implemented(id) || id == "workbench.action.quickOpen";
+    let after = |id: &str| catalog::is_implemented(id) || id == SAMPLE;
     let items = visible_items(&menus, MenuId::Go, &commands, &after);
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].1.command.as_ref(), "workbench.action.quickOpen");
+    assert_eq!(items[0].1.command.as_ref(), SAMPLE);
 }
 
 #[test]
