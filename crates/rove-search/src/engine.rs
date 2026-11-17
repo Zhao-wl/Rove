@@ -189,7 +189,7 @@ impl Shared {
             return true;
         };
         let remaining = budget
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
             .unwrap_or_default();
