@@ -132,7 +132,7 @@ fn to_bgra(frame: Frame) -> Frame {
     let delay = frame.delay();
     let mut pixels = frame.into_buffer();
     let bytes: &mut [u8] = pixels.as_mut();
-    for pixel in bytes.chunks_exact_mut(4) {
+    for pixel in bytes.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Frame::from_parts(pixels, 0, 0, delay)
@@ -245,7 +245,7 @@ pub(crate) fn rasterize(tree: &usvg::Tree, scale: f32) -> Result<Arc<RenderImage
     );
     let mut pixels = pixmap.take();
     // Tiny-skia returns premultiplied RGBA; GPUI's image sprites hold straight BGRA.
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u32::from(pixel[3]);
         if alpha != 0 && alpha != 255 {
             for channel in &mut pixel[..3] {
