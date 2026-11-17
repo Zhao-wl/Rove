@@ -694,3 +694,285 @@ fn workbench_parts_keep_their_layout_at_every_scale(cx: &mut TestAppContext) {
         }
     }
 }
+
+#[gpui::test]
+fn zen_shortcuts_hide_parts_and_restore_layout(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    open_first_file(cx);
+    cx.simulate_keystrokes("ctrl-j");
+    let original = view.update(cx, |view, _| {
+        view.shell.layout.sidebar_width = 375.0;
+        view.shell.layout.panel_size = 160.0;
+        view.shell.layout.clone()
+    });
+    cx.simulate_keystrokes("escape");
+    redraw(cx);
+    assert!(cx.update(|window, app| crate::keys::pending_chord(window, app).is_empty()));
+    let original_editor = cx.debug_bounds("editor").unwrap();
+    let original_gutter = view.read_with(cx, |view, app| {
+        view.code_view().read(app).layout.gutter.size.width
+    });
+    assert!(original_gutter > px(0.0));
+    cx.simulate_keystrokes("ctrl-k z");
+    redraw(cx);
+    let zen = cx.debug_bounds("centered-editor-layout").unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert_eq!(zen.origin, point(px(0.0), px(0.0)));
+    assert_eq!(zen.size, viewport);
+    assert!(cx.update(|window, _| window.is_fullscreen()));
+    view.read_with(cx, |view, app| {
+        assert!(!view.shell.layout.sidebar_visible);
+        assert!(!view.shell.layout.panel_visible);
+        assert!(!view.shell.status_bar_visible());
+        let code = view.code_view().read(app);
+        assert!(code.suppress_line_numbers);
+        assert!(code.layout.gutter.size.width < original_gutter);
+    });
+    view.update(cx, |view, _| {
+        view.shell.layout.sidebar_width = 500.0;
+        view.shell.layout.panel_size = 200.0;
+    });
+    cx.simulate_keystrokes("escape escape");
+    redraw(cx);
+    assert!(!cx.update(|window, _| window.is_fullscreen()));
+    assert_eq!(cx.debug_bounds("editor"), Some(original_editor));
+    view.read_with(cx, |view, app| {
+        let layout = &view.shell.layout;
+        assert_eq!(layout.sidebar_visible, original.sidebar_visible);
+        assert_eq!(layout.panel_visible, original.panel_visible);
+        assert!(view.shell.status_bar_visible());
+        assert!(view.shell.zen_context().is_none());
+        assert_eq!(layout.sidebar_width, original.sidebar_width);
+        assert_eq!(layout.panel_size, original.panel_size);
+        assert_eq!(layout.active_panel_view, original.active_panel_view);
+        let code = view.code_view().read(app);
+        assert!(!code.suppress_line_numbers);
+        assert_eq!(code.layout.gutter.size.width, original_gutter);
+    });
+}
+
+#[gpui::test]
+fn zen_respects_settings_and_preserves_independent_centering(cx: &mut TestAppContext) {
+    use crate::editors::settings::Tabs;
+
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    open_first_file(cx);
+    view.update(cx, |view, _| {
+        for setting in [
+            "zenMode.fullScreen",
+            "zenMode.centerLayout",
+            "zenMode.hideActivityBar",
+            "zenMode.hideStatusBar",
+            "zenMode.hideLineNumbers",
+            "zenMode.silentNotifications",
+        ] {
+            view.shell.override_setting(setting, Value::Bool(false));
+        }
+        view.shell
+            .override_setting("zenMode.showTabs", Value::String("single".into()));
+    });
+    cx.simulate_keystrokes("ctrl-k z");
+    redraw(cx);
+    assert!(!cx.update(|window, _| window.is_fullscreen()));
+    assert!(cx.debug_bounds("editor").unwrap().origin.x > px(0.0));
+    assert!(cx.debug_bounds("centered-editor-layout").is_none());
+    view.read_with(cx, |view, app| {
+        assert!(view.shell.status_bar_visible());
+        assert!(!view.code_view().read(app).suppress_line_numbers);
+        assert_eq!(view.shell.zen_tabs(), Some(Tabs::Single));
+        assert!(!view.shell.feedback.do_not_disturb());
+    });
+    cx.simulate_keystrokes("escape escape");
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.shell
+                .override_setting("zenMode.centerLayout", Value::Bool(true));
+            view.shell
+                .override_setting("zenMode.showTabs", Value::String("none".into()));
+            run_command(view, "workbench.action.toggleCenteredLayout", window, cx);
+        })
+    });
+    cx.simulate_keystrokes("ctrl-k z");
+    redraw(cx);
+    assert!(cx.debug_bounds("centered-editor-layout").is_some());
+    assert_eq!(
+        view.read_with(cx, |view, _| view.shell.zen_tabs()),
+        Some(Tabs::None)
+    );
+    cx.simulate_keystrokes("escape escape");
+    redraw(cx);
+    assert!(cx.debug_bounds("centered-editor-layout").is_some());
+    assert_eq!(view.read_with(cx, |view, _| view.shell.zen_tabs()), None);
+}
+
+#[gpui::test]
+fn fullscreen_shortcut_and_zen_keep_the_original_window_mode(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (_, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    let initial = cx.update(|window, _| window.window_bounds());
+    let editor_top = cx.debug_bounds("editor").unwrap().origin.y;
+    cx.simulate_keystrokes("f11");
+    redraw(cx);
+    assert!(cx.update(|window, _| window.is_fullscreen()));
+    assert_eq!(cx.debug_bounds("editor").unwrap().origin.y, px(0.0));
+    cx.simulate_keystrokes("ctrl-k z");
+    redraw(cx);
+    cx.simulate_keystrokes("escape escape");
+    redraw(cx);
+    assert!(cx.update(|window, _| window.is_fullscreen()));
+    cx.simulate_keystrokes("f11");
+    redraw(cx);
+    assert!(!cx.update(|window, _| window.is_fullscreen()));
+    assert_eq!(cx.update(|window, _| window.window_bounds()), initial);
+    assert_eq!(cx.debug_bounds("editor").unwrap().origin.y, editor_top);
+}
+
+#[gpui::test]
+fn zen_suppresses_non_error_toasts_until_exit(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    view.update(cx, |view, cx| {
+        shell::view::report(
+            view,
+            "before-zen",
+            Reason::Global(Severity::Info),
+            Message::key("view.problems"),
+            none(),
+            cx,
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        view.read_with(cx, |view, _| view.shell.feedback.toasts().count()),
+        1
+    );
+    cx.simulate_keystrokes("ctrl-k z");
+    view.update(cx, |view, cx| {
+        for (key, severity) in [("info", Severity::Info), ("error", Severity::Error)] {
+            shell::view::report(
+                view,
+                key,
+                Reason::Global(severity),
+                Message::key("view.problems"),
+                none(),
+                cx,
+            )
+            .unwrap();
+        }
+        let toasts: Vec<_> = view
+            .shell
+            .feedback
+            .toasts()
+            .map(|toast| toast.key.as_ref())
+            .collect();
+        assert_eq!(toasts, ["error"]);
+    });
+    redraw(cx);
+    // A visible toast owns the first Escape. Close it before the Zen exit chord.
+    cx.simulate_keystrokes("escape");
+    redraw(cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.shell.feedback.toasts().count()),
+        0
+    );
+    cx.simulate_keystrokes("escape escape");
+    assert!(!view.read_with(cx, |view, _| view.shell.feedback.do_not_disturb()));
+}
+
+#[gpui::test]
+fn zen_restore_reuses_the_workspace_layout_snapshot(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let storage = tempfile::tempdir().unwrap();
+    let store = LayoutStore::with_base(Some(storage.path().into()), folder.path());
+    {
+        let (view, cx) = open_workbench(cx, folder.path(), store.clone());
+        cx.simulate_keystrokes("ctrl-k z");
+        view.update(cx, |view, _| view.shell.save_now());
+        let saved = store.load();
+        assert!(saved.zen_mode);
+        assert!(saved.sidebar_visible);
+    }
+    let (view, cx) = open_workbench(cx, folder.path(), store.clone());
+    cx.update(|window, app| view.update(app, |view, cx| Shell::attach_window(view, window, cx)));
+    redraw(cx);
+    assert!(cx.debug_bounds("centered-editor-layout").is_some());
+    view.update(cx, |view, _| {
+        view.shell
+            .override_setting("zenMode.restore", Value::Bool(false));
+        view.shell.save_now();
+    });
+    assert!(!store.load().zen_mode);
+}
+
+#[gpui::test]
+fn centered_layout_keeps_editor_hit_testing_in_window_coordinates(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    open_first_file(cx);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    let pos = rove_base::Position {
+        line: Line(0),
+        column: rove_base::Utf8Column(7),
+    };
+    let original = code.update(cx, |code, _| code.point_for_position(pos).unwrap());
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            run_command(view, "workbench.action.toggleCenteredLayout", window, cx)
+        })
+    });
+    redraw(cx);
+    let centered = code.update(cx, |code, _| code.point_for_position(pos).unwrap());
+    assert!(centered.x > original.x);
+    cx.simulate_click(centered, Modifiers::default());
+    code.read_with(cx, |code, _| assert_eq!(code.selection().active, pos));
+    view.update(cx, |view, cx| {
+        view.editor.split(Direction::Right).unwrap();
+        cx.notify();
+    });
+    redraw(cx);
+    let outer = cx.debug_bounds("centered-editor-layout").unwrap();
+    let inner = cx.debug_bounds("centered-editor-grid").unwrap();
+    let left = f32::from(inner.origin.x - outer.origin.x);
+    let right = f32::from(outer.right() - inner.right());
+    assert!((left - right).abs() <= 1.0);
+    assert!((left / f32::from(outer.size.width) - 0.1909).abs() < 0.01);
+    let carets = view.read_with(cx, |view, _| {
+        assert_eq!(view.editor.groups.len(), 2);
+        view.views
+            .values()
+            .map(|views| views.primary.code.clone())
+            .collect::<Vec<_>>()
+    });
+    let first = carets[0].update(cx, |code, _| code.point_for_position(pos).unwrap());
+    let second = carets[1].update(cx, |code, _| code.point_for_position(pos).unwrap());
+    assert!(first.x >= inner.origin.x && first.x < second.x && second.x < inner.right());
+}
+
+#[gpui::test]
+fn zen_honors_the_user_keybinding(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let user = tempfile::tempdir().unwrap();
+    let keybindings = user.path().join("keybindings.json");
+    std::fs::write(
+        &keybindings,
+        r#"[
+            { "key": "ctrl+k z", "command": "-workbench.action.toggleZenMode", "when": "!isAuxiliaryWindowFocusedContext" },
+            { "key": "ctrl+alt+z", "command": "workbench.action.toggleZenMode" }
+        ]"#,
+    )
+    .unwrap();
+    cx.update(|cx| crate::keys::watch_user_file(keybindings, cx));
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    cx.simulate_keystrokes("ctrl-k z");
+    redraw(cx);
+    assert!(view
+        .read_with(cx, |view, _| view.shell.zen_context())
+        .is_none());
+    cx.simulate_keystrokes("ctrl-alt-z");
+    redraw(cx);
+    assert!(view
+        .read_with(cx, |view, _| view.shell.zen_context())
+        .is_some());
+}

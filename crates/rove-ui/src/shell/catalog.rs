@@ -250,6 +250,26 @@ const COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "接受通知主要操作",
         Some("notifications"),
     ),
+    (
+        "workbench.action.toggleFullScreen",
+        "切换全屏",
+        Some("view"),
+    ),
+    (
+        "workbench.action.toggleZenMode",
+        "切换 Zen 模式",
+        Some("view"),
+    ),
+    (
+        "workbench.action.exitZenMode",
+        "退出 Zen 模式",
+        Some("view"),
+    ),
+    (
+        "workbench.action.toggleCenteredLayout",
+        "切换居中布局",
+        Some("view"),
+    ),
 ];
 
 /// 工作台实现了的命令 ID（菜单与命令面板据此决定是否显示）。
@@ -440,6 +460,14 @@ const SETTINGS: &[(&str, SettingDefault)] = &[
         "workbench.notifications.showInTitleBar",
         SettingDefault::Bool(true),
     ),
+    ("zenMode.fullScreen", SettingDefault::Bool(true)),
+    ("zenMode.centerLayout", SettingDefault::Bool(true)),
+    ("zenMode.hideActivityBar", SettingDefault::Bool(true)),
+    ("zenMode.hideStatusBar", SettingDefault::Bool(true)),
+    ("zenMode.hideLineNumbers", SettingDefault::Bool(true)),
+    ("zenMode.showTabs", SettingDefault::Str("multiple")),
+    ("zenMode.silentNotifications", SettingDefault::Bool(true)),
+    ("zenMode.restore", SettingDefault::Bool(true)),
 ];
 #[derive(Clone, Copy)]
 enum SettingDefault {

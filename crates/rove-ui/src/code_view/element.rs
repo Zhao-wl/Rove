@@ -191,7 +191,7 @@ impl CodeView {
 
         // 行号栏：字形边距 | 行号 | 行装饰区（含折叠控件）。
         let glyph_w = if o.glyph_margin { 18.0 } else { 0.0 };
-        let ln_w = if o.line_numbers == LineNumbers::Off {
+        let ln_w = if self.suppress_line_numbers || o.line_numbers == LineNumbers::Off {
             0.0
         } else {
             let n = (doc_count.max(1) as f64).log10().floor() as u32 + 1;

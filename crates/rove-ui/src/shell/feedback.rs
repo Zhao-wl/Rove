@@ -145,6 +145,7 @@ impl Events<FeedbackEvent> for Bus {
 #[derive(Default)]
 pub struct FeedbackHub {
     do_not_disturb: bool,
+    zen_silent: bool,
     generation: u64,
     status: Option<StatusMessage>,
     cursor: Option<CursorHint>,
@@ -186,15 +187,27 @@ impl FeedbackHub {
     }
 
     pub fn do_not_disturb(&self) -> bool {
+        self.do_not_disturb || self.zen_silent
+    }
+
+    pub(super) fn saved_do_not_disturb(&self) -> bool {
         self.do_not_disturb
+    }
+
+    pub(super) fn set_zen_silent(&mut self, enabled: bool) {
+        self.zen_silent = enabled;
+        self.apply_do_not_disturb();
     }
     /// 勿扰模式：开启后只弹出错误级通知；已有的非错误 toast 立即收起（仍在通知中心里）。
     pub fn set_do_not_disturb(&mut self, enabled: bool) {
         self.do_not_disturb = enabled;
-        if enabled {
-            for n in &mut self.notifications {
-                if !matches!(n.severity, Severity::Error) {
-                    n.toast = false;
+        self.apply_do_not_disturb();
+    }
+    fn apply_do_not_disturb(&mut self) {
+        if self.do_not_disturb() {
+            for notification in &mut self.notifications {
+                if !matches!(notification.severity, Severity::Error) {
+                    notification.toast = false;
                 }
             }
         }
@@ -414,7 +427,7 @@ impl FeedbackService for FeedbackHub {
                 });
             }
             FeedbackLevel::Notification { severity } => {
-                let toast = (!self.do_not_disturb || matches!(severity, Severity::Error))
+                let toast = (!self.do_not_disturb() || matches!(severity, Severity::Error))
                     && !self.center_visible;
                 if let Some(i) = self.notifications.iter().position(|n| n.key == f.key) {
                     // 同一原因不重复弹出：更新次数与内容，移到最前。
