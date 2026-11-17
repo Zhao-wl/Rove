@@ -1336,7 +1336,9 @@ fn render_title_bar<T: ShellHost>(
     div()
         .id("titlebar")
         .debug_selector(|| "titlebar".into())
-        .track_focus(&host.shell().title_focus.clone())
+        // 标题栏**不能** `track_focus`：gpui 在可聚焦元素上按下鼠标时会 `prevent_default()`，
+        // Windows 平台层据此认为应用已处理这次非客户区按下，最小化 / 最大化 / 关闭按钮、
+        // 拖动与双击标题栏就全部失效（v0.1.0）。点标题栏也不该把焦点从编辑器拿走（同 VS Code）。
         .h(height)
         .w_full()
         .flex_shrink_0()
@@ -1532,6 +1534,7 @@ fn render_window_controls<T: ShellHost>(host: &T, window: &Window) -> Option<Any
         |id: &'static str, name: &str, area: WindowControlArea, tip: String, close: bool| {
             div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .w(shell.z(46.0))
                 .h_full()
                 .flex()
