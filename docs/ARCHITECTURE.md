@@ -2039,7 +2039,7 @@ K&R 风格下两者同在声明行。`#region` 不在查询里（由 #12 的 `fo
 | `xtask/src/licenses.rs` | `cargo metadata` → SPDX 表达式判定（`OR` 取其一、`AND` 都要）→ 生成 `packaging/licenses/rust-dependencies.md`；`--check` 在未登记许可或清单过期时失败（CI 的「依赖许可汇总」任务） |
 | `xtask/src/icon.rs` | 多尺寸 `.ico`（16/32/48/64/128/256，小尺寸 BMP、64 起 PNG）由代码画出来；`--check` 保证仓库里的 `rove.ico` 与生成结果一致 |
 | `xtask/src/size.rs` | 体积守护：报告 `rove.exe`（相对 M0 6.2 MB 基线）**与发布包**，按 `perf/budgets.toml` 的 `[size].budget_bytes`（30 MB）判定**发布包**；索引组件包用 `--component` 只报告、不计入 |
-| `packaging/windows/rove.iss` | Inno Setup 6：用户级安装（`%LOCALAPPDATA%\Programs\Rove`，`PrivilegesRequired=lowest`，只写 `HKCU`）、默认不勾的文件关联（`OpenWithProgids`，不抢默认程序）与文件 / 目录右键菜单（目录传 `"%V"` 作为启动参数）、静默升级参数、卸载清理（用户数据默认保留，可勾选删除）、可选的 C# 索引组件（解压随包 zip 到 #43 的位置，**不联网**） |
+| `packaging/windows/rove.iss` | Inno Setup 6：用户级安装（`%LOCALAPPDATA%\Programs\Rove`，`PrivilegesRequired=lowest`，只写 `HKCU`）、默认不勾的文件关联（`OpenWithProgids`，不抢默认程序）与文件 / 目录右键菜单（目录传 `"%V"` 作为启动参数）、静默升级参数、卸载清理（用户数据默认保留，卸载前确认框选「是」才删）、可选的 C# 索引组件（解压随包 zip 到 #43 的位置，**不联网**） |
 | `crates/rove-app/build.rs` | 把 `rove.ico` 以**资源 ID 1** 编进 `rove.exe`（gpui 的 `load_icon()` 正是按 ID 1 取图标，所以窗口 / 任务栏 / Alt+Tab 用同一张图）并写 `VERSIONINFO`（`FileDescription` / `ProductName` / `CompanyName` / `FileVersion` / `LegalCopyright`）。用 embed-resource（gpui 已经在用它编 manifest），不新增依赖链 |
 | `crates/rove-ui/build.rs` | 注入 `ROVE_BUILD_COMMIT` / `ROVE_BUILD_DATE` / `ROVE_BUILD_CHANNEL` / `ROVE_GPUI_VERSION`（发布流水线设了就用它的，本地构建现场问 git），供「关于」对话框使用 |
 | `crates/rove-ui/src/about/` | `info.rs` 取值（版本、提交号、构建日期、通道、gpui 版本、C# 索引组件状态、可执行文件路径）、`mod.rs` 排版与复制文本、`registry.rs` 命令 `workbench.action.showAboutDialog` + 界面字符串 + 齿轮菜单项 + GPUI action |

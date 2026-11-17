@@ -745,7 +745,7 @@ fn release_notes(version: &str, info: &BuildInfo, sums: &str) -> String {
          ## 卸载\n\
          \n\
          从「应用和功能」卸载。程序目录、快捷方式与注册表项都会清除；用户数据（`%LOCALAPPDATA%\\Rove`，\n\
-         含索引缓存与设置备份）默认保留，卸载时可以勾选一并删除。\n\
+         含索引缓存与设置备份）默认保留，卸载时会询问是否一并删除（默认「否」）。\n\
          \n\
          ## SHA-256\n\
          \n\
@@ -955,9 +955,9 @@ mod tests {
         );
     }
 
-    /// 卸载默认保留用户数据，勾选后才删（issue #76）。
+    /// 卸载默认保留用户数据，卸载前确认框选「是」才删（issue #76）。
     #[test]
-    fn uninstaller_keeps_user_data_unless_the_box_is_checked() {
+    fn uninstaller_keeps_user_data_unless_the_user_confirms() {
         let iss = installer_script();
         assert!(
             iss.contains("RemoveUserData := False;") && iss.contains("MB_YESNO or MB_DEFBUTTON2"),
@@ -969,7 +969,7 @@ mod tests {
         );
         assert!(
             iss.contains(r"DelTree(ExpandConstant('{localappdata}\Rove')"),
-            "勾选后删除 %LOCALAPPDATA%\\Rove"
+            "确认后删除 %LOCALAPPDATA%\\Rove"
         );
         assert!(
             iss.contains("if UninstallSilent() then"),
