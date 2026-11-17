@@ -1892,7 +1892,10 @@ fn render_activity_bar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElemen
         .justify_center()
         .text_color(if open { fg } else { inactive })
         .hover(move |s| s.text_color(fg))
-        .tooltip(tooltip(label(host, "activityBar.manage", &[]), &p))
+        // 菜单打开时不再弹「管理」提示，免得盖住菜单。
+        .when(!open, |d| {
+            d.tooltip(tooltip(label(host, "activityBar.manage", &[]), &p))
+        })
         .child(named_icon("settings-gear", size))
         .on_click(cx.listener(|host: &mut T, _, _, cx| {
             let shell = host.shell_mut();
