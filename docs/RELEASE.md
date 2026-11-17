@@ -68,7 +68,7 @@ Markdown 预览资源等**全部嵌在 `rove.exe` 里**，所以包里没有资�
 - 右键菜单「用 Rove 打开」：文件用 `"%1"`，目录与目录空白处用 `"%V"`（路径作为启动参数 → 以它为工作区打开）。
   **不往 PATH 里加东西**（UX_SPEC §1.6：只接受启动参数，不提供 shell 命令行工具）；
 - 卸载清除程序目录、快捷方式与全部注册表项；用户数据（`%LOCALAPPDATA%\Rove`）**默认保留**，
-  卸载进度页上有一个默认不勾的「同时删除用户数据」；
+  卸载开始前弹一次确认框「是否同时删除用户数据」，默认按钮是「否」（静默卸载不问，按保留处理）；
 - 静默升级：`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP-`，`CloseApplications=yes`
   让安装器等 `rove.exe` 退出，`RestartApplications=no`（重启与启动参数由 #149 的更新端决定）。
   这组参数同时写进 `latest.json` 的 `installer.silent_args`，更新端照着调用即可；
@@ -203,8 +203,8 @@ C# 索引组件是独立的可选包，**不计入** 30 MB：用 `--component <z
 | 6 | 重新安装，勾上文件关联与两个右键菜单 | `.cs` 出现在「打开方式」里但默认程序不变；文件与目录右键都有「用 Rove 打开」，目录项以该目录为工作区打开 |
 | 7 | 装 `v0.1.0` 后装 `v0.1.1` | 原地升级，不留旧版本目录，设置与工作区状态还在 |
 | 8 | 静默升级 `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART` | 无界面完成；运行中的 `rove.exe` 会被要求退出后再装 |
-| 9 | 卸载（不勾「同时删除用户数据」） | 程序目录、快捷方式、`HKCU\Software\Classes` 下的 `Rove.*` 与 `shell\Rove` 全部消失；`%LOCALAPPDATA%\Rove` 还在 |
-| 10 | 再装一次并卸载，勾上「同时删除用户数据」 | `%LOCALAPPDATA%\Rove` 也被删除 |
+| 9 | 卸载（确认框选「否」） | 程序目录、快捷方式、`HKCU\Software\Classes` 下的 `Rove.*` 与 `shell\Rove` 全部消失；`%LOCALAPPDATA%\Rove` 还在 |
+| 10 | 再装一次并卸载，确认框选「是」 | `%LOCALAPPDATA%\Rove` 也被删除 |
 | 11 | 用户名含中文 / 空格、OneDrive 重定向的账户 | 以上全部重跑一遍 |
 
 检查注册表残留：

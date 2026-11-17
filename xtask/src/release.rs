@@ -430,6 +430,16 @@ pub fn find_iscc() -> Option<PathBuf> {
             }
         }
     }
+    // 用户级安装（`winget install JRSoftware.InnoSetup --scope user` 的落点）。
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        let path = PathBuf::from(dir)
+            .join("Programs")
+            .join("Inno Setup 6")
+            .join("ISCC.exe");
+        if path.is_file() {
+            return Some(path);
+        }
+    }
     None
 }
 
@@ -950,8 +960,12 @@ mod tests {
     fn uninstaller_keeps_user_data_unless_the_box_is_checked() {
         let iss = installer_script();
         assert!(
-            iss.contains("RemoveUserDataCheckBox.Checked := False"),
-            "「同时删除用户数据」默认不勾"
+            iss.contains("RemoveUserData := False;") && iss.contains("MB_YESNO or MB_DEFBUTTON2"),
+            "「同时删除用户数据」默认不删，确认框的默认按钮是「否」"
+        );
+        assert!(
+            iss.contains("function InitializeUninstall(): Boolean;"),
+            "卸载开始之前就问（进度页上的勾选框来不及勾）"
         );
         assert!(
             iss.contains(r"DelTree(ExpandConstant('{localappdata}\Rove')"),
