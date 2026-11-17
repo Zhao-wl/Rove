@@ -21,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::pack::{self, Contents, PackedFile};
@@ -39,10 +39,10 @@ pub const SILENT_ARGS: &[&str] = &[
     "/SP-",
 ];
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Manifest {
     schema: u32,
-    product: &'static str,
+    product: String,
     channel: String,
     version: String,
     released: String,
@@ -53,17 +53,17 @@ struct Manifest {
     components: Vec<Component>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Artifact {
     file: String,
     url: String,
     size: u64,
     sha256: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     silent_args: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Component {
     id: String,
     version: String,
@@ -178,6 +178,23 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     println!("  输出：{}", out.display());
     fs::create_dir_all(&out)?;
 
+    // 组件包在**构建之前**就解析并判定：正式发布漏传 `--component` 时当场失败，
+    // 而不是等十几分钟构建完才发现清单里 `components` 是空的（issue #238）。
+    let component_source = component_zip(args)?;
+    match (
+        &component_source,
+        missing_component_policy(&version, &channel, util::has_flag(args, "--no-component")),
+    ) {
+        (Some(path), _) => println!("  C# 索引组件：{}", path.display()),
+        (None, MissingComponent::Fail) => return Err(missing_component_error(&channel).into()),
+        (None, MissingComponent::Warn) => {
+            println!("::warning::没传 --component：latest.json 的 components 会是空数组，");
+            println!(
+                "  安装器里也不会出现「安装 C# 索引组件」勾选项；已装组件的用户拿不到组件更新。"
+            );
+        }
+    }
+
     // ---------------------------------------------------------------- 1. 构建
     if util::has_flag(args, "--skip-build") {
         println!("\n[1/6] 跳过构建（--skip-build）");
@@ -221,12 +238,19 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
 
     // ---------------------------------------------------------------- 4. 安装包
     println!("\n[4/6] 安装包（Inno Setup）");
-    // 组件包必须在建安装包**之前**解析：安装器里那个「安装 C# 索引组件」勾选项
-    // 是 rove.iss 按 /DComponentZip 条件编译出来的，拿不到路径就整段不生成（issue #76 §5）。
-    let component = component_zip(args)?;
-    match &component {
-        Some(path) => println!("  随包携带 C# 索引组件：{}", path.display()),
-        None => println!("  没传 --component：安装器里不会出现「安装 C# 索引组件」勾选项"),
+    // 组件包先收进产物目录：发布附件就是这个目录里的文件（Actions 与 upload.ps1 都照它上传），
+    // 组件留在 target\components 下就会出现「清单里有、附件里没有」的发布（issue #238）。
+    // 安装器里那个「安装 C# 索引组件」勾选项是 rove.iss 按 /DComponentZip 条件编译出来的，
+    // 所以这一步必须在建安装包**之前**完成（issue #76 §5）。
+    let component = match &component_source {
+        Some(path) => Some(stage_component(path, &out)?),
+        None => {
+            println!("  没传 --component：安装器里不会出现「安装 C# 索引组件」勾选项");
+            None
+        }
+    };
+    if let Some(path) = &component {
+        println!("  随包携带 C# 索引组件：{}", path.display());
     }
     let installer = match find_iscc() {
         Some(iscc) => Some(build_installer(
@@ -296,6 +320,12 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
             sig.display(),
             sign::fingerprint(&key)
         );
+    }
+
+    // 自检：清单引用的每个文件都在产物目录里（大小与 SHA-256 对得上），
+    // 目录里的每个发布附件也都在清单里（issue #238）。
+    for line in verify_attachments(&out, &manifest_path)? {
+        println!("  {line}");
     }
 
     // ---------------------------------------------------------------- 6. 说明与上传脚本
@@ -423,6 +453,141 @@ fn component_zip(args: &[String]) -> Result<Option<PathBuf>, Box<dyn std::error:
     Ok(Some(path))
 }
 
+/// 漏传 `--component` 时怎么办（issue #238）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingComponent {
+    /// 正式发布：直接失败，不产出一份组件列表为空的清单。
+    Fail,
+    /// 预发布 / 自定义频道 / 明确 `--no-component`：只警告，照常产出。
+    Warn,
+}
+
+/// 正式发布（`stable` 频道 + 没有预发布后缀的版本号）漏了组件包就是个发布事故：
+/// 清单里的 `components` 为空，已经装了索引组件的用户永远等不到这次更新（issue #238）。
+/// 真的要发一版不带组件的，就显式写 `--no-component`。
+fn missing_component_policy(version: &str, channel: &str, opted_out: bool) -> MissingComponent {
+    if opted_out || channel != "stable" || version.contains('-') {
+        MissingComponent::Warn
+    } else {
+        MissingComponent::Fail
+    }
+}
+
+fn missing_component_error(channel: &str) -> String {
+    format!(
+        "正式发布（{channel} 频道）必须带上 C# 索引组件包，否则 latest.json 的 components 是空的，\
+         已安装组件的用户拿不到这次更新（issue #238）。\n\
+         先打组件包：powershell -NoProfile -File scripts\\components\\package-indexer.ps1\n\
+         再传给本命令：cargo xtask release --component target\\components\\rove-indexer-cs-<版本>-win-x64.zip\n\
+         确实要发一版不带组件的，显式加 --no-component。"
+    )
+}
+
+/// 把组件包收进产物目录：**发布附件 = 产物目录里的文件**，组件留在 `target\components`
+/// 下就会漏传（Actions 的 `gh release create` 只扫产物目录）。已经在目录里就原地用。
+fn stage_component(src: &Path, out: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| format!("--component：{} 没有文件名", src.display()))?;
+    let dest = out.join(name);
+    if dest != *src {
+        fs::copy(src, &dest).map_err(|e| format!("复制组件包到 {} 失败：{e}", dest.display()))?;
+    }
+    Ok(dest)
+}
+
+/// 发布附件与签名清单必须一一对应（issue #238 的验收标准）。
+///
+/// 两个方向都查，少了哪一边都是事故：
+/// - 清单里引用的每个文件（安装包、便携版、每个组件）都在产物目录里，**大小与 SHA-256 一致**，
+///   并且在 `SHA256SUMS.txt` 里有同样的校验值；
+/// - 产物目录里的每个发布附件（`.zip` / `.exe`）都被清单引用——组件包只在附件里、
+///   不在清单里，正是 tag 工作流漏传 `--component` 时的样子。
+pub fn verify_attachments(
+    dir: &Path,
+    manifest_path: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let bytes = fs::read(manifest_path)
+        .map_err(|e| format!("读取 {} 失败：{e}", manifest_path.display()))?;
+    let manifest: Manifest = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{} 不是合法的更新清单：{e}", manifest_path.display()))?;
+
+    let sums_path = dir.join("SHA256SUMS.txt");
+    let sums = util::read_text(&sums_path)
+        .map_err(|e| format!("读取 {} 失败：{e}", sums_path.display()))?;
+
+    let mut referenced: Vec<(String, u64, String, String)> = Vec::new();
+    if let Some(installer) = &manifest.installer {
+        referenced.push((
+            installer.file.clone(),
+            installer.size,
+            installer.sha256.clone(),
+            "安装包".into(),
+        ));
+    }
+    referenced.push((
+        manifest.portable.file.clone(),
+        manifest.portable.size,
+        manifest.portable.sha256.clone(),
+        "便携版".into(),
+    ));
+    for component in &manifest.components {
+        referenced.push((
+            component.file.clone(),
+            component.size,
+            component.sha256.clone(),
+            format!("组件 {} {}", component.id, component.version),
+        ));
+    }
+
+    let mut report = Vec::new();
+    for (file, size, digest, what) in &referenced {
+        let path = dir.join(file);
+        if !path.is_file() {
+            return Err(format!(
+                "清单引用了 {file}（{what}），但发布附件里没有它：{} 不存在",
+                path.display()
+            )
+            .into());
+        }
+        let actual_size = fs::metadata(&path)?.len();
+        if actual_size != *size {
+            return Err(
+                format!("{file}（{what}）的大小是 {actual_size}，清单里写的是 {size}").into(),
+            );
+        }
+        let actual = sha256_file(&path)?;
+        if actual != *digest {
+            return Err(format!("{file}（{what}）的 SHA-256 与清单不一致").into());
+        }
+        if !sums
+            .lines()
+            .any(|l| l.trim() == format!("{digest}  {file}"))
+        {
+            return Err(format!("SHA256SUMS.txt 里没有 {file}（{what}）的校验值").into());
+        }
+        report.push(format!("清单 ⟷ 附件一致：{file}（{what}，{size} 字节）"));
+    }
+
+    // 反向：目录里的发布附件不能有清单没提到的。
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_attachment = name.ends_with(".zip") || name.ends_with(".exe");
+        if is_attachment && !referenced.iter().any(|(file, ..)| *file == name) {
+            return Err(format!(
+                "{name} 会被当成发布附件上传，但签名清单里没有它\
+                 （组件包进了附件却没进清单，正是 issue #238 的 bug）"
+            )
+            .into());
+        }
+    }
+    Ok(report)
+}
+
 /// ISCC 的 `/D` 参数（不含脚本路径本身）。单独拆出来是为了能在没装 Inno Setup 的机器上测。
 fn iscc_defines(
     version: &str,
@@ -528,7 +693,7 @@ fn build_manifest(
     };
     Ok(Manifest {
         schema: 1,
-        product: "rove",
+        product: "rove".into(),
         channel: channel.to_string(),
         version: version.to_string(),
         released: info.date.clone(),
@@ -887,6 +1052,215 @@ mod tests {
             assert_eq!(resolved.file_name().unwrap().to_string_lossy(), name);
         }
         fs::remove_file(&file).ok();
+    }
+
+    // ------------------------------------------------- issue #238：组件进清单与附件
+
+    fn fake_info() -> BuildInfo {
+        BuildInfo {
+            commit: "0".repeat(40),
+            short_commit: "000000000000".into(),
+            date: "2026-11-17".into(),
+            dirty: false,
+        }
+    }
+
+    /// 在 `dir` 里造一份假的产物（内容无所谓，校验的是大小与摘要的一致性）。
+    fn fake_artifact(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// 按 `run()` 的做法写出 SHA256SUMS.txt 与 latest.json。
+    fn write_release(
+        out: &Path,
+        zip: &Path,
+        installer: Option<&Path>,
+        component: Option<&Path>,
+    ) -> PathBuf {
+        let mut artifacts = vec![zip.to_path_buf()];
+        artifacts.extend(installer.map(Path::to_path_buf));
+        artifacts.extend(component.map(Path::to_path_buf));
+        let mut sums = String::new();
+        for path in &artifacts {
+            sums.push_str(&format!(
+                "{}  {}\n",
+                sha256_file(path).unwrap(),
+                path.file_name().unwrap().to_string_lossy()
+            ));
+        }
+        fs::write(out.join("SHA256SUMS.txt"), &sums).unwrap();
+        let manifest = build_manifest(
+            "0.1.0",
+            "stable",
+            &fake_info(),
+            "https://github.com/Zhao-wl/Rove/releases/tag/v0.1.0",
+            "https://github.com/Zhao-wl/Rove/releases/download/v0.1.0",
+            zip,
+            installer,
+            component,
+        )
+        .unwrap();
+        let path = out.join("latest.json");
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+        )
+        .unwrap();
+        path
+    }
+
+    /// 一次带组件的发布：组件包进了附件、也进了清单，版本 / 摘要 / 大小都对得上。
+    #[test]
+    fn a_release_with_a_component_lists_it_in_both_the_attachments_and_the_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let zip = fake_artifact(out, "Rove-0.1.0-win-x64.zip", b"portable");
+        let installer = fake_artifact(out, "Rove-0.1.0-win-x64-setup.exe", b"installer");
+        let component = fake_artifact(
+            out,
+            "rove-indexer-cs-1.3.0.0-win-x64.zip",
+            b"indexer component package",
+        );
+        let manifest_path = write_release(out, &zip, Some(&installer), Some(&component));
+
+        let report = verify_attachments(out, &manifest_path).expect("附件与清单应一致");
+        assert_eq!(report.len(), 3, "安装包 + 便携版 + 组件：{report:?}");
+
+        let text = util::read_text(&manifest_path).unwrap();
+        let parsed: Manifest = serde_json::from_str(&text).unwrap();
+        let listed = &parsed.components[0];
+        assert_eq!(listed.id, "indexer-cs");
+        assert_eq!(listed.version, "1.3.0.0", "版本号从包名解析");
+        assert_eq!(listed.size, fs::metadata(&component).unwrap().len());
+        assert_eq!(listed.sha256, sha256_file(&component).unwrap());
+        assert!(listed.url.ends_with("rove-indexer-cs-1.3.0.0-win-x64.zip"));
+    }
+
+    /// issue #238 的现场：组件包是发布附件，却没进签名清单（tag 工作流漏传 `--component`）。
+    #[test]
+    fn a_component_attachment_missing_from_the_manifest_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let zip = fake_artifact(out, "Rove-0.1.0-win-x64.zip", b"portable");
+        // 清单按「没传 --component」生成，组件包却躺在产物目录里等着被上传。
+        let manifest_path = write_release(out, &zip, None, None);
+        fake_artifact(out, "rove-indexer-cs-1.3.0.0-win-x64.zip", b"component");
+
+        let err = verify_attachments(out, &manifest_path).expect_err("清单漏了组件必须失败");
+        assert!(err.to_string().contains("rove-indexer-cs"), "{err}");
+    }
+
+    /// 反过来：清单里写了组件，附件里却没有（组件包留在 target\components 没收进产物目录）。
+    #[test]
+    fn a_manifest_component_without_an_attachment_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let elsewhere = dir.path().join("components");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let zip = fake_artifact(out, "Rove-0.1.0-win-x64.zip", b"portable");
+        let component = fake_artifact(&elsewhere, "rove-indexer-cs-1.3.0.0-win-x64.zip", b"c");
+        let manifest_path = write_release(out, &zip, None, Some(&component));
+
+        let err = verify_attachments(out, &manifest_path).expect_err("附件里没有组件必须失败");
+        assert!(err.to_string().contains("发布附件里没有它"), "{err}");
+
+        // `stage_component` 就是用来堵这个洞的：收进产物目录后再校验就通过了。
+        let staged = stage_component(&component, out).unwrap();
+        assert_eq!(staged, out.join("rove-indexer-cs-1.3.0.0-win-x64.zip"));
+        let manifest_path = write_release(out, &zip, None, Some(&staged));
+        verify_attachments(out, &manifest_path).expect("收进产物目录后应一致");
+        // 已经在产物目录里的包不会被复制到自己身上。
+        assert_eq!(stage_component(&staged, out).unwrap(), staged);
+    }
+
+    /// 清单与附件的大小 / 摘要对不上（比如重新打了包却没重算清单）也要被拦下来。
+    #[test]
+    fn a_tampered_attachment_fails_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let zip = fake_artifact(out, "Rove-0.1.0-win-x64.zip", b"portable");
+        let component = fake_artifact(out, "rove-indexer-cs-1.3.0.0-win-x64.zip", b"component");
+        let manifest_path = write_release(out, &zip, None, Some(&component));
+        fs::write(&component, b"component v2").unwrap();
+
+        let err = verify_attachments(out, &manifest_path).expect_err("改了包就必须失败");
+        assert!(err.to_string().contains("大小"), "{err}");
+    }
+
+    /// 正式发布漏传 `--component` 必须报错；预发布 / 显式 `--no-component` 只警告。
+    #[test]
+    fn a_formal_release_refuses_to_drop_the_component() {
+        assert_eq!(
+            missing_component_policy("0.1.0", "stable", false),
+            MissingComponent::Fail,
+            "正式版本号 + stable 频道漏了组件 = 发布事故（issue #238）"
+        );
+        assert_eq!(
+            missing_component_policy("0.1.0", "stable", true),
+            MissingComponent::Warn,
+            "--no-component 是明确的选择，放行但要警告"
+        );
+        assert_eq!(
+            missing_component_policy("0.2.0-rc1", "stable", false),
+            MissingComponent::Warn,
+            "预发布版本号只警告"
+        );
+        assert_eq!(
+            missing_component_policy("0.1.0", "nightly", false),
+            MissingComponent::Warn,
+            "非 stable 频道只警告"
+        );
+        let message = missing_component_error("stable");
+        assert!(message.contains("package-indexer.ps1"), "要给出下一步做法");
+        assert!(message.contains("--no-component"));
+    }
+
+    /// 验收标准第二条的客户端一侧：用**本流水线产出的清单**喂 #149 的更新端，
+    /// 已装组件的机器能更新，没装的机器不会被自动装上。
+    #[test]
+    fn installed_components_update_while_absent_ones_are_left_alone() {
+        use rove_update::component::{plan, Installed, Plan};
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let zip = fake_artifact(out, "Rove-0.1.0-win-x64.zip", b"portable");
+        let component = fake_artifact(out, "rove-indexer-cs-1.3.0.0-win-x64.zip", b"component");
+        let manifest_path = write_release(out, &zip, None, Some(&component));
+        verify_attachments(out, &manifest_path).unwrap();
+
+        // 更新端读的是清单的**字节**（签名覆盖的也是这些字节）。
+        let bytes = fs::read(&manifest_path).unwrap();
+        let manifest = rove_update::Manifest::parse(&bytes).expect("#149 的解析器要认这份清单");
+        let listed = manifest
+            .indexer_component()
+            .expect("清单里必须有 indexer-cs");
+        assert_eq!(listed.version, "1.3.0.0");
+        assert_eq!(listed.sha256, sha256_file(&component).unwrap());
+        assert_eq!(listed.size, fs::metadata(&component).unwrap().len());
+
+        let root = dir.path().join("components").join("indexer-cs");
+        let installed = Installed {
+            root: root.clone(),
+            version: Some("1.2.0.0".into()),
+            manifest_file: "component.json".into(),
+        };
+        assert!(
+            matches!(plan(Some(listed), &installed), Plan::Update(c) if c.version == "1.3.0.0"),
+            "已装 1.2.0.0 的机器应该能更新到清单里的 1.3.0.0"
+        );
+
+        let not_installed = Installed {
+            root,
+            version: None,
+            manifest_file: "component.json".into(),
+        };
+        assert_eq!(
+            plan(Some(listed), &not_installed),
+            Plan::NotInstalled,
+            "没装组件的机器不会被自动装上（#43 的组件是可选的）"
+        );
     }
 
     #[test]

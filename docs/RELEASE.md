@@ -10,6 +10,12 @@ Rove 的发布有两条等价的路径，产出同一套产物：
 | GitHub Actions | [`.github/workflows/release.yml`](../.github/workflows/release.yml)，打 `v*` tag 触发 | 正常情况 |
 | 本地 | `cargo xtask release` + 生成出来的 `upload.ps1` | **Actions 额度耗尽时**（当前就是这种情况） |
 
+两条路径都**先打 C# 索引组件包、再用 `--component` 传给发布命令**（issue #238）：漏了这一步，
+签名清单 `latest.json` 的 `components` 就是空数组，已经装了索引组件的用户永远等不到这次组件更新。
+Actions 自己跑 `scripts/components/package-indexer.ps1`；本地这一步是人工的，所以
+**正式发布（`stable` 频道 + 非预发布版本号）漏传 `--component` 会直接失败**，
+确实要发一版不带组件的就显式加 `--no-component`（只警告，照常产出）。
+
 两条路径调用的是同一段代码（`xtask/src/release.rs`），唯一的差别是签名私钥的来源：
 Actions 读 secret `ROVE_UPDATE_SIGNING_KEY`，本地读 `%LOCALAPPDATA%\Rove-release\update-signing.key`。
 
@@ -25,7 +31,12 @@ Actions 读 secret `ROVE_UPDATE_SIGNING_KEY`，本地读 `%LOCALAPPDATA%\Rove-re
 | `latest.json` + `latest.json.sig` | #149 的更新清单与 ed25519 分离签名 |
 | `release-notes.md` | Release 说明草稿（SmartScreen、WebView2、卸载说明都写好了） |
 | `upload.ps1` | 人工执行的上传脚本（打 tag → 建**草稿** Release → 上传） |
-| `rove-indexer-cs-<版本>-win-x64.zip` | 可选的 C# 索引组件包，由 `scripts/components/package-indexer.ps1` 单独打，`--component` 传进来 |
+| `rove-indexer-cs-<版本>-win-x64.zip` | C# 索引组件包，由 `scripts/components/package-indexer.ps1` 单独打，`--component` 传进来后**复制进本目录**（#238） |
+
+**发布附件 = 这个目录里的全部文件（`upload.ps1` 除外）**，两条路径都照这个目录上传，
+所以组件包必须躺在这里，而不是留在 `target/components/`。`cargo xtask release` 收工前会自检
+一遍：清单引用的每个文件都在目录里且大小与 SHA-256 对得上，目录里的每个 `.zip` / `.exe`
+也都被清单引用——两个方向都查，才能既防「附件有、清单没有」也防「清单有、附件没有」。
 
 发布包的内容清单在 [`packaging/package-contents.toml`](../packaging/package-contents.toml)：
 `rove.exe` + `LICENSE.txt` + `THIRD_PARTY_NOTICES.md` + `README.md`。主题、语言配置、codicons、
@@ -69,7 +80,8 @@ Markdown 预览资源等**全部嵌在 `rove.exe` 里**，所以包里没有资�
 # 0. 一次性：生成签名密钥对（私钥在仓库外，公钥提交进仓库）
 cargo xtask release-keygen
 
-# 1. 可选：打索引组件包（需要 .NET 9 SDK）
+# 1. 打索引组件包（需要 .NET 9 SDK）。**正式发布不能跳过这一步**：
+#    脚本最后一行输出就是 zip 的路径，下一条命令要用它。
 powershell -NoProfile -File scripts\components\package-indexer.ps1
 
 # 2. 构建 + 打包 + 签名（不打 tag、不上传）
@@ -85,6 +97,9 @@ powershell -NoProfile -File target\release-dist\<版本>\upload.ps1
 - 版本号的**唯一来源**是根 `Cargo.toml` 的 `[workspace.package] version`。改版本只改那一处，
   版本资源、安装包、`latest.json`、「关于」对话框都跟着变；`cargo xtask check-version --tag v0.1.0`
   校验 tag 与它一致（CI 在打 tag 时跑同一条命令）。
+- 第 1 步漏了的话，第 2 步会在**构建开始之前**就失败（issue #238），错误里写着怎么补；
+  真要发一版不带组件的就加 `--no-component`。预发布版本号（`0.2.0-rc1`）与非 `stable`
+  频道只警告不失败。
 - 没装 Inno Setup 时 `cargo xtask release` 会跳过安装包并给出提示，其余产物照常产出；
   加 `--require-installer` 则视为失败。ISCC.exe 的位置可以用 `ROVE_ISCC` 指定。
 - 产物可复现：`Cargo.lock` 已锁定，工具链固定在 `rust-toolchain.toml`；
@@ -112,7 +127,14 @@ powershell -NoProfile -File target\release-dist\<版本>\upload.ps1
 ```
 
 `installer` 在没有产出安装包时是 `null`（例如本机没装 Inno Setup 就跑了 `cargo xtask release`），
-`components` 没有可选组件时是空数组；**正式发布的清单里两者都应该有内容**。
+`components` 没有可选组件时是空数组；**正式发布的清单里两者都必须有内容**：`components` 为空
+意味着已装索引组件的用户拿不到这次更新（issue #238），所以漏传 `--component` 时发布命令直接失败。
+`components[].version` 从包名 `rove-indexer-cs-<版本>-win-x64.zip` 解析，与 `component.json`
+里的版本是同一个（打包脚本两边都按 `rove-indexer-cs --version` 的输出写）。
+
+更新端（#149）拿到这份清单后：**只有已经装了组件的机器才会下载组件包**，没装的不会被自动装上
+（`rove_update::component::plan`，#43 的组件是可选的）。`cargo test -p xtask` 里有一条测试直接
+把本流水线产出的 `latest.json` 喂给那个判定，两种情况都压住。
 
 签名是**分离式**的：对 `latest.json` 的**字节**签名，写出 `latest.json.sig`，内容是一行
 `ed25519 <base64 的 64 字节签名>`。验签时读同样的两个文件，**不要重新序列化 JSON**

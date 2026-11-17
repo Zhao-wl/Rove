@@ -44,6 +44,9 @@ gpui.workspace = true
 tempfile = "3"
 # #25 全局搜索基准。
 rove-search.workspace = true
+# #238：发布流水线产出的 latest.json 要能被 #149 的更新端原样读懂（组件更新的判定也在那边）。
+# 只在测试里用，不进 xtask 的产物，也不开任何网络 feature（网络出口仍然只有 rove-update 自己）。
+rove-update.workspace = true
 
 [[bench]]
 name = "text_source"
