@@ -274,6 +274,7 @@ pub(crate) struct EditorService {
     pub(crate) expanded: Option<EditorGroupId>,
     pub(crate) settings: EditorSettings,
     loader: Arc<dyn Documents>,
+    make_image_document: Rc<dyn Fn(Resource) -> Arc<Document>>,
     highlights: syntax::Highlights,
     schedule: Rc<dyn Fn(OpenJob)>,
     schedule_syntax: Rc<dyn Fn(syntax::SyntaxJob)>,
@@ -295,6 +296,7 @@ pub(crate) struct EditorService {
 impl EditorService {
     pub(crate) fn new(
         loader: Arc<dyn Documents>,
+        make_image_document: impl Fn(Resource) -> Arc<Document> + 'static,
         syntax: Arc<dyn DocumentHighlighter>,
         settings: EditorSettings,
         schedule: impl Fn(OpenJob) + 'static,
@@ -310,6 +312,7 @@ impl EditorService {
             expanded: None,
             settings,
             loader,
+            make_image_document: Rc::new(make_image_document),
             highlights: syntax::Highlights::new(syntax),
             schedule: Rc::new(schedule),
             schedule_syntax: Rc::new(schedule_syntax),
@@ -1086,6 +1089,7 @@ impl EditorService {
         let from = self.location();
         let kind = self.settings.editors.resolve(&resource, &options)?;
         let text_editor = kind == EditorKind::Text;
+        let image_editor = settings::is_image_preview(&kind);
         let known = self.loader.find(&resource);
         let matches = |tab: &Tab| {
             tab.kind == kind
@@ -1210,6 +1214,28 @@ impl EditorService {
         });
         if let Some(request) = replaced {
             self.report_cancelled(group, request);
+        }
+        if image_editor {
+            // Image tabs keep the open service's document identity and event ordering without
+            // running text encoding detection on the binary asset.
+            let opened = self.groups[&group]
+                .tab(tab_id)
+                .and_then(Tab::opened)
+                .cloned()
+                .unwrap_or_else(|| Opened {
+                    document: (self.make_image_document)(resource),
+                    syntax: None,
+                });
+            self.finish(
+                id,
+                Ok(LoadResult {
+                    opened,
+                    position: None,
+                    selection: None,
+                }),
+            );
+            (self.wake)();
+            return Ok(id);
         }
         // #132：目标文件已经在别的标签里打开（同一版本的文档，语法快照也不需要在任务里等）时同步定位：
         // 位置校验与快照复用都是纯内存操作，再走一次「后台任务 → 回到 UI 线程」要多等一到两帧，

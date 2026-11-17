@@ -127,6 +127,7 @@ mod update_host;
 #[cfg(test)]
 mod update_tests;
 // #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）的装配。
+mod image_host;
 mod welcome_host;
 #[cfg(test)]
 mod welcome_tests;
@@ -273,6 +274,7 @@ pub struct Workbench {
     editing: edit_host::Editing,
     /// #29：窗口唯一的 Markdown 预览实例与状态（见 `markdown_host.rs`）。
     markdown: markdown_host::MarkdownPreview,
+    images: image_host::ImagePanels,
     /// #28：欢迎页、最近打开与首选项入口（见 `welcome_host.rs`）。
     welcome: welcome_host::Welcome,
     /// #28：本窗口有没有打开文件夹。空窗口显示欢迎页，资源管理器显示空状态（UX_SPEC §6.3）。
@@ -476,6 +478,10 @@ impl Workbench {
             explorer_revealed: None,
             editor: EditorService::new(
                 files.clone(),
+                {
+                    let files = files.clone();
+                    move |resource| files.image_document(resource)
+                },
                 // #94: one baseline per open document, configured by the shared settings.
                 Arc::new(SyntaxDocuments::new(
                     TreeSitterSyntax::default().with_settings(services.clone()),
@@ -521,6 +527,7 @@ impl Workbench {
             metadata,
             editing: edit_host::Editing::new(files),
             markdown: Default::default(),
+            images: Default::default(),
             welcome: welcome_host::Welcome::new(&store_for_welcome),
             about: Default::default(),
             updates: Default::default(),
@@ -543,6 +550,8 @@ impl Workbench {
         for (id, _, _) in crate::markdown::registry::COMMANDS {
             view.shell.mark_implemented(*id);
         }
+        view.shell
+            .mark_implemented(crate::image_preview::registry::TOGGLE_ZOOM);
         // #28：欢迎页、打开文件 / 文件夹 / 最近、设置、键位与颜色主题。
         for (id, _, _) in crate::welcome::registry::COMMANDS {
             view.shell.mark_implemented(*id);
@@ -853,6 +862,7 @@ impl Workbench {
                         view.quick_files_changed(quick, cx);
                         // #47：打开中的文档在磁盘上被修改 / 删除。
                         view.note_disk_events(&nav, cx);
+                        view.refresh_workspace_images(&nav, cx);
                         view.nav_files_changed(&nav, cx);
                         if !view.editor.settings.close_on_delete {
                             return;
@@ -943,6 +953,10 @@ impl Workbench {
         // #27：状态栏条目的选择器命令；`changeEOL` 带参数时直接统一行尾（#49），不带参数时弹选择器。
         if crate::status_items::registry::is_status_command(id) {
             self.status_command(id, &invocation.args, cx);
+            return;
+        }
+        if id == crate::image_preview::registry::TOGGLE_ZOOM {
+            self.toggle_image_fit(cx);
             return;
         }
         if id == "workbench.action.closeActiveEditor" && self.close_active_checked(cx) {
@@ -1427,8 +1441,10 @@ impl Workbench {
 
     /// Whether a tab's document is presented read-only (lock icon on the tab).
     fn tab_read_only(&self, tab: &Tab) -> bool {
-        tab.opened()
-            .is_some_and(|opened| !self.read_only_of(&opened.document).is_empty())
+        crate::editors::settings::is_image_preview(&tab.kind)
+            || tab
+                .opened()
+                .is_some_and(|opened| !self.read_only_of(&opened.document).is_empty())
     }
 
     /// Read-only reasons the focused code view shows (tests, status entries).
@@ -1925,6 +1941,7 @@ impl Render for Workbench {
         }
         // #22：超大文件提示条、状态栏标记、索引进度、滚动估计与流式查找。
         self.sync_large_files(cx);
+        self.sync_images(window, cx);
         // #27：状态栏右侧的文件状态条目（只在状态变化时重算，见 `status_host.rs`）。
         self.sync_status(window, cx);
         let workbench = shell::view::render(self, window, cx);

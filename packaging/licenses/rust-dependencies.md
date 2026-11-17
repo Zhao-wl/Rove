@@ -7,7 +7,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 清单覆盖全部 feature 的依赖图，因此包含只在构建、基准与测试时使用、**不进 `rove.exe`** 的包。
 移植代码与随包资产的逐项声明在 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。
 
-依赖总数 703，许可种类 32。
+依赖总数 705，许可种类 32。
 
 ## 按许可汇总
 
@@ -36,7 +36,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | `MIT OR Apache-2.0` | 317 |
 | `MIT OR Apache-2.0 OR BSD-1-Clause` | 1 |
 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | 2 |
-| `MIT OR Apache-2.0 OR Zlib` | 3 |
+| `MIT OR Apache-2.0 OR Zlib` | 5 |
 | `MIT OR Zlib OR Apache-2.0` | 2 |
 | `MIT/Apache-2.0` | 37 |
 | `MPL-2.0` | 5 |
@@ -750,6 +750,8 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | zerovec-derive | 0.11.7 | `Unicode-3.0` | crates.io |
 | zlib-rs | 0.6.8 | `Zlib` | crates.io |
 | zmij | 1.0.23 | `MIT` | crates.io |
+| zune-core | 0.5.3 | `MIT OR Apache-2.0 OR Zlib` | crates.io |
+| zune-jpeg | 0.5.15 | `MIT OR Apache-2.0 OR Zlib` | crates.io |
 | zvariant | 5.15.1 | `MIT` | crates.io |
 | zvariant_derive | 5.15.1 | `MIT` | crates.io |
 | zvariant_utils | 4.2.0 | `MIT` | crates.io |
