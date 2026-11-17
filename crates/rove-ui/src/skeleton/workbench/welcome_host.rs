@@ -641,16 +641,27 @@ impl Workbench {
     pub(super) fn sync_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_shared_notice(cx);
         if !cfg!(test) {
+            // 这里在本窗口的绘制过程中：**不能**当场开新窗口或关掉本窗口。gpui 的元素 arena
+            // 是线程级的，新窗口的首帧会清空它，本窗口这一帧还没画完的元素就成了悬空指针
+            // （v0.1.0「打开文件夹」整个进程访问冲突崩溃）。推迟到这一轮更新结束后再做。
             if let Some((path, replace)) = self.welcome.folder_request.take() {
-                open_new_window(path, Vec::new(), self.settings.clone(), cx);
+                let settings = self.settings.clone();
+                let this = window.window_handle();
+                cx.defer(move |cx| {
+                    open_new_window(path, Vec::new(), settings, cx);
+                    if replace {
+                        let _ = this.update(cx, |_, window, _| window.remove_window());
+                    }
+                });
                 if replace {
-                    window.remove_window();
                     return;
                 }
             }
             if !self.welcome.file_requests.is_empty() {
                 let files = std::mem::take(&mut self.welcome.file_requests);
-                open_new_window(self.root.clone(), files, self.settings.clone(), cx);
+                let root = self.root.clone();
+                let settings = self.settings.clone();
+                cx.defer(move |cx| open_new_window(root, files, settings, cx));
             }
         }
         if self.welcome.mode == Some(PickMode::Theme) {
@@ -907,15 +918,12 @@ impl Workbench {
 }
 
 /// 开一个新窗口（`window.openFoldersInNewWindow` / `window.openFilesInNewWindow`）。
-fn open_new_window(
-    root: PathBuf,
-    files: Vec<PathBuf>,
-    settings: Arc<dyn Settings>,
-    cx: &mut Context<Workbench>,
-) {
+/// 只能在绘制之外调用（见 `sync_welcome`）。
+fn open_new_window(root: PathBuf, files: Vec<PathBuf>, settings: Arc<dyn Settings>, cx: &mut App) {
     let store = LayoutStore::for_workspace(&root);
     let started = Instant::now();
-    let opened = cx.open_window(Default::default(), |window, cx| {
+    let options = super::window_options(&store, settings.as_ref(), cx);
+    let opened = cx.open_window(options, |window, cx| {
         cx.new(|cx| {
             let mut view = Workbench::with_settings(root, started, store, settings, cx)
                 .expect("valid editor settings");

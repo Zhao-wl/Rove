@@ -2089,6 +2089,50 @@ impl Render for Workbench {
             .children(welcome)
     }
 }
+/// 工作台窗口的选项：标题、自绘标题栏（`window.titleBarStyle`），以及按这个工作区上次保存的
+/// 布局恢复位置、大小与最大化状态（`window.restoreWindows`；保存的位置已不在任何显示器上时居中）。
+/// 启动时的窗口和之后「打开文件夹」开的新窗口共用它，所以新窗口同样是自绘标题栏。
+pub(super) fn window_options(
+    store: &LayoutStore,
+    settings: &dyn Settings,
+    cx: &App,
+) -> WindowOptions {
+    // 布局文件只有几百字节：开窗口前读取。
+    let layout = store.load();
+    let read = |key: &'static str| {
+        Key::<String>::new(key)
+            .read(settings, &Scope::default())
+            .unwrap_or_default()
+    };
+    let custom_title = read("window.titleBarStyle") != "native";
+    let restore = read("window.restoreWindows") != "none";
+    let saved = layout
+        .window
+        .filter(|_| restore)
+        .map(|w| {
+            (
+                Bounds::new(point(px(w.x), px(w.y)), size(px(w.width), px(w.height))),
+                w.maximized,
+            )
+        })
+        .filter(|(b, _)| cx.displays().iter().any(|d| d.bounds().intersects(b)));
+    let window_bounds = match saved {
+        Some((b, true)) => WindowBounds::Maximized(b),
+        Some((b, false)) => WindowBounds::Windowed(b),
+        None => WindowBounds::Windowed(Bounds::centered(None, size(px(1200.0), px(800.0)), cx)),
+    };
+    WindowOptions {
+        window_bounds: Some(window_bounds),
+        titlebar: Some(TitlebarOptions {
+            title: Some(
+                appearance::message(&appearance::strings().unwrap(), "app.title", &[]).into(),
+            ),
+            appears_transparent: custom_title,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
 /// Launch the actual GPUI application. Path is session input, never persisted in repository data.
 ///
 /// `settings` 是应用唯一的设置服务实例（`crate::app_settings::open`），窗口设置、工作台、主题、
@@ -2124,45 +2168,10 @@ pub fn launch(
         if let Some(path) = crate::keys::user_keybindings_path(std::env::args_os().skip(1)) {
             crate::keys::watch_user_file(path, cx);
         }
-        // 布局文件只有几百字节：首帧前读取，用来恢复窗口位置、大小与最大化状态。
         let store = LayoutStore::for_workspace(&root);
-        let layout = store.load();
-        let read = |key: &'static str| {
-            Key::<String>::new(key)
-                .read(settings.as_ref(), &Scope::default())
-                .unwrap_or_default()
-        };
-        let custom_title = read("window.titleBarStyle") != "native";
-        let restore = read("window.restoreWindows") != "none";
-        let saved = layout
-            .window
-            .filter(|_| restore)
-            .map(|w| {
-                (
-                    Bounds::new(point(px(w.x), px(w.y)), size(px(w.width), px(w.height))),
-                    w.maximized,
-                )
-            })
-            .filter(|(b, _)| cx.displays().iter().any(|d| d.bounds().intersects(b)));
-        let window_bounds = match saved {
-            Some((b, true)) => WindowBounds::Maximized(b),
-            Some((b, false)) => WindowBounds::Windowed(b),
-            None => WindowBounds::Windowed(Bounds::centered(None, size(px(1200.0), px(800.0)), cx)),
-        };
         let window = cx
             .open_window(
-                WindowOptions {
-                    window_bounds: Some(window_bounds),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some(
-                            appearance::message(&appearance::strings().unwrap(), "app.title", &[])
-                                .into(),
-                        ),
-                        appears_transparent: custom_title,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
+                window_options(&store, settings.as_ref(), cx),
                 |window, cx| {
                     cx.new(|cx| {
                         let mut view = Workbench::with_settings(
@@ -2199,7 +2208,8 @@ pub fn launch(
             let store = LayoutStore::for_workspace(folder);
             let settings = settings.clone();
             let folder = folder.clone();
-            let opened = cx.open_window(Default::default(), |window, cx| {
+            let options = window_options(&store, settings.as_ref(), cx);
+            let opened = cx.open_window(options, |window, cx| {
                 cx.new(|cx| {
                     let mut view =
                         Workbench::with_settings(folder.clone(), started, store, settings, cx)

@@ -643,6 +643,42 @@ fn top_right_notifications_have_a_title_bar_entry(cx: &mut TestAppContext) {
     });
 }
 
+/// v0.1.0 回归：标题栏挂过 `track_focus`，gpui 在可聚焦元素上按下鼠标会把焦点给它并
+/// `prevent_default()`，Windows 平台层看到后就认为应用处理了这次非客户区按下，最小化 /
+/// 最大化 / 关闭按钮与拖动标题栏全部失效。点标题栏（含窗口按钮）不能拿走编辑器的焦点。
+#[gpui::test]
+fn clicking_the_title_bar_does_not_take_focus(cx: &mut TestAppContext) {
+    let folder = csharp_folder();
+    let (view, cx) = open_workbench(cx, folder.path(), LayoutStore::disabled());
+    open_first_file(cx);
+    // 点资源管理器打开文件后焦点在侧边栏：先交回编辑器。
+    cx.update(|window, cx| window.focus(&view.read(cx).focus));
+    redraw(cx);
+    assert_eq!(part(&view, cx), Part::Editor);
+    for selector in ["window-min", "window-max", "window-close"] {
+        let button = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("自绘标题栏应当有 {selector}"));
+        cx.simulate_mouse_down(
+            button.center(),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        redraw(cx);
+        assert_eq!(
+            part(&view, cx),
+            Part::Editor,
+            "按下 {selector} 后焦点被标题栏拿走"
+        );
+        cx.simulate_mouse_up(
+            button.center(),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        redraw(cx);
+    }
+}
+
 /// #30：工作台各部分在 100% / 125% / 150% / 200% 下是同一组逻辑像素布局，且都落在窗口里。
 /// 缩放变更（跨显示器拖动）不改变逻辑布局，也不会让某一块跑到窗口外面。
 #[gpui::test]
