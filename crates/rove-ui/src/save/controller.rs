@@ -21,7 +21,7 @@
 //! 宿主负责：命令分发、“另存为”对话框、把 [`Effect`] 反映到视图（文本、标签的脏标记 / “已删除”），
 //! 以及在后台读盘（[`SaveController::due`] → 读盘 → [`SaveController::apply_disk`]）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -83,6 +83,9 @@ pub struct SaveController {
     /// 不保存）、[`Self::attach`] 或 [`Self::detach`] 时清除；生命周期不超过它所属的那份
     /// [`TextFile`]。
     pending: BTreeMap<DocumentId, SaveRequest>,
+    /// 同一文档只运行一次写盘。值表示结果是否仍属于当前挂接的文档实例。
+    saving: BTreeMap<DocumentId, bool>,
+    close_after_save: BTreeSet<DocumentId>,
     own: SelfWrites,
     coalescer: ChangeCoalescer,
     write: WriteOptions,
@@ -100,6 +103,8 @@ impl SaveController {
         Self {
             files: BTreeMap::new(),
             pending: BTreeMap::new(),
+            saving: BTreeMap::new(),
+            close_after_save: BTreeSet::new(),
             own: SelfWrites::default(),
             coalescer: ChangeCoalescer::default(),
             write,
@@ -121,11 +126,19 @@ impl SaveController {
     pub fn attach(&mut self, document: DocumentId, file: TextFile) {
         // 同一个 ID 换一份文档时，上一份遗留的未完成请求不能被新文档继承（#140）。
         self.pending.remove(&document);
+        self.close_after_save.remove(&document);
+        if let Some(current) = self.saving.get_mut(&document) {
+            *current = false;
+        }
         self.files.insert(document, file);
     }
 
     pub fn detach(&mut self, document: DocumentId) -> Option<TextFile> {
         self.pending.remove(&document);
+        self.close_after_save.remove(&document);
+        if let Some(current) = self.saving.get_mut(&document) {
+            *current = false;
+        }
         self.files.remove(&document)
     }
 
@@ -179,6 +192,9 @@ impl SaveController {
         feedback: &mut FeedbackHub,
         now: Instant,
     ) -> std::result::Result<SaveJob, Vec<Effect>> {
+        if self.saving.contains_key(&document) {
+            return Err(Vec::new());
+        }
         let write = self.write.clone();
         // 记下这次请求：失败时的后续按钮要在它上面叠加选项（#140）。
         self.pending.insert(document, request.clone());
@@ -187,7 +203,10 @@ impl SaveController {
             return Err(Vec::new());
         };
         match file.begin_save(request, options, None, &write, now) {
-            Ok(job) => Ok(job),
+            Ok(job) => {
+                self.saving.insert(document, true);
+                Ok(job)
+            }
             Err(outcome) => Err(self.report(document, outcome, feedback, now)),
         }
     }
@@ -200,6 +219,9 @@ impl SaveController {
         feedback: &mut FeedbackHub,
         now: Instant,
     ) -> Vec<Effect> {
+        if self.saving.remove(&document) != Some(true) {
+            return Vec::new();
+        }
         let Some(file) = self.files.get_mut(&document) else {
             return Vec::new();
         };
@@ -256,7 +278,10 @@ impl SaveController {
     ) -> Result<Vec<Effect>> {
         let file = self.files.get_mut(&document).ok_or(Error::NotFound)?;
         let change = file.revert(settings, now)?;
-        self.pending.remove(&document);
+        if !self.saving.contains_key(&document) {
+            self.pending.remove(&document);
+        }
+        self.close_after_save.remove(&document);
         Self::dismiss_document(feedback, document);
         Ok(Self::disk_effects(document, change))
     }
@@ -293,7 +318,7 @@ impl SaveController {
         CloseCheck::Pending
     }
 
-    /// 反馈按钮（通知、模态、提示条）被点击：执行对应的后续动作。不是本模块的键时返回空。
+    /// 反馈按钮的同步入口。窗口使用 [`Self::begin_action`]，在后台运行返回的写入任务。
     pub fn on_action(
         &mut self,
         feedback_key: &str,
@@ -303,19 +328,38 @@ impl SaveController {
         feedback: &mut FeedbackHub,
         now: Instant,
     ) -> Vec<Effect> {
+        match self.begin_action(feedback_key, action, options, settings, feedback, now) {
+            Ok((document, job)) => self.complete_save(document, job.run(), feedback, now),
+            Err(effects) => effects,
+        }
+    }
+
+    /// 执行反馈动作；需要写盘时只准备任务，将任务交给窗口的后台执行器。
+    pub(crate) fn begin_action(
+        &mut self,
+        feedback_key: &str,
+        action: &str,
+        options: &SaveOptions,
+        settings: &dyn Settings,
+        feedback: &mut FeedbackHub,
+        now: Instant,
+    ) -> std::result::Result<(DocumentId, SaveJob), Vec<Effect>> {
         let Some((prefix, document)) = parse_key(feedback_key) else {
-            return Vec::new();
+            return Err(Vec::new());
         };
         if !self.files.contains_key(&document) {
-            return Vec::new();
+            return Err(Vec::new());
         }
         let save = |this: &mut Self, request: SaveRequest, feedback: &mut FeedbackHub| {
-            this.save(document, &request, options, feedback, now)
+            this.begin_save(document, &request, options, feedback, now)
+                .map(|job| (document, job))
         };
         // 那次请求的后续按钮都在最近一次未完成的请求上叠加本次选项：另存为的目标路径不能丢（#140）。
         let base = self.follow_up(document);
         match (prefix, action) {
-            (_, ACTION_SAVE_AS) => vec![Effect::PickSaveAsPath(document)],
+            (_, ACTION_SAVE_AS) if !self.saving.contains_key(&document) => {
+                Err(vec![Effect::PickSaveAsPath(document)])
+            }
             (KEY_BUSY, ACTION_RETRY) | (KEY_FAILED, ACTION_RETRY) => save(self, base, feedback),
             (KEY_READ_ONLY, ACTION_OVERWRITE) => save(
                 self,
@@ -333,14 +377,14 @@ impl SaveController {
                 },
                 feedback,
             ),
-            (KEY_CONFLICT, ACTION_DISCARD) | (KEY_EXTERNAL, ACTION_RELOAD) => self
+            (KEY_CONFLICT, ACTION_DISCARD) | (KEY_EXTERNAL, ACTION_RELOAD) => Err(self
                 .revert(document, settings, feedback, now)
-                .unwrap_or_default(),
+                .unwrap_or_default()),
             (KEY_EXTERNAL, ACTION_KEEP) => {
                 if let Some(file) = self.files.get_mut(&document) {
                     file.keep_local_changes();
                 }
-                Vec::new()
+                Err(Vec::new())
             }
             (KEY_UNENCODABLE, ACTION_USE_UTF8) => save(
                 self,
@@ -361,23 +405,31 @@ impl SaveController {
             // 关闭确认的“保存”是一条新的“保存本文档”命令，不是某次另存为的后续：模态框说的是
             // 当前文档，就得写回当前文档（未命名文档照旧请求选路径）。
             (KEY_CLOSE, ACTION_SAVE) => {
-                self.pending.remove(&document);
-                let mut effects = save(self, SaveRequest::default(), feedback);
-                if effects.iter().any(|e| matches!(e, Effect::Saved { .. })) {
-                    effects.push(Effect::Close(document));
+                if self.saving.get(&document) == Some(&false) {
+                    self.request_close(document, feedback);
+                    return Err(Vec::new());
                 }
-                effects
+                self.close_after_save.insert(document);
+                save(self, SaveRequest::default(), feedback)
             }
             (KEY_CLOSE, ACTION_DONT_SAVE) => {
                 self.pending.remove(&document);
-                vec![Effect::Close(document)]
+                self.close_after_save.remove(&document);
+                Err(vec![Effect::Close(document)])
             }
             // 模态框的“取消”：放弃这次保存（文档保持原样、仍未保存），连同记住的请求一起忘掉。
-            (KEY_UNENCODABLE, ACTION_CANCEL) => {
-                self.pending.remove(&document);
-                Vec::new()
+            (KEY_CLOSE, ACTION_CANCEL) => {
+                self.close_after_save.remove(&document);
+                Err(Vec::new())
             }
-            _ => Vec::new(),
+            (KEY_UNENCODABLE, ACTION_CANCEL) => {
+                if !self.saving.contains_key(&document) {
+                    self.pending.remove(&document);
+                    self.close_after_save.remove(&document);
+                }
+                Err(Vec::new())
+            }
+            _ => Err(Vec::new()),
         }
     }
 
@@ -388,11 +440,14 @@ impl SaveController {
         let Some((prefix, document)) = parse_key(feedback_key) else {
             return;
         };
-        if matches!(
-            prefix,
-            KEY_BUSY | KEY_READ_ONLY | KEY_CONFLICT | KEY_FAILED | KEY_UNENCODABLE
-        ) {
+        if !self.saving.contains_key(&document)
+            && matches!(
+                prefix,
+                KEY_BUSY | KEY_READ_ONLY | KEY_CONFLICT | KEY_FAILED | KEY_UNENCODABLE
+            )
+        {
             self.pending.remove(&document);
+            self.close_after_save.remove(&document);
         }
     }
 
@@ -539,17 +594,36 @@ impl SaveController {
                 encoding_changed,
                 ..
             } => {
+                let close = self.close_after_save.remove(&document);
+                let dirty = file.is_dirty();
                 self.own.record(&path, hash, now);
                 Self::dismiss_document(feedback, document);
-                vec![Effect::Saved {
+                let mut effects = vec![Effect::Saved {
                     document,
                     path,
                     hash,
                     encoding_changed,
-                }]
+                }];
+                if close {
+                    if dirty {
+                        self.request_close(document, feedback);
+                    } else {
+                        effects.push(Effect::Close(document));
+                    }
+                }
+                effects
             }
-            SaveOutcome::NotDirty => Vec::new(),
-            SaveOutcome::NeedsPath => vec![Effect::PickSaveAsPath(document)],
+            SaveOutcome::NotDirty => {
+                if self.close_after_save.remove(&document) {
+                    vec![Effect::Close(document)]
+                } else {
+                    Vec::new()
+                }
+            }
+            SaveOutcome::NeedsPath => {
+                self.close_after_save.remove(&document);
+                vec![Effect::PickSaveAsPath(document)]
+            }
             SaveOutcome::NeedsEncodingDecision { count, encoding } => {
                 let message = Message {
                     key: "save.modal.unencodable".into(),

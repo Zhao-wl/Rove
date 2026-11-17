@@ -381,6 +381,157 @@ fn ctrl_n_opens_an_editable_untitled_document(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn save_feedback_dispatches_retry_overwrite_and_close_in_the_background(cx: &mut TestAppContext) {
+    use rove_buffer::save::{ReplaceFailPoint, WriteError, WriteOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let fx = Fixture::new();
+    let disk = fx.file("notes.txt", "original\n");
+    let (view, cx) = fx.open(cx);
+    let failure = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let hook = {
+        let failure = failure.clone();
+        let attempts = attempts.clone();
+        ReplaceFailPoint(Arc::new(move |attempt| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            match failure.load(Ordering::SeqCst) {
+                1 => Some(WriteError::Busy { attempts: attempt }),
+                2 => Some(WriteError::ReadOnly),
+                _ => None,
+            }
+        }))
+    };
+    view.update(cx, |v, _| {
+        *v.editing.saves.borrow_mut() = crate::save::SaveController::new(WriteOptions {
+            busy_retries: 0,
+            replace_fail_point: Some(hook),
+            ..WriteOptions::default()
+        });
+    });
+    let code = open_file(&view, cx, "notes.txt");
+    let document = active_doc(&view, cx);
+
+    for (mode, prefix, button) in [
+        (1, ids::KEY_BUSY, ids::ACTION_RETRY),
+        (2, ids::KEY_READ_ONLY, ids::ACTION_OVERWRITE),
+        (0, ids::KEY_CLOSE, ids::ACTION_SAVE),
+    ] {
+        cx.simulate_input("x");
+        settle(cx);
+        failure.store(mode, Ordering::SeqCst);
+        let key = format!("{prefix}{}", document.0);
+        if mode == 0 {
+            view.update(cx, |v, cx| {
+                v.command("workbench.action.closeActiveEditor", cx)
+            });
+            assert!(view.read_with(cx, |v, _| v.shell.feedback.modal().is_some()));
+        } else {
+            save_action(cx, ids::SAVE);
+            assert!(view.read_with(cx, |v, _| {
+                v.shell
+                    .feedback
+                    .notifications()
+                    .iter()
+                    .any(|n| n.key.as_ref() == key)
+            }));
+        }
+
+        let expected = shown_text(&code, cx);
+        let before = attempts.load(Ordering::SeqCst);
+        view.update(cx, |v, cx| v.save_feedback_action(&key, button, cx));
+        // 测试执行器尚未调度后台任务，窗口仍可处理另一笔编辑。
+        assert_eq!(attempts.load(Ordering::SeqCst), before);
+        code.update(cx, |c, cx| c.type_text("y", None, cx));
+        assert_ne!(shown_text(&code, cx), expected);
+        failure.store(0, Ordering::SeqCst);
+        settle(cx);
+
+        assert_eq!(attempts.load(Ordering::SeqCst), before + 1);
+        assert_eq!(std::fs::read_to_string(&disk).unwrap(), expected);
+        assert!(view.read_with(cx, |v, _| v.open_document(document).is_some()));
+        assert!(active_tab(&view, cx, |_, tab| tab.dirty));
+    }
+
+    let final_text = shown_text(&code, cx);
+    let key = format!("{}{}", ids::KEY_CLOSE, document.0);
+    view.update(cx, |v, cx| {
+        v.save_feedback_action(&key, ids::ACTION_SAVE, cx)
+    });
+    assert!(view.read_with(cx, |v, _| v.open_document(document).is_some()));
+    settle(cx);
+    assert_eq!(std::fs::read_to_string(&disk).unwrap(), final_text);
+    assert!(view.read_with(cx, |v, _| v.open_document(document).is_none()));
+}
+
+#[gpui::test]
+fn close_confirmation_remains_actionable_during_an_existing_save(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let (view, cx) = fx.open(cx);
+    for (name, action, stays_open) in [
+        ("save.txt", ids::ACTION_SAVE, false),
+        ("cancel.txt", ids::ACTION_CANCEL, true),
+        ("discard.txt", ids::ACTION_DONT_SAVE, false),
+    ] {
+        let disk = fx.file(name, "original\n");
+        let code = open_file(&view, cx, name);
+        cx.simulate_input("x");
+        settle(cx);
+        let document = active_doc(&view, cx);
+        let expected = shown_text(&code, cx);
+        let key = format!("{}{}", ids::KEY_CLOSE, document.0);
+        view.update(cx, |v, cx| {
+            v.start_save(document, rove_buffer::save::SaveRequest::default(), cx);
+            v.command("workbench.action.closeActiveEditor", cx);
+            assert_eq!(v.shell.feedback.modal().unwrap().key.as_ref(), key);
+            v.shell.feedback.act(&key, action).unwrap();
+        });
+        settle(cx);
+        assert_eq!(std::fs::read_to_string(&disk).unwrap(), expected);
+        assert_eq!(
+            view.read_with(cx, |v, _| v.open_document(document).is_some()),
+            stays_open
+        );
+    }
+}
+
+#[gpui::test]
+fn revert_during_save_does_not_drop_its_later_disk_result(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let disk = fx.file("notes.txt", "original\n");
+    let (view, cx) = fx.open(cx);
+    let code = open_file(&view, cx, "notes.txt");
+    let document = active_doc(&view, cx);
+    cx.simulate_input("x");
+    settle(cx);
+    let pending = shown_text(&code, cx);
+
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.start_save(document, rove_buffer::save::SaveRequest::default(), cx);
+            v.save_command(ids::REVERT, window, cx);
+        });
+    });
+    settle(cx);
+
+    assert_eq!(std::fs::read_to_string(&disk).unwrap(), pending);
+    assert!(active_tab(&view, cx, |_, tab| tab.dirty));
+    assert_eq!(
+        view.read_with(cx, |v, _| {
+            v.editing
+                .saves
+                .borrow()
+                .file(document)
+                .unwrap()
+                .disk_stamp()
+                .unwrap()
+                .hash
+        }),
+        rove_buffer::save::content_hash(pending.as_bytes())
+    );
+}
+
+#[gpui::test]
 fn closing_a_dirty_tab_or_the_window_asks_first(cx: &mut TestAppContext) {
     let fx = Fixture::new();
     fx.file("a.txt", "abc\n");
