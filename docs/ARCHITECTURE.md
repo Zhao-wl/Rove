@@ -2009,7 +2009,7 @@ K&R 风格下两者同在声明行。`#region` 不在查询里（由 #12 的 `fo
 
 | 模块 | 内容 |
 |---|---|
-| `xtask/src/release.rs` | `cargo xtask release`：构建（注入 `ROVE_BUILD_COMMIT` / `ROVE_BUILD_DATE`）→ 按清单组装暂存目录 → 便携版 zip → 调 ISCC 出安装包 → SHA256 → 生成并签名 `latest.json` → 写 Release 说明草稿与 `upload.ps1`。**不打 tag、不建 Release、不上传**；`check-version` 校验 tag 与 `Cargo.toml` 一致 |
+| `xtask/src/release.rs` | `cargo xtask release`：构建（注入 `ROVE_BUILD_COMMIT` / `ROVE_BUILD_DATE`）→ 按清单组装暂存目录 → 便携版 zip → 调 ISCC 出安装包 → SHA256 → 生成并签名 `latest.json` → 自检发布附件与清单一致 → 写 Release 说明草稿与 `upload.ps1`。**不打 tag、不建 Release、不上传**；`check-version` 校验 tag 与 `Cargo.toml` 一致。`--component` 的组件包会被复制进产物目录（发布附件就是这个目录），正式发布漏传时**构建前**就失败，`--no-component` 是显式的放行开关（#238） |
 | `xtask/src/pack.rs` | `packaging/package-contents.toml` 的读取与暂存：`[[file]]` / `[[dir]]` 是包里的文件，`[[embedded]]` 是嵌入 `rove.exe` 的资产分项（体积报告按它分组） |
 | `xtask/src/sign.rs` | ed25519 密钥对生成 / 分离式签名 / 验签。私钥在仓库外（`%LOCALAPPDATA%\Rove-release\update-signing.key`，`ROVE_RELEASE_KEY` 可改），**从不打印内容**；公钥 `packaging/release/update-signing.pub` 提交进仓库供 #149 使用 |
 | `xtask/src/licenses.rs` | `cargo metadata` → SPDX 表达式判定（`OR` 取其一、`AND` 都要）→ 生成 `packaging/licenses/rust-dependencies.md`；`--check` 在未登记许可或清单过期时失败（CI 的「依赖许可汇总」任务） |

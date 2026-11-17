@@ -1,7 +1,9 @@
 name: Release
 
-# 发布流水线（issue #76）。打 `v*` tag 触发：构建 release、出便携版 zip 与安装包、
-# 算 SHA256、生成并签名 latest.json，最后发布为**草稿** Release 等人工确认。
+# 发布流水线（issue #76）。打 `v*` tag 触发：打 C# 索引组件包、构建 release、出便携版 zip
+# 与安装包、算 SHA256、生成并签名 latest.json，最后发布为**草稿** Release 等人工确认。
+# 组件包要在构建之前打好并用 `--component` 传给发布任务，否则签名清单的 components 是空的，
+# 已安装索引组件的用户拿不到这次更新（issue #238）。
 #
 # 本地等价命令是 `cargo xtask release`（同一套代码、同样的产物），GitHub Actions 额度不够时用它：
 # 做法见 docs/RELEASE.md。两边唯一的差别是私钥的来源：这里是 Actions secret，本地是
@@ -71,6 +73,31 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
+      # C# 索引组件（#43）是可选但**必发**的附件：不打包、不传 --component，
+      # 签名清单的 components 就是空的，已装组件的用户拿不到更新（issue #238）。
+      - name: 安装 .NET 9 SDK（打索引组件包）
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: 缓存 NuGet 包
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('tools/**/*.csproj', 'tools/**/*.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: 打 C# 索引组件包
+        id: component
+        shell: pwsh
+        run: |
+          # 脚本的最后一行输出就是 zip 的路径（其余是体积与 sha256 的汇总）。
+          $output = & .\scripts\components\package-indexer.ps1
+          $output | ForEach-Object { Write-Host $_ }
+          $zip = ($output | Select-Object -Last 1)
+          if (-not $zip -or -not (Test-Path $zip)) { Write-Error "组件包没有产出：$zip"; exit 1 }
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       # 私钥只存在 Actions secret 里：写到 runner 的临时文件，用完立刻删。
       # secret 没配置时跳过签名（流水线仍然产出其他产物，并在摘要里说明）。
       - name: 写入签名私钥
@@ -92,7 +119,8 @@ jobs:
       - name: cargo xtask release
         shell: pwsh
         run: |
-          $args = @('--require-installer')
+          # --component：组件包进产物目录、进 SHA256SUMS.txt、进签名清单的 components（#238）。
+          $args = @('--require-installer', '--component', '${{ steps.component.outputs.zip }}')
           if ('${{ steps.key.outputs.signed }}' -ne 'true') { $args += '--unsigned' }
           cargo xtask release @args 2>&1 | Tee-Object -FilePath release-report.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -127,6 +155,7 @@ jobs:
           path: |
             target/release-dist/*/Rove-*.zip
             target/release-dist/*/Rove-*-setup.exe
+            target/release-dist/*/rove-indexer-cs-*.zip
             target/release-dist/*/SHA256SUMS.txt
             target/release-dist/*/latest.json
             target/release-dist/*/latest.json.sig
@@ -134,6 +163,8 @@ jobs:
             toolchain.txt
 
       # 草稿 Release：等人工确认后再在网页上发布（不自动公开）。
+      # 附件就是产物目录里的全部文件（除了 upload.ps1），组件包已由 `cargo xtask release`
+      # 收进这个目录，所以附件与签名清单天然一致（#238；release 命令自己也会自检一遍）。
       - name: 创建草稿 Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
