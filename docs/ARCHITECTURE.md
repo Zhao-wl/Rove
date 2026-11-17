@@ -248,6 +248,7 @@ cargo test --workspace
 | `markdown` | 无骨架标记（#2 只把 `*.md` 解析成占位编辑器 `vscode.markdown.preview.editor`，显示“尚未实现”）：已由 `rove-ui::markdown` 与 `skeleton/workbench/markdown_host.rs` 实现（见 §38）：WebView2 预览（按需创建、一个窗口一个实例、空闲回收）、默认以预览打开、切换与并排、滚动同步、远程资源阻止 | #29（已完成） |
 | `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
 | `metadata-view` | 无骨架标记（#2 没有元数据视图这种文档类型）：已由 `rove-lang-cs::metadata_view` 与 `rove-ui::metadata`、`skeleton/workbench/metadata_host.rs` 实现（见 §26、§35）：`rove-cs-metadata:` 虚拟资源、只读文档、`X [元数据]` 标签与 DLL 路径悬停、`#region` 头、面包屑、`showDocs` 热切换、索引原子替换后换进同一个标签 | #34、#42（已完成） |
+| `image-preview` | 无骨架标记，由 `rove-ui::image_preview` 解码，`skeleton/workbench/image_host.rs` 接入只读自定义编辑器。文件类型通过 #17 关联登记。图片解码与 SVG 重栅格化在后台执行。 | #64 |
 
 数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，
@@ -1318,6 +1319,12 @@ BOM / 二进制、8 KiB 探测块两侧的匹配（#133）、分块行号、多�
 （行号映射、增量编辑合成、UTF-16 区域换算）、`cargo test -p rove-ui edit_tests`（真实窗口：编辑 → `ctrl+s` → 外部修改
 静默重载且滚动不变 → 本地有修改时提示条 → 删除后“已删除”；C# 编辑与保存登记到 `BufferStates`；`ctrl+n`；标签与窗口的
 关闭确认）。
+
+## 图片预览（#64）
+
+`vscode.imagePreview` 通过 #17 的打开服务和 `workbench.editorAssociations` 接入 png、jpg/jpeg、gif、svg 和 tga。用户规则优先，显式文本关联仍经文本入口。尺寸和缩放是 #16 的状态栏条目，缩放和平移按标签保存。GIF 在可见标签上按帧延时重绘，隐藏时取消任务。工作区事件和可见文件的元数据变化触发后台刷新。
+
+光栅解码复用 GPUI 已有的 `image` 版本，先检查尺寸，再按 128 MiB 解码像素预算限制单张图片和动画总帧。SVG 复用 `resvg`，外部资源与内嵌图像资源解析器均禁用，脚本不执行。字体只使用本机；SVG 以当前缩放和 DPI 后台重绘。损坏或过大的图片显示带重试和资源管理器入口的错误页。已有 `mediaPreview.video.autoPlay` / `mediaPreview.video.loop` 目录项仅供共用设置识别，图片预览不读取它们。
 
 ## 38. Markdown 预览（#29）
 

@@ -114,6 +114,19 @@ impl FileDocuments {
         }
     }
 
+    /// A native image gets a read-only shell document; the preview alone reads the bytes.
+    pub(super) fn image_document(&self, resource: Resource) -> Arc<Document> {
+        Arc::new(virtual_document(
+            DocumentId(self.next.fetch_add(1, Ordering::Relaxed)),
+            &resource,
+            VirtualContent {
+                text: String::new(),
+                language: "plaintext".into(),
+                read_only: vec![ReadOnlyReason::Session],
+            },
+        ))
+    }
+
     /// #27：`document` 的编码是不是自动识别出来的。
     pub fn encoding_guessed(&self, document: DocumentId) -> bool {
         self.guessed

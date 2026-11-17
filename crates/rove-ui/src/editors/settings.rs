@@ -1,4 +1,5 @@
 use crate::documents::{OpenOptions, OpenSource, Presentation};
+use crate::image_preview::registry as image_preview;
 use globset::{GlobBuilder, GlobMatcher};
 use rove_base::{Error, Registry, Resource, Result, Value};
 use rove_config::{DefaultSettings, Key, Scope, Setting, SettingRegistry, Settings};
@@ -20,6 +21,7 @@ pub(crate) struct EditorTypes {
     types: Registry<EditorKind>,
     rules: Vec<(GlobMatcher, bool, Arc<str>)>,
     markdown: GlobMatcher,
+    images: Vec<GlobMatcher>,
     /// #29：本机没有 WebView2 运行时（或创建失败）时为假：关联到预览的文件改为以源码打开，
     /// 显式要求预览返回 `Unsupported`（UX_SPEC §6.4）。
     preview_available: bool,
@@ -72,6 +74,13 @@ impl EditorTypes {
                 label: "welcome.tabTitle",
             },
         )?;
+        types.register(
+            image_preview::EDITOR_ID,
+            EditorKind::Placeholder {
+                id: image_preview::EDITOR_ID.into(),
+                label: image_preview::LABEL,
+            },
+        )?;
         let mut rules = Vec::new();
         if let Value::Object(patterns) = associations {
             for (pattern, id) in patterns.iter().rev() {
@@ -84,6 +93,10 @@ impl EditorTypes {
             types,
             rules,
             markdown: compile("*.md").expect("valid built-in glob").0,
+            images: image_preview::ASSOCIATIONS
+                .iter()
+                .map(|pattern| compile(pattern).expect("valid built-in glob").0)
+                .collect(),
             preview_available: true,
         })
     }
@@ -123,13 +136,31 @@ impl EditorTypes {
         if is_welcome_resource(resource) {
             return self.types.get(WELCOME).cloned().ok_or(Error::Unsupported);
         }
+        let path = resource_path(resource);
+        let mut associated = self
+            .rules
+            .iter()
+            .filter(|(glob, basename, _)| matches(glob, *basename, path))
+            .filter_map(|(_, _, id)| self.types.get(id));
+        let image_default = self
+            .images
+            .iter()
+            .any(|glob| matches(glob, true, path))
+            .then(|| self.types.get(image_preview::EDITOR_ID))
+            .flatten();
+        let search_text = options.source == OpenSource::Search
+            && !associated
+                .clone()
+                .next()
+                .or(image_default)
+                .is_some_and(is_image_preview);
         if options.location.is_some()
             || options.selection.is_some()
             || matches!(options.presentation, Presentation::Source)
+            || search_text
             || matches!(
                 options.source,
-                OpenSource::Search
-                    | OpenSource::CodeNavigation
+                OpenSource::CodeNavigation
                     | OpenSource::GoToLine
                     | OpenSource::Outline
                     | OpenSource::Breadcrumb
@@ -137,12 +168,6 @@ impl EditorTypes {
         {
             return Ok(EditorKind::Text);
         }
-        let path = resource_path(resource);
-        let mut associated = self
-            .rules
-            .iter()
-            .filter(|(glob, basename, _)| matches(glob, *basename, path))
-            .filter_map(|(_, _, id)| self.types.get(id));
         if matches!(options.presentation, Presentation::Preview) {
             associated
                 .find(|kind| matches!(kind, EditorKind::Placeholder { .. }))
@@ -153,10 +178,15 @@ impl EditorTypes {
                         None
                     }
                 })
+                .or(image_default)
                 .cloned()
                 .ok_or(Error::Unsupported)
         } else {
-            Ok(associated.next().cloned().unwrap_or(EditorKind::Text))
+            Ok(associated
+                .next()
+                .or(image_default)
+                .cloned()
+                .unwrap_or(EditorKind::Text))
         }
     }
 }
@@ -174,6 +204,10 @@ pub(crate) fn is_welcome(kind: &EditorKind) -> bool {
 /// #29：是不是 Markdown 预览编辑器。
 pub(crate) fn is_markdown_preview(kind: &EditorKind) -> bool {
     matches!(kind, EditorKind::Placeholder { id, .. } if id.as_ref() == MARKDOWN)
+}
+
+pub(crate) fn is_image_preview(kind: &EditorKind) -> bool {
+    matches!(kind, EditorKind::Placeholder { id, .. } if id.as_ref() == image_preview::EDITOR_ID)
 }
 
 /// #29：Markdown 预览的编辑器类型。
@@ -326,7 +360,14 @@ pub fn register() -> Result<SettingRegistry> {
         Setting {
             default: Value::Object(Arc::new(BTreeMap::new())),
             rove_default: Some(Value::Object(Arc::new(
-                [("*.md".to_string(), Value::String(MARKDOWN.into()))].into(),
+                std::iter::once(("*.md".to_string(), Value::String(MARKDOWN.into())))
+                    .chain(image_preview::ASSOCIATIONS.iter().map(|pattern| {
+                        (
+                            (*pattern).to_owned(),
+                            Value::String(image_preview::EDITOR_ID.into()),
+                        )
+                    }))
+                    .collect(),
             ))),
             language_overridable: false,
         },

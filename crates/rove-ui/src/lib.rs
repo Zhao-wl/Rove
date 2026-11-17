@@ -64,3 +64,6 @@ pub mod about;
 pub mod update;
 // #30：高 DPI 下的物理像素对齐（细线、插入符）。
 pub mod dpi;
+
+// #64：离线图片预览。
+mod image_preview;

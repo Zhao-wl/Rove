@@ -1,5 +1,5 @@
 //! 全局搜索（#25）在骨架窗口中的装配：搜索视图的创建与绘制、命令转发、打开结果、全局上下文键。
-//! 打开与定位一律经 #17 的 `OpenDocuments`（`OpenSource::Search`，带选区：`.md` 也打开源码）。
+//! 打开与定位一律经 #17 的 `OpenDocuments`。文本搜索结果保留选区，图片没有可定位的文本。
 use super::*;
 use crate::{
     documents::OpenTarget,
@@ -175,7 +175,8 @@ impl Workbench {
     }
 
     pub(super) fn open_search_result(&mut self, request: &OpenRequest, cx: &mut Context<Self>) {
-        let options = OpenOptions {
+        let resource = Resource::Workspace(request.path.clone());
+        let mut options = OpenOptions {
             source: OpenSource::Search,
             target: if request.side {
                 OpenTarget::Beside
@@ -184,14 +185,21 @@ impl Workbench {
             },
             preview_tab: !request.pinned,
             preserve_focus: request.preserve_focus,
-            selection: Some(request.selection.clone()),
             ..Default::default()
         };
-        if let Err(e) = self.open_documents().open(
-            Resource::Workspace(request.path.clone()),
-            options,
-            Cancellation::default(),
-        ) {
+        let image = self
+            .editor
+            .settings
+            .editors
+            .resolve(&resource, &options)
+            .is_ok_and(|kind| crate::editors::settings::is_image_preview(&kind));
+        if !image {
+            options.selection = Some(request.selection.clone());
+        }
+        if let Err(e) = self
+            .open_documents()
+            .open(resource, options, Cancellation::default())
+        {
             eprintln!("search: {e}");
         }
         cx.notify();

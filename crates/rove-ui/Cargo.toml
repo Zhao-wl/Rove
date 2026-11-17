@@ -34,6 +34,12 @@ pulldown-cmark.workspace = true
 ammonia.workspace = true
 flate2.workspace = true
 
+# #64：与 GPUI 共享现有版本，无网络依赖。
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "tga"] }
+resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+roxmltree = "0.20"
+smallvec = "1"
+
 [target.'cfg(windows)'.dependencies]
 webview2-com.workspace = true
 raw-window-handle = "0.6"

@@ -102,6 +102,7 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::explorer::registry::register_commands(&mut registry)?;
     // #29：Markdown 预览。
     crate::markdown::registry::register_commands(&mut registry)?;
+    crate::image_preview::registry::register_command(&mut registry)?;
     // #28：欢迎页、打开文件 / 文件夹 / 最近、设置、键位与颜色主题。
     crate::welcome::registry::register_commands(&mut registry)?;
     // #27：状态栏条目的选择器命令（更改缩进 / 编码 / 语言模式）。

@@ -607,36 +607,17 @@ fn acceptance_scenario_3_quick_open_on_real_project(cx: &mut TestAppContext) {
     let opened = opened.unwrap();
     eprintln!("[#31 场景 3] 打开了 {opened}");
 
-    // 真实项目里快速打开会列出 `.png` 之类的二进制文件（VS Code 也列）。打开它要走
-    // 「不受支持」的错误页而不是一屏乱码；M1 没有图片预览（#63 是 M4）。
-    if opened.ends_with(".png") {
-        let failed = view.read_with(cx, |v, _| {
-            v.editor
-                .active()
-                .current()
-                .is_some_and(|t| matches!(&t.content, Content::Failed(Error::Unsupported)))
+    // #64：快速打开的 PNG 走普通关联规则，进入只读图片编辑器。
+    // #209 的二进制文本回退在 binary_tests 中验证。
+    if std::path::Path::new(&opened)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+    {
+        view.read_with(cx, |v, _| {
+            let tab = v.editor.active().current().unwrap();
+            assert!(crate::editors::settings::is_image_preview(&tab.kind));
+            assert!(v.tab_read_only(tab));
         });
-        assert!(
-            failed,
-            "二进制文件应当以「不受支持」结束，而不是当成文本显示"
-        );
-        // #209 已补上 UX_SPEC §3.5 的「仍然打开」：错误页换成「此文件是二进制文件或使用了
-        // 不支持的文本编码。」，并多一个强制打开的操作（整条链路见 `binary_tests`）。
-        let resource = view.read_with(cx, |v, _| {
-            v.editor.active().current().unwrap().resource.clone()
-        });
-        assert_eq!(
-            super::editor_panes::error_page_key(&Error::Unsupported, &resource),
-            "editors.fileBinary"
-        );
-        assert!(
-            super::editor_panes::can_open_anyway(&Error::Unsupported, &resource),
-            "二进制文件的错误页要提供「仍然打开」（UX_SPEC §3.5）"
-        );
-        eprintln!(
-            "[#31 场景 3] 二进制文件（{opened}）显示「此文件是二进制文件或使用了不支持的文本编码。」\
-             错误页上有「重试」「仍然打开」与「在资源管理器中显示」（#209）"
-        );
     }
 }
 

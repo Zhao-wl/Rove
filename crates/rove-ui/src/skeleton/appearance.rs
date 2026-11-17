@@ -98,6 +98,7 @@ pub fn strings() -> Result<StringTable> {
     crate::about::registry::register_strings(&mut t)?;
     // #149：自动更新的命令、状态、提示条与通知。
     crate::update::registry::register_strings(&mut t)?;
+    crate::image_preview::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -127,5 +128,6 @@ pub fn contributions() -> Result<ContributionRegistry> {
     crate::large_file::registry::register_contributions(&mut r)?;
     // #60：面板里的「引用」视图（与「问题」并列，UX_SPEC §1.4）。
     crate::references::registry::register_contributions(&mut r)?;
+    crate::image_preview::registry::register_contributions(&mut r)?;
     Ok(r)
 }

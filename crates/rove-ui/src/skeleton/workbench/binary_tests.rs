@@ -156,12 +156,12 @@ fn document_text(view: &Entity<Workbench>, cx: &mut VisualTestContext) -> String
 #[gpui::test]
 fn binary_file_is_rejected_then_open_anyway_shows_its_text(cx: &mut TestAppContext) {
     let fx = Fixture::new();
-    fx.file("Assets/Textures/Player.png", BINARY);
+    fx.file("Assets/Textures/Player.bin", BINARY);
     let (view, cx) = fx.open(cx);
     open_file(
         &view,
         cx,
-        Resource::Workspace(WorkspacePath::new("Assets/Textures/Player.png").unwrap()),
+        Resource::Workspace(WorkspacePath::new("Assets/Textures/Player.bin").unwrap()),
     );
 
     // 1. 普通打开被 rove-buffer 的二进制判定拒绝，标签上是错误页而不是一屏乱码。
@@ -200,12 +200,12 @@ fn binary_file_is_rejected_then_open_anyway_shows_its_text(cx: &mut TestAppConte
 #[gpui::test]
 fn binary_open_anyway_keeps_the_encoding_entry_and_stays_editable(cx: &mut TestAppContext) {
     let fx = Fixture::new();
-    fx.file("Assets/Textures/Player.png", BINARY);
+    fx.file("Assets/Textures/Player.bin", BINARY);
     let (view, cx) = fx.open(cx);
     open_file(
         &view,
         cx,
-        Resource::Workspace(WorkspacePath::new("Assets/Textures/Player.png").unwrap()),
+        Resource::Workspace(WorkspacePath::new("Assets/Textures/Player.bin").unwrap()),
     );
     // 失败的标签没有活动文本编辑器，六个条目全部移除（#27 的既有行为）。
     assert_eq!(status_text(&view, cx, ids::ENCODING), "");
@@ -231,12 +231,12 @@ fn binary_open_anyway_keeps_the_encoding_entry_and_stays_editable(cx: &mut TestA
 #[gpui::test]
 fn retry_after_open_anyway_keeps_forcing(cx: &mut TestAppContext) {
     let fx = Fixture::new();
-    fx.file("Assets/Textures/Player.png", BINARY);
+    fx.file("Assets/Textures/Player.bin", BINARY);
     let (view, cx) = fx.open(cx);
     open_file(
         &view,
         cx,
-        Resource::Workspace(WorkspacePath::new("Assets/Textures/Player.png").unwrap()),
+        Resource::Workspace(WorkspacePath::new("Assets/Textures/Player.bin").unwrap()),
     );
     click_open_anyway(&view, cx);
     assert_eq!(failure(&view, cx), None);
@@ -275,8 +275,8 @@ fn virtual_resources_keep_the_generic_unsupported_page() {
 
 // ---------------------------------------------------------------- 真实项目
 
-/// #31 场景 3 的现象：真实 Unity 项目里 `Ctrl+P` 会列出 `.png`，打开后走错误页。
-/// 这里把那条路走完：错误页 → 「仍然打开」→ 正文可见。
+/// #64 默认以图片预览打开 PNG。显式关联到文本编辑器后仍保留 #209 的路径。
+/// 在真实 Unity 图片上验证错误页 → 「仍然打开」→ 正文可见。
 #[gpui::test]
 fn binary_png_in_a_real_unity_project_opens_anyway(cx: &mut TestAppContext) {
     let Some(root) = UnityProject::Medium.path() else {
@@ -288,7 +288,11 @@ fn binary_png_in_a_real_unity_project_opens_anyway(cx: &mut TestAppContext) {
         return;
     };
     let user = tempfile::tempdir().unwrap();
-    std::fs::write(user.path().join("settings.json"), "{}").unwrap();
+    std::fs::write(
+        user.path().join("settings.json"),
+        r#"{ "workbench.editorAssociations": { "*.png": "default" } }"#,
+    )
+    .unwrap();
     let mut options = SettingsOptions::new(user.path(), user.path().join("backup"));
     options.watch = None;
     let service = Arc::new(SettingsService::open(
@@ -313,7 +317,7 @@ fn binary_png_in_a_real_unity_project_opens_anyway(cx: &mut TestAppContext) {
     assert_eq!(
         failure(&view, cx),
         Some(Error::Unsupported),
-        "真实 .png 应当先被拒绝：{}",
+        "关联到文本编辑器的真实 .png 应当先被拒绝：{}",
         png.display()
     );
     let resource = view.read_with(cx, |v, _| {

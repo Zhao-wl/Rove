@@ -297,6 +297,8 @@ impl Workbench {
                     } else if crate::editors::settings::is_markdown_preview(&tab.kind) {
                         // #29：Markdown 预览（WebView2）。
                         body = body.child(self.markdown_viewport(group, tab.id, cx));
+                    } else if crate::editors::settings::is_image_preview(&tab.kind) {
+                        body = body.child(self.image_viewport(tab.id, cx));
                     } else if let EditorKind::Placeholder { label, .. } = &tab.kind {
                         body = body.child(self.centered(self.label(label, &[])));
                     }
@@ -608,7 +610,7 @@ impl Workbench {
         body
     }
 
-    fn centered(&self, text: String) -> Div {
+    pub(super) fn centered(&self, text: String) -> Div {
         div()
             .absolute()
             .inset_0()
