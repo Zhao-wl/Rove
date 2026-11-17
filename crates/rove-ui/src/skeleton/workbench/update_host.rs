@@ -17,7 +17,7 @@
 
 use super::*;
 use crate::update::{registry as update_registry, Step, UpdateService};
-use rove_update::{mode::UpdateMode, Outcome};
+use rove_update::{mode::UpdateMode, Outcome, UpdateState};
 
 /// 窗口的更新状态。
 #[derive(Default)]
@@ -27,6 +27,7 @@ pub(super) struct Updates {
     /// 已经排过「首帧之后的第一次检查」。
     scheduled: bool,
     scheduled_check: Option<gpui::Task<()>>,
+    manual_check_waiting: bool,
 }
 
 impl Workbench {
@@ -70,6 +71,7 @@ impl Workbench {
         }
         let step = service.change_mode(mode);
         self.updates.scheduled_check = None;
+        self.updates.manual_check_waiting = false;
         for key in [
             update_registry::KEY_STATUS,
             update_registry::KEY_PROMPT,
@@ -152,16 +154,18 @@ impl Workbench {
 
     /// 跑一次检查（在后台执行器上）。`manual` 为真表示是「检查更新」命令触发的。
     pub(crate) fn run_update_check(&mut self, manual: bool, cx: &mut Context<Self>) {
-        let Some(service) = &self.updates.service else {
+        let Some(service) = &mut self.updates.service else {
             return;
         };
-        if !service.mode().may_connect()
-            || service.state().is_ready_to_install()
-            || (service.state().is_busy() && !manual)
-        {
-            return;
+        let (step, start) = service.begin_check(manual);
+        if service.state() == &UpdateState::Checking {
+            self.updates.manual_check_waiting |= manual;
         }
         let updater = service.updater().clone();
+        self.apply_update_step(step, cx);
+        if !start {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             // 网络 I/O 放后台线程，UI 线程一帧都不等。
             let worker = updater.clone();
@@ -170,7 +174,7 @@ impl Workbench {
                 .spawn(async move { worker.check() })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.finish_update_check(&updater, outcome, manual, cx)
+                view.finish_update_check(&updater, outcome, cx)
             });
         })
         .detach();
@@ -180,15 +184,15 @@ impl Workbench {
         &mut self,
         updater: &Arc<rove_update::Updater>,
         outcome: Outcome,
-        manual: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(service) = self.updates.service.as_mut() else {
             return;
         };
-        if !Arc::ptr_eq(service.updater(), updater) {
+        if !Arc::ptr_eq(service.updater(), updater) || service.state() != &UpdateState::Checking {
             return;
         }
+        let manual = std::mem::take(&mut self.updates.manual_check_waiting);
         let step = service.on_check_finished(&outcome, manual);
         self.apply_update_step(step.clone(), cx);
         if step == Step::Download {
@@ -231,34 +235,34 @@ impl Workbench {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let Some(service) = view.updates.service.as_mut() else {
-                    return;
-                };
-                if !Arc::ptr_eq(service.updater(), &updater) {
-                    return;
-                }
-                let step = service.on_download_finished(result);
-                view.apply_update_step(step, cx);
+                view.finish_update_download(&updater, result, cx);
             });
         })
         .detach();
     }
 
+    pub(super) fn finish_update_download(
+        &mut self,
+        updater: &Arc<rove_update::Updater>,
+        result: rove_update::Result<rove_update::paths::Pending>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(service) = self.updates.service.as_mut() else {
+            return;
+        };
+        if !Arc::ptr_eq(service.updater(), updater)
+            || !matches!(service.state(), UpdateState::Downloading { .. })
+        {
+            return;
+        }
+        let step = service.on_download_finished(result);
+        self.apply_update_step(step, cx);
+    }
+
     /// 命令分发：`update.checkForUpdates` / `update.restartToUpdate`。
     pub(super) fn update_command(&mut self, id: &str, cx: &mut Context<Self>) {
         match id {
-            update_registry::CHECK_FOR_UPDATES => {
-                let Some(service) = self.updates.service.as_mut() else {
-                    return;
-                };
-                let step = service.on_command_check();
-                let connects =
-                    service.mode().may_connect() && !service.state().is_ready_to_install();
-                self.apply_update_step(step, cx);
-                if connects {
-                    self.run_update_check(true, cx);
-                }
-            }
+            update_registry::CHECK_FOR_UPDATES => self.run_update_check(true, cx),
             update_registry::RESTART_TO_UPDATE => self.restart_to_update(cx),
             _ => {}
         }

@@ -605,7 +605,6 @@ fn hot_loading_update_mode_revokes_old_work_and_restarts_the_schedule(cx: &mut T
                 manifest: Box::new(manifest("0.1.1")),
                 required: false,
             },
-            false,
             cx,
         );
         v.update_command(reg::CHECK_FOR_UPDATES, cx);
@@ -629,7 +628,6 @@ fn hot_loading_update_mode_revokes_old_work_and_restarts_the_schedule(cx: &mut T
                 manifest: Box::new(manifest("0.1.1")),
                 required: false,
             },
-            false,
             cx,
         );
     });
@@ -654,4 +652,128 @@ fn hot_loading_update_mode_revokes_old_work_and_restarts_the_schedule(cx: &mut T
         crate::update::component::Followed::Installed(_)
     ));
     assert_eq!(spy.requested(), vec![manifest_url, component_get]);
+}
+
+#[gpui::test]
+fn scheduled_and_manual_update_checks_share_one_request(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (view, cx) = open(cx);
+    let spy = attach_with(
+        &view,
+        cx,
+        UpdateMode::Default,
+        dir.path(),
+        StubTransport::new(),
+    );
+
+    view.update(cx, |v, cx| {
+        v.run_update_check(false, cx);
+        assert_eq!(v.update_service().unwrap().state(), &UpdateState::Checking);
+        v.update_command(reg::CHECK_FOR_UPDATES, cx);
+        v.update_command(reg::CHECK_FOR_UPDATES, cx);
+    });
+    cx.run_until_parked();
+
+    let manifest_url = rove_update::endpoint::manifest_url();
+    assert_eq!(
+        spy.requested().as_slice(),
+        std::slice::from_ref(&manifest_url)
+    );
+    view.update(cx, |v, cx| {
+        assert!(matches!(
+            v.update_service().unwrap().state(),
+            UpdateState::Failed { .. }
+        ));
+        v.update_command(reg::CHECK_FOR_UPDATES, cx);
+        v.run_update_check(false, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(spy.requested(), [manifest_url.clone(), manifest_url]);
+}
+
+#[gpui::test]
+fn repeated_acceptance_and_late_failures_leave_one_ready_update(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (view, cx) = open(cx);
+    let url = "https://a/s.exe";
+    let spy = attach_with(
+        &view,
+        cx,
+        UpdateMode::Start,
+        dir.path(),
+        StubTransport::new().with(url, INSTALLER.to_vec()),
+    );
+    let updater = view.update(cx, |v, cx| {
+        let service = v.update_service_mut().unwrap();
+        let step = service.on_check_finished(
+            &Outcome::Available {
+                manifest: Box::new(manifest_with_component("0.1.1", None)),
+                required: false,
+            },
+            false,
+        );
+        let updater = service.updater().clone();
+        v.apply_update_step_for_test(step, cx);
+        v.update_feedback_action(reg::KEY_PROMPT, reg::ACTION_DOWNLOAD, cx);
+        v.update_feedback_action(reg::KEY_PROMPT, reg::ACTION_DOWNLOAD, cx);
+        v.update_command(reg::CHECK_FOR_UPDATES, cx);
+        v.run_update_check(false, cx);
+        updater
+    });
+    cx.run_until_parked();
+    assert_eq!(spy.requested(), [url]);
+
+    let paths = updater.paths().unwrap();
+    let pending = paths.read_pending().unwrap();
+    view.update(cx, |v, cx| {
+        v.finish_update_check(&updater, Outcome::UpToDate, cx);
+        v.finish_update_download(
+            &updater,
+            Err(rove_update::UpdateError::Integrity(
+                "stale completion".into(),
+            )),
+            cx,
+        );
+        let service = v.update_service().unwrap();
+        assert_eq!(service.pending(), Some(&pending));
+        assert!(service.state().is_ready_to_install());
+    });
+    assert_eq!(paths.read_pending(), Some(pending.clone()));
+    assert_eq!(
+        std::fs::read(pending.installer_path(paths)).unwrap(),
+        INSTALLER
+    );
+    assert_eq!(
+        notification(&view, cx).map(|(_, actions)| actions),
+        Some(vec![reg::ACTION_RESTART.into(), reg::ACTION_LATER.into()]),
+    );
+}
+
+#[gpui::test]
+fn failed_download_preserves_an_existing_installer_and_record(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (view, cx) = open(cx);
+    attach(&view, cx, UpdateMode::Start, dir.path());
+
+    let manifest = manifest_with_component("0.1.1", None);
+    let existing = rove_update::paths::Pending::from_manifest(&manifest, String::new()).unwrap();
+    let paths = UpdatePaths::new(dir.path().join("Rove"));
+    paths.ensure_updates_dir().unwrap();
+    paths.write_pending(&existing).unwrap();
+    std::fs::write(existing.installer_path(&paths), INSTALLER).unwrap();
+
+    // The transport has no installer response. The download fails with an existing
+    // verified installer at the same destination and an intact pending record.
+    download_update(&view, cx, manifest);
+    view.read_with(cx, |v, _| {
+        assert!(matches!(
+            v.update_service().unwrap().state(),
+            UpdateState::Failed { .. }
+        ));
+    });
+    assert_eq!(paths.read_pending(), Some(existing.clone()));
+    assert_eq!(
+        std::fs::read(existing.installer_path(&paths)).unwrap(),
+        INSTALLER
+    );
 }
