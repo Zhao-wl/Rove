@@ -13,7 +13,7 @@
 ; - 右键菜单「用 Rove 打开」对**文件与目录**都提供；目录项把路径当启动参数传给 rove.exe
 ;   （UX_SPEC §1.6：只接受启动参数，不提供 shell 命令行工具，所以**不往 PATH 里加东西**）。
 ; - 卸载清除程序目录、快捷方式与上面所有注册表项；用户数据（%LOCALAPPDATA%\Rove）**默认保留**，
-;   卸载时可以勾选一并删除。
+;   卸载前弹框询问是否一并删除（默认「否」，静默卸载不删）。
 ; - 静默升级（#149）：/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP-；
 ;   CloseApplications=yes 让安装器等 rove.exe 退出，RestartApplications=no 由更新端决定是否重启。
 ; - 安装器**不联网**：不捆绑、不下载 WebView2 运行时，也不下载 C# 索引组件
