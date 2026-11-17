@@ -159,31 +159,27 @@ Type: dirifempty; Name: "{app}"
 
 [Code]
 var
-  RemoveUserDataCheckBox: TNewCheckBox;
+  RemoveUserData: Boolean;
 
-// 卸载进度页上加一个「同时删除用户数据」的勾选项，**默认不勾**
-//（issue #76：用户数据默认保留）。静默卸载时不显示，按默认保留。
-procedure InitializeUninstallProgressForm();
+// 「同时删除用户数据」**默认不删**（issue #76：用户数据默认保留）。
+// 卸载开始之前问一次（默认按钮是「否」）：放在卸载进度页上的勾选框来不及勾，
+// 卸载一开始就跑完了。静默卸载（包括自动更新的静默升级）不问，按默认保留。
+function InitializeUninstall(): Boolean;
 begin
+  Result := True;
+  RemoveUserData := False;
   if UninstallSilent() then
     Exit;
-  RemoveUserDataCheckBox := TNewCheckBox.Create(UninstallProgressForm);
-  RemoveUserDataCheckBox.Parent := UninstallProgressForm.InnerPage;
-  RemoveUserDataCheckBox.Left := UninstallProgressForm.StatusLabel.Left;
-  RemoveUserDataCheckBox.Top := UninstallProgressForm.StatusLabel.Top +
-    UninstallProgressForm.StatusLabel.Height + ScaleY(16);
-  RemoveUserDataCheckBox.Width := UninstallProgressForm.InnerPage.ClientWidth -
-    RemoveUserDataCheckBox.Left * 2;
-  RemoveUserDataCheckBox.Height := ScaleY(34);
-  RemoveUserDataCheckBox.WordWrap := True;
-  RemoveUserDataCheckBox.Caption :=
-    '同时删除用户数据（%LOCALAPPDATA%\Rove：索引缓存、设置备份、工作区状态）';
-  RemoveUserDataCheckBox.Checked := False;
+  RemoveUserData := MsgBox(
+    '是否同时删除 Rove 的用户数据？' + #13#10 + #13#10 +
+    ExpandConstant('{localappdata}\Rove') + #13#10 +
+    '（索引缓存、设置备份、工作区状态）' + #13#10 + #13#10 +
+    '选「否」保留这些数据，重新安装后可以继续使用。',
+    mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if (CurUninstallStep = usPostUninstall) and (RemoveUserDataCheckBox <> nil) and
-     RemoveUserDataCheckBox.Checked then
+  if (CurUninstallStep = usPostUninstall) and RemoveUserData then
     DelTree(ExpandConstant('{localappdata}\Rove'), True, True, True);
 end;
