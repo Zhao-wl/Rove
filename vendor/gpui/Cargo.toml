@@ -280,6 +280,11 @@ package = "gpui_http_client"
 
 [dependencies.image]
 version = "0.25.1"
+# Rove #193：只留 gpui 自身代码需要的解码器（img.rs 的 GifDecoder / WebPDecoder，以及 Png/Bmp/Ico），
+# 去掉默认的 jpeg / exr / tiff / avif / hdr / dds / qoi 等格式（Rove v0.1 不显示图片）。
+# R63 图片预览要更多格式时在这里按需加回，并复测 `cargo xtask check-size`。
+default-features = false
+features = ["png", "gif", "webp", "bmp", "ico"]
 
 [dependencies.inventory]
 version = "0.3.19"
