@@ -2404,7 +2404,7 @@ Rust 侧一行没改：这些位置和标识符的出现位置同构，`CsIndex`
 | `xtask/src/procwatch.rs` | `Memory` 多一个 `private_working_set`，来自 `Win32_PerfRawData_PerfProc_Process` 的 `WorkingSetPrivate`（任务管理器的「内存(专用工作集)」列），按 pid 并进同一棵进程树；单独一次查询，不让 `netwatch` 的轮询多付开销。计数器拿不到时留 0 并按「未测到」报告，`private_not_resident_mb()` 返回 `None`，绝不拿 0 当真值算差值 |
 | `xtask/src/startup.rs` | 多写一个结果 id `startup/empty_window_private_working_set`（`metrics`，MB；没测到就不写这一项）；输出把三个数分行列出，并标出哪一个是判定口径 |
 | `perf/budgets.toml` | `empty_window_memory` 的 `metric` / `reason` 写清判定口径；新增两条 `recorded`（`value = 0`，口径同 `cold_start_first_frame`）：`empty_window_private_working_set` 与 `empty_window_private_commit` |
-| `docs/PROJECT_CHARTER.md` §6、§9 | §6 的指标行写明「常驻」判定工作集、另两个数只记录；§9 留下待维护者最终确认的条目 |
+| `docs/PROJECT_CHARTER.md` §6、§9 | §6 的指标行写明「常驻」判定工作集、另两个数只记录；§9 记录该口径（2026-11-17 维护者确认） |
 | `perf/README.md` | 采集口径第 3 条展开成三个计数器各是什么、为什么判定工作集、报告要写三个数 |
 
 本机实测（`cargo xtask startup --startup-tries 3`，空窗口每轮 3 次取中位数，稳定 2 s 后采样；
