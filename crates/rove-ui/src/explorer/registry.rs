@@ -90,6 +90,22 @@ pub const STRINGS: &[(&str, &str)] = &[
     ),
     ("explorer.readFailed.other", "无法读取此文件夹。"),
     ("explorer.badge.readonly", "只读"),
+    ("explorer.branch.title", "分支筛选"),
+    ("explorer.branch.only", "只看分支变更"),
+    ("explorer.branch.author", "提交者"),
+    ("explorer.branch.commit", "分支提交"),
+    ("explorer.branch.allAuthors", "全部提交者"),
+    ("explorer.branch.whole", "整个分支"),
+    ("explorer.branch.parent", "相对父提交"),
+    ("explorer.branch.base", "相对 main 分叉点 · 仅已提交"),
+    ("explorer.branch.clear", "清除"),
+    ("explorer.branch.files", "个文件"),
+    ("explorer.branch.empty", "没有匹配的文件。"),
+    (
+        "explorer.branch.unavailable",
+        "无法读取当前分支或 main 基准。",
+    ),
+    ("explorer.branch.deleted", "该文件在所选范围内已删除。"),
 ];
 
 pub fn register_commands(registry: &mut CommandRegistry) -> Result<()> {

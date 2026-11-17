@@ -4567,6 +4567,7 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "futures-lite 2.6.1",
+ "git2",
  "globset",
  "gpui",
  "image",

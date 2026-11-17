@@ -25,6 +25,8 @@
 //! - #15 的快照只有“目录存在与否”，目录读取失败只会表现为 `NotFound`：显示“该文件夹已不存在或无法读取”。
 //! - `explorer.expandSingleFolderWorkspaces` 针对多根工作区，Rove 只有单根且不显示根行，不适用。
 //! - 没有右键菜单（本 issue 没有可放进去的已实现项；文件操作菜单属于 R62）。
+mod branch_history;
+mod branch_tree;
 pub mod decorations;
 pub mod model;
 pub mod registry;

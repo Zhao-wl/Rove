@@ -38,6 +38,10 @@ use rove_theme::Theme;
 use rove_workspace::{FileEvent, Workspace};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+use super::branch_history::{Change, Changes};
+#[path = "branch_view.rs"]
+mod branch_view;
+
 /// 行高（与 #2 骨架一致；缩放由窗口整体处理）。
 pub const ROW_HEIGHT: f32 = 24.0;
 const ICON: f32 = 16.0;
@@ -67,6 +71,7 @@ impl TreeSource for NoFolder {
 
 /// 行渲染读取的共享状态（渲染闭包在 GPUI 的单线程里运行）。
 struct RenderState {
+    changes: Changes,
     providers: Vec<Arc<dyn DecorationProvider>>,
     badges: bool,
     colors: bool,
@@ -75,6 +80,7 @@ struct RenderState {
 }
 
 pub struct ExplorerView {
+    branch_filter: branch_view::Filter,
     list: Entity<ListView>,
     render: Rc<RefCell<RenderState>>,
     source: Option<Arc<ExplorerSource>>,
@@ -246,6 +252,20 @@ fn row_renderer(state: Rc<RefCell<RenderState>>, theme: Arc<dyn Theme>) -> RowRe
             }
             el = el.child(badge);
         }
+        if let Some(change) = state.changes.get(row.id.0.as_ref()).filter(|_| !is_dir) {
+            let key = match change {
+                Change::Added => "list.highlightForeground",
+                Change::Modified => "list.warningForeground",
+                Change::Deleted => "list.errorForeground",
+            };
+            el = el.child(
+                div()
+                    .pl(px(6.))
+                    .flex_shrink_0()
+                    .text_color(color_of(&*theme, key).unwrap_or_else(gpui::white))
+                    .child(change.badge()),
+            );
+        }
         el.into_any_element()
     })
 }
@@ -259,6 +279,7 @@ impl ExplorerView {
     ) -> Self {
         let explorer = ExplorerSettings::read(settings);
         let render = Rc::new(RefCell::new(RenderState {
+            changes: Changes::new(),
             providers: Vec::new(),
             badges: explorer.badges,
             colors: explorer.colors,
@@ -287,6 +308,7 @@ impl ExplorerView {
             }),
         ];
         let mut view = Self {
+            branch_filter: branch_view::Filter::new(cx),
             list,
             render,
             source: None,
@@ -365,11 +387,14 @@ impl ExplorerView {
             self.show_empty_state(true, cx);
             return;
         };
-        let source = Arc::new(ExplorerSource::new(
-            workspace.clone(),
-            self.settings.clone(),
-            self.strings.clone(),
-        ));
+        let source = Arc::new(
+            ExplorerSource::new(
+                workspace.clone(),
+                self.settings.clone(),
+                self.strings.clone(),
+            )
+            .with_branch_entries(self.filtered_entries()),
+        );
         self.render.borrow_mut().providers = vec![
             Arc::new(ReadOnlyDecorations(workspace.clone())),
             self.problems.clone(),
@@ -377,6 +402,15 @@ impl ExplorerView {
         self.source = Some(source.clone());
         self.workspace = Some(workspace);
         self.show_empty_state(false, cx);
+        if self.branch_filter.enabled && !self.branch_filter.busy && !self.branch_filter.failed {
+            self.list.update(cx, |list, cx| {
+                list.set_empty_state(Some(EmptyState {
+                    message: Message::key("explorer.branch.empty"),
+                    actions: Vec::new(),
+                }));
+                cx.notify();
+            });
+        }
         self.list.update(cx, |list, cx| {
             list.widget
                 .update_tree(|t| *t = TreeModel::new(source.clone()));
@@ -427,6 +461,9 @@ impl ExplorerView {
 
     /// 文件事件的增量应用：只重新装填受影响的节点，展开状态与选中项按 ID 保留。
     pub fn files_changed(&mut self, events: &[FileEvent], cx: &mut Context<Self>) {
+        if self.branch_filter.enabled {
+            return;
+        }
         let Some(source) = self.source.clone() else {
             return;
         };
@@ -601,6 +638,10 @@ impl ExplorerView {
                 side_by_side,
             } => {
                 for id in ids.iter().filter(|id| !is_error_id(&id.0)) {
+                    if self.render.borrow().changes.get(id.0.as_ref()) == Some(&Change::Deleted) {
+                        cx.notify();
+                        continue;
+                    }
                     if let Ok(path) = WorkspacePath::new(&id.0) {
                         cx.emit(ExplorerEvent::Open {
                             path,
@@ -658,7 +699,11 @@ impl ExplorerView {
         let Some(row) = self.focused_row(cx) else {
             return;
         };
-        if row.expandable || is_error_id(&row.id.0) {
+        if row.expandable
+            || is_error_id(&row.id.0)
+            || self.render.borrow().changes.get(row.id.0.as_ref()) == Some(&Change::Deleted)
+        {
+            cx.notify();
             return;
         }
         if let Ok(path) = WorkspacePath::new(&row.id.0) {
@@ -732,12 +777,34 @@ impl Render for ExplorerView {
             }
         }
         let context = self.key_context(cx);
+        let selected_deleted = self
+            .selected(cx)
+            .iter()
+            .any(|path| self.render.borrow().changes.get(path) == Some(&Change::Deleted));
+        let status = self.branch_summary();
         div()
             .size_full()
+            .flex()
+            .flex_col()
             .key_context(context)
             .on_action(
                 cx.listener(|this, action: &ExplorerAction, _, cx| this.command(action.0, cx)),
             )
-            .child(self.list.clone())
+            .children(status.map(|(label, count)| {
+                div()
+                    .flex()
+                    .gap(px(6.))
+                    .text_xs()
+                    .px(px(8.))
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .children(count.map(|count| div().flex_shrink_0().child(count)))
+            }))
+            .children(selected_deleted.then(|| {
+                div()
+                    .text_xs()
+                    .px(px(8.))
+                    .child(self.branch_label("explorer.branch.deleted"))
+            }))
+            .child(div().flex_1().min_h_0().child(self.list.clone()))
     }
 }

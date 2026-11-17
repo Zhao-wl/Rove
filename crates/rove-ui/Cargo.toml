@@ -29,6 +29,7 @@ fancy-regex.workspace = true
 globset.workspace = true
 async-channel.workspace = true
 rayon.workspace = true
+git2 = { version = "0.20.4", default-features = false }
 # #29 Markdown 预览。
 pulldown-cmark.workspace = true
 ammonia.workspace = true
