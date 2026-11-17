@@ -8,7 +8,9 @@
 //! 2. **把 [`Step`] 翻译成反馈**：状态栏临时消息（第 1 级）或带按钮的通知（第 4 级）。
 //!    **不弹模态框**（UX_SPEC §6.1 把它留给数据丢失与安全确认），**不加状态栏常驻条目**。
 //! 3. **「重启以更新」**：先走 #50 的热退出把会话与未保存的修改存好 → 关窗口 →
-//!    拉起安装包（静默参数来自清单）→ 安装器装完再把 Rove 拉起来。
+//!    写下安装尝试记录 → 拉起安装包（静默参数来自清单）→ 安装器装完再把 Rove 拉起来。
+//!    拉起成功不等于装成功：**下一次启动**由 [`UpdateService::on_start`] 结算这次请求，
+//!    装失败了就展示失败、清掉记录与下载，并给一个「重试」按钮（issue #235）。
 //! 4. **C# 索引组件跟着一起升级**（第 4 节）：安装包下好之后调
 //!    [`crate::update::component::follow_update`]（装了才下，没装不下），
 //!    下次启动的首帧之后调 [`crate::update::component::cleanup`] 删掉旧版本目录。
@@ -117,10 +119,13 @@ impl Workbench {
         }
         let roots = service.component_roots().clone();
         let keep = service.installed_component().map(str::to_string);
+        // 推迟安装时随新版下好的待用组件也要留着（issue #237）。
+        let pending = service.pending_component().map(str::to_string);
         let log = service.updater().log().clone();
         cx.background_executor()
             .spawn(async move {
-                let removed = crate::update::component::cleanup(&roots, keep.as_deref());
+                let removed =
+                    crate::update::component::cleanup(&roots, keep.as_deref(), pending.as_deref());
                 if removed > 0 {
                     log.line(&format!("component cleanup: 删掉 {removed} 个旧版本目录"));
                 }
@@ -288,6 +293,9 @@ impl Workbench {
                     self.start_update_download(cx);
                 }
             }
+            // 安装失败之后明确重试（issue #235）：失败的那份下载已经清掉，
+            // 这里从「检查」重新走一遍，拿到的是当前发布的那一版。
+            update_registry::ACTION_RETRY => self.run_update_check(true, cx),
             // 「稍后」：什么都不做。下次启动还会再提示一次（issue 第 3 节）。
             update_registry::ACTION_LATER => {}
             _ => {}
@@ -317,9 +325,10 @@ impl Workbench {
         if !self.request_window_close(cx) {
             return;
         }
-        let installer = pending.installer_path(&paths);
+        // `launch` 会先写下安装尝试记录再拉起安装器：下次启动靠它分得清
+        // 「装失败了」与「用户只是点了稍后」（issue #235）。
         let exe = std::env::current_exe().unwrap_or_default();
-        if let Err(error) = rove_update::install::launch(&pending, &installer, &exe) {
+        if let Err(error) = rove_update::install::launch(&paths, &pending, &exe) {
             let Some(service) = self.updates.service.as_mut() else {
                 return;
             };
@@ -398,6 +407,7 @@ fn action_label(action: &str) -> &'static str {
     match action {
         update_registry::ACTION_RESTART => "update.action.restart",
         update_registry::ACTION_DOWNLOAD => "update.action.download",
+        update_registry::ACTION_RETRY => "update.action.retry",
         _ => "update.action.later",
     }
 }

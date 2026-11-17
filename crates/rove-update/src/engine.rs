@@ -51,6 +51,23 @@ pub enum Outcome {
     Failed { error: UpdateError },
 }
 
+/// 启动时结算上一次安装请求的结论（见 [`Updater::after_start`]）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Startup {
+    /// 没有待安装版本，上一次启动也没有装过东西。
+    Nothing,
+    /// 下载好了还没装：用户点过「稍后」，或者只是普通重启。再提示一次。
+    Pending(Pending),
+    /// 上一次的安装请求装上了（记录与下载已经清掉）。
+    Installed {
+        version: String,
+        /// 随那次更新一起装的组件版本：启动清理时留它、删别的。
+        component_version: Option<String>,
+    },
+    /// 上一次「重启以更新」没装成（记录与下载已经清掉，这次安装请求到此结束）。
+    Failed { version: String, reason: String },
+}
+
 impl Outcome {
     pub fn manifest(&self) -> Option<&Manifest> {
         match self {
@@ -309,23 +326,64 @@ impl Updater {
         Ok(pending)
     }
 
-    /// 启动时读出上次留下的待安装版本（还没装、下次启动要再提示一次的那个）。
+    /// 启动时结算上一次留下的安装请求（issue #149 第 5 节、issue #235）。
     ///
-    /// 如果它已经不比当前版本新，说明**已经装上了**：把记录与下载清掉，返回 `None`。
-    pub fn take_pending_after_start(&self) -> Option<Pending> {
-        let paths = self.paths.as_ref()?;
-        let pending = paths.read_pending()?;
-        if pending.is_newer_than(&self.current) {
-            self.log
-                .line(&format!("pending on start: {}", pending.version));
-            return Some(pending);
+    /// 判定只看两样东西：**有没有安装尝试记录**，以及**版本号变没变**。
+    ///
+    /// | 尝试记录 | 版本号 | 结论 |
+    /// |---|---|---|
+    /// | 没有 | 待安装版本更新 | [`Startup::Pending`]：用户点过「稍后」，继续提示 |
+    /// | 没有 | 已经不更新了 | [`Startup::Installed`]：用户自己装的，清掉记录与下载 |
+    /// | 有 | 已经不更新了 | [`Startup::Installed`]：装上了，清掉记录与下载 |
+    /// | 有 | 还是更新 | [`Startup::Failed`]：装失败了，报告并清掉记录与下载 |
+    pub fn after_start(&self) -> Startup {
+        let Some(paths) = self.paths.as_ref() else {
+            return Startup::Nothing;
+        };
+        let pending = paths.read_pending();
+        let Some(attempt) = paths.read_attempt() else {
+            let Some(pending) = pending else {
+                return Startup::Nothing;
+            };
+            if pending.is_newer_than(&self.current) {
+                self.log
+                    .line(&format!("pending on start: {}", pending.version));
+                return Startup::Pending(pending);
+            }
+            return self.finish_install(paths, pending.version, pending.component_version);
+        };
+        // 上一次「重启以更新」之后的第一次启动。
+        if attempt.is_newer_than(&self.current) {
+            let reason = crate::install::failure_reason(paths.read_exit_code());
+            self.log.line(&format!(
+                "install failed: {} 没装上（当前 {}）：{reason}，清掉记录与下载",
+                attempt.version, self.current
+            ));
+            paths.discard_pending();
+            return Startup::Failed {
+                version: attempt.version,
+                reason,
+            };
         }
+        self.finish_install(paths, attempt.version, attempt.component_version)
+    }
+
+    /// 装上了：记录与下载一起清掉，把随包装上的组件版本带出去（启动清理要留它）。
+    fn finish_install(
+        &self,
+        paths: &UpdatePaths,
+        version: String,
+        component_version: Option<String>,
+    ) -> Startup {
         self.log.line(&format!(
-            "installed: 当前 {}，清掉 {} 的下载",
-            self.current, pending.version
+            "installed: 当前 {}，清掉 {version} 的下载",
+            self.current
         ));
         paths.discard_pending();
-        None
+        Startup::Installed {
+            version,
+            component_version,
+        }
     }
 
     /// 放弃待安装版本（校验失败、安装失败、用户关掉更新）。
@@ -481,26 +539,112 @@ mod tests {
         assert!(error.is_silent());
     }
 
-    /// 启动时：待安装版本还比当前新 → 再提示一次；已经装上了 → 清掉记录。
-    #[test]
-    fn a_pending_update_is_offered_again_or_cleaned_up() {
-        let (_dir, paths) = paths();
+    /// 写下一份「下载好了」的现场（记录 + 安装包）。
+    fn downloaded(paths: &UpdatePaths) -> Pending {
         let manifest = Manifest::parse(sample("0.1.1").as_bytes()).unwrap();
         let pending = Pending::from_manifest(&manifest, "now".into()).unwrap();
         paths.write_pending(&pending).unwrap();
-        std::fs::write(pending.installer_path(&paths), b"setup").unwrap();
+        std::fs::write(pending.installer_path(paths), b"setup").unwrap();
+        pending
+    }
 
-        let older = updater(UpdateMode::Default, StubTransport::new(), paths.clone());
-        assert_eq!(older.take_pending_after_start().as_ref(), Some(&pending));
-
-        // 装上之后（当前版本 = 0.1.1）记录与安装包都被清掉。
-        let newer = Updater::with_transport(
-            Version::parse("0.1.1").unwrap(),
+    fn at_version(version: &str, paths: &UpdatePaths) -> Updater {
+        Updater::with_transport(
+            Version::parse(version).unwrap(),
             UpdateMode::Default,
             Some(paths.clone()),
             Arc::new(StubTransport::new()),
+        )
+    }
+
+    /// 验收（#235 第 3 条）：只推迟安装、普通重启时，有效的待安装记录继续保留。
+    #[test]
+    fn a_deferred_update_is_offered_again_on_the_next_start() {
+        let (_dir, paths) = paths();
+        let pending = downloaded(&paths);
+        let older = updater(UpdateMode::Default, StubTransport::new(), paths.clone());
+        // 重启几次都照旧：没有安装尝试记录 = 用户只是点了「稍后」。
+        for _ in 0..2 {
+            assert_eq!(older.after_start(), Startup::Pending(pending.clone()));
+        }
+        assert_eq!(paths.read_pending(), Some(pending.clone()));
+        assert!(pending.installer_path(&paths).is_file());
+    }
+
+    /// 验收（#235 第 2 条）：正常安装重启后清理下载与记录，不再提示重启。
+    #[test]
+    fn a_finished_install_cleans_up_and_stops_prompting() {
+        let (_dir, paths) = paths();
+        let pending = downloaded(&paths);
+        paths
+            .write_attempt(&crate::paths::Attempt::new(&pending, "now".into()))
+            .unwrap();
+
+        let newer = at_version("0.1.1", &paths);
+        assert_eq!(
+            newer.after_start(),
+            Startup::Installed {
+                version: "0.1.1".into(),
+                // 随这次更新装上的组件版本带得出来（启动清理要留它）。
+                component_version: Some("1.2.0.0".into()),
+            }
         );
-        assert_eq!(newer.take_pending_after_start(), None);
+        assert!(!pending.installer_path(&paths).exists());
+        assert_eq!(paths.read_pending(), None);
+        assert_eq!(paths.read_attempt(), None);
+        // 再启动一次什么都不剩。
+        assert_eq!(newer.after_start(), Startup::Nothing);
+    }
+
+    /// 验收（#235 第 1 条）：拉起过安装器但版本号没变 = 这次装失败了。
+    /// 失败要报告出去，记录与下载一起清掉，不再按原记录提示装同一个包。
+    #[test]
+    fn a_failed_install_is_reported_once_and_ends_the_request() {
+        let (_dir, paths) = paths();
+        let pending = downloaded(&paths);
+        paths
+            .write_attempt(&crate::paths::Attempt::new(&pending, "now".into()))
+            .unwrap();
+        // 安装器替身的退出码（命令行怎么写下它见 install.rs 的测试）。
+        std::fs::write(paths.exit_code_file(), b"3").unwrap();
+
+        let older = updater(UpdateMode::Default, StubTransport::new(), paths.clone());
+        let Startup::Failed { version, reason } = older.after_start() else {
+            panic!("拉起过安装器、版本号却没变，应该判失败");
+        };
+        assert_eq!(version, "0.1.1");
+        assert_eq!(reason, "安装器退出码 3");
+        assert!(!pending.installer_path(&paths).exists());
+        assert_eq!(paths.read_pending(), None);
+        assert_eq!(paths.read_attempt(), None);
+        // 下一次启动不再提示装同一个包，也不再重复报告失败。
+        assert_eq!(older.after_start(), Startup::Nothing);
+        let log = std::fs::read_to_string(older.log().path().unwrap()).unwrap();
+        assert!(log.contains("install failed"), "{log}");
+    }
+
+    /// 安装器连退出码都没留下（被杀掉、写不进去）时同样判失败，原因说得出来。
+    #[test]
+    fn an_install_without_an_exit_code_still_fails_loudly() {
+        let (_dir, paths) = paths();
+        let pending = downloaded(&paths);
+        paths
+            .write_attempt(&crate::paths::Attempt::new(&pending, "now".into()))
+            .unwrap();
+        let older = updater(UpdateMode::Default, StubTransport::new(), paths.clone());
+        let Startup::Failed { reason, .. } = older.after_start() else {
+            panic!("应该判失败");
+        };
+        assert!(reason.contains("版本号"), "{reason}");
+    }
+
+    /// 用户自己手动装了新版本（没有尝试记录，版本号却变了）也算装上了。
+    #[test]
+    fn a_manual_install_also_clears_the_record() {
+        let (_dir, paths) = paths();
+        let pending = downloaded(&paths);
+        let newer = at_version("0.2.0", &paths);
+        assert!(matches!(newer.after_start(), Startup::Installed { .. }));
         assert!(!pending.installer_path(&paths).exists());
         assert_eq!(paths.read_pending(), None);
     }

@@ -50,7 +50,7 @@ pub mod zip;
 
 mod engine;
 
-pub use engine::{Outcome, Updater};
+pub use engine::{Outcome, Startup, Updater};
 pub use manifest::Manifest;
 pub use mode::UpdateMode;
 pub use state::UpdateState;

@@ -28,6 +28,8 @@ pub const RESTART_TO_UPDATE: &str = "update.restartToUpdate";
 pub const ACTION_RESTART: &str = "restart";
 pub const ACTION_DOWNLOAD: &str = "download";
 pub const ACTION_LATER: &str = "later";
+/// 安装失败之后明确重试：重新检查一次，再走一遍下载与安装（issue #235）。
+pub const ACTION_RETRY: &str = "retry";
 
 /// 反馈键（去重用，同一件事只显示一条）。
 pub const KEY_PROMPT: &str = "update.prompt";
@@ -55,6 +57,10 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("update.state.downloading", "正在下载 {version}"),
     ("update.state.ready", "已下载 {version}，重启后安装"),
     ("update.state.failed", "上次检查失败（{time}）：{reason}"),
+    (
+        "update.state.installFailed",
+        "{version} 上次安装失败（{time}）：{reason}",
+    ),
     // 提示条与通知。
     ("update.prompt.restart", "已下载 Rove {version}，重启以更新"),
     ("update.prompt.available", "发现新版本 Rove {version}"),
@@ -65,6 +71,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("update.action.restart", "重启"),
     ("update.action.download", "下载"),
     ("update.action.later", "稍后"),
+    ("update.action.retry", "重试"),
     // 命令的即时回执（第 1 级反馈：状态栏临时消息）。
     ("update.status.checking", "正在检查更新…"),
     ("update.status.upToDate", "已经是最新版本 {version}"),
@@ -79,7 +86,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("update.notify.failed", "更新失败：{reason}"),
     (
         "update.notify.installFailed",
-        "更新没有安装成功，仍在使用当前版本（{reason}）",
+        "Rove {version} 没有安装成功，仍在使用当前版本（{reason}）",
     ),
 ];
 
@@ -213,6 +220,11 @@ mod tests {
             UpdateState::Failed {
                 at: "2026-11-14 10:00:00Z".into(),
                 reason: "网络不可用".into(),
+            },
+            UpdateState::InstallFailed {
+                at: "2026-11-14 10:00:00Z".into(),
+                version: "0.1.1".into(),
+                reason: "安装器退出码 3".into(),
             },
         ] {
             assert!(
