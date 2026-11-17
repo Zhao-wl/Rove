@@ -67,7 +67,10 @@ pub mod context {
 }
 
 /// (命令 ID, 标题字符串 key, 中文标题)。标题取 VS Code 中文语言包的措辞。
+pub const OPEN_LINK: &str = "editor.action.openLink";
+
 pub const COMMANDS: &[(&str, &str, &str)] = &[
+    (OPEN_LINK, "editor.link.openLabel", "打开链接"),
     (
         REVEAL_DEFINITION,
         "nav.command.revealDefinition",
@@ -152,6 +155,12 @@ pub const CATEGORY_KEY: &str = "codeView.category";
 
 /// 其余界面字符串（UX_SPEC §2.2、§6.1–§6.3 的措辞：先说发生了什么，不加“错误：”前缀）。
 pub const STRINGS: &[(&str, &str)] = &[
+    ("editor.link.confirm", "要打开以下外部链接吗？\n{url}"),
+    ("editor.link.cancelLabel", "取消"),
+    ("editor.link.copyLabel", "复制链接地址"),
+    ("editor.link.notFound", "未找到文件 {path}"),
+    ("editor.link.followCtrl", "按 Ctrl 并单击以打开链接"),
+    ("editor.link.followAlt", "按 Alt 并单击以打开链接"),
     ("nav.noDefinition", "未找到 `{name}` 的定义"),
     (
         "nav.noDefinition.approximate",

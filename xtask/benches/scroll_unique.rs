@@ -59,6 +59,7 @@ struct Scenario {
 struct Samples {
     cpu: Vec<Duration>,
     layout: Vec<Duration>,
+    links_cpu: Vec<Duration>,
     glyphs: u64,
     interval: Vec<Duration>,
     placeholders: u64,
@@ -237,6 +238,7 @@ fn frame(run: Rc<RefCell<Run>>, window: &mut Window, cx: &mut App) {
         for f in frames {
             samples.cpu.push(f.cpu);
             samples.layout.push(f.layout);
+            samples.links_cpu.push(f.links_cpu);
             samples.glyphs += f.glyphs as u64;
             samples.placeholders += (f.placeholders + f.missing) as u64;
             if f.placeholders + f.missing > 0 {
@@ -380,8 +382,22 @@ fn highlighted(unique: bool, lines: usize) -> Option<Highlighted> {
 
 fn main() {
     eprintln!("scroll 基准：加载测试数据 {}", testdata_dir().display());
-    let mut scenarios = vec![];
+    let mut scenarios: Vec<(Scenario, Arc<dyn TextSource>)> = vec![];
     let mut names = vec![];
+    let links_text = "Assets/Scripts/Player.cs:41 https://example.test/guide\n".repeat(420);
+    scenarios.push((
+        Scenario {
+            file: "generated links",
+            frames: 300,
+            step: 3.0,
+            wrap: Some(300.0),
+            highlight: None,
+            find: None,
+            word_wrap: false,
+        },
+        Arc::new(rove_buffer::RopeText::from_text(&links_text)),
+    ));
+    names.push("links_hit");
     if let Some(text) = load("small.txt") {
         scenarios.push((
             Scenario {
@@ -507,6 +523,10 @@ fn main() {
         );
         stats("帧间隔", &s.interval);
         match *name {
+            "links_hit" => {
+                stats("  链接缓存", &s.links_cpu);
+                record("links_frame_cpu_cache_hit", &s.links_cpu);
+            }
             "hit" => {
                 record("frame_cpu_cache_hit", &s.cpu);
                 record("frame_interval_cache_hit", &s.interval);

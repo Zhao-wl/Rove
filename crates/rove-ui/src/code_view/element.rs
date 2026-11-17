@@ -409,7 +409,12 @@ impl CodeView {
         stats.text_version = self.text.as_ref().map_or(0, |t| t.version().0);
         self.last_frame = stats;
         let last = lines.last().map_or(first_doc, |l| l.line);
-        self.note_visible(first..view_line.max(first + 1), top);
+        let visible = first..view_line.max(first + 1);
+        let link_started = self.recording.is_some().then(Instant::now);
+        self.queue_visible_links(visible.clone(), cx);
+        self.last_frame.links_cpu =
+            link_started.map_or(std::time::Duration::ZERO, |start| start.elapsed());
+        self.note_visible(visible, top);
 
         let vthumb = vbar.and_then(|b| {
             let t = scroll::thumb(
@@ -1507,6 +1512,17 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
             }
         });
         cx.stop_propagation();
+    });
+    let v = view.clone();
+    let text_hitbox = frame.text_hitbox.clone();
+    window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+        if phase == DispatchPhase::Bubble
+            && e.button == MouseButton::Right
+            && text_hitbox.is_hovered(window)
+            && v.update(cx, |v, cx| v.mouse_down_link_menu(e.position, cx))
+        {
+            cx.stop_propagation();
+        }
     });
     let v = view.clone();
     let lay = frame.layout.clone();

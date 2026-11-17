@@ -511,6 +511,18 @@ VS Code 内置默认值。默认键位来自 #14 生成的 VS Code 默认键位�
 性能：`cargo xtask gen-testdata --only small`、`--only uniq` 后 `cargo xtask bench --filter scroll`
 （真实窗口，见 `xtask/benches/scroll_unique.rs`）。
 
+### 链接检测与打开（#72）
+
+`CodeView` 在后台检测可见视觉行和两侧各八行，按文档行缓存字节区间。缓存随事务平移未改动的行。检测遵循 `editor.links`、单行渲染上限以及超大文件关闭规则。
+
+链接与 C# 定义共享命中事件、装饰层和悬停卡片。没有定义目标时才打开检测到的链接。文件路径经打开文档服务定位，Markdown 源码的相对路径基于所在文档，标题锚点使用大纲符号。引用式链接的定义仅在用户打开或复制时由后台解析。
+
+| VS Code 设置 | Rove 行为 |
+|---|---|
+| `workbench.externalBrowser`、`workbench.externalUriOpeners` | 静默忽略。仅 HTTP(S) 交给系统默认浏览器，每次均确认。 |
+| `workbench.trustedDomains.promptInTrustedWorkspace` | 静默忽略。没有受信域名列表。 |
+| `file://` | 本地文件经打开文档服务加载。拒绝网络路径和 Windows 设备路径。 |
+
 ### 高亮、折叠与只读（#20）
 
 位置仍在 `crates/rove-ui/src/code_view/`，新增文件：

@@ -465,6 +465,7 @@ impl CodeView {
                     .rekey(|l| old_to_new(changes, *l).filter(|_| keep.contains(l)));
             }
             self.decorations.remap(|l| old_to_new(changes, l));
+            self.links.remap(|l| old_to_new(changes, *l));
             self.remap_wrap(changes);
             for c in &changes.ranges {
                 wrap_dirty.push(c.new.start().0..c.new.end().0 + 1);

@@ -128,6 +128,16 @@ reason = "#8 落地：open_file 内存映射 + 同步索引头部 1 MiB，到首
 # #150 把这条占位删掉，**数值没有任何改动**：同一个指标只留一条，避免一条判定、一条永远 pending。
 
 [[budget]]
+id = "links_frame_cpu_cache_hit"
+metric = "连续滚动时链接检测缓存的每帧 CPU"
+value = 0.05
+unit = "ms"
+owner = "#72"
+status = "enforced"
+bench = "scroll/links_frame_cpu_cache_hit"
+reason = "真实窗口内 420 行混合文件路径及 URL，预热后滚动 300 帧 × 3 行，只测视口链接缓存调度。"
+
+[[budget]]
 id = "frame_cpu_cache_hit"
 metric = "连续滚动时每帧 CPU（整形缓存命中）"
 value = 1

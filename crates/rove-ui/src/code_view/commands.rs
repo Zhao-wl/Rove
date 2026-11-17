@@ -607,6 +607,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("codeView.feature.folding", "折叠"),
     ("codeView.feature.stickyScroll", "粘性滚动"),
     ("codeView.feature.wordWrap", "软换行"),
+    ("codeView.feature.links", "链接检测"),
 ];
 
 /// 分类标题（命令面板里显示为“编辑器: …”）。

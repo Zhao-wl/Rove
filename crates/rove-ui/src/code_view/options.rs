@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// 本视图登记的全部设置项及 VS Code 默认值（`docs/compat/SETTINGS.md`）。
 pub const SETTINGS: &[(&str, DefaultValue)] = &[
+    ("editor.links", DefaultValue::Bool(true)),
     (
         "editor.fontFamily",
         DefaultValue::Str("Consolas, 'Courier New', monospace"),
@@ -360,6 +361,7 @@ pub struct EditorOptions {
     pub overtype_on_paste: bool,
     // #52
     /// `editor.multiCursorModifier`：加光标与 #40 的跳转手势共用的修饰键来源。
+    pub links: bool,
     pub multi_cursor_modifier: super::multicursor::MultiCursorModifier,
     pub multi_cursor_merge_overlapping: bool,
     pub multi_cursor_limit: usize,
@@ -629,6 +631,7 @@ impl EditorOptions {
             trim_auto_whitespace: r.bool("editor.trimAutoWhitespace"),
             overtype_cursor_style: cursor_style(&r.str("editor.overtypeCursorStyle")),
             overtype_on_paste: r.bool("editor.overtypeOnPaste"),
+            links: r.bool("editor.links"),
             multi_cursor_modifier: super::multicursor::MultiCursorModifier::parse(
                 &r.str("editor.multiCursorModifier"),
             ),
