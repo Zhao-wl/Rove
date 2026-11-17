@@ -634,6 +634,139 @@ fn conflict_on_a_read_only_target_keeps_the_attribute() {
     assert!(tmp_files(dir.path()).is_empty());
 }
 
+fn set_read_only(path: &Path, read_only: bool) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(read_only);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+fn is_read_only(path: &Path) -> bool {
+    std::fs::metadata(path).unwrap().permissions().readonly()
+}
+
+fn read_only_save_fixture(dir: &Path) -> (PathBuf, TextFile, SaveRequest) {
+    let target = dir.join("Player.cs");
+    std::fs::write(&target, b"base").unwrap();
+    let mut file = load(&target, &defaults());
+    type_at(&mut file, 4, " local", Instant::now());
+    set_read_only(&target, true);
+    let request = SaveRequest {
+        clear_read_only: true,
+        ..SaveRequest::default()
+    };
+    (target, file, request)
+}
+
+#[test]
+fn late_conflict_after_temp_write_keeps_read_only_attribute() {
+    let dir = tempfile::tempdir().unwrap();
+    let (target, mut file, request) = read_only_save_fixture(dir.path());
+    let external = target.clone();
+    let write = WriteOptions {
+        fail_point: Some(save::FailPoint(Arc::new(move |_| {
+            assert!(is_read_only(&external));
+            set_read_only(&external, false);
+            std::fs::write(&external, b"base external").unwrap();
+            set_read_only(&external, true);
+            Ok(())
+        }))),
+        ..WriteOptions::default()
+    };
+    assert_eq!(
+        file.save(
+            &request,
+            &SaveOptions::default(),
+            None,
+            &write,
+            Instant::now()
+        ),
+        SaveOutcome::Conflict
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"base external");
+    assert!(is_read_only(&target));
+    assert!(tmp_files(dir.path()).is_empty());
+    set_read_only(&target, false);
+}
+
+#[test]
+fn conflict_on_busy_retry_keeps_read_only_attribute() {
+    let dir = tempfile::tempdir().unwrap();
+    let (target, mut file, request) = read_only_save_fixture(dir.path());
+    let write = busy_once_then_external_write(&target, b"base external");
+    assert_eq!(
+        file.save(
+            &request,
+            &SaveOptions::default(),
+            None,
+            &write,
+            Instant::now()
+        ),
+        SaveOutcome::Conflict
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"base external");
+    assert!(is_read_only(&target));
+    assert!(tmp_files(dir.path()).is_empty());
+    set_read_only(&target, false);
+}
+
+#[test]
+fn failed_replace_rolls_back_read_only_attribute() {
+    let dir = tempfile::tempdir().unwrap();
+    let (target, mut file, request) = read_only_save_fixture(dir.path());
+    let write = WriteOptions {
+        replace_fail_point: Some(save::ReplaceFailPoint(Arc::new(|_| {
+            Some(save::WriteError::AccessDenied)
+        }))),
+        ..WriteOptions::default()
+    };
+    assert_eq!(
+        file.save(
+            &request,
+            &SaveOptions::default(),
+            None,
+            &write,
+            Instant::now()
+        ),
+        SaveOutcome::AccessDenied
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"base");
+    assert!(is_read_only(&target));
+    assert!(tmp_files(dir.path()).is_empty());
+    set_read_only(&target, false);
+}
+
+#[test]
+fn failed_replace_does_not_change_an_external_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let (target, mut file, request) = read_only_save_fixture(dir.path());
+    let original = dir.path().join("original.cs");
+    let (external, displaced) = (target.clone(), original.clone());
+    let write = WriteOptions {
+        replace_fail_point: Some(save::ReplaceFailPoint(Arc::new(move |_| {
+            std::fs::rename(&external, &displaced).unwrap();
+            std::fs::write(&external, b"base external").unwrap();
+            Some(save::WriteError::AccessDenied)
+        }))),
+        ..WriteOptions::default()
+    };
+    assert_eq!(
+        file.save(
+            &request,
+            &SaveOptions::default(),
+            None,
+            &write,
+            Instant::now()
+        ),
+        SaveOutcome::AccessDenied
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"base external");
+    assert!(!is_read_only(&target));
+    assert!(is_read_only(&original));
+    assert!(tmp_files(dir.path()).is_empty());
+    set_read_only(&original, false);
+}
+
 fn conflicted(dir: &Path) -> (PathBuf, TextFile) {
     let target = dir.join("Player.cs");
     std::fs::write(&target, b"base").unwrap();

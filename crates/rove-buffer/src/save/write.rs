@@ -3,14 +3,14 @@
 //! 保证：
 //!
 //! - **不留半截文件**：内容先完整写进同目录的临时文件并 `FlushFileBuffers`，再一次性替换目标；
-//!   替换之前任何一步失败（包括进程被强杀），目标文件保持原样。
+//!   临时文件准备期间失败（包括进程被强杀），目标文件保持原样。
 //! - **不留临时残留**：临时文件创建后立即设置“关闭即删除”的处置（`FileDispositionInfo`），
 //!   进程在写入途中被强杀时由系统删除；替换前才撤销这个处置。其他失败路径显式删除临时文件。
 //! - **保留属性与时间戳语义**：`ReplaceFileW` 保留原文件的属性（隐藏、系统……）、创建时间与 ACL，
 //!   修改时间是这次写入的时间（与 VS Code 相同）。
 //! - **失败分类**：被其他程序占用（Unity 正在导入：共享冲突、锁冲突、映射中、无法移除被替换文件）
 //!   归为 [`WriteError::Busy`]，并按 [`WriteOptions::busy_retries`] 自动重试；只读属性归为
-//!   [`WriteError::ReadOnly`]（[`WriteOptions::clear_read_only`] 为真时先清除再写，即通知里的“覆盖”）；
+//!   [`WriteError::ReadOnly`]（[`WriteOptions::clear_read_only`] 为真时在替换前清除，替换失败时恢复，即通知里的“覆盖”）；
 //!   其余拒绝访问归为 [`WriteError::AccessDenied`]。**不提供提权写入**。
 //!
 //! 写入的线性化点是替换成功的那一刻；之后发生的任何事情都不会把结果报告成失败（ARCHITECTURE §3.8）。
@@ -139,16 +139,10 @@ pub(crate) fn write_atomic_guarded<E: From<WriteError>, G>(
     if !parent.is_dir() {
         return Err(WriteError::DirectoryMissing.into());
     }
-    // 先检查一次再动目标的属性：冲突时不能先清掉只读属性再中止（替换前每次仍会再检查）。
+    // 保留早期冲突和只读检查，避免在已知不能保存时准备临时文件。
     drop(before_replace()?);
-    let existing = std::fs::metadata(path).ok();
-    if let Some(metadata) = &existing {
-        if metadata.permissions().readonly() {
-            if !options.clear_read_only {
-                return Err(WriteError::ReadOnly.into());
-            }
-            clear_read_only(path).map_err(|error| classify(path, error))?;
-        }
+    if !options.clear_read_only && is_read_only(path) {
+        return Err(WriteError::ReadOnly.into());
     }
     let temp = TempFile::create(&parent, path).map_err(|error| classify(path, error))?;
     temp.write(bytes).map_err(|error| classify(path, error))?;
@@ -167,20 +161,7 @@ pub(crate) fn write_atomic_guarded<E: From<WriteError>, G>(
                 return Err(error);
             }
         };
-        let injected = options
-            .replace_fail_point
-            .as_ref()
-            .and_then(|ReplaceFailPoint(hook)| hook(attempts));
-        let result = match injected {
-            Some(error) => Err(error),
-            // 每次都重新判断：重试期间目标可能被删除或创建。
-            None => if path.exists() {
-                replace(path, &temp)
-            } else {
-                rename(&temp, path)
-            }
-            .map_err(|error| classify(path, error)),
-        };
+        let result = replace_once(path, &temp, options, attempts);
         drop(guard);
         match result {
             Ok(()) => break,
@@ -217,11 +198,76 @@ fn parent_dir(path: &Path) -> PathBuf {
     }
 }
 
-fn clear_read_only(path: &Path) -> std::io::Result<()> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    #[allow(clippy::permissions_set_readonly_false)]
-    permissions.set_readonly(false);
-    std::fs::set_permissions(path, permissions)
+fn is_read_only(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().readonly())
+}
+
+fn replace_once(
+    path: &Path,
+    temp: &Path,
+    options: &WriteOptions,
+    attempts: u32,
+) -> Result<(), WriteError> {
+    let read_only = if is_read_only(path) {
+        if !options.clear_read_only {
+            return Err(WriteError::ReadOnly);
+        }
+        let file = open_for_attributes(path).map_err(|error| classify(path, error))?;
+        let permissions = file
+            .metadata()
+            .map_err(|error| classify(path, error))?
+            .permissions();
+        if permissions.readonly() {
+            let mut writable = permissions.clone();
+            #[allow(clippy::permissions_set_readonly_false)]
+            writable.set_readonly(false);
+            file.set_permissions(writable)
+                .map_err(|error| classify(path, error))?;
+            Some((file, permissions))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let injected = options
+        .replace_fail_point
+        .as_ref()
+        .and_then(|ReplaceFailPoint(hook)| hook(attempts));
+    let result = match injected {
+        Some(error) => Err(error),
+        // 每次都重新判断：重试期间目标可能被删除或创建。
+        None => if path.exists() {
+            replace(path, temp)
+        } else {
+            rename(temp, path)
+        }
+        .map_err(|error| classify(path, error)),
+    };
+    if result.is_err() {
+        if let Some((file, permissions)) = read_only {
+            // 用原句柄恢复，路径若已被外部替换，不会误改另一个文件。等待重试前完成恢复。
+            file.set_permissions(permissions)
+                .map_err(|error| WriteError::Io(error.into()))?;
+        }
+    }
+    result
+}
+
+#[cfg(windows)]
+fn open_for_attributes(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES};
+
+    OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_for_attributes(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 /// 把 I/O 错误归类。Windows 错误码见模块文档。
