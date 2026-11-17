@@ -183,31 +183,21 @@ struct Shared {
 }
 
 impl Shared {
-    /// 申请 `n` 处匹配的配额，返回实际得到的数量（用完时触发上限、停止全部线程）。
-    fn claim(&self, n: usize) -> usize {
+    /// 为一处可报告的匹配申请配额。最后一处配额用完后，通知其余工作线程停止。
+    fn claim_match(&self) -> bool {
         let Some(budget) = &self.budget else {
-            return n;
+            return true;
         };
-        let mut current = budget.load(Ordering::Relaxed);
-        loop {
-            let granted = current.min(n);
-            match budget.compare_exchange_weak(
-                current,
-                current - granted,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    if current == granted {
-                        // 配额用完（达到 `search.maxResults`）：停止全部工作线程。
-                        self.limit_hit.store(true, Ordering::Relaxed);
-                        self.cancel.cancel();
-                    }
-                    return granted;
-                }
-                Err(actual) => current = actual,
-            }
+        let remaining = budget
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .unwrap_or_default();
+        if remaining <= 1 {
+            self.limit_hit.store(true, Ordering::Relaxed);
+            self.cancel.cancel();
         }
+        remaining != 0
     }
 }
 
@@ -687,10 +677,23 @@ impl Sink for Collect<'_> {
         // (行在 bytes 中的起止, 行号, 区间)。这里的“行”已经按独立 `\r` 切开。
         let mut per_line: Vec<(usize, usize, u64, Vec<Range<u32>>)> = Vec::new();
         let _ = self.shared.matcher.find_iter(bytes, |m| {
+            if self.shared.cancel.check().is_err() {
+                return false;
+            }
             // 零宽命中（`^` / `$` / `\b`）保留为空区间；`find_iter` 遇到空匹配会前进一个字节。
             // 整段末尾、行终止符之后的空匹配是“下一行的行首”，不是一处命中。
             if m.start() == m.end() && m.start() == bytes.len() && bytes.ends_with(b"\n") {
                 return true;
+            }
+            if !self.shared.claim_match() {
+                return false;
+            }
+            // 命中按位置递增。同一编辑器行内复用边界，避免密集命中时反复扫描整行。
+            if let Some((start, end, _, ranges)) = per_line.last_mut() {
+                if m.start() <= *end {
+                    ranges.push((m.start() - *start) as u32..(m.end().min(*end) - *start) as u32);
+                    return self.shared.cancel.check().is_ok();
+                }
             }
             let lf_start = memchr::memrchr(b'\n', &bytes[..m.start()]).map_or(0, |i| i + 1);
             let lf_index = memchr::memchr_iter(b'\n', &bytes[..lf_start]).count() as u64;
@@ -711,20 +714,13 @@ impl Sink for Collect<'_> {
                     std::iter::once(range).collect(),
                 )),
             }
-            true
+            // 最后一处配额已经存入，停止本轮枚举并保留这些已获配额的结果。
+            self.shared.cancel.check().is_ok()
         });
-        for (start, end, line, mut ranges) in per_line {
-            let granted = self.shared.claim(ranges.len());
-            ranges.truncate(granted);
-            if ranges.is_empty() {
-                return Ok(false);
-            }
+        for (start, end, line, ranges) in per_line {
             self.out.push(preview(line, &bytes[start..end], ranges));
-            if granted == 0 || self.shared.cancel.check().is_err() {
-                return Ok(false);
-            }
         }
-        Ok(true)
+        Ok(self.shared.cancel.check().is_ok())
     }
 }
 
