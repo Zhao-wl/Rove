@@ -130,6 +130,40 @@ impl SyntaxLayer {
             .fold(line, |l, changes| super::edit::new_to_old(changes, l))
     }
 
+    /// 某一行里属于字符串或注释的字节区间（升序、互不重叠）。
+    ///
+    /// #57 的括号对树据此跳过注释与字符串里的括号：判定一律走 #9 的 token（scope），
+    /// 不自己扫引号与注释起止，所以 C# 的逐字字符串（`@"..."`）与 XML 的 CDATA 都能正确跳过。
+    pub fn ignored_ranges(&self, line: u64, out: &mut Vec<Range<u32>>) {
+        let Some((snapshot, text)) = &self.current else {
+            return;
+        };
+        let line = self.snapshot_line(line);
+        let (Ok(range), Ok(tokens)) = (text.line_range(Line(line)), snapshot.tokens(Line(line)))
+        else {
+            return;
+        };
+        let (line_start, line_end) = (range.start().0, range.end().0);
+        for token in tokens.iter() {
+            if !token
+                .scopes
+                .iter()
+                .any(|s| s.starts_with("string") || s.starts_with("comment"))
+            {
+                continue;
+            }
+            let start = (token.range.start().0.max(line_start) - line_start) as u32;
+            let end = token.range.end().0.min(line_end).saturating_sub(line_start) as u32;
+            if start >= end {
+                continue;
+            }
+            match out.last_mut() {
+                Some(last) if last.end >= start => last.end = last.end.max(end),
+                _ => out.push(start..end),
+            }
+        }
+    }
+
     /// 某行某列（UTF-8 字节）所在 token 的 scope 是否属于字符串或注释（括号匹配跳过这些位置）。
     pub fn in_string_or_comment(&self, line: u64, column: u32) -> bool {
         let (string, comment) = self.scope_at(line, column);

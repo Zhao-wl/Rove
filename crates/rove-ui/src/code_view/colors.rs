@@ -170,6 +170,14 @@ pub const FEATURE_COLORS: &[&str] = &[
     "editorStickyScroll.shadow",
     "editorStickyScrollGutter.background",
     "editorStickyScrollHover.background",
+    // #57：括号对着色（按嵌套深度循环取 1–6，未配对的用 unexpectedBracket）。
+    "editorBracketHighlight.foreground1",
+    "editorBracketHighlight.foreground2",
+    "editorBracketHighlight.foreground3",
+    "editorBracketHighlight.foreground4",
+    "editorBracketHighlight.foreground5",
+    "editorBracketHighlight.foreground6",
+    "editorBracketHighlight.unexpectedBracket.foreground",
 ];
 
 /// 主题服务用的颜色登记表：全部 P0 键，加上代码视图用到的其余键（[`COLORS`]、[`FEATURE_COLORS`]）。
@@ -253,6 +261,8 @@ pub struct Palette {
     pub folding_control_foreground: Color,
     /// `editorIndentGuide.background1`–`background6`，按缩进层级循环取。
     pub indent_guides: [Option<Color>; 6],
+    /// #57：`editorBracketHighlight.foreground1`–`foreground6` 与未配对括号的颜色。
+    pub bracket_pairs: super::bracket_pairs::BracketColors,
     pub whitespace: Option<Color>,
     /// #47：`editor.compositionBorder`（输入法组合串下方的线）。
     pub composition_border: Option<Color>,
@@ -349,6 +359,17 @@ impl Palette {
                 get("editorIndentGuide.background5"),
                 get("editorIndentGuide.background6"),
             ],
+            bracket_pairs: super::bracket_pairs::BracketColors {
+                depth: [
+                    get("editorBracketHighlight.foreground1"),
+                    get("editorBracketHighlight.foreground2"),
+                    get("editorBracketHighlight.foreground3"),
+                    get("editorBracketHighlight.foreground4"),
+                    get("editorBracketHighlight.foreground5"),
+                    get("editorBracketHighlight.foreground6"),
+                ],
+                unexpected: get("editorBracketHighlight.unexpectedBracket.foreground"),
+            },
             whitespace: get("editorWhitespace.foreground"),
             composition_border: get("editor.compositionBorder"),
             multi_cursor_primary: get("editorMultiCursor.primary.foreground")

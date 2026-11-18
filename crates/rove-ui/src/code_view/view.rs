@@ -5,6 +5,7 @@
 //! 每个切片有时间预算，沿滚动方向预取；缓存未命中的行先按等宽近似画占位，下一帧换成正式结果，
 //! 行高与 y 坐标只由行号和 f64 滚动位置决定，所以替换时不会跳动。
 
+use super::bracket_pairs::{BracketKind, BracketPairs, BracketSource};
 use super::brackets::{self, BracketMatch};
 use super::cache::{CacheStats, Lru};
 use super::colors::Palette;
@@ -148,6 +149,8 @@ pub enum Feature {
     /// 软换行（仅超大文件，#58）。
     WordWrap,
     Links,
+    /// 括号对着色（#57；大文件与超大文件关闭，括号太多时也关闭）。
+    BracketPairColorization,
 }
 
 impl Feature {
@@ -162,7 +165,26 @@ impl Feature {
             Feature::Folding => "codeView.feature.folding",
             Feature::WordWrap => "codeView.feature.wordWrap",
             Feature::Links => "codeView.feature.links",
+            Feature::BracketPairColorization => "codeView.feature.bracketPairColorization",
         }
+    }
+}
+
+/// #57：括号对树的文档适配器。行文本来自文本源，忽略区间（注释 / 字符串）来自 #9 的 token。
+struct BracketDoc<'a> {
+    text: &'a dyn TextSource,
+    syntax: &'a SyntaxLayer,
+}
+
+impl BracketSource for BracketDoc<'_> {
+    fn line_count(&self) -> u64 {
+        self.text.lines().known.max(1)
+    }
+    fn line_text(&self, line: u64) -> Option<Arc<str>> {
+        read_line(self.text, line).map(Arc::from)
+    }
+    fn ignored_ranges(&self, line: u64, out: &mut Vec<Range<u32>>) {
+        self.syntax.ignored_ranges(line, out);
     }
 }
 
@@ -457,6 +479,9 @@ pub struct CodeView {
     last_syntax_invalidation: Option<Option<Vec<Range<u64>>>>,
     brackets: Rc<RefCell<(Option<BracketMatch>, TextStyle)>>,
     bracket_layer: LayerId,
+    /// #57：括号对树（着色与活动括号对共用）。
+    pub(crate) bracket_pairs: Rc<RefCell<BracketPairs>>,
+    bracket_color_layer: LayerId,
     pub(crate) occurrences: Rc<RefCell<Occurrences>>,
     occurrence_layer: LayerId,
     occurrence_epoch: Rc<Cell<u64>>,
@@ -694,6 +719,18 @@ impl CodeView {
                 }),
             )
             .expect("built-in layer");
+        // #57：括号对着色。优先级高于 token 与语义 token 的前景色，低于括号匹配的高亮框。
+        let bracket_pairs: Rc<RefCell<BracketPairs>> = Rc::default();
+        let state = bracket_pairs.clone();
+        let bracket_color_layer = decorations
+            .add(
+                "rove.bracketPairColorization",
+                priority::BRACKET_PAIR,
+                Rc::new(move |line: u64, _: &str, out: &mut LineDecorations| {
+                    state.borrow().colorize(line, &mut out.inline);
+                }),
+            )
+            .expect("built-in layer");
         let mut view = Self {
             focus,
             text: None,
@@ -718,6 +755,8 @@ impl CodeView {
             last_syntax_invalidation: None,
             brackets,
             bracket_layer,
+            bracket_pairs,
+            bracket_color_layer,
             occurrences,
             occurrence_layer,
             occurrence_epoch: Rc::new(Cell::new(0)),
@@ -822,6 +861,8 @@ impl CodeView {
             // 换文档：`alt+z` 的会话覆盖跟着这个视图的文档走，重置回设置。
             self.wrap.session = None;
         }
+        // #57：换了文本（或同一文档的新快照）就整棵括号对树重建，并重新判定括号数上限。
+        self.bracket_pairs.borrow_mut().reset();
         // #58：换了文本就得重算全部换行点（分帧进行）。
         self.wrap.applied = None;
         self.wrap.map.disable_wrap();
@@ -1276,7 +1317,17 @@ impl CodeView {
             || options.sticky_scroll_max_line_count != self.options.sticky_scroll_max_line_count;
         let tokens_changed =
             options.max_tokenization_line_length != self.options.max_tokenization_line_length;
+        // #57：括号对着色的设置变了，着色层整体失效（括号定义变了还要重建树）。
+        let colorization_changed = options.bracket_pair_colorization
+            != self.options.bracket_pair_colorization
+            || options.independent_color_pool_per_bracket_type
+                != self.options.independent_color_pool_per_bracket_type
+            || options.language_brackets != self.options.language_brackets
+            || options.language_colorized_brackets != self.options.language_colorized_brackets
+            || options.bracket_maximum != self.options.bracket_maximum;
         let highlights_changed = options.match_brackets != self.options.match_brackets
+            || options.highlight_active_bracket_pair != self.options.highlight_active_bracket_pair
+            || colorization_changed
             || options.occurrences_highlight != self.options.occurrences_highlight
             || options.selection_highlight != self.options.selection_highlight
             || options.selection_highlight_max_length
@@ -1311,6 +1362,9 @@ impl CodeView {
         if folds_changed {
             self.recompute_folds(cx);
         }
+        if colorization_changed {
+            self.decorations.invalidate(&self.bracket_color_layer, None);
+        }
         if highlights_changed {
             self.update_highlights(cx);
         }
@@ -1336,6 +1390,7 @@ impl CodeView {
             &self.syntax_layer,
             &self.occurrence_layer,
             &self.bracket_layer,
+            &self.bracket_color_layer,
         ] {
             self.decorations.invalidate(layer, None);
         }
@@ -3133,10 +3188,27 @@ impl CodeView {
                 }
             }
         }
+        // #57：注释与字符串的范围由 token 决定，所以变化行的括号也要重算。
+        {
+            let mut pairs = self.bracket_pairs.borrow_mut();
+            match &invalid {
+                None => pairs.invalidate_all(),
+                Some(ranges) => pairs.note_lines(
+                    ranges
+                        .iter()
+                        .map(|r| super::bracket_pairs::parser::LineEdit {
+                            old: r.clone(),
+                            new: r.clone(),
+                        })
+                        .collect(),
+                ),
+            }
+        }
         self.last_syntax_invalidation = Some(invalid);
         if had_folds || folds_of(&self.syntax.borrow().current) {
             self.recompute_folds(cx);
         }
+        self.sync_bracket_pairs();
         self.update_brackets();
         cx.notify();
     }
@@ -3162,6 +3234,23 @@ impl CodeView {
             let mut syntax = self.syntax.borrow_mut();
             syntax.max_line_length = self.options.max_tokenization_line_length;
             syntax.enabled = self.effective_level() != SizeClass::Huge;
+        }
+        // #57：括号对着色。大文件与超大文件整体关闭（`UX_SPEC` §3.1）。
+        {
+            let level = self.effective_level();
+            let kinds = self.bracket_kinds();
+            let mut pairs = self.bracket_pairs.borrow_mut();
+            pairs.colors = p.bracket_pairs;
+            pairs.enabled = self.options.bracket_pair_colorization;
+            pairs.level_allows = level == SizeClass::Normal;
+            pairs.independent_pool = self.options.independent_color_pool_per_bracket_type;
+            pairs.highlight_active = self.options.highlight_active_bracket_pair;
+            if pairs.limit != self.options.bracket_maximum {
+                pairs.limit = self.options.bracket_maximum;
+                // 上限变了要重新判定「是不是括号太多」。
+                pairs.reset();
+            }
+            pairs.set_kinds(kinds);
         }
         self.brackets.borrow_mut().1 = TextStyle {
             foreground: p.bracket_match_foreground,
@@ -3220,15 +3309,24 @@ impl CodeView {
     /// 当前因文档级别被关闭的功能（#22 据此组装状态栏悬停提示）。
     pub fn disabled_features(&self) -> Vec<Feature> {
         match self.effective_level() {
-            SizeClass::Normal => Vec::new(),
+            // #57：括号太多（压缩 JSON、生成代码）时整体关闭着色，原因同样可以查询到。
+            SizeClass::Normal => {
+                if self.bracket_pairs.borrow().over_limit() {
+                    vec![Feature::BracketPairColorization]
+                } else {
+                    Vec::new()
+                }
+            }
             SizeClass::Large => vec![
                 Feature::StickyScroll,
+                Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxFolding,
                 Feature::BackgroundHighlighting,
             ],
             SizeClass::Huge => vec![
                 Feature::StickyScroll,
+                Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxHighlighting,
                 Feature::Folding,
@@ -3662,10 +3760,55 @@ impl CodeView {
 
     // ------------------------------------------------------------------ 括号匹配与同名高亮（#20）
 
-    /// 选区变化后更新括号匹配与同名高亮。
+    /// 选区变化后更新括号匹配与同名高亮。括号对树要先更新：活动括号对以它为准。
     pub(crate) fn update_highlights(&mut self, cx: &mut Context<Self>) {
+        self.sync_bracket_pairs();
         self.update_brackets();
         self.update_occurrences(cx);
+    }
+
+    // ------------------------------------------------------------------ 括号对树与着色（#57）
+
+    /// 当前生效的括号定义：`brackets` 决定哪些括号参与匹配，`colorizedBracketPairs`
+    /// （未定义时回落到 `brackets`）决定哪些参与着色；两者取并集建同一棵树。
+    /// 用户的 `editor.language.brackets` / `editor.language.colorizedBracketPairs` 优先。
+    fn bracket_kinds(&self) -> Vec<BracketKind> {
+        super::bracket_pairs::kinds_for(
+            self.language_config().map(|c| &**c.data()),
+            self.options.language_brackets.as_deref(),
+            self.options.language_colorized_brackets.as_deref(),
+        )
+    }
+
+    /// 必要时重新解析括号对树；树变了就让着色层整体失效（重算仍按行懒惰进行，不闪烁）。
+    pub(crate) fn sync_bracket_pairs(&mut self) {
+        // 不按 `is_dirty` 提前返回：设置或文档级别变化时树要被丢掉，这一步也归 `update` 判断
+        //（它自己会在「没变化且已解析过」时立即返回）。
+        let Some(text) = self.text.clone() else {
+            self.bracket_pairs.borrow_mut().reset();
+            return;
+        };
+        let changed = {
+            let syntax = self.syntax.borrow();
+            let doc = BracketDoc {
+                text: &*text,
+                syntax: &syntax,
+            };
+            self.bracket_pairs.borrow_mut().update(&doc)
+        };
+        if changed {
+            self.decorations.invalidate(&self.bracket_color_layer, None);
+        }
+    }
+
+    /// 某一行上的括号及其嵌套深度（集成测试与 #56 的概览标尺用）。
+    pub fn bracket_depths(&self, line: u64) -> Vec<super::bracket_pairs::query::BracketHit> {
+        self.bracket_pairs.borrow().brackets_in_line(line)
+    }
+
+    /// 某一行上参与着色的括号：(行内字节区间, 深度, 颜色键)。
+    pub fn bracket_colors(&self, line: u64) -> Vec<(Range<u32>, u32, &'static str)> {
+        self.bracket_pairs.borrow().colored_keys(line)
     }
 
     /// 当前高亮的括号对。
@@ -3700,9 +3843,21 @@ impl CodeView {
     }
 
     fn find_brackets(&self) -> Option<BracketMatch> {
+        // #57：`editor.guides.highlightActiveBracketPair` 为假时完全不高亮。
+        if !self.options.highlight_active_bracket_pair {
+            return None;
+        }
+        let a = self.cursor.selection.active;
+        {
+            // 括号对树可用时一律以它为准：嵌套与未配对的情况比就近扫描准，
+            // 而 `editor.matchBrackets`（always / near / never）的语义不变。
+            let pairs = self.bracket_pairs.borrow();
+            if pairs.has_tree() {
+                return pairs.active_pair(a.line.0, a.column.0 as u32, self.options.match_brackets);
+            }
+        }
         let text = self.text.as_ref()?;
         let config = self.language_config()?;
-        let a = self.cursor.selection.active;
         let lines = TextLines(&**text);
         let read = |l: u64| -> Option<Arc<str>> {
             self.lines
