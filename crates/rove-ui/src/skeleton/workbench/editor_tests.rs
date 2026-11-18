@@ -204,9 +204,28 @@ fn open_preview_keep_split_pin_and_restore_use_the_real_window(cx: &mut TestAppC
     cx.run_until_parked();
     view.read_with(cx, |v, _| assert_eq!(v.editor.maximized, Some(right)));
     cx.simulate_keystrokes("ctrl-k ctrl-m");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert_eq!(v.editor.maximized, None));
     cx.simulate_keystrokes("ctrl-1");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert_eq!(v.editor.focused, left));
     cx.simulate_keystrokes("alt-1");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.focused, left);
+        assert_eq!(
+            v.editor.active().current().unwrap().resource,
+            resource("B.cs")
+        );
+    });
     cx.simulate_keystrokes("ctrl-k shift-enter");
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.focused, left);
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.resource, resource("B.cs"));
+        assert!(tab.pinned);
+    });
     cx.simulate_keystrokes("ctrl-k ctrl-w");
     cx.run_until_parked();
     view.read_with(cx, |v, _| {
