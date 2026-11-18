@@ -15,6 +15,7 @@ use super::decorations::{
     MergedLine, TextStyle,
 };
 use super::folding::{FoldMap, FoldRange, Folding};
+use super::guides::GUIDE_SEARCH;
 use super::highlight::{SyntaxLayer, SyntaxProvider};
 use super::occurrences::{OccurrenceProvider, Occurrences, Target, WordRule};
 use super::options::{EditorOptions, Ligatures, MAX_ZOOM, MIN_ZOOM};
@@ -3245,6 +3246,9 @@ impl CodeView {
             pairs.level_allows = level == SizeClass::Normal;
             pairs.independent_pool = self.options.independent_color_pool_per_bracket_type;
             pairs.highlight_active = self.options.highlight_active_bracket_pair;
+            // #57 第二部分：参考线也要用这棵树，所以着色关了、参考线开着时照样建树。
+            pairs.guides = self.options.guides_bracket_pairs != super::guides::GuideMode::Off
+                || self.options.guides_bracket_pairs_horizontal != super::guides::GuideMode::Off;
             if pairs.limit != self.options.bracket_maximum {
                 pairs.limit = self.options.bracket_maximum;
                 // 上限变了要重新判定「是不是括号太多」。
@@ -3814,6 +3818,132 @@ impl CodeView {
     /// 当前高亮的括号对。
     pub fn bracket_match(&self) -> Option<BracketMatch> {
         self.brackets.borrow().0.clone()
+    }
+
+    // ------------------------------------------------------------------ 参考线（#57 第二部分）
+
+    /// 一行的源文本：优先用行缓存，没命中再读文本源。
+    fn line_source(&self, line: u64) -> Option<Arc<str>> {
+        if let Some(entry) = self.lines.peek(&line) {
+            return Some(entry.source.clone());
+        }
+        let text = self.text.as_ref()?;
+        super::columns::read_line(&**text, line).map(Arc::from)
+    }
+
+    /// 某一行里某个源字节列的**可见列**（Tab 展开、全宽字符算两列）。
+    fn visible_column_at(&self, line: u64, column: u32) -> u32 {
+        if let Some(entry) = self.lines.peek(&line) {
+            return entry.display.visible_column(column);
+        }
+        // 没命中行缓存（括号对跨过视口时左右括号那一行可能在视口外）：现算，并且只算到这一列
+        //（字节数不小于字符数，所以这个上限一定覆盖得到目标列），长行上不白跑整行。
+        match self.line_source(line) {
+            Some(text) => {
+                DisplayLine::build(&text, self.options.tab_size, Some(column as usize + 1))
+                    .visible_column(column)
+            }
+            None => column,
+        }
+    }
+
+    /// 一行的缩进参考线条数（只对有内容的行返回 `Some`）。
+    fn content_levels(&self, line: u64) -> Option<u32> {
+        let tab = self.options.tab_size;
+        let source = self.line_source(line)?;
+        super::guides::indent_columns(&source, tab).map(|c| super::guides::levels(c, tab))
+    }
+
+    /// 活动缩进参考线（`editor.guides.highlightActiveIndentation`）。
+    ///
+    /// `visible` 是当前视口的缓冲行区间：与 VS Code 一样只在可见范围里找块的上下边界，
+    /// 代价与视口大小成正比，与文档大小无关。
+    pub fn active_indent_guide(&self, visible: Range<u64>) -> Option<super::guides::ActiveIndent> {
+        use super::guides::ActiveIndentMode;
+        let mode = self.options.highlight_active_indentation;
+        if mode == ActiveIndentMode::Off || !self.options.guides_indentation {
+            return None;
+        }
+        // `true` 时让位给括号对参考线标出的活动括号对；`"always"` 两条都画。
+        if mode == ActiveIndentMode::On
+            && self.options.guides_bracket_pairs != super::guides::GuideMode::Off
+            && self.active_guide_pair().is_some()
+        {
+            return None;
+        }
+        super::guides::active_indent_guide(
+            self.cursor.selection.active.line.0,
+            self.doc_line_count(),
+            visible,
+            GUIDE_SEARCH,
+            false,
+            &|line| self.content_levels(line),
+        )
+    }
+
+    /// 光标所在的活动括号对参考线（跨行、配对完整的最内层括号对）。
+    pub fn active_guide_pair(&self) -> Option<super::bracket_pairs::query::GuidePair> {
+        let a = self.cursor.selection.active;
+        self.bracket_pairs
+            .borrow()
+            .active_guide_pair(a.line.0, a.column.0 as u32)
+    }
+
+    /// 可见区间内的括号对参考线（`editor.guides.bracketPairs` /
+    /// `editor.guides.bracketPairsHorizontal`），按行升序。
+    ///
+    /// 两个设置项互相独立：水平线可以单独开着（默认就是 `bracketPairs: false` +
+    /// `bracketPairsHorizontal: "active"`）。可见列要读左右括号那两行的文本，视口内的行走行缓存，
+    /// 跨过视口的括号对每对最多多读两行（条数等于嵌套层数）。
+    pub fn bracket_pair_guides(&self, visible: Range<u64>) -> Vec<super::guides::BracketGuide> {
+        use super::guides::GuideMode;
+        let vertical_mode = self.options.guides_bracket_pairs;
+        let horizontal_mode = self.options.guides_bracket_pairs_horizontal;
+        if (vertical_mode == GuideMode::Off && horizontal_mode == GuideMode::Off)
+            || visible.is_empty()
+        {
+            return Vec::new();
+        }
+        let active = self.active_guide_pair();
+        // 两边都只画活动的那一对，而光标又不在任何跨行括号对里：不用遍历树了
+        //（默认设置就是这种情况，每帧省掉一次遍历）。
+        if active.is_none() && vertical_mode != GuideMode::On && horizontal_mode != GuideMode::On {
+            return Vec::new();
+        }
+        let pairs = self.bracket_pairs.borrow().guide_pairs(visible.clone());
+        let mut out = Vec::new();
+        for pair in pairs {
+            let is_active = active.as_ref() == Some(&pair);
+            let vertical = vertical_mode.wants(is_active);
+            let horizontal = horizontal_mode.wants(is_active);
+            if !vertical && !horizontal {
+                continue;
+            }
+            let close_source = self.line_source(pair.close.lines);
+            let close_is_first = close_source.as_deref().is_none_or(|text| {
+                text.find(|c: char| c != ' ' && c != '\t')
+                    .is_none_or(|i| i as u32 >= pair.close.columns)
+            });
+            let geometry = super::guides::PairGeometry {
+                open_line: pair.open.lines,
+                open_column: self.visible_column_at(pair.open.lines, pair.open.columns),
+                close_line: pair.close.lines,
+                close_column: self.visible_column_at(pair.close.lines, pair.close.columns),
+                close_is_first,
+                level: pair.level,
+                level_of_kind: pair.level_of_kind,
+                active: is_active,
+            };
+            super::guides::bracket_guide_lines(
+                &geometry,
+                visible.clone(),
+                vertical,
+                horizontal,
+                &mut out,
+            );
+        }
+        out.sort_by_key(|g| (g.line, g.column, g.level));
+        out
     }
 
     fn update_brackets(&mut self) {

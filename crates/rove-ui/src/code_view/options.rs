@@ -191,6 +191,16 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
         "rove.bracketPairColorization.maximumBrackets",
         DefaultValue::Num(super::bracket_pairs::DEFAULT_MAX_BRACKETS as f64),
     ),
+    // #57 第二部分：括号对参考线与活动缩进参考线。三个取值的设置项默认值照搬 VS Code。
+    ("editor.guides.bracketPairs", DefaultValue::Bool(false)),
+    (
+        "editor.guides.bracketPairsHorizontal",
+        DefaultValue::Str("active"),
+    ),
+    (
+        "editor.guides.highlightActiveIndentation",
+        DefaultValue::Bool(true),
+    ),
 ];
 
 /// 设置项默认值（编译期表）。
@@ -376,6 +386,13 @@ pub struct EditorOptions {
     pub folding_highlight: bool,
     pub unfold_on_click_after_end_of_line: bool,
     pub guides_indentation: bool,
+    // #57 第二部分：括号对参考线与活动缩进参考线。
+    /// `editor.guides.bracketPairs`。
+    pub guides_bracket_pairs: super::guides::GuideMode,
+    /// `editor.guides.bracketPairsHorizontal`。
+    pub guides_bracket_pairs_horizontal: super::guides::GuideMode,
+    /// `editor.guides.highlightActiveIndentation`。
+    pub highlight_active_indentation: super::guides::ActiveIndentMode,
     // #55：粘性滚动。
     pub sticky_scroll: bool,
     /// `editor.stickyScroll.maxLineCount`（1–[`super::sticky::MAX_LINE_COUNT`]）。
@@ -554,6 +571,18 @@ pub fn parse_bracket_pairs(value: &Value) -> Option<Vec<(Arc<str>, Arc<str>)>> {
         out.push(pair);
     }
     Some(out)
+}
+
+/// `editor.guides.bracketPairs` / `editor.guides.bracketPairsHorizontal` 的三个取值
+/// （`true` / `false` / `"active"`；认不出来的值按 VS Code 当成 `false`）。
+fn guide_mode(value: &Value) -> super::guides::GuideMode {
+    use super::guides::GuideMode;
+    match value {
+        Value::Bool(true) => GuideMode::On,
+        Value::String(s) if &**s == "active" => GuideMode::Active,
+        Value::String(s) if &**s == "true" => GuideMode::On,
+        _ => GuideMode::Off,
+    }
 }
 
 fn cursor_style(s: &str) -> CursorStyle {
@@ -797,6 +826,15 @@ impl EditorOptions {
             folding_highlight: r.bool("editor.foldingHighlight"),
             unfold_on_click_after_end_of_line: r.bool("editor.unfoldOnClickAfterEndOfLine"),
             guides_indentation: r.bool("editor.guides.indentation"),
+            guides_bracket_pairs: guide_mode(&r.raw("editor.guides.bracketPairs")),
+            guides_bracket_pairs_horizontal: guide_mode(
+                &r.raw("editor.guides.bracketPairsHorizontal"),
+            ),
+            highlight_active_indentation: match r.raw("editor.guides.highlightActiveIndentation") {
+                Value::Bool(false) => super::guides::ActiveIndentMode::Off,
+                Value::String(s) if &*s == "always" => super::guides::ActiveIndentMode::Always,
+                _ => super::guides::ActiveIndentMode::On,
+            },
             sticky_scroll: r.bool("editor.stickyScroll.enabled"),
             sticky_scroll_max_line_count: r.num(
                 "editor.stickyScroll.maxLineCount",

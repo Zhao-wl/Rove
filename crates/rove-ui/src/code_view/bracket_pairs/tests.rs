@@ -357,6 +357,7 @@ fn colorization_can_be_turned_off() {
     state.colors = BracketColors {
         depth: [Some(rove_theme::Color(1, 2, 3, 255)); DEPTH_COLORS],
         unexpected: Some(rove_theme::Color(9, 9, 9, 255)),
+        ..Default::default()
     };
     let mut out = Vec::new();
     state.colorize(0, &mut out);
@@ -387,6 +388,7 @@ fn fully_transparent_depth_colors_do_not_override_the_token_color() {
             None,
         ],
         unexpected: None,
+        ..Default::default()
     };
     let mut out = Vec::new();
     state.colorize(0, &mut out);

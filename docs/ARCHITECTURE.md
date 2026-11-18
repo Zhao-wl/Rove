@@ -2535,5 +2535,62 @@ scope 以 `string` 或 `comment` 开头），不自己扫引号与注释起止�
 含 `editor.matchBrackets` 回归）、`cargo xtask bench --only brackets`（`perf/budgets.toml` 的
 `bracket_pair_incremental_update` 与 `bracket_pair_frame_extra`）。
 
-**留给 #57 第二部分**：`editor.guides.bracketPairs`、`editor.guides.bracketPairsHorizontal`、
-`editor.guides.highlightActiveIndentation` 与各自的截图。
+## 括号对参考线与活动缩进参考线（#57 第二部分）
+
+位置：括号对树上的查询在 `code_view/bracket_pairs/query.rs`（`guide_pairs` / `active_guide_pair`），
+逐行几何在 `code_view/guides.rs`（纯计算，与 #20 的缩进参考线同一个模块），
+可见列换算与设置判定在 `code_view/view.rs`，绘制在 `code_view/element.rs`。
+
+**数据来源与代价**。`guide_pairs(root, 行区间)` 在括号对树上走一遍，起点在区间之后、终点在区间之前的
+子树整棵剪掉，所以代价与「与视口相交的括号对数」成正比，与文档大小无关；它给出的 `level` /
+`level_of_kind` 与着色是同一套计数（`bracket_pairs::depth_index`），**参考线与括号的颜色序号必然一致**。
+参考线整帧算一次（`CodeView::bracket_pair_guides(可见区间)`）：视口内的行走行缓存，
+跨过视口的括号对每对最多多读两行文本（条数等于嵌套层数），不另建缓存。
+`editor.guides.bracketPairs` 或 `editor.guides.bracketPairsHorizontal` 任意一个不是 `false` 时
+`BracketPairs::guides` 为真，**着色关掉也照样建树**，否则参考线没有数据来源。
+
+**竖线画在哪一列**。`min(左括号可见列, 右括号可见列)`。VS Code 还会再和「括号对内部各行的最小缩进 + 1」
+取一次最小值，那一步要扫过整对括号的每一行（代价与括号对长度成正比，没法只看视口），
+而且只有在「内容比两个括号本身更靠左」这种少见的排版下才会改变结果，**本实现不做**。
+
+**一对括号摊成哪些行**（`guides::bracket_guide_lines`）：
+
+| 行 | 竖线 | 水平线（`bracketPairsHorizontal` 打开时） |
+|---|---|---|
+| 左括号那一行 | 下半截 | 行高中线，从竖线连到左括号 |
+| 中间各行 | 整行 | 无 |
+| 右括号那一行，且右括号是首个非空白字符 | 上半截 | 行高中线，从竖线连到右括号（通常长度为 0） |
+| 右括号那一行，前面还有别的内容 | 整行 | 贴行底，从竖线连到右括号 |
+| 单行括号对 | 无 | 行高中线，从左括号连到右括号 |
+
+于是整条参考线正好起于左括号、止于右括号。**两个设置项互相独立**：`bracketPairs: false` +
+`bracketPairsHorizontal: "active"`（VS Code 的默认组合）只画活动括号对的水平线。
+`"active"` 的判定是「包含光标、配对完整且**跨行**的最内层括号对」（`active_guide_pair`，
+单行括号对永远不算活动，与 VS Code 一致）。
+
+**参考线的颜色**（`colors.rs`，照搬 VS Code 的 themingParticipant 回落）：
+`editorBracketPairGuide.backgroundN` 没设色或完全透明时用 `editorBracketHighlight.foregroundN`
+打三成透明度，`activeBackgroundN` 则直接用 `foregroundN` 本身。没有这条回落，默认主题下
+（这些键的默认值都是 `#00000000`）参考线永远看不见。
+
+**活动缩进参考线**（`editor.guides.highlightActiveIndentation`，`guides::active_indent_guide`）：
+取光标所在行的参考线条数 `base`（空行按上下最近的有内容行推定）；光标那一行如果是块的开头
+（下一条有内容的行更深）活动的就是它开出来的那一层，否则是本行最里面的那条；再从锚点行上下找
+「参考线条数 ≥ 目标层数」的连续行作为高亮范围，**只在可见区间里找**（与 VS Code 的
+`getActiveIndentGuide(行, 可见首行, 可见末行)` 一样，代价与视口大小成正比）。
+取值 `true` 时，括号对参考线已经标出活动括号对就让位给它；`"always"` 两条都画；`false` 不画。
+颜色取 `editorIndentGuide.activeBackground1`–`6`，某一级没设色或完全透明时回落到第 1 级
+（VS Code 的普通缩进参考线只用 `activeBackground1`）。
+
+**按级别关闭**：括号对参考线随括号对树一起在大文件与超大文件上关闭（`Feature::BracketPairColorization`）；
+缩进参考线与活动高亮在各级别都保留（`UX_SPEC` §3.1 的关闭清单里没有它们）。
+
+**登记**：设置项 `editor.guides.bracketPairs`、`editor.guides.bracketPairsHorizontal`、
+`editor.guides.highlightActiveIndentation` 在 `code_view::options::SETTINGS`；颜色键
+`editorBracketPairGuide.background1`–`6`、`.activeBackground1`–`6` 与
+`editorIndentGuide.activeBackground1`–`6` 在 `code_view::colors::FEATURE_COLORS`。没有新增界面字符串。
+
+验证：`cargo test -p rove-ui --lib guides`、`cargo test -p rove-ui --lib bracket_pairs::query`、
+`cargo test -p rove-ui --test code_view_brackets`（三个取值、深度一致、按级别关闭、颜色回落、登记）。
+**截图没有做**：仓库里没有截图测试框架（GPUI 测试窗口没有真实 HWND），几何量改为由
+`CodeView::bracket_pair_guides` / `CodeView::active_indent_guide` 逐条断言。
