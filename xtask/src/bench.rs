@@ -142,6 +142,8 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
         None => util::default_testdata_dir(),
     };
     let filter = util::flag(args, "--filter");
+    let only = util::flag(args, "--only");
+    let selected = select_targets(only.as_deref(), filter.as_deref())?;
     let save = util::flag(args, "--save").map(PathBuf::from);
     let baseline = util::flag(args, "--baseline").map(PathBuf::from);
     let check_budgets = util::has_flag(args, "--check-budgets");
@@ -179,6 +181,9 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
 
             let mut ran = 0usize;
             for target in TARGETS {
+                if !selected.contains(&target.name) {
+                    continue;
+                }
                 let ready = match target.name {
                     "cs_index" => cs_index.is_some(),
                     "scroll_unique" => uniq_ready,
@@ -257,6 +262,48 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
         code |= budgets::check(&budgets, &current)?;
     }
     Ok(code)
+}
+
+/// 要跑哪些基准目标（#154）。
+///
+/// - `--only a,b`：只跑列出的目标（名字必须存在），与 `gen-testdata --only` 的用法一致；
+/// - 只给 `--filter`：criterion 用例 ID 的第一段就是目标名（`find/replace_all` → `find`），
+///   有目标的名字包含这一段时只跑这些目标；一个都不匹配时照旧全跑（过滤交给各基准自己）。
+///   手写基准（`typing`、`nav` 等）不解析 `--filter`，不先按目标筛掉的话会整套照跑。
+fn select_targets(
+    only: Option<&str>,
+    filter: Option<&str>,
+) -> Result<Vec<&'static str>, Box<dyn std::error::Error>> {
+    let all: Vec<&'static str> = TARGETS.iter().map(|t| t.name).collect();
+    if let Some(only) = only {
+        let mut out = Vec::new();
+        for name in only.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            match all.iter().find(|t| **t == name) {
+                Some(t) => out.push(*t),
+                None => {
+                    return Err(format!(
+                        "--only 不认识基准目标 `{name}`；可用的有：{}",
+                        all.join(", ")
+                    )
+                    .into())
+                }
+            }
+        }
+        if out.is_empty() {
+            return Err("--only 没有给出任何基准目标".into());
+        }
+        return Ok(out);
+    }
+    if let Some(head) = filter
+        .and_then(|f| f.split('/').next())
+        .filter(|h| !h.is_empty())
+    {
+        let matched: Vec<&'static str> = all.iter().copied().filter(|t| t.contains(head)).collect();
+        if !matched.is_empty() {
+            return Ok(matched);
+        }
+    }
+    Ok(all)
 }
 
 fn run_target(
@@ -389,4 +436,38 @@ fn format_ns(ns: f64) -> String {
 
 fn cargo_exe() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+}
+
+#[cfg(test)]
+mod select_tests {
+    use super::select_targets;
+
+    #[test]
+    fn filter_narrows_to_the_target_named_by_its_first_segment() {
+        assert_eq!(
+            select_targets(None, Some("find/replace_all")).unwrap(),
+            ["find"]
+        );
+        assert_eq!(
+            select_targets(None, Some("scroll")).unwrap(),
+            ["scroll_unique"]
+        );
+    }
+
+    #[test]
+    fn an_unmatched_filter_still_runs_every_target() {
+        let all = select_targets(None, None).unwrap();
+        assert_eq!(select_targets(None, Some("no_such_group")).unwrap(), all);
+        assert!(all.contains(&"typing") && all.contains(&"nav"));
+    }
+
+    #[test]
+    fn only_lists_exact_targets_and_rejects_unknown_names() {
+        assert_eq!(
+            select_targets(Some("find, edit"), Some("scroll")).unwrap(),
+            ["find", "edit"]
+        );
+        assert!(select_targets(Some("nope"), None).is_err());
+        assert!(select_targets(Some(","), None).is_err());
+    }
 }

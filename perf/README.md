@@ -19,6 +19,8 @@ cargo xtask gen-testdata --only uniq        # 只生成 uniq.txt（CI 用这个�
 # 2) 跑基准（criterion，统一入口）
 cargo xtask bench                                    # 所有可用的基准组
 cargo xtask bench --quick                            # 快速模式（CI 用）
+cargo xtask bench --only find,edit                   # 只跑列出的基准目标（cargo bench --bench <名字>）
+cargo xtask bench --filter find/replace_all          # 用例过滤；第一段能对上目标名时只跑那些目标
 cargo xtask bench --cs-index out/medium.idx          # 额外跑索引查询（没有索引就整组跳过）
 cargo xtask bench --save target/bench.json           # 保存机器可读结果
 cargo xtask bench --baseline target/bench-main.json  # 与基线比较，退化 > 15% 报警

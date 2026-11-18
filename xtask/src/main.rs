@@ -44,7 +44,7 @@ const USAGE: &str = "\
       生成测试数据。默认写到 target/perf-testdata（已在 .gitignore 里）。
       CI 上不要生成 big1g.txt。
 
-  bench [--cs-index PATH] [--filter PATTERN] [--testdata DIR]
+  bench [--cs-index PATH] [--filter PATTERN] [--only TARGET[,TARGET]] [--testdata DIR]
         [--save PATH] [--baseline PATH] [--check-budgets] [--quick] [--from PATH]
         [--compare-floor-ns N] [--no-startup] [--exe PATH] [--project DIR]
       跑基准。--save 写出机器可读结果；--baseline 与旧结果比较，退化超过 15% 报警；
