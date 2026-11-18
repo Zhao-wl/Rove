@@ -24,7 +24,25 @@ const INFERRED: &str =
     "未找到项目文件，正在使用推断的项目结构。在 Unity 中执行 Assets → Open C# Project 可以生成项目文件。";
 
 fn open(cx: &mut TestAppContext) -> (Entity<Workbench>, &mut VisualTestContext, tempfile::TempDir) {
+    open_with(cx, &[])
+}
+
+/// 先在文件夹里放好文件再打开工作台（#181）：打开之后再写的文件会被工作区监视器当作变化
+/// 转给索引生命周期，事件在高负载下可能迟到，`.csproj` 的变化会触发一次意料之外的全量重建。
+fn open_with<'a>(
+    cx: &'a mut TestAppContext,
+    files: &[(&str, &str)],
+) -> (
+    Entity<Workbench>,
+    &'a mut VisualTestContext,
+    tempfile::TempDir,
+) {
     let folder = tempfile::tempdir().unwrap();
+    for (rel, text) in files {
+        let path = folder.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     let root: PathBuf = folder.path().into();
     let (view, cx) = cx.add_window_view(|_, cx| Workbench::new(root, Instant::now(), cx));
     cx.run_until_parked();
@@ -349,10 +367,10 @@ impl IndexBuilder for FakeIndexer {
 
 #[gpui::test]
 fn lifecycle_drives_the_item_from_open_to_failure_and_retry(cx: &mut TestAppContext) {
-    let (view, cx, folder) = open(cx);
-    std::fs::create_dir(folder.path().join("Assets")).unwrap();
-    std::fs::write(folder.path().join("Assets/A.cs"), "class A {}").unwrap();
-    std::fs::write(folder.path().join("Game.csproj"), "<Project/>").unwrap();
+    let (view, cx, folder) = open_with(
+        cx,
+        &[("Assets/A.cs", "class A {}"), ("Game.csproj", "<Project/>")],
+    );
     let cache = tempfile::tempdir().unwrap();
     let builder = Arc::new(FakeIndexer::default());
     // 首次构建两次都失败（重试一次后降级）。
