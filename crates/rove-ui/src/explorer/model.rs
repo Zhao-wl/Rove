@@ -295,11 +295,14 @@ pub struct RevealPlan {
 }
 
 /// 资源管理器树的数据源：目录树来自 #15，展开时才向它要子节点；排序与紧凑文件夹在这里完成。
+pub(super) type BranchEntries = std::collections::BTreeMap<String, Vec<Entry>>;
+
 pub struct ExplorerSource {
     workspace: Arc<dyn Workspace>,
     settings: ExplorerSettings,
     strings: Arc<dyn Strings>,
     shared: Mutex<Shared>,
+    branch_entries: Option<BranchEntries>,
 }
 
 impl ExplorerSource {
@@ -313,7 +316,13 @@ impl ExplorerSource {
             settings,
             strings,
             shared: Mutex::new(Shared::default()),
+            branch_entries: None,
         }
+    }
+
+    pub(super) fn with_branch_entries(mut self, entries: Option<BranchEntries>) -> Self {
+        self.branch_entries = entries;
+        self
     }
 
     pub fn workspace(&self) -> &Arc<dyn Workspace> {
@@ -325,6 +334,10 @@ impl ExplorerSource {
     }
 
     fn list(&self, dir: Option<&WorkspacePath>) -> Result<Vec<Entry>, Error> {
+        if let Some(entries) = &self.branch_entries {
+            let key = dir.map_or("", WorkspacePath::as_str);
+            return Ok(entries.get(key).cloned().unwrap_or_default());
+        }
         let page = self.workspace.children(dir, 0..usize::MAX)?;
         Ok(page.items.to_vec())
     }
@@ -337,10 +350,18 @@ impl ExplorerSource {
         }
         while chain.len() < MAX_CHAIN {
             let last = chain.last().expect("chain is never empty");
-            let Ok(page) = self.workspace.children(Some(last), 0..2) else {
+            let branch_page;
+            let workspace_page;
+            let items = if let Some(entries) = &self.branch_entries {
+                branch_page = entries.get(last.as_str()).map_or(&[][..], Vec::as_slice);
+                branch_page
+            } else if let Ok(page) = self.workspace.children(Some(last), 0..2) {
+                workspace_page = page;
+                workspace_page.items.as_ref()
+            } else {
                 break;
             };
-            match page.items.as_ref() {
+            match items {
                 [only] if is_dir(only) => chain.push(only.path.clone()),
                 _ => break,
             }
@@ -541,6 +562,13 @@ impl ExplorerSource {
     /// 在 `parent` 下找名称（不分大小写）等于 `name` 的子项，返回磁盘上的写法。
     fn find_child(&self, parent: Option<&WorkspacePath>, wanted: &str) -> Option<Entry> {
         let key = fold_key(wanted);
+        if let Some(entries) = &self.branch_entries {
+            return entries
+                .get(parent.map_or("", WorkspacePath::as_str))?
+                .iter()
+                .find(|entry| fold_key(entry.path.as_str()) == key)
+                .cloned();
+        }
         let page = self.workspace.children(parent, 0..usize::MAX).ok()?;
         page.items
             .iter()

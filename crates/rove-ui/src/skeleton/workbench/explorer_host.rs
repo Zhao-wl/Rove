@@ -17,6 +17,7 @@ impl Workbench {
     ) -> Entity<ExplorerView> {
         let strings: Arc<dyn Strings> = Arc::new(appearance::strings().unwrap());
         let view = cx.new(|cx| ExplorerView::new(theme, strings, &**settings, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&view, |this, _, event: &ExplorerEvent, cx| {
             this.explorer_event(event, cx)
         })

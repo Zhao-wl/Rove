@@ -18,6 +18,120 @@ use gpui::{
 use rove_config::{SettingsOptions, SettingsService};
 use std::sync::Mutex;
 
+fn branch_commit(
+    repo: &git2::Repository,
+    author: &str,
+    summary: &str,
+    edits: &[(&str, Option<&str>)],
+) -> git2::Oid {
+    let root = repo.workdir().unwrap();
+    let mut index = repo.index().unwrap();
+    for (name, contents) in edits {
+        let path = std::path::Path::new(name);
+        let disk = root.join(path);
+        if let Some(contents) = contents {
+            std::fs::write(disk, contents).unwrap();
+            index.add_path(path).unwrap();
+        } else {
+            std::fs::remove_file(disk).unwrap();
+            index.remove_path(path).unwrap();
+        }
+    }
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let who = git2::Signature::now(author, &format!("{author}@example.test")).unwrap();
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    let parents = parent.iter().collect::<Vec<_>>();
+    repo.commit(Some("HEAD"), &who, &who, summary, &tree, &parents)
+        .unwrap()
+}
+
+#[gpui::test]
+fn explorer_branch_menu_filters_real_commit_history(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}", &["modified.txt", "deleted.txt"]);
+    let repo = git2::Repository::init_opts(
+        fixture.folder.path(),
+        git2::RepositoryInitOptions::new().initial_head("main"),
+    )
+    .unwrap();
+    let base = branch_commit(
+        &repo,
+        "Alice",
+        "base",
+        &[("modified.txt", Some("old")), ("deleted.txt", Some("old"))],
+    );
+    repo.branch("feature", &repo.find_commit(base).unwrap(), false)
+        .unwrap();
+    repo.set_head("refs/heads/feature").unwrap();
+    branch_commit(
+        &repo,
+        "Alice",
+        "add files",
+        &[
+            ("added.txt", Some("new")),
+            ("temporary.txt", Some("temporary")),
+        ],
+    );
+    branch_commit(
+        &repo,
+        "Bob",
+        "modify and delete",
+        &[
+            ("modified.txt", Some("new")),
+            ("deleted.txt", None),
+            ("temporary.txt", None),
+        ],
+    );
+    std::fs::write(fixture.path("working.txt"), "untracked").unwrap();
+    let (view, cx) = fixture.open(cx);
+    let click = |cx: &mut VisualTestContext, selector: &'static str| {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is missing"));
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+    };
+
+    assert_eq!(
+        rows(&view, cx),
+        ["added.txt", "modified.txt", "working.txt"]
+    );
+    click(cx, "explorer-branch-filter");
+    click(cx, "explorer-branch-toggle");
+    assert_eq!(
+        rows(&view, cx),
+        ["added.txt", "deleted.txt", "modified.txt"]
+    );
+
+    click(cx, "explorer-branch-author");
+    click(cx, "explorer-branch-option-1");
+    assert_eq!(rows(&view, cx), ["added.txt"]);
+    click(cx, "explorer-branch-commit");
+    click(cx, "explorer-branch-option-1");
+    assert_eq!(rows(&view, cx), ["added.txt", "temporary.txt"]);
+
+    click(cx, "explorer-branch-toggle");
+    assert_eq!(
+        rows(&view, cx),
+        ["added.txt", "modified.txt", "working.txt"]
+    );
+    click(cx, "explorer-branch-toggle");
+    assert_eq!(rows(&view, cx), ["added.txt", "temporary.txt"]);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    // GPUI retains debug_bounds across frames; inspect the live menu state.
+    assert!(!view.read_with(cx, |view, cx| view.explorer.read(cx).branch_menu_is_open()));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, cx| view.explorer.read(cx).branch_menu_is_open()));
+}
+
 struct Fixture {
     user: tempfile::TempDir,
     folder: tempfile::TempDir,

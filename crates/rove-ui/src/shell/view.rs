@@ -67,6 +67,14 @@ pub trait ShellHost: Sized + 'static {
     fn section_title(&self, _id: &str) -> Option<String> {
         None
     }
+    fn sidebar_title_action(
+        &mut self,
+        _container: &str,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
+    }
     /// 当前活动编辑器的文档；提示条与光标提示只显示在它上面。
     fn active_document(&self) -> Option<DocumentId>;
     fn editor_focus(&self) -> FocusHandle;
@@ -2024,6 +2032,7 @@ fn render_sidebar<T: ShellHost>(
             .children(content.map(|c| div().flex().flex_col().flex_1().min_h_0().child(c)));
         body = body.child(section);
     }
+    let title_action = host.sidebar_title_action(&container, window, cx);
     let shell = host.shell();
     let p = Palette {
         shell,
@@ -2058,7 +2067,8 @@ fn render_sidebar<T: ShellHost>(
                 .text_size(shell.z(11.0))
                 .bg(p.or("sideBarTitle.background", "sideBar.background"))
                 .text_color(p.or("sideBarTitle.foreground", "sideBar.foreground"))
-                .child(title),
+                .child(div().flex_1().child(title))
+                .children(title_action),
         )
         .child(body)
         .into_any_element()

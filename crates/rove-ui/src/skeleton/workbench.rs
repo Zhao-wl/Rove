@@ -802,6 +802,9 @@ impl Workbench {
         let workspace: Arc<dyn Workspace> = folder.clone();
         self.scan_failed = false;
         self.workspace = Some(workspace.clone());
+        self.explorer.update(cx, |explorer, _| {
+            explorer.set_branch_root(folder.root().to_owned());
+        });
         self.show_workspace(&workspace, cx);
         let wait =
             cx.background_executor().spawn({
@@ -1821,6 +1824,21 @@ impl ShellHost for Workbench {
             _ => None,
         }
     }
+    fn sidebar_title_action(
+        &mut self,
+        container: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if container != crate::shell::catalog::EXPLORER || !self.explorer.read(cx).has_workspace() {
+            return None;
+        }
+        let theme = self.theme.clone();
+        Some(self.explorer.update(cx, |explorer, cx| {
+            explorer.branch_toolbar(&*theme, window, cx)
+        }))
+    }
+
     fn section_title(&self, id: &str) -> Option<String> {
         (id == FILE_VIEW).then(|| self.shell.title.clone())
     }
