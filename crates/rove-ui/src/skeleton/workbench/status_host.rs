@@ -31,7 +31,7 @@ use crate::{
         registry as ids,
     },
 };
-use gpui::{Context, Window};
+use gpui::{App, Context, Window};
 use rove_base::{DocumentId, Line, Position, Resource, Span, TextRange, Value, Version};
 use rove_buffer::{
     Document, Encoding, Eol, LineEndings, ReadOnlyReason, ReducedFeature, SizeClass, TextSource,
@@ -78,6 +78,9 @@ struct Snapshot {
     guessed: bool,
     eol: (Eol, bool),
     size: SizeClass,
+    /// 这一体积级别是否生效（#20 的 `disabled_features` 非空；`editor.largeFileOptimizations`
+    /// 为 false 时大文件级别不生效）。
+    size_reduced: bool,
     read_only: Vec<ReadOnlyReason>,
 }
 
@@ -122,7 +125,7 @@ impl Workbench {
                 code.execute(command, window, cx);
             });
         }
-        let snapshot = self.status_snapshot();
+        let snapshot = self.status_snapshot(cx);
         if self.status.last == snapshot {
             return;
         }
@@ -138,7 +141,7 @@ impl Workbench {
     }
 
     /// 活动文本编辑器的状态；没有活动文本编辑器时 `None`（条目全部隐藏）。
-    fn status_snapshot(&mut self) -> Option<Snapshot> {
+    fn status_snapshot(&mut self, cx: &App) -> Option<Snapshot> {
         let (cursor, selection, document) = {
             let tab = self
                 .editor
@@ -166,6 +169,7 @@ impl Workbench {
             guessed: self.metadata.files.encoding_guessed(document.id),
             eol: eol_key(&document.metadata.line_endings),
             size: document.metadata.size,
+            size_reduced: !self.code_view().read(cx).disabled_features().is_empty(),
             read_only,
         })
     }
@@ -176,7 +180,10 @@ impl Workbench {
             .as_ref()
             .map(|document| cursor_summary(&*document.text, snapshot))
             .unwrap_or_default();
-        let disabled: Vec<ReducedFeature> = if snapshot.size == SizeClass::Huge {
+        // 关掉了哪些功能按 UX_SPEC §3.1 的整张表（#8），不只是 #20 已经实现的那几项。
+        let disabled: Vec<ReducedFeature> = if snapshot.size == SizeClass::Huge
+            || (snapshot.size == SizeClass::Large && snapshot.size_reduced)
+        {
             rove_buffer::disabled_features(snapshot.size).to_vec()
         } else {
             Vec::new()

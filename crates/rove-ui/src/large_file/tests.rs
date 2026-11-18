@@ -13,7 +13,7 @@ fn strings() -> StringTable {
     table
 }
 
-/// 超大文件的整条链路：提示条 → 状态栏 → 索引进度 → 索引建完后进度条目消失。
+/// 超大文件的整条链路：提示条 → 索引进度 → 索引建完后进度条目消失。
 #[test]
 fn a_huge_file_reports_a_bar_a_status_mark_and_index_progress() {
     let strings = strings();
@@ -24,12 +24,7 @@ fn a_huge_file_reports_a_bar_a_status_mark_and_index_progress() {
     assert_eq!(bar.size, "1.2 GB");
     assert!(notice::notice_for(SizeClass::Large, bytes).is_none());
 
-    // 2. 状态栏：超大文件 · 只读 + 被关闭的功能。
-    let disabled = vec![Feature::SyntaxHighlighting, Feature::Folding];
-    let entry = status_entry(&strings, SizeClass::Huge, &disabled).expect("有条目");
-    assert_eq!(entry.text, "超大文件 · 只读");
-    assert!(entry.tooltip.as_ref().unwrap().contains("语法高亮"));
-    assert!(status_entry(&strings, SizeClass::Normal, &disabled).is_none());
+    // 2. 体积标记由 #27 的只读标记条目承载（#185），见 `status_items` 的测试。
 
     // 3. 索引进度：建完前显示百分比、建完后条目消失（永远不弹通知，级别由 #16 决定）。
     let indexing = IndexProgress {

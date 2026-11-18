@@ -1477,19 +1477,15 @@ C# / YAML / XML / Markdown 查询，并在 `highlight/grammar.rs` 里加了两�
 | `long_line.rs` | `rove.editor.openLongLine` 的 ID、截断标记与临时标签的文案 key、`line_chars`（按块数 UTF-8 首字节，不把 50 MB 的行读进内存）、`CharCounts`（按快照版本缓存）、`wrap_fixed` / `wrapped_line`（固定宽度断行） | 否 |
 | `source.rs` | `LongLineSource`：超长行临时标签的虚拟文档内容来源，可串在 #42 的元数据加载器前面 | 否 |
 | `registry.rs` | 界面字符串、状态栏条目贡献、颜色键（只用已有的 `descriptionForeground`） | 否 |
-| `mod.rs` | `status_entry` / `index_status_entry`（状态栏内容）、`allows_replace`、`TruncationMarks`（#19 的 `DecorationProvider`） | 否 |
+| `mod.rs` | `index_status_entry`（状态栏内容）、`allows_replace`、`TruncationMarks`（#19 的 `DecorationProvider`） | 否 |
 
 **提示条与状态栏（§3.2）**：打开超大文件时经 #16 的 `Reason::FileContext` 报一条**编辑器顶部提示条**
 （§6.1 第 3 级，可关闭、带“不再提示”），**全程不弹通知**；大文件级别不报提示条，只在状态栏标记。
-状态栏两条条目在右侧：`rove.status.fileSize`（`超大文件 · 只读` / `大文件`，悬停列出被关闭的功能）与
-`rove.status.lineIndex`（`行索引 N%`，建完后条目消失，`Reason::Background` 的口径——永不弹通知）。
-悬停内容的两个数据源分工：**这一级生效了吗**看 #20 的 `CodeView::disabled_features()`
-（`editor.largeFileOptimizations` 为 false 时视图报空集合，这里也不列功能）；**关掉了哪些功能**用 #8 的
-`disabled_features(SizeClass)`（`UX_SPEC` §3.1 的整张表），字符串由本模块登记。
+本模块在状态栏右侧只有 `rove.status.lineIndex`（`行索引 N%`，建完后条目消失，`Reason::Background` 的口径——
+永不弹通知）。体积标记（`超大文件 · 只读` / `大文件`）是 #27 只读标记条目 `rove.status.readOnly` 的状态，见 §42。
 
-> 临时承载：按 issue，大小标记应当是 #27「只读标记」条目的一个状态。#27 尚未合并，本 issue 先用自己的条目
-> （`rove.status.fileSize`）把数据显示出来；**#27 合并时把 `large_file::status_entry` 的输出并进只读标记条目，
-> 并删掉 `large_file::registry::SIZE_STATUS`**。`rove.status.lineIndex` 属于 #22，#27 不接管。
+> 2026-11-18（#185）：原先的临时条目 `rove.status.fileSize` 与 `large_file::status_entry` 已删除，
+> 两者曾在超大文件上同时显示内容相同的条目。悬停文案统一用 #27 的口径（`status.readOnly.*`、`status.feature.*`）。
 
 **滚动（§3.2）**：代码视图新增 `set_scroll_line_estimate(Option<u64>)`，只参与 `metrics().line_count`
 （内容高度、滚动条滑块、滚到底的位置），**不改变任何一行的行号、也不改变视口顶端的行**，所以估计值随索引
@@ -1558,7 +1554,7 @@ N 是整行的字符数，由 `line_chars` 按块统计、`CharCounts` 按快照
 | `rove.status.encoding` | 编码名（带 BOM 时 `… with BOM`）；自动识别出来的在悬停里注明 | `workbench.action.editor.changeEncoding` |
 | `rove.status.eol` | `LF` / `CRLF` / `CR` / `混合` | `workbench.action.editor.changeEOL`（#49） |
 | `rove.status.language` | 语言显示名（未登记显示名的语言用 ID） | `workbench.action.editor.changeLanguageMode`（`ctrl+k m`） |
-| `rove.status.readOnly` | `只读` / `超大文件 · 只读`，`StatusKind::Warning` → `statusBarItem.warning*` | 无（纯提示） |
+| `rove.status.readOnly` | `只读` / `超大文件 · 只读`，`StatusKind::Warning` → `statusBarItem.warning*`；可编辑的大文件且没有只读原因时为 `大文件`，`StatusKind::Standard`（#185，并入原 #22 的文件大小标记）。悬停列出只读原因与被关闭的功能：**这一级生效了吗**看 #20 的 `CodeView::disabled_features()`（`editor.largeFileOptimizations` 为 false 时不列功能，改为说明没有关闭），**关掉了哪些功能**用 #8 的 `disabled_features(SizeClass)` 整张表 | 无（纯提示） |
 
 **同步**：`Workbench::sync_status` 在 `Render` 末尾调用，先比较一个状态快照（文档、文本版本、光标、选区、
 缩进、语言、编码、BOM、是否自动识别、换行符、大小级别、只读原因）；没有变化就直接返回，所以光标移动不会让

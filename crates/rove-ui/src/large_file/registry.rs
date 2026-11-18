@@ -14,45 +14,32 @@ use rove_i18n::{Message, StringTable};
 use rove_theme::ColorRegistry;
 use std::sync::Arc;
 
-/// 文件大小标记（`超大文件 · 只读` / `大文件`）。
-///
-/// **临时承载**：按 issue，这应当是 #27 的“只读标记”条目的一个状态；#27 尚未合并，
-/// 本 issue 先用自己的条目把数据显示出来，#27 合并时把 [`super::status_entry`] 的输出并进
-/// 只读标记条目并删掉这一条（`docs/ARCHITECTURE.md` §39 已注明）。
-pub const SIZE_STATUS: &str = "rove.status.fileSize";
 /// 行索引进度（`行索引 45%`），建完后条目消失。本条目属于 #22。
 pub const INDEX_STATUS: &str = "rove.status.lineIndex";
 
 /// 状态栏右侧位置：VS Code 的 priority，数值越大越靠左。
-/// 只读/大小标记排在编码、换行符（#27，100 起）右边。
-pub const SIZE_ORDER: i32 = 95;
+/// 排在编码、换行符（#27，100 起）右边。文件大小标记是 #27 只读标记条目的一个状态（#185）。
 pub const INDEX_ORDER: i32 = 94;
 
 /// 本模块用到的颜色键（均为已有的 VS Code 颜色键，不新造）。
 pub const COLORS: &[&str] = &[super::long_line::MARK_COLOR];
 
 pub fn register_contributions(r: &mut ContributionRegistry) -> Result<()> {
-    for (id, title, order) in [
-        (SIZE_STATUS, "largeFile.status.name", SIZE_ORDER),
-        (INDEX_STATUS, "largeFile.status.indexName", INDEX_ORDER),
-    ] {
-        match r.register(
-            id,
-            Contribution {
-                title: Message::key(title),
-                placement: Placement::StatusRight,
-                order,
-                icon: None,
-                command: None,
-                when: None,
-                factory_key: STATUS_FACTORY.into(),
-            },
-        ) {
-            Ok(()) | Err(Error::Duplicate(_)) => {}
-            Err(e) => return Err(e),
-        }
+    match r.register(
+        INDEX_STATUS,
+        Contribution {
+            title: Message::key("largeFile.status.indexName"),
+            placement: Placement::StatusRight,
+            order: INDEX_ORDER,
+            icon: None,
+            command: None,
+            when: None,
+            factory_key: STATUS_FACTORY.into(),
+        },
+    ) {
+        Ok(()) | Err(Error::Duplicate(_)) => Ok(()),
+        Err(e) => Err(e),
     }
-    Ok(())
 }
 
 const STRINGS: &[(&str, &str)] = &[
@@ -62,31 +49,12 @@ const STRINGS: &[(&str, &str)] = &[
         "超大文件（{size}）：只读，已关闭语法高亮等功能。",
     ),
     // --- 状态栏 ---
-    ("largeFile.status.name", "文件大小"),
     ("largeFile.status.indexName", "行索引进度"),
-    (super::notice::STATUS_HUGE, "超大文件 · 只读"),
-    (super::notice::STATUS_LARGE, "大文件"),
     (super::progress::STATUS_KEY, "行索引 {percent}%"),
     (
         super::progress::STATUS_TOOLTIP_KEY,
         "正在后台建立行索引（{percent}%）。文件已经可以阅读和查找，索引建完后行号与滚动条才完全准确。",
     ),
-    ("largeFile.tooltip.disabled", "已关闭的功能：\n{features}"),
-    (
-        "largeFile.tooltip.noneDisabled",
-        "这个文件没有因为体积关闭任何功能。",
-    ),
-    // --- 被关闭的功能（顺序与 rove_buffer::disabled_features 一致） ---
-    ("largeFile.feature.minimap", "缩略图"),
-    ("largeFile.feature.stickyScroll", "粘性滚动"),
-    ("largeFile.feature.bracketPairColorization", "括号对着色"),
-    ("largeFile.feature.occurrencesHighlight", "同名高亮"),
-    ("largeFile.feature.semanticHighlighting", "语义高亮"),
-    ("largeFile.feature.syntaxFolding", "基于语法的折叠"),
-    ("largeFile.feature.syntaxHighlighting", "语法高亮"),
-    ("largeFile.feature.folding", "折叠"),
-    ("largeFile.feature.wordWrap", "软换行"),
-    ("largeFile.feature.replace", "替换"),
     // --- 转到行的等待（界面在 #24） ---
     (
         super::goto::WAIT_HINT_KEY,
@@ -146,17 +114,11 @@ mod tests {
         let keys: Vec<&str> = STRINGS.iter().map(|(k, _)| *k).collect();
         for key in [
             super::super::notice::NOTICE_HUGE,
-            super::super::notice::STATUS_HUGE,
-            super::super::notice::STATUS_LARGE,
             super::super::progress::STATUS_KEY,
             super::super::goto::WAIT_HINT_KEY,
             super::super::long_line::MARK_KEY,
             super::super::long_line::TAB_TITLE_KEY,
         ] {
-            assert!(keys.contains(&key), "{key} 未登记");
-        }
-        for feature in rove_buffer::disabled_features(rove_buffer::SizeClass::Huge) {
-            let key = super::super::notice::feature_key(*feature);
             assert!(keys.contains(&key), "{key} 未登记");
         }
     }
@@ -168,9 +130,7 @@ mod tests {
         register_contributions(&mut r).unwrap();
         // 幂等。
         register_contributions(&mut r).unwrap();
-        for id in [SIZE_STATUS, INDEX_STATUS] {
-            let c = r.get(id).expect("已登记");
-            assert!(matches!(c.placement, Placement::StatusRight));
-        }
+        let c = r.get(INDEX_STATUS).expect("已登记");
+        assert!(matches!(c.placement, Placement::StatusRight));
     }
 }

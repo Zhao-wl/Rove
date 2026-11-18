@@ -21,7 +21,7 @@ use crate::large_file::{
     long_line::{self, OPEN_LONG_LINE},
     notice,
     progress::IndexProgress,
-    registry as lf, status_entry, LongLineSource, TruncationMarks,
+    registry as lf, LongLineSource, TruncationMarks,
 };
 use crate::{
     code_view::{priority, LayerId},
@@ -39,7 +39,6 @@ pub(super) struct LargeFiles {
     /// 已经报过提示条的文档（一个文档只报一次；“不再提示”由反馈层按去重键记住）。
     noticed: BTreeSet<DocumentId>,
     /// 当前写进状态栏的两条内容（避免每帧重复 set）。
-    shown_size: Option<String>,
     shown_index: Option<String>,
     /// 进行中的“转到行”等待（同一时刻至多一个）。
     pending_goto: Option<goto::PendingGoto>,
@@ -57,7 +56,6 @@ impl LargeFiles {
         Self {
             long_lines: Arc::new(LongLineSource::chained(next)),
             noticed: BTreeSet::new(),
-            shown_size: None,
             shown_index: None,
             pending_goto: None,
             goto_progress: None,
@@ -171,28 +169,9 @@ impl Workbench {
         );
     }
 
-    /// 状态栏：`超大文件 · 只读`（悬停列出被关闭的功能）与 `行索引 N%`（建完后消失）。
-    fn sync_large_file_status(&mut self, cx: &mut Context<Self>) {
+    /// 状态栏的 `行索引 N%`（建完后消失）。体积标记并进了 #27 的只读标记条目（#185）。
+    fn sync_large_file_status(&mut self, _cx: &mut Context<Self>) {
         let document = self.active_large_file_document();
-        let size = document.as_ref().map(|d| d.metadata.size);
-        let disabled = self.code_view().read(cx).disabled_features();
-
-        let entry = size.and_then(|size| status_entry(&self.strings, size, &disabled));
-        let text = entry.as_ref().map(|e| e.text.clone());
-        if self.large_files.shown_size != text {
-            self.large_files.shown_size = text;
-            let shell = &mut self.shell;
-            match entry {
-                Some(entry) => {
-                    let _ = shell
-                        .status_bar
-                        .set(&shell.contributions, lf::SIZE_STATUS, entry);
-                }
-                None => {
-                    shell.status_bar.remove(lf::SIZE_STATUS);
-                }
-            }
-        }
         let progress = document
             .as_ref()
             .map(|d| IndexProgress::of(&d.text.lines()));

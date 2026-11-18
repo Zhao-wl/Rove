@@ -4,7 +4,7 @@
 //! 级别由 #16 的 [`Reason::FileContext`](crate::shell::feedback::Reason) 映射成“编辑器顶部提示条”，
 //! 所以**永远不会弹通知**（§6.1）。大文件级别不产生提示条，只在状态栏标记。
 
-use rove_buffer::{ReducedFeature, SizeClass};
+use rove_buffer::SizeClass;
 
 /// 提示条的“不再提示”去重键：同一台机器只要用户点过一次，之后所有超大文件都不再提示。
 pub const SUPPRESS_KEY: &str = "rove.largeFile.huge";
@@ -57,37 +57,6 @@ pub fn notice_for(size: SizeClass, bytes: u64) -> Option<Notice> {
     }
 }
 
-/// 状态栏“超大文件 · 只读”条目的文案 key。
-pub const STATUS_HUGE: &str = "largeFile.status.huge";
-/// 状态栏“大文件”条目的文案 key（大文件可编辑，所以不带“只读”）。
-pub const STATUS_LARGE: &str = "largeFile.status.large";
-
-/// 状态栏条目的文案 key（普通文件没有条目）。
-pub fn status_key(size: SizeClass) -> Option<&'static str> {
-    match size {
-        SizeClass::Huge => Some(STATUS_HUGE),
-        SizeClass::Large => Some(STATUS_LARGE),
-        SizeClass::Normal => None,
-    }
-}
-
-/// 被关闭的功能在悬停提示里的字符串 key（内容来自 #8 的 `disabled_features`，
-/// 与 #20 `CodeView::disabled_features` 对同一级别给出的集合一致）。
-pub fn feature_key(feature: ReducedFeature) -> &'static str {
-    match feature {
-        ReducedFeature::Minimap => "largeFile.feature.minimap",
-        ReducedFeature::StickyScroll => "largeFile.feature.stickyScroll",
-        ReducedFeature::BracketPairColorization => "largeFile.feature.bracketPairColorization",
-        ReducedFeature::OccurrencesHighlight => "largeFile.feature.occurrencesHighlight",
-        ReducedFeature::SemanticHighlighting => "largeFile.feature.semanticHighlighting",
-        ReducedFeature::SyntaxFolding => "largeFile.feature.syntaxFolding",
-        ReducedFeature::SyntaxHighlighting => "largeFile.feature.syntaxHighlighting",
-        ReducedFeature::Folding => "largeFile.feature.folding",
-        ReducedFeature::WordWrap => "largeFile.feature.wordWrap",
-        ReducedFeature::Replace => "largeFile.feature.replace",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,25 +84,5 @@ mod tests {
         );
         assert_eq!(notice_for(SizeClass::Large, 30 << 20), None);
         assert_eq!(notice_for(SizeClass::Normal, 10), None);
-    }
-
-    #[test]
-    fn status_marks_both_large_levels_but_not_normal() {
-        assert_eq!(status_key(SizeClass::Huge), Some(STATUS_HUGE));
-        assert_eq!(status_key(SizeClass::Large), Some(STATUS_LARGE));
-        assert_eq!(status_key(SizeClass::Normal), None);
-    }
-
-    #[test]
-    fn every_reduced_feature_has_a_distinct_string_key() {
-        let keys: Vec<_> = rove_buffer::disabled_features(SizeClass::Huge)
-            .iter()
-            .map(|f| feature_key(*f))
-            .collect();
-        let mut sorted = keys.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), keys.len());
-        assert_eq!(keys.len(), 10);
     }
 }

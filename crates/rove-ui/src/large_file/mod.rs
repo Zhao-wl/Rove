@@ -29,10 +29,7 @@ mod tests;
 
 pub use source::LongLineSource;
 
-use crate::code_view::{
-    decorations::{DecorationProvider, LineDecorations, Overlay, TextStyle},
-    Feature,
-};
+use crate::code_view::decorations::{DecorationProvider, LineDecorations, Overlay, TextStyle};
 use crate::shell::status::{StatusEntry, StatusKind};
 use rove_base::Result;
 use rove_buffer::{SizeClass, TextSource};
@@ -66,49 +63,6 @@ fn label(strings: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
             .collect(),
     };
     rove_i18n::tr!(strings, &message).unwrap_or_else(|_| key.to_string())
-}
-
-/// 状态栏的文件大小标记（`超大文件 · 只读`）与悬停提示。
-///
-/// 两个数据源各管一半，与 `docs/ARCHITECTURE.md` 的分工一致：
-/// - **这一级生效了吗**：看 #20 的
-///   [`CodeView::disabled_features`](crate::code_view::CodeView::disabled_features)。
-///   `editor.largeFileOptimizations` 为 false 时大文件级别不生效，视图报空集合，这里也不列功能。
-/// - **关掉了哪些功能**：用 #8 的 [`rove_buffer::disabled_features`]（`UX_SPEC` §3.1 的表），
-///   界面字符串由本模块登记（[`notice::feature_key`]）。#20 只实现了其中一部分，
-///   但状态栏要照 §3.1 把这一级关掉的功能都列出来。
-///
-/// 普通文件没有条目。
-pub fn status_entry(
-    strings: &dyn Strings,
-    size: SizeClass,
-    disabled: &[Feature],
-) -> Option<StatusEntry> {
-    let key = notice::status_key(size)?;
-    let in_effect = !disabled.is_empty();
-    let tooltip = if in_effect {
-        let features = rove_buffer::disabled_features(size)
-            .iter()
-            .map(|f| format!("· {}", label(strings, notice::feature_key(*f), &[])))
-            .collect::<Vec<_>>()
-            .join(
-                "
-",
-            );
-        label(
-            strings,
-            "largeFile.tooltip.disabled",
-            &[("features", features)],
-        )
-    } else {
-        label(strings, "largeFile.tooltip.noneDisabled", &[])
-    };
-    Some(StatusEntry {
-        text: label(strings, key, &[]),
-        tooltip: Some(tooltip),
-        command: None,
-        kind: StatusKind::Standard,
-    })
 }
 
 /// 状态栏的 `行索引 N%`；索引建完后返回 `None`（条目消失）。
