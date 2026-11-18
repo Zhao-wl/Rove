@@ -48,10 +48,19 @@ fn branch_commit(
 
 #[gpui::test]
 fn explorer_branch_menu_filters_real_commit_history(cx: &mut TestAppContext) {
+    check_branch_menu_filters(cx, "main");
+}
+
+#[gpui::test]
+fn explorer_branch_menu_uses_origin_default_without_main(cx: &mut TestAppContext) {
+    check_branch_menu_filters(cx, "dev");
+}
+
+fn check_branch_menu_filters(cx: &mut TestAppContext, base_branch: &str) {
     let fixture = Fixture::new("{}", &["modified.txt", "deleted.txt"]);
     let repo = git2::Repository::init_opts(
         fixture.folder.path(),
-        git2::RepositoryInitOptions::new().initial_head("main"),
+        git2::RepositoryInitOptions::new().initial_head(base_branch),
     )
     .unwrap();
     let base = branch_commit(
@@ -63,6 +72,21 @@ fn explorer_branch_menu_filters_real_commit_history(cx: &mut TestAppContext) {
     repo.branch("feature", &repo.find_commit(base).unwrap(), false)
         .unwrap();
     repo.set_head("refs/heads/feature").unwrap();
+    if base_branch == "dev" {
+        repo.reference("refs/remotes/origin/dev", base, false, "test default")
+            .unwrap();
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/dev",
+            false,
+            "test default",
+        )
+        .unwrap();
+        repo.find_branch("dev", git2::BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+    }
     branch_commit(
         &repo,
         "Alice",

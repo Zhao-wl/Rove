@@ -97,13 +97,13 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("explorer.branch.allAuthors", "全部提交者"),
     ("explorer.branch.whole", "整个分支"),
     ("explorer.branch.parent", "相对父提交"),
-    ("explorer.branch.base", "相对 main 分叉点 · 仅已提交"),
+    ("explorer.branch.base", "相对基准分支的分叉点 · 仅已提交"),
     ("explorer.branch.clear", "清除"),
     ("explorer.branch.files", "个文件"),
     ("explorer.branch.empty", "没有匹配的文件。"),
     (
         "explorer.branch.unavailable",
-        "无法读取当前分支或 main 基准。",
+        "无法读取当前分支或比较基准。",
     ),
     ("explorer.branch.deleted", "该文件在所选范围内已删除。"),
 ];

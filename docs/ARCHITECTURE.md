@@ -2477,3 +2477,7 @@ Rust 侧一行没改：这些位置和标识符的出现位置同构，`CsIndex`
 
 `xtask/src/size.rs` 报告 `rove.exe` 相对 M0 基线的变化、发布包总体积和资产分项。
 2026-11-18 取消发布包体积上限。CI 和 Release 继续运行 `cargo xtask check-size` 生成报告，取代上文的体积判定。
+
+## 分支变更筛选的基准回退
+
+基准依次查找本地 `main`、本地保存的 `origin/main` 和 `origin/HEAD`。`origin/HEAD` 通常指向本地保存的远端默认分支引用，例如 `origin/dev`。筛选仍从基准与当前分支的共同祖先计算差异，全程只读取本地 Git 数据。
