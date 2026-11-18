@@ -178,6 +178,25 @@ pub const FEATURE_COLORS: &[&str] = &[
     "editorBracketHighlight.foreground5",
     "editorBracketHighlight.foreground6",
     "editorBracketHighlight.unexpectedBracket.foreground",
+    // #57 第二部分：括号对参考线与活动缩进参考线。
+    "editorBracketPairGuide.background1",
+    "editorBracketPairGuide.background2",
+    "editorBracketPairGuide.background3",
+    "editorBracketPairGuide.background4",
+    "editorBracketPairGuide.background5",
+    "editorBracketPairGuide.background6",
+    "editorBracketPairGuide.activeBackground1",
+    "editorBracketPairGuide.activeBackground2",
+    "editorBracketPairGuide.activeBackground3",
+    "editorBracketPairGuide.activeBackground4",
+    "editorBracketPairGuide.activeBackground5",
+    "editorBracketPairGuide.activeBackground6",
+    "editorIndentGuide.activeBackground1",
+    "editorIndentGuide.activeBackground2",
+    "editorIndentGuide.activeBackground3",
+    "editorIndentGuide.activeBackground4",
+    "editorIndentGuide.activeBackground5",
+    "editorIndentGuide.activeBackground6",
 ];
 
 /// 主题服务用的颜色登记表：全部 P0 键，加上代码视图用到的其余键（[`COLORS`]、[`FEATURE_COLORS`]）。
@@ -261,6 +280,9 @@ pub struct Palette {
     pub folding_control_foreground: Color,
     /// `editorIndentGuide.background1`–`background6`，按缩进层级循环取。
     pub indent_guides: [Option<Color>; 6],
+    /// #57：`editorIndentGuide.activeBackground1`–`activeBackground6`（活动缩进参考线）。
+    /// 某一级没设色或完全透明时回落到第 1 级（VS Code 的普通缩进参考线只用 `activeBackground1`）。
+    pub indent_guides_active: [Option<Color>; 6],
     /// #57：`editorBracketHighlight.foreground1`–`foreground6` 与未配对括号的颜色。
     pub bracket_pairs: super::bracket_pairs::BracketColors,
     pub whitespace: Option<Color>,
@@ -278,6 +300,11 @@ pub struct Palette {
     pub sticky_shadow: Option<Color>,
     pub sticky_gutter_background: Color,
     pub sticky_hover_background: Option<Color>,
+}
+
+/// 完全透明（`#00000000`）在 VS Code 的参考线配色里表示「没设这个颜色」，不是「画成透明」。
+fn opaque(color: Option<Color>) -> Option<Color> {
+    color.filter(|c| c.3 != 0)
 }
 
 fn fallback(key: &str, kind: ThemeKind) -> Option<Color> {
@@ -359,16 +386,38 @@ impl Palette {
                 get("editorIndentGuide.background5"),
                 get("editorIndentGuide.background6"),
             ],
-            bracket_pairs: super::bracket_pairs::BracketColors {
-                depth: [
+            bracket_pairs: {
+                let depth = [
                     get("editorBracketHighlight.foreground1"),
                     get("editorBracketHighlight.foreground2"),
                     get("editorBracketHighlight.foreground3"),
                     get("editorBracketHighlight.foreground4"),
                     get("editorBracketHighlight.foreground5"),
                     get("editorBracketHighlight.foreground6"),
-                ],
-                unexpected: get("editorBracketHighlight.unexpectedBracket.foreground"),
+                ];
+                // #57 第二部分：参考线颜色按 VS Code 的 themingParticipant 回落——
+                // `editorBracketPairGuide.backgroundN` 没设色或完全透明时用同一级的括号颜色
+                // 打三成透明度，`activeBackgroundN` 则直接用括号颜色本身。
+                let mut guide = [None; super::bracket_pairs::DEPTH_COLORS];
+                let mut active_guide = [None; super::bracket_pairs::DEPTH_COLORS];
+                for i in 0..super::bracket_pairs::DEPTH_COLORS {
+                    guide[i] = opaque(get(super::bracket_pairs::GUIDE_KEYS[i])).or_else(|| {
+                        depth[i].map(|c| Color(c.0, c.1, c.2, (c.3 as f32 * 0.3) as u8))
+                    });
+                    active_guide[i] =
+                        opaque(get(super::bracket_pairs::ACTIVE_GUIDE_KEYS[i])).or(depth[i]);
+                }
+                super::bracket_pairs::BracketColors {
+                    depth,
+                    unexpected: get("editorBracketHighlight.unexpectedBracket.foreground"),
+                    guide,
+                    active_guide,
+                }
+            },
+            indent_guides_active: {
+                let keys = super::bracket_pairs::ACTIVE_INDENT_KEYS;
+                let first = opaque(get(keys[0]));
+                std::array::from_fn(|i| opaque(get(keys[i])).or(first))
             },
             whitespace: get("editorWhitespace.foreground"),
             composition_border: get("editor.compositionBorder"),

@@ -527,6 +527,16 @@ impl CodeView {
         let comp_line = self.composition.as_ref().map(|c| c.start.line.0);
         let caret_line = comp_line.unwrap_or(sel.active.line.0);
         let mut caret_bounds = None;
+        // #57：参考线按可见区间整帧算一次（跨过视口的括号对每对最多多读两行文本）。
+        let visible = match (frame.lines.first(), frame.lines.last()) {
+            (Some(a), Some(b)) => a.line..b.line + 1,
+            _ => 0..0,
+        };
+        let bracket_guides = self.bracket_pair_guides(visible.clone());
+        let active_indent = o
+            .guides_indentation
+            .then(|| self.active_indent_guide(visible))
+            .flatten();
 
         window.paint_quad(fill(lay.bounds, hsla(p.background)));
         window.paint_quad(fill(lay.gutter, hsla(p.gutter_background)));
@@ -610,7 +620,31 @@ impl CodeView {
                             }
                         }
                         if o.guides_indentation {
-                            self.paint_indent_guides(l, entry, &xs, left, y, frame, window);
+                            self.paint_indent_guides(
+                                l,
+                                entry,
+                                &xs,
+                                left,
+                                y,
+                                active_indent.as_ref(),
+                                window,
+                            );
+                        }
+                        // #57：括号对参考线画在缩进参考线之上、选区之下。
+                        if !bracket_guides.is_empty() {
+                            let start = bracket_guides.partition_point(|g| g.line < l.line);
+                            let end = bracket_guides[start..].partition_point(|g| g.line == l.line)
+                                + start;
+                            if start < end {
+                                self.paint_bracket_guides(
+                                    entry,
+                                    &xs,
+                                    left,
+                                    y,
+                                    &bracket_guides[start..end],
+                                    window,
+                                );
+                            }
                         }
                         // 选区（#52：主选区与每个次选区各画一次）。
                         for sel in &selections {
@@ -963,7 +997,19 @@ impl CodeView {
         }
     }
 
-    /// 缩进参考线：每个缩进单位一条 1 px 竖线，颜色按层级取 `editorIndentGuide.background1`–`6`。
+    /// 某个可见列在本行的 x（像素，相对行首）。整形结果里没有这一列时按等宽近似。
+    fn guide_x(&self, entry: &LineEntry, xs: &[f32], column: u32) -> f32 {
+        entry
+            .display
+            .stops()
+            .iter()
+            .position(|s| s.col == column)
+            .filter(|&i| i < xs.len())
+            .map_or(column as f32 * self.font.cell_width, |i| xs[i])
+    }
+
+    /// 缩进参考线：每个缩进单位一条 1 px 竖线，颜色按层级取 `editorIndentGuide.background1`–`6`；
+    /// #57：光标所在层级那一条改用 `editorIndentGuide.activeBackground1`–`6`。
     #[allow(clippy::too_many_arguments)]
     fn paint_indent_guides(
         &self,
@@ -972,7 +1018,7 @@ impl CodeView {
         xs: &[f32],
         left: Pixels,
         y: Pixels,
-        frame: &Frame,
+        active: Option<&guides::ActiveIndent>,
         window: &mut Window,
     ) {
         let tab = self.options.tab_size;
@@ -980,35 +1026,27 @@ impl CodeView {
             Some(cols) => guides::levels(cols, tab),
             None => {
                 // 空行：看上下最近的有内容行（只看已缓存的行，不在帧内读文本）。
-                let indent_of = |line: u64| {
+                let doc_count = self.doc_line_count();
+                guides::effective_levels(l.line, doc_count, guides::GUIDE_SEARCH, false, &|line| {
                     self.lines
                         .peek(&line)
                         .and_then(|e| guides::indent_columns(&e.source, tab))
                         .map(|c| guides::levels(c, tab))
-                };
-                let doc_count = self.doc_line_count();
-                let above = (l.line.saturating_sub(GUIDE_SEARCH)..l.line)
-                    .rev()
-                    .find_map(indent_of);
-                let below =
-                    (l.line + 1..(l.line + GUIDE_SEARCH).min(doc_count)).find_map(indent_of);
-                let off_side = false;
-                guides::blank_line_levels(above, below, off_side)
+                })
             }
         };
-        let _ = frame;
-        let stops = entry.display.stops();
         let scale = window.scale_factor();
         for level in 0..levels {
-            let Some(color) = self.palette.indent_guides[level as usize % 6] else {
+            let is_active = active.is_some_and(|a| a.level == level && a.lines.contains(&l.line));
+            let palette = if is_active {
+                &self.palette.indent_guides_active
+            } else {
+                &self.palette.indent_guides
+            };
+            let Some(color) = palette[level as usize % 6] else {
                 continue;
             };
-            let col = level * tab;
-            let x = stops
-                .iter()
-                .position(|s| s.col == col)
-                .filter(|&i| i < xs.len())
-                .map_or(col as f32 * self.font.cell_width, |i| xs[i]);
+            let x = self.guide_x(entry, xs, level * tab);
             // #30：宽度恰好 1 个物理像素，x 对齐到物理像素网格（不消失、不发虚、不变成 2 px）。
             let r = dpi::vline(
                 f32::from(left) + x,
@@ -1017,6 +1055,55 @@ impl CodeView {
                 scale,
             );
             window.paint_quad(fill(r, hsla(color)));
+        }
+    }
+
+    /// 括号对参考线（#57）：竖线画在左右括号里靠左的那一列上，首尾行再按设置画一条水平连接线。
+    #[allow(clippy::too_many_arguments)]
+    fn paint_bracket_guides(
+        &self,
+        entry: &LineEntry,
+        xs: &[f32],
+        left: Pixels,
+        y: Pixels,
+        line_guides: &[guides::BracketGuide],
+        window: &mut Window,
+    ) {
+        let lh = self.font.line_height;
+        let scale = window.scale_factor();
+        let independent = self.options.independent_color_pool_per_bracket_type;
+        for guide in line_guides {
+            let Some(color) = self.palette.bracket_pairs.guide_color(
+                guide.level,
+                guide.level_of_kind,
+                independent,
+                guide.active,
+            ) else {
+                continue;
+            };
+            let x = f32::from(left) + self.guide_x(entry, xs, guide.column);
+            let top = f32::from(y);
+            let (y0, height) = match guide.vertical {
+                guides::VerticalPart::None => (top, 0.0),
+                guides::VerticalPart::Full => (top, lh),
+                guides::VerticalPart::Lower => (top + lh * 0.5, lh * 0.5),
+                guides::VerticalPart::Upper => (top, lh * 0.5),
+            };
+            if height > 0.0 {
+                window.paint_quad(fill(dpi::vline(x, y0, height, scale), hsla(color)));
+            }
+            let Some(h) = guide.horizontal else { continue };
+            let to = f32::from(left) + self.guide_x(entry, xs, h.to_column);
+            if to <= x {
+                continue;
+            }
+            // 贴行底的那条画在行内最后一个物理像素上，不越到下一行去。
+            let hy = if h.at_bottom {
+                top + lh - 1.0
+            } else {
+                top + lh * 0.5
+            };
+            window.paint_quad(fill(dpi::hline(x, hy, to - x, 1.0, scale), hsla(color)));
         }
     }
 
@@ -1589,5 +1676,3 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
 }
 
 const LINE_NUMBERS_MIN_CHARS: u32 = 5;
-/// 空行的缩进参考线向上下各找多少行有内容的行。
-const GUIDE_SEARCH: u64 = 64;

@@ -498,7 +498,352 @@ fn too_many_brackets_turns_colorization_off_and_is_reported(cx: &mut TestAppCont
         .contains(&Feature::BracketPairColorization));
 }
 
-// ------------------------------------------------------------------ 5. 登记机制
+// ------------------------------------------------------------------ 5. 参考线（第二部分）
+
+/// 括号对参考线的夹具：嵌套三层花括号，最里面还有一对跨行的圆括号。
+///
+/// ```text
+/// 0  class C
+/// 1  {
+/// 2      void M() {      ← `{` 在第 13 列，配对的 `}` 在第 7 行第 4 列
+/// 3          if (x) {    ← `{` 在第 15 列，配对的 `}` 在第 6 行第 8 列
+/// 4              a(1,    ← `(` 在第 13 列
+/// 5                  2); ← `)` 在第 17 列，前面还有内容
+/// 6          }
+/// 7      }
+/// 8  }
+/// ```
+const GUIDE_SOURCE: &str = concat!(
+    "class C\n",
+    "{\n",
+    "    void M() {\n",
+    "        if (x) {\n",
+    "            a(1,\n",
+    "                2);\n",
+    "        }\n",
+    "    }\n",
+    "}\n",
+);
+
+/// 第 `line` 行上的括号对参考线：(竖线可见列, 深度, 是否活动, 竖线覆盖, 水平线)。
+#[allow(clippy::type_complexity)]
+fn guides(
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+    line: u64,
+) -> Vec<(
+    u32,
+    u32,
+    bool,
+    code_view::guides::VerticalPart,
+    Option<(u32, bool)>,
+)> {
+    view.read_with(cx, |v, _| {
+        v.bracket_pair_guides(0..9)
+            .into_iter()
+            .filter(|g| g.line == line)
+            .map(|g| {
+                (
+                    g.column,
+                    g.level,
+                    g.active,
+                    g.vertical,
+                    g.horizontal.map(|h| (h.to_column, h.at_bottom)),
+                )
+            })
+            .collect()
+    })
+}
+
+fn active_indent(
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> Option<(u32, std::ops::Range<u64>)> {
+    view.read_with(cx, |v, _| {
+        v.active_indent_guide(0..9).map(|a| (a.level, a.lines))
+    })
+}
+
+fn guide_settings(pairs: &'static str, horizontal: &'static str) -> Vec<(&'static str, Value)> {
+    let parse = |s: &str| match s {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        other => Value::String(other.into()),
+    };
+    vec![
+        ("editor.guides.bracketPairs", parse(pairs)),
+        ("editor.guides.bracketPairsHorizontal", parse(horizontal)),
+    ]
+}
+
+#[gpui::test]
+fn bracket_pair_guides_run_from_the_open_bracket_to_the_close_bracket(cx: &mut TestAppContext) {
+    use code_view::guides::VerticalPart;
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "false"), true);
+    // 第 4 行上有四条竖线：类体（第 0 列）、方法体（第 4 列）、if 体（第 8 列）、`a(` （第 13 列）。
+    // 最里面那条是 `a(` 的左括号所在行，所以只画下半截。
+    assert_eq!(
+        guides(&view, cx, 4),
+        vec![
+            (0, 1, false, VerticalPart::Full, None),
+            (4, 2, false, VerticalPart::Full, None),
+            (8, 3, false, VerticalPart::Full, None),
+            (13, 4, false, VerticalPart::Lower, None),
+        ]
+    );
+    // 第 5 行是 `2);`：右括号前面还有内容，所以这一行竖线画满。
+    let last = guides(&view, cx, 5);
+    assert_eq!(last.last(), Some(&(13, 4, false, VerticalPart::Full, None)));
+    // 第 2 行是方法体的左括号所在行：竖线落在右括号那一列（第 4 列）并只画下半截。
+    assert!(guides(&view, cx, 2).contains(&(4, 2, false, VerticalPart::Lower, None)));
+    // 第 7 行是方法体的右括号所在行：右括号就是首个非空白字符，只画上半截。
+    assert!(guides(&view, cx, 7).contains(&(4, 2, false, VerticalPart::Upper, None)));
+    // 括号对之外的行没有参考线。
+    assert!(guides(&view, cx, 0).is_empty());
+}
+
+#[gpui::test]
+fn bracket_pair_guides_three_values(cx: &mut TestAppContext) {
+    use code_view::guides::VerticalPart;
+    // false：一条都不画。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("false", "false"), true);
+    assert!(guides(&view, cx, 4).is_empty());
+
+    // "active"：只画光标所在的那一对（`a(` … `)`）。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("active", "false"), true);
+    caret(&view, cx, 4, 14);
+    assert_eq!(
+        guides(&view, cx, 4),
+        vec![(13, 4, true, VerticalPart::Lower, None)]
+    );
+    // 光标挪到 if 体的右括号上：活动的那一对就是 if 体。
+    caret(&view, cx, 6, 8);
+    assert_eq!(
+        guides(&view, cx, 4),
+        vec![(8, 3, true, VerticalPart::Full, None)]
+    );
+    // 再挪到方法体的右括号上：活动的换成方法体那一对。
+    caret(&view, cx, 7, 4);
+    assert_eq!(
+        guides(&view, cx, 4),
+        vec![(4, 2, true, VerticalPart::Full, None)]
+    );
+
+    // true：全部都画，光标所在的那一对标成活动。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "false"), true);
+    caret(&view, cx, 4, 14);
+    let all = guides(&view, cx, 4);
+    assert_eq!(all.len(), 4);
+    assert_eq!(
+        all.iter().map(|g| g.2).collect::<Vec<_>>(),
+        vec![false, false, false, true]
+    );
+}
+
+#[gpui::test]
+fn horizontal_bracket_pair_guides_three_values(cx: &mut TestAppContext) {
+    // false：没有水平线。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "false"), true);
+    assert!(guides(&view, cx, 2).iter().all(|g| g.4.is_none()));
+
+    // true：每一对的首尾行都有。第 2 行的方法体左括号在第 13 列，竖线在第 4 列，
+    // 所以水平线从第 4 列连到第 13 列；单行括号对（`M()`）也有一条。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "true"), true);
+    let line2 = guides(&view, cx, 2);
+    assert!(line2.contains(&(
+        4,
+        2,
+        false,
+        code_view::guides::VerticalPart::Lower,
+        Some((13, false))
+    )));
+    assert!(
+        line2.iter().any(|g| g.0 == 10 && g.4 == Some((11, false))),
+        "单行的 `M()` 也有一条水平线：{line2:?}"
+    );
+    // 第 5 行的 `)` 前面还有内容：水平线贴着行底画。
+    assert!(guides(&view, cx, 5).iter().any(|g| g.4 == Some((17, true))));
+
+    // "active"：全部括号对都有竖线，但只有光标所在的那一对再加水平线。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "active"), true);
+    caret(&view, cx, 4, 14);
+    let line4 = guides(&view, cx, 4);
+    assert_eq!(line4.len(), 4);
+    assert_eq!(
+        line4
+            .iter()
+            .filter(|g| g.4.is_some())
+            .map(|g| (g.0, g.2, g.4))
+            .collect::<Vec<_>>(),
+        vec![(13, true, Some((13, false)))],
+        "只有活动的那一对有水平线：{line4:?}"
+    );
+    assert!(guides(&view, cx, 2).iter().all(|g| g.4.is_none()));
+}
+
+/// `editor.guides.bracketPairs` 为 `false` 时一条括号对参考线都不画，**水平线也不画**：
+/// `bracketPairsHorizontal` 只决定「已经要画的那些括号对」里哪些再加一条水平线。
+/// 默认设置（`false` + `"active"`）下什么都看不到，与 VS Code 一致。
+#[gpui::test]
+fn bracket_pairs_false_switches_off_the_horizontal_lines_too(cx: &mut TestAppContext) {
+    for horizontal in ["true", "active", "false"] {
+        let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("false", horizontal), true);
+        caret(&view, cx, 4, 14);
+        for line in 0..9 {
+            assert!(
+                guides(&view, cx, line).is_empty(),
+                "bracketPairs = false + bracketPairsHorizontal = {horizontal}，第 {line} 行"
+            );
+        }
+    }
+    // 默认设置就是这一组，所以默认一条都不画。
+    let (view, cx) = open(cx, GUIDE_SOURCE, vec![], true);
+    caret(&view, cx, 4, 14);
+    assert!((0..9).all(|line| guides(&view, cx, line).is_empty()));
+
+    // 着色与活动括号对都关掉之后，光靠 `bracketPairsHorizontal` 不会把括号对树建起来。
+    let (view, cx) = open(
+        cx,
+        GUIDE_SOURCE,
+        vec![
+            ("editor.bracketPairColorization.enabled", Value::Bool(false)),
+            (
+                "editor.guides.highlightActiveBracketPair",
+                Value::Bool(false),
+            ),
+            ("editor.guides.bracketPairs", Value::Bool(false)),
+            (
+                "editor.guides.bracketPairsHorizontal",
+                Value::String("true".into()),
+            ),
+        ],
+        true,
+    );
+    assert!(
+        view.read_with(cx, |v, _| v.bracket_depths(4)).is_empty(),
+        "树不该为了水平线而建"
+    );
+}
+
+#[gpui::test]
+fn bracket_pair_guides_share_the_colorization_depth(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "false"), true);
+    caret(&view, cx, 4, 14);
+    // 参考线的深度与同一对括号的着色深度一致，颜色键也按同一套循环取。
+    for (column, level) in [(0u32, 1u32), (4, 2), (8, 3), (13, 4)] {
+        let hit = guides(&view, cx, 4)
+            .into_iter()
+            .find(|g| g.0 == column)
+            .expect("有这条参考线");
+        assert_eq!(hit.1, level);
+        let key = code_view::bracket_pairs::guide_color_key(level, level, false, hit.2);
+        let expected = if hit.2 {
+            code_view::bracket_pairs::ACTIVE_GUIDE_KEYS[level as usize - 1]
+        } else {
+            code_view::bracket_pairs::GUIDE_KEYS[level as usize - 1]
+        };
+        assert_eq!(key, expected);
+    }
+    // 第 4 行各括号的着色深度与参考线一致。
+    let colored = colors(&view, cx, 4);
+    assert_eq!(colored[0].1, 4, "`a(` 是第 4 层：{colored:?}");
+}
+
+#[gpui::test]
+fn guides_work_even_when_colorization_is_off(cx: &mut TestAppContext) {
+    // 着色关掉之后树还得建，否则参考线没有数据来源。
+    let mut overrides = guide_settings("true", "false");
+    overrides.push(("editor.bracketPairColorization.enabled", Value::Bool(false)));
+    let (view, cx) = open(cx, GUIDE_SOURCE, overrides, true);
+    assert!(colors(&view, cx, 4).is_empty());
+    assert_eq!(guides(&view, cx, 4).len(), 4);
+}
+
+#[gpui::test]
+fn the_active_indent_guide_follows_the_cursor(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, GUIDE_SOURCE, vec![], true);
+    // 光标在 `if (x) {` 上：活动的是它开出来的那一层（第 2 条，可见列 8）。
+    caret(&view, cx, 3, 8);
+    assert_eq!(active_indent(&view, cx), Some((2, 4..6)));
+    // 挪到更深一层。
+    caret(&view, cx, 5, 16);
+    assert_eq!(active_indent(&view, cx), Some((3, 5..6)));
+    // 挪到 `}`：退回外面那一层。
+    caret(&view, cx, 6, 8);
+    assert_eq!(active_indent(&view, cx), Some((1, 3..7)));
+    // 顶层的行没有活动参考线。
+    caret(&view, cx, 8, 0);
+    assert_eq!(active_indent(&view, cx), None);
+}
+
+#[gpui::test]
+fn highlight_active_indentation_three_values(cx: &mut TestAppContext) {
+    let with = |value: Value, pairs: &'static str| {
+        let mut overrides = guide_settings(pairs, "false");
+        overrides.push(("editor.guides.highlightActiveIndentation", value));
+        overrides
+    };
+    // false：不高亮。
+    let o = with(Value::Bool(false), "false");
+    let (view, cx) = open(cx, GUIDE_SOURCE, o, true);
+    caret(&view, cx, 4, 14);
+    assert_eq!(active_indent(&view, cx), None);
+
+    // true：没有括号对参考线时照常高亮。
+    let o = with(Value::Bool(true), "false");
+    let (view, cx) = open(cx, GUIDE_SOURCE, o, true);
+    caret(&view, cx, 4, 14);
+    assert!(active_indent(&view, cx).is_some());
+
+    // true + 括号对参考线已经标出了活动括号对：让位给它。
+    let o = with(Value::Bool(true), "true");
+    let (view, cx) = open(cx, GUIDE_SOURCE, o, true);
+    caret(&view, cx, 4, 14);
+    assert_eq!(active_indent(&view, cx), None);
+    // 同一个设置下，文档里没有跨行括号对时缩进参考线照常高亮（让位只针对活动括号对）。
+    let o = with(Value::Bool(true), "true");
+    let (view, cx) = open(
+        cx,
+        "a
+    b
+    c
+d
+",
+        o,
+        true,
+    );
+    caret(&view, cx, 1, 4);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.active_indent_guide(0..4).map(|a| a.level)),
+        Some(0)
+    );
+
+    // "always"：括号对参考线也在高亮时照样高亮。
+    let o = with(Value::String("always".into()), "true");
+    let (view, cx) = open(cx, GUIDE_SOURCE, o, true);
+    caret(&view, cx, 4, 14);
+    assert!(active_indent(&view, cx).is_some());
+}
+
+#[gpui::test]
+fn large_files_keep_the_indent_guides_but_drop_the_bracket_pair_guides(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "true"), true);
+    caret(&view, cx, 6, 8);
+    assert!(!guides(&view, cx, 4).is_empty());
+
+    // 大文件：括号对树整体关掉，参考线跟着没了；缩进参考线与活动高亮保留（UX_SPEC §3.1）。
+    view.update(cx, |v, cx| v.set_document_level(SizeClass::Large, cx));
+    settle(cx);
+    assert!(guides(&view, cx, 4).is_empty());
+    assert_eq!(active_indent(&view, cx), Some((1, 3..7)));
+
+    view.update(cx, |v, cx| v.set_document_level(SizeClass::Huge, cx));
+    settle(cx);
+    assert!(guides(&view, cx, 4).is_empty());
+    assert_eq!(active_indent(&view, cx), Some((1, 3..7)));
+}
+
+// ------------------------------------------------------------------ 6. 登记机制
 
 #[gpui::test]
 fn settings_colors_and_strings_are_registered(cx: &mut TestAppContext) {
@@ -511,16 +856,46 @@ fn settings_colors_and_strings_are_registered(cx: &mut TestAppContext) {
         "editor.language.brackets",
         "editor.language.colorizedBracketPairs",
         "rove.bracketPairColorization.maximumBrackets",
+        // 第二部分
+        "editor.guides.bracketPairs",
+        "editor.guides.bracketPairsHorizontal",
+        "editor.guides.highlightActiveIndentation",
     ] {
         assert!(settings.get(key).is_some(), "设置项 {key} 未登记");
     }
     for key in code_view::bracket_pairs::FOREGROUND_KEYS
         .iter()
         .chain(std::iter::once(&code_view::bracket_pairs::UNEXPECTED_KEY))
+        .chain(code_view::bracket_pairs::GUIDE_KEYS.iter())
+        .chain(code_view::bracket_pairs::ACTIVE_GUIDE_KEYS.iter())
+        .chain(code_view::bracket_pairs::ACTIVE_INDENT_KEYS.iter())
     {
         assert!(colors.get(key).is_some(), "颜色键 {key} 未登记");
     }
     assert!(strings
         .get(Feature::BracketPairColorization.label_key())
         .is_some());
+}
+
+/// 参考线的颜色按 VS Code 的回落规则解析：没设色或完全透明时用同一级的括号颜色。
+#[gpui::test]
+fn guide_colors_fall_back_to_the_bracket_colors(cx: &mut TestAppContext) {
+    let _ = cx;
+    let (_, colors, _, _) = registries();
+    let theme = DefaultTheme {
+        colors,
+        kind: ThemeKind::Dark,
+    };
+    let palette = code_view::colors::Palette::resolve(&theme, ThemeKind::Dark);
+    let depth1 = palette.bracket_pairs.depth[0].expect("深色主题有 foreground1");
+    // `editorBracketPairGuide.background1` 默认完全透明 → 用括号颜色打三成透明度。
+    let guide = palette.bracket_pairs.guide[0].expect("有参考线颜色");
+    assert_eq!((guide.0, guide.1, guide.2), (depth1.0, depth1.1, depth1.2));
+    assert!(guide.3 < depth1.3, "非活动参考线更淡：{guide:?}");
+    // `activeBackground1` 默认完全透明 → 直接用括号颜色。
+    assert_eq!(palette.bracket_pairs.active_guide[0], Some(depth1));
+    // 活动缩进参考线：第 2–6 级没设色时回落到第 1 级。
+    let active = palette.indent_guides_active;
+    assert!(active[0].is_some());
+    assert_eq!(active[1], active[0]);
 }
