@@ -27,6 +27,7 @@ pub mod buffers;
 pub mod l0;
 pub mod mapping;
 mod metadata;
+mod semantic_tokens;
 #[doc(hidden)]
 pub mod testing;
 #[cfg(test)]
@@ -334,6 +335,8 @@ pub struct CsRouter {
     views: Option<Arc<crate::metadata_view::MetadataViews>>,
     /// 最近一次 L0 解析（按路径与版本）。
     l0_cache: Mutex<Option<(String, Version, Arc<L0File>)>>,
+    /// #59：最近一次声明细节提取（按路径与版本），与 `l0_cache` 共用同一次解析。
+    facts_cache: Mutex<Option<(String, Version, Arc<crate::semantic::syntax::FileFacts>)>>,
     /// 已经请求过重建的（文件, 当前内容哈希），避免每次查询都请求。
     requested: Mutex<HashSet<(String, u64)>>,
 }
@@ -347,6 +350,7 @@ impl CsRouter {
             root: None,
             views: None,
             l0_cache: Mutex::default(),
+            facts_cache: Mutex::default(),
             requested: Mutex::default(),
         }
     }
@@ -1379,15 +1383,14 @@ impl CsQueries for CsRouter {
         })
     }
 
-    /// 语义高亮属于 R58，路由不提供。
+    /// #59：按文件取语义 token。只有 C# 有（D2），实现见 `router::semantic_tokens`。
     fn semantic_tokens(
         &self,
-        _: &Resource,
-        _: Version,
+        file: &Resource,
+        version: Version,
         cancel: &Cancellation,
     ) -> Result<QueryResult<Arc<[SemanticToken]>>> {
-        cancel.check()?;
-        Err(Error::Unsupported)
+        self.semantic_tokens_impl(file, version, cancel)
     }
 
     /// 不生效的预处理区域（L2 的行区间，整行），映射到当前坐标；文件改过时标为近似。
