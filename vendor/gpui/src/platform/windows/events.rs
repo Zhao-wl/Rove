@@ -170,10 +170,12 @@ impl WindowsWindowInner {
     fn handle_size_msg(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
         let mut lock = self.state.borrow_mut();
 
-        // Don't resize the renderer when the window is minimized, but record that it was minimized so
-        // that on restore the swap chain can be recreated via `update_drawable_size_even_if_unchanged`.
+        // Suspend frame requests without resizing the renderer while minimized.
         if wparam.0 == SIZE_MINIMIZED as usize {
-            lock.restore_from_minimized = lock.callbacks.request_frame.take();
+            // Duplicate notifications must preserve the callback already saved for restore.
+            if let Some(request_frame) = lock.callbacks.request_frame.take() {
+                lock.restore_from_minimized = Some(request_frame);
+            }
             return Some(0);
         }
 
