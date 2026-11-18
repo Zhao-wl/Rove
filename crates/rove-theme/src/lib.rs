@@ -72,6 +72,7 @@ mod color;
 pub mod defaults;
 pub mod file;
 pub mod resolved;
+pub mod semantic;
 pub mod service;
 pub mod textmate;
 pub use color::{format_hex, parse_hex};

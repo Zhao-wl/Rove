@@ -16,11 +16,15 @@ pub const DEFAULT_THEME: &str = "Dark 2026";
 pub const COLOR_THEME: Key<String> = Key::new("workbench.colorTheme");
 pub const COLOR_CUSTOMIZATIONS: Key<Value> = Key::new("workbench.colorCustomizations");
 pub const TOKEN_COLOR_CUSTOMIZATIONS: Key<Value> = Key::new("editor.tokenColorCustomizations");
+/// `editor.semanticTokenColorCustomizations`（#59）。
+pub const SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS: Key<Value> =
+    Key::new("editor.semanticTokenColorCustomizations");
 /// 触发重新加载的设置键。
-pub const THEME_SETTING_KEYS: [&str; 3] = [
+pub const THEME_SETTING_KEYS: [&str; 4] = [
     COLOR_THEME.id,
     COLOR_CUSTOMIZATIONS.id,
     TOKEN_COLOR_CUSTOMIZATIONS.id,
+    SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.id,
 ];
 
 /// 一个可选主题：设置中使用的 ID、显示名称、界面类型与主题文件。
@@ -350,6 +354,10 @@ impl ThemeService {
             token_colors: opt(
                 TOKEN_COLOR_CUSTOMIZATIONS.id,
                 TOKEN_COLOR_CUSTOMIZATIONS.read(settings, &scope),
+            ),
+            semantic_token_colors: opt(
+                SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.id,
+                SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.read(settings, &scope),
             ),
         };
         (theme, custom)

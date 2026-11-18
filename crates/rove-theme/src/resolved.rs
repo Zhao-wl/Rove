@@ -8,7 +8,12 @@
 
 use crate::color::{parse_hex, VsColor};
 use crate::defaults::{self, ColorScope};
-use crate::file::{parse_rule, parse_settings, Diagnostic, SemanticTokenRule, ThemeDocument};
+use crate::file::{
+    parse_rule, parse_semantic_rule, parse_settings, Diagnostic, SemanticTokenRule, ThemeDocument,
+};
+use crate::semantic::{
+    style_from_settings, Selector, SemanticStyle, StyleAccumulator, FALLBACK_RULES,
+};
 use crate::textmate::{font_style, RawRule, RawScope, TextMateTheme};
 use crate::{Color, ColorRegistry, ThemeKind, TokenStyle};
 use rove_base::{Error, Result, Value};
@@ -30,6 +35,8 @@ pub struct Customizations {
     pub colors: Option<Value>,
     /// `editor.tokenColorCustomizations`
     pub token_colors: Option<Value>,
+    /// `editor.semanticTokenColorCustomizations`（#59）
+    pub semantic_token_colors: Option<Value>,
 }
 
 /// `[Theme]`/`[*Theme*]`/`[Theme*]`/`[*Theme]` 是否命中当前主题（VS Code `isThemeScopeMatch`）。
@@ -205,6 +212,28 @@ fn add_custom_token_colors(
     }
 }
 
+/// `readSemanticTokenRules`：`rules` 是「选择器 → 颜色或样式对象」的映射；
+/// `[主题名]` 这种键在这里跳过（它们由 `theme_specific` 单独处理）。
+fn add_custom_semantic_rules(
+    rules: Option<&Value>,
+    field: &str,
+    out: &mut Vec<SemanticTokenRule>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some(Value::Object(rules)) = rules else {
+        return;
+    };
+    for (selector, v) in rules.iter() {
+        if is_theme_scope(selector) {
+            continue;
+        }
+        let f = format!("{field}.rules[{selector:?}]");
+        if let Some(r) = parse_semantic_rule(selector, &to_json(v), &f, SETTINGS_FILE, diags) {
+            out.push(r);
+        }
+    }
+}
+
 /// `defaultThemeColors`：日志类 token 的默认颜色。
 fn default_token_rules(kind: ThemeKind) -> [RawRule; 4] {
     let (info, warn, error, debug) = match kind {
@@ -238,9 +267,13 @@ pub struct ResolvedTheme {
     resolved: BTreeMap<String, Option<Color>>,
     textmate: TextMateTheme,
     semantic_rules: Vec<SemanticTokenRule>,
+    /// `editor.semanticTokenColorCustomizations` 里的规则（全局形式在前、按主题形式在后）。
+    custom_semantic_rules: Vec<SemanticTokenRule>,
     semantic_highlighting: bool,
     diagnostics: Vec<Diagnostic>,
     cache: RwLock<HashMap<Box<[Arc<str>]>, TokenStyle>>,
+    /// 语义 token 样式缓存：`(类型.修饰符…:语言)` → 样式。
+    semantic_cache: RwLock<HashMap<Box<str>, SemanticStyle>>,
 }
 
 impl std::fmt::Debug for ResolvedTheme {
@@ -304,9 +337,11 @@ impl ResolvedTheme {
             resolved: BTreeMap::new(),
             textmate: TextMateTheme::from_rules(&[]),
             semantic_rules: doc.semantic_token_colors,
+            custom_semantic_rules: Vec::new(),
             semantic_highlighting: doc.semantic_highlighting,
             diagnostics: Vec::new(),
             cache: RwLock::new(HashMap::new()),
+            semantic_cache: RwLock::new(HashMap::new()),
         };
 
         // token 规则
@@ -345,6 +380,31 @@ impl ResolvedTheme {
             if let Some(Value::Bool(b)) = sh {
                 theme.semantic_highlighting = *b;
             }
+        }
+        // `editor.semanticTokenColorCustomizations`（VS Code `setCustomSemanticTokenColors`）：
+        // 先读全局形式的 `enabled` / `rules`，再用按主题形式覆盖；优先级高于主题自身的规则，
+        // 也高于 `editor.tokenColorCustomizations.semanticHighlighting` 这个旧写法。
+        if let Some(Value::Object(obj)) = &custom.semantic_token_colors {
+            let field = "editor.semanticTokenColorCustomizations";
+            if let Some(Value::Bool(b)) = obj.get("enabled") {
+                theme.semantic_highlighting = *b;
+            }
+            add_custom_semantic_rules(
+                obj.get("rules"),
+                field,
+                &mut theme.custom_semantic_rules,
+                &mut diagnostics,
+            );
+            let scoped = theme_specific(settings_id, obj);
+            if let Some(Value::Bool(b)) = scoped.get("enabled") {
+                theme.semantic_highlighting = *b;
+            }
+            add_custom_semantic_rules(
+                scoped.get("rules"),
+                &format!("{field}[{settings_id:?}]"),
+                &mut theme.custom_semantic_rules,
+                &mut diagnostics,
+            );
         }
         rules.extend(custom_rules);
         let has_default_tokens = rules
@@ -422,6 +482,103 @@ impl ResolvedTheme {
             underline: bits & font_style::UNDERLINE != 0,
             strikethrough: bits & font_style::STRIKETHROUGH != 0,
         }
+    }
+
+    /// 探测一组 TextMate scope（VS Code `resolveScopes`）：按顺序试每一组，
+    /// 第一组能解析出前景色或字体样式的就是结果；都没有返回 `None`。
+    /// 与 `token_style` 不同，这里**不**回落到默认前景色——没命中就该走下一组。
+    fn probe_scopes(&self, probes: &[&[&str]]) -> Option<SemanticStyle> {
+        for scope in probes {
+            let Some(m) = self.textmate.match_path(scope) else {
+                continue;
+            };
+            if m.foreground.is_none() && m.font_style.is_none() {
+                continue;
+            }
+            let bits = m.font_style;
+            return Some(SemanticStyle {
+                foreground: m.foreground,
+                bold: bits.map(|b| b & font_style::BOLD != 0),
+                italic: bits.map(|b| b & font_style::ITALIC != 0),
+                underline: bits.map(|b| b & font_style::UNDERLINE != 0),
+                strikethrough: bits.map(|b| b & font_style::STRIKETHROUGH != 0),
+            });
+        }
+        None
+    }
+
+    fn rule_style(rule: &SemanticTokenRule) -> SemanticStyle {
+        style_from_settings(
+            rule.foreground,
+            rule.font_style.as_deref(),
+            rule.bold,
+            rule.underline,
+            rule.strikethrough,
+            rule.italic,
+        )
+    }
+
+    /// 一个语义 token（类型 + 修饰符 + 语言）的样式，未设置的属性为 `None`
+    /// （调用方保留下层的语法着色）。逐条对应 VS Code `ColorThemeData.getTokenStyle`。
+    pub fn semantic_token_style_uncached(
+        &self,
+        token_type: &str,
+        modifiers: &[&str],
+        language: &str,
+    ) -> SemanticStyle {
+        let mut acc = StyleAccumulator::new();
+        for rule in self
+            .semantic_rules
+            .iter()
+            .chain(&self.custom_semantic_rules)
+        {
+            let Some(selector) = Selector::parse(&rule.selector) else {
+                continue;
+            };
+            if let Some(score) = selector.score(token_type, modifiers, language) {
+                acc.process(score, &Self::rule_style(rule));
+            }
+        }
+        if acc.incomplete() {
+            acc.lock();
+            for fallback in FALLBACK_RULES {
+                let Some(selector) = Selector::parse(fallback.selector) else {
+                    continue;
+                };
+                let Some(score) = selector.score(token_type, modifiers, language) else {
+                    continue;
+                };
+                if let Some(style) = self.probe_scopes(fallback.probes) {
+                    acc.process(score, &style);
+                }
+            }
+        }
+        acc.style
+    }
+
+    /// 带缓存的 [`Self::semantic_token_style_uncached`]（主题不可变，缓存随主题一起丢弃）。
+    pub fn semantic_token_style(
+        &self,
+        token_type: &str,
+        modifiers: &[&str],
+        language: &str,
+    ) -> SemanticStyle {
+        let key = Selector {
+            token_type: token_type.to_owned(),
+            modifiers: modifiers.iter().map(|m| (*m).to_owned()).collect(),
+            language: Some(language.to_owned()),
+        }
+        .id();
+        if let Some(s) = self.semantic_cache.read().expect("cache lock").get(&*key) {
+            return *s;
+        }
+        let style = self.semantic_token_style_uncached(token_type, modifiers, language);
+        let mut cache = self.semantic_cache.write().expect("cache lock");
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key.into(), style);
+        style
     }
 
     /// 按 scope 路径（由外到内）解析 token 样式。前景色总是已设置（无匹配时为默认前景色）。
