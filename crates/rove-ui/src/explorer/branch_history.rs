@@ -94,12 +94,13 @@ impl Branch {
         }
         let name = reference.shorthand().unwrap_or("HEAD").to_owned();
         let head = reference.peel_to_commit()?.id();
-        let main = repo
+        let baseline = repo
             .find_reference("refs/heads/main")
-            .or_else(|_| repo.find_reference("refs/remotes/origin/main"))?
+            .or_else(|_| repo.find_reference("refs/remotes/origin/main"))
+            .or_else(|_| repo.find_reference("refs/remotes/origin/HEAD"))?
             .peel_to_commit()?
             .id();
-        let base = repo.merge_base(head, main)?;
+        let base = repo.merge_base(head, baseline)?;
         let net = diff(&repo, &prefix, Some(base), head)?;
         let mut history = repo.revwalk()?;
         history.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
