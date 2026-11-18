@@ -313,6 +313,31 @@ impl Folding {
         }
     }
 
+    /// 行被整块搬动之后（#171 移动行 / 复制行），已折叠的区间与手动区间跟着行走。
+    /// `before` 是编辑**之前**的已折叠集合（编辑途中光标落到旧位置的隐藏行上会展开它们）；
+    /// `map` 是旧行号 → 新行号；区间首末行搬到不连续的位置时丢弃该区间。
+    pub fn remap_lines(&mut self, before: &[(u64, u64)], map: impl Fn(u64) -> u64) {
+        let moved = |s: u64, e: u64| {
+            let (ns, nl) = (map(s), map(e - 1));
+            (nl >= ns && nl - ns == e - 1 - s).then_some((ns, nl + 1))
+        };
+        let mut collapsed: Vec<(u64, u64)> =
+            before.iter().filter_map(|&(s, e)| moved(s, e)).collect();
+        collapsed.sort_unstable();
+        collapsed.dedup();
+        self.manual = self
+            .manual
+            .iter()
+            .filter_map(|r| moved(r.start, r.end).and_then(|(s, e)| FoldRange::new(s, e, r.source)))
+            .collect();
+        self.merge();
+        if collapsed != self.collapsed {
+            self.collapsed = collapsed;
+            self.rebuild();
+            self.generation += 1;
+        }
+    }
+
     /// 当前折叠（保存到标签的 `ViewState::folds`）。
     pub fn collapsed(&self) -> Vec<LineRange> {
         self.collapsed
