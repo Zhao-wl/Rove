@@ -34,6 +34,8 @@ pub enum WaitOutcome {
 /// 一次进行中的等待。宿主每打开一次“转到行”最多持有一个。
 #[derive(Clone)]
 pub struct PendingGoto {
+    /// 这次请求的编号（进程内唯一）。回调凭它认出自己：同一文档、同一行取消后重发也是新请求。
+    pub id: u64,
     /// 等待的文档。
     pub document: DocumentId,
     /// 目标行（1 起始，与用户输入一致）。
@@ -44,7 +46,9 @@ pub struct PendingGoto {
 
 impl PendingGoto {
     pub fn new(document: DocumentId, line: u64) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             document,
             line,
             cancel: Cancellation::default(),

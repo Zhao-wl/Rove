@@ -257,6 +257,78 @@ fn goto_line_waits_for_the_index_and_can_be_cancelled(cx: &mut TestAppContext) {
     assert_eq!(goto::resolve_now(&*waiting, 90), None);
 }
 
+/// #232：旧请求的回调不得清掉新请求。用可控的回调顺序代替真实延迟：
+/// 先等 A、再切到 B，A 的回调先到——界面继续显示 B 的等待，B 就绪后跳到 B；
+/// 取消后立刻重发同一行也是独立的请求，旧任务既不提前跳转、也不清除新任务。
+#[gpui::test]
+fn a_stale_goto_callback_neither_jumps_nor_clears_the_newer_request(cx: &mut TestAppContext) {
+    let f = Fixture::new(SETTINGS);
+    let (view, cx) = f.open(cx);
+    open_file(&view, "big.log", cx);
+    settle(cx);
+    let document = document(&view, cx);
+    // 同一个文档（编号一致，跳转能找到它），但行索引停在第 10 行。
+    let pending_doc = Arc::new(Document {
+        text: Arc::new(Pending::new(100)),
+        ..(*document).clone()
+    });
+    let line_of_caret = |view: &Entity<Workbench>, cx: &mut VisualTestContext| {
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
+        code.read_with(cx, |c, _| c.selection().active.line.0)
+    };
+    let start = line_of_caret(&view, cx);
+
+    // 测试里的回调由手动调用送达；后台的真实等待永远等不到第 10 行以后，
+    // 所以在 `refresh`（会跑后台任务）之前一律先取消它，否则要轮询到超时。
+    // A（第 50 行）等待中，切到 B（第 80 行）。
+    assert!(!view.update(cx, |v, cx| v.goto_line_or_wait(&pending_doc, 50, cx)));
+    let a = view.read_with(cx, |v, _| v.pending_goto_request().unwrap());
+    assert!(!view.update(cx, |v, cx| v.goto_line_or_wait(&pending_doc, 80, cx)));
+    let b = view.read_with(cx, |v, _| v.pending_goto_request().unwrap());
+    assert_ne!(a.id, b.id);
+    assert!(a.is_cancelled() && !b.is_cancelled());
+    // A 的回调先到：它是已取消的旧请求，不跳转、不动 B 的等待。
+    view.update(cx, |v, cx| {
+        v.finish_pending_goto(a.id, goto::WaitOutcome::Ready(Line(49)), cx)
+    });
+    assert_eq!(
+        view.read_with(cx, |v, _| v.pending_goto().map(|p| p.0)),
+        Some(80)
+    );
+    assert_eq!(line_of_caret(&view, cx), start, "旧请求没有跳转");
+    // B 就绪：跳到 B，等待结束。
+    view.update(cx, |v, cx| {
+        v.finish_pending_goto(b.id, goto::WaitOutcome::Ready(Line(79)), cx)
+    });
+    b.cancel();
+    refresh(cx);
+    assert!(view.read_with(cx, |v, _| v.pending_goto().is_none()));
+    assert_eq!(line_of_caret(&view, cx), 79);
+
+    // 取消后立即重发同一行：两次请求各自独立。
+    assert!(!view.update(cx, |v, cx| v.goto_line_or_wait(&pending_doc, 60, cx)));
+    let old = view.read_with(cx, |v, _| v.pending_goto_request().unwrap());
+    view.update(cx, |v, _| v.cancel_pending_goto());
+    assert!(!view.update(cx, |v, cx| v.goto_line_or_wait(&pending_doc, 60, cx)));
+    let new = view.read_with(cx, |v, _| v.pending_goto_request().unwrap());
+    assert_ne!(old.id, new.id);
+    view.update(cx, |v, cx| {
+        v.finish_pending_goto(old.id, goto::WaitOutcome::Ready(Line(59)), cx)
+    });
+    assert_eq!(
+        view.read_with(cx, |v, _| v.pending_goto().map(|p| p.0)),
+        Some(60)
+    );
+    assert_eq!(line_of_caret(&view, cx), 79, "旧任务没有提前跳转");
+    view.update(cx, |v, cx| {
+        v.finish_pending_goto(new.id, goto::WaitOutcome::Ready(Line(59)), cx)
+    });
+    new.cancel();
+    refresh(cx);
+    assert!(view.read_with(cx, |v, _| v.pending_goto().is_none()));
+    assert_eq!(line_of_caret(&view, cx), 59);
+}
+
 /// 等待期间界面上看得见、也取消得掉（UX_SPEC §6.2）：快速输入框保持打开、显示进度，
 /// `quickInput.hide`（Esc 的命令）取消等待。
 #[gpui::test]

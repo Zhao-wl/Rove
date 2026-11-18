@@ -288,6 +288,12 @@ impl Workbench {
         ))
     }
 
+    /// 等待中的请求（测试用它模拟某一次请求的回调先到，并在之后取消它的后台等待）。
+    #[cfg(test)]
+    pub(super) fn pending_goto_request(&self) -> Option<goto::PendingGoto> {
+        self.large_files.pending_goto.clone()
+    }
+
     /// 等待中时刷新进度（#24 的提示里显示 `正在建立行索引，完成后跳转（45%）`）。
     fn refresh_goto_progress(&mut self) {
         let Some(pending) = self.large_files.pending_goto.as_ref() else {
@@ -327,14 +333,14 @@ impl Workbench {
         self.large_files.goto_progress = Some(IndexProgress::of(&document.text.lines()));
         let text = document.text.clone();
         let cancel = pending.cancel.clone();
-        let id = document.id;
+        let request = pending.id;
         cx.spawn(async move |view, cx| {
             let outcome = cx
                 .background_executor()
                 .spawn(async move { goto::wait_for_line(&*text, line, &cancel, GOTO_TIMEOUT) })
                 .await;
             let _ = view.update(cx, |view, cx| {
-                view.finish_pending_goto(id, line, outcome, cx);
+                view.finish_pending_goto(request, outcome, cx);
             });
         })
         .detach();
@@ -342,23 +348,25 @@ impl Workbench {
         false
     }
 
-    fn finish_pending_goto(
+    /// 一次等待结束（`request` 是 [`goto::PendingGoto::id`]）。
+    ///
+    /// 只处理仍在等待的**这一次**请求：用户换了目标行、取消后又重发同一行时，旧任务的回调
+    /// 既不跳转，也不能清掉新任务的等待与进度（#232）。
+    pub(super) fn finish_pending_goto(
         &mut self,
-        document: DocumentId,
-        line: u64,
+        request: u64,
         outcome: goto::WaitOutcome,
         cx: &mut Context<Self>,
     ) {
-        let still_waiting = self
+        let Some(pending) = self
             .large_files
             .pending_goto
-            .as_ref()
-            .is_some_and(|p| p.document == document && p.line == line && !p.is_cancelled());
-        self.large_files.pending_goto = None;
-        self.large_files.goto_progress = None;
-        if !still_waiting {
+            .take_if(|p| p.id == request && !p.is_cancelled())
+        else {
             return;
-        }
+        };
+        self.large_files.goto_progress = None;
+        let document = pending.document;
         let target = match outcome {
             goto::WaitOutcome::Ready(line) => line,
             goto::WaitOutcome::OutOfRange { last } => last,
