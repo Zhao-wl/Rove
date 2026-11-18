@@ -875,11 +875,19 @@ impl CodeView {
         let ctx = lineops::LineOpContext {
             word_separators: self.options.word_separators.to_string(),
             eol: self.document_eol(),
+            collapsed: self.folding.collapsed_keys().to_vec(),
         };
-        self.run_edit(Some(window), cx, move |session, snapshot, now| {
+        let before = ctx.collapsed.clone();
+        // #171：行被整块搬动时，折叠状态按方案给出的行号对应跟着走（编辑本身同步执行）。
+        let mut moved: Option<Vec<(u64, u64, i64)>> = None;
+        let slot = &mut moved;
+        let done = self.run_edit(Some(window), cx, move |session, snapshot, now| {
             let Some(plan) = lineops::plan(op, &**snapshot, &selections, &ctx)? else {
                 return Ok(Default::default());
             };
+            if !plan.line_map.is_empty() {
+                *slot = Some(plan.line_map.clone());
+            }
             let applied = session.edit(plan.transaction, now)?;
             if let Some(after) = plan.selections {
                 let snapshot = session.snapshot();
@@ -900,6 +908,14 @@ impl CodeView {
                 selection: None,
             })
         });
+        if let Some(map) = moved.filter(|_| done) {
+            self.folding
+                .remap_lines(&before, |l| lineops::map_line(&map, l));
+            self.sync_fold_map();
+            // 行数不变的移动不会触发 `apply_text` 里的重算：可折叠区间（折叠箭头）要跟着重算。
+            self.recompute_folds(cx);
+            cx.notify();
+        }
         self.column_select = None;
     }
 }

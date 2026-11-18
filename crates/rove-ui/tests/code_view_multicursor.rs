@@ -604,6 +604,53 @@ fn move_lines_stops_at_the_file_edges_and_moves_whole_selections(cx: &mut TestAp
     assert_eq!(f.primary(), Selection::new(pos(1, 0), pos(2, 1)));
 }
 
+/// #171：在折叠首行上移动 / 复制行，整个折叠区域一起走，折叠状态也跟着走；
+/// 普通行跨过折叠区域时，整个区域算一个屏幕行。
+#[gpui::test]
+fn move_and_copy_lines_carry_a_folded_region_as_one_block(cx: &mut TestAppContext) {
+    let mut f = lf("a\nhead\n  x\n  y\nb\nc", cx);
+    settle(f.cx);
+    let folds = |f: &mut Fixture| -> Vec<(u64, u64)> {
+        f.view.update(f.cx, |v, _| {
+            v.folds().iter().map(|r| (r.start().0, r.end().0)).collect()
+        })
+    };
+    f.caret(1, 0);
+    f.run("editor.fold");
+    assert_eq!(folds(&mut f), [(1, 4)], "缩进折叠：隐藏第 2、3 行");
+
+    f.run("editor.action.moveLinesDownAction");
+    assert_eq!(
+        f.contents(),
+        "a\nb\nhead\n  x\n  y\nc",
+        "整个折叠区域一起下移"
+    );
+    assert_eq!(f.primary(), Selection::caret(pos(2, 0)));
+    assert_eq!(folds(&mut f), [(2, 5)], "折叠状态跟着走");
+    f.view.update(f.cx, |v, _| {
+        let map = v.fold_map();
+        assert!(map.is_hidden(3) && map.is_hidden(4) && !map.is_hidden(5));
+    });
+
+    f.run("editor.action.moveLinesUpAction");
+    assert_eq!(f.contents(), "a\nhead\n  x\n  y\nb\nc");
+    assert_eq!(folds(&mut f), [(1, 4)]);
+
+    // 普通行向下跨过折叠区域：一步跨过整个区域。
+    f.caret(0, 0);
+    f.run("editor.action.moveLinesDownAction");
+    assert_eq!(f.contents(), "head\n  x\n  y\na\nb\nc");
+    assert_eq!(f.primary(), Selection::caret(pos(3, 0)));
+    assert_eq!(folds(&mut f), [(0, 3)]);
+
+    // 复制折叠首行：复制整个区域，光标与折叠留在下面那一份（原块）上。
+    f.caret(0, 0);
+    f.run("editor.action.copyLinesDownAction");
+    assert_eq!(f.contents(), "head\n  x\n  y\nhead\n  x\n  y\na\nb\nc");
+    assert_eq!(f.primary(), Selection::caret(pos(3, 0)));
+    assert!(folds(&mut f).contains(&(3, 6)), "{:?}", folds(&mut f));
+}
+
 #[gpui::test]
 fn line_operations_with_several_cursors_are_one_transaction(cx: &mut TestAppContext) {
     let mut f = lf("a\nb\nc\nd\ne\n", cx);

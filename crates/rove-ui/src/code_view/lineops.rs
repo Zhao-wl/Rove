@@ -60,6 +60,9 @@ pub struct LineOpContext {
     pub word_separators: String,
     /// 文档的主换行符（只在需要补一个行终止符时使用）。
     pub eol: String,
+    /// 当前已折叠的区间 `(首行, 末行的下一行)`（#20 `Folding::collapsed_keys`）。
+    /// 移动行 / 复制行按**屏幕行**取块（#171）：折叠首行连同被它隐藏的行是一个整体。
+    pub collapsed: Vec<(u64, u64)>,
 }
 
 /// 一次行操作的结果。
@@ -68,6 +71,23 @@ pub struct LinePlan {
     pub transaction: Transaction,
     /// 事务之后每个选区的位置（顺序与传入的选区一致）。`None` 表示按事务自动映射。
     pub selections: Option<Vec<Selection>>,
+    /// 行号的搬动：`(首行, 末行（含）, 平移量)`，没列出的行行号不变。移动行 / 复制行用它让
+    /// 折叠状态跟着行走（#171）；其他操作为空。
+    pub line_map: Vec<(u64, u64, i64)>,
+}
+
+impl LinePlan {
+    /// 旧行号 → 新行号（按 [`Self::line_map`]）。
+    pub fn map_line(&self, line: u64) -> u64 {
+        map_line(&self.line_map, line)
+    }
+}
+
+/// 按 [`LinePlan::line_map`] 把旧行号换成新行号；没列出的行不变。
+pub fn map_line(map: &[(u64, u64, i64)], line: u64) -> u64 {
+    map.iter()
+        .find(|(lo, hi, _)| *lo <= line && line <= *hi)
+        .map_or(line, |(_, _, d)| (line as i64 + d).max(0) as u64)
 }
 
 /// 按 `op` 计算事务；没有任何变化时返回 `Ok(None)`。
@@ -94,6 +114,7 @@ pub fn plan(
                 LinePlan {
                     transaction: t,
                     selections: None,
+                    line_map: Vec::new(),
                 }
             }),
         ),
@@ -141,9 +162,24 @@ pub fn block_of(s: &Selection) -> (u64, u64) {
     (start, end)
 }
 
-/// 把若干选区的行区间合并成互不相交、按起点升序的若干块。
-fn blocks(selections: &[Selection]) -> Vec<(u64, u64)> {
-    let mut out: Vec<(u64, u64)> = selections.iter().map(block_of).collect();
+/// `line` 所在的屏幕行覆盖的文档行（含两端）：被折叠的区间算一整行（取最外层）。
+fn screen_line(collapsed: &[(u64, u64)], line: u64) -> (u64, u64) {
+    collapsed
+        .iter()
+        .filter(|(s, e)| *s <= line && line < *e)
+        .fold((line, line), |(lo, hi), (s, e)| (lo.min(*s), hi.max(e - 1)))
+}
+
+/// 把若干选区的行区间合并成互不相交、按起点升序的若干块。两端按屏幕行扩展：
+/// 落在折叠区间里的行带上整个区间（#171）。
+fn blocks(selections: &[Selection], collapsed: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = selections
+        .iter()
+        .map(|s| {
+            let (lo, hi) = block_of(s);
+            (screen_line(collapsed, lo).0, screen_line(collapsed, hi).1)
+        })
+        .collect();
     out.sort_unstable();
     let mut merged: Vec<(u64, u64)> = Vec::with_capacity(out.len());
     for (lo, hi) in out {
@@ -219,23 +255,34 @@ fn move_lines(
 ) -> Result<Option<LinePlan>> {
     let count = line_count(text)?;
     let mut edits = Vec::new();
-    let mut moved: Vec<(u64, u64)> = Vec::new();
-    for (lo, hi) in blocks(selections) {
+    // (块首, 块末, 块的平移量)。
+    let mut moved: Vec<(u64, u64, i64)> = Vec::new();
+    let mut line_map = Vec::new();
+    for (lo, hi) in blocks(selections, &ctx.collapsed) {
         if up && lo == 0 {
             continue;
         }
         if !up && hi + 1 >= count {
             continue;
         }
-        let (rlo, rhi) = if up { (lo - 1, hi) } else { (lo, hi + 1) };
-        let mut items = read_block(text, rlo, rhi, count)?;
-        if up {
-            // 第一行（被跨过的那一行）挪到块后面。
-            let first = items.remove(0);
-            items.push(first);
+        // 被跨过的是相邻的**一个屏幕行**：折叠着的区域整体跨过（VS Code 按屏幕行移动）。
+        let (rlo, rhi) = if up {
+            (screen_line(&ctx.collapsed, lo - 1).0, hi)
         } else {
-            let last = items.pop().expect("至少两行");
-            items.insert(0, last);
+            (lo, screen_line(&ctx.collapsed, hi + 1).1)
+        };
+        let mut items = read_block(text, rlo, rhi, count)?;
+        let block = (hi - lo + 1) as i64;
+        let skipped = if up { lo - rlo } else { rhi - hi } as i64;
+        if up {
+            // 被跨过的那几行挪到块后面。
+            items.rotate_left(skipped as usize);
+            line_map.push((lo, hi, -skipped));
+            line_map.push((rlo, lo - 1, block));
+        } else {
+            items.rotate_right(skipped as usize);
+            line_map.push((lo, hi, skipped));
+            line_map.push((hi + 1, rhi, -block));
         }
         let range = block_range(text, rlo, rhi, count)?;
         let ends_at_eof = rhi + 1 >= count;
@@ -243,26 +290,25 @@ fn move_lines(
             range,
             join_block(&items, ends_at_eof, &ctx.eol),
         ));
-        moved.push((lo, hi));
+        moved.push((lo, hi, if up { -skipped } else { skipped }));
     }
     if edits.is_empty() {
         return Ok(None);
     }
-    let delta = if up { -1 } else { 1 };
     let selections = selections
         .iter()
         .map(|s| {
             let (lo, hi) = block_of(s);
-            if moved.iter().any(|(a, b)| *a <= lo && hi <= *b) {
-                shift_selection(s, delta)
-            } else {
-                *s
+            match moved.iter().find(|(a, b, _)| *a <= lo && hi <= *b) {
+                Some((_, _, delta)) => shift_selection(s, *delta),
+                None => *s,
             }
         })
         .collect();
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: Some(selections),
+        line_map,
     }))
 }
 
@@ -275,7 +321,7 @@ fn copy_lines(
     let count = line_count(text)?;
     let mut edits = Vec::new();
     let mut copied: Vec<(u64, u64)> = Vec::new();
-    for (lo, hi) in blocks(selections) {
+    for (lo, hi) in blocks(selections, &ctx.collapsed) {
         let items = read_block(text, lo, hi, count)?;
         // 在块的起点插入一份副本：光标留在上一份就是“向上复制”，落到下一份就是“向下复制”
         // （VS Code `CopyLinesCommand` 用的同一个技巧）。副本一定在文件中间，所以每行都要终止符。
@@ -299,16 +345,25 @@ fn copy_lines(
             shift_selection(s, before)
         })
         .collect();
+    // 副本插在每块的起点：块及其后的行都下移，下移量是它之前（含自身）插入的行数。
+    let mut line_map = Vec::new();
+    let mut shift = 0i64;
+    for (i, (lo, hi)) in copied.iter().enumerate() {
+        shift += (hi - lo + 1) as i64;
+        let next = copied.get(i + 1).map_or(u64::MAX, |(n, _)| n - 1);
+        line_map.push((*lo, next, shift));
+    }
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: Some(selections),
+        line_map,
     }))
 }
 
 fn delete_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Option<LinePlan>> {
     let count = line_count(text)?;
     let mut edits = Vec::new();
-    for (lo, hi) in blocks(selections) {
+    for (lo, hi) in blocks(selections, &[]) {
         let range = if hi + 1 < count {
             // 整行 + 终止符。
             Span::new(line_start(text, lo)?, line_start(text, hi + 1)?)?
@@ -331,6 +386,7 @@ fn delete_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Optio
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -366,6 +422,7 @@ fn duplicate_selection(
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -374,7 +431,7 @@ fn duplicate_selection(
 fn join_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Option<LinePlan>> {
     let count = line_count(text)?;
     let mut edits = Vec::new();
-    for (lo, mut hi) in blocks(selections) {
+    for (lo, mut hi) in blocks(selections, &[]) {
         if lo == hi {
             // 只有一行：与下一行合并。
             if hi + 1 >= count {
@@ -412,6 +469,7 @@ fn join_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Option<
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -434,7 +492,7 @@ fn sort_lines(
         };
         vec![(0, last)]
     } else {
-        blocks(selections)
+        blocks(selections, &[])
     };
     let mut edits = Vec::new();
     for (lo, hi) in ranges {
@@ -472,6 +530,7 @@ fn sort_lines(
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -522,6 +581,7 @@ fn transpose(text: &dyn TextSource, selections: &[Selection]) -> Result<Option<L
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -551,6 +611,7 @@ fn transpose_letters(text: &dyn TextSource, selections: &[Selection]) -> Result<
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -612,6 +673,7 @@ fn case_transform(
     Ok(Some(LinePlan {
         transaction: Transaction::new(edits)?.verbatim(),
         selections: None,
+        line_map: Vec::new(),
     }))
 }
 
@@ -739,6 +801,7 @@ mod tests {
         LineOpContext {
             word_separators: "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?".into(),
             eol: "\n".into(),
+            collapsed: Vec::new(),
         }
     }
 
@@ -822,6 +885,68 @@ mod tests {
         let (out, sels) = run("a\nb\nc", LineOp::CopyUp, &[caret(1, 1)]);
         assert_eq!(out, "a\nb\nb\nc");
         assert_eq!(sels[0], caret(1, 1));
+    }
+
+    /// 带折叠执行：返回新全文、新选区与行号搬动。
+    fn run_folded(
+        text: &str,
+        op: LineOp,
+        sels: &[Selection],
+        collapsed: &[(u64, u64)],
+    ) -> (String, Vec<Selection>, LinePlan) {
+        let mut buffer = buffer(text);
+        let snapshot = buffer.snapshot();
+        let ctx = LineOpContext {
+            collapsed: collapsed.to_vec(),
+            ..ctx()
+        };
+        let plan = plan(op, &*snapshot, sels, &ctx).unwrap().expect("有变化");
+        buffer.apply(&plan.transaction).unwrap();
+        let sels = plan.selections.clone().unwrap();
+        (buffer.contents(), sels, plan)
+    }
+
+    /// #171：折叠首行上的移动把整个折叠区域一起搬走，折叠状态跟着走。
+    #[test]
+    fn moving_a_folded_header_moves_the_whole_region() {
+        // 第 1 行是折叠首行，隐藏第 2、3 行（折叠键 (1, 4)）。
+        let text = "a\nfn {\n  x\n}\nb\nc";
+        let (out, sels, plan) = run_folded(text, LineOp::MoveDown, &[caret(1, 0)], &[(1, 4)]);
+        assert_eq!(out, "a\nb\nfn {\n  x\n}\nc");
+        assert_eq!(sels[0], caret(2, 0));
+        assert_eq!(plan.map_line(1), 2, "折叠首行跟着块下移一行");
+        assert_eq!(plan.map_line(3), 4);
+        assert_eq!(plan.map_line(4), 1, "被跨过的行挪到块前面");
+        assert_eq!(plan.map_line(5), 5);
+
+        let (out, sels, plan) = run_folded(text, LineOp::MoveUp, &[caret(1, 0)], &[(1, 4)]);
+        assert_eq!(out, "fn {\n  x\n}\na\nb\nc");
+        assert_eq!(sels[0], caret(0, 0));
+        assert_eq!((plan.map_line(1), plan.map_line(0)), (0, 3));
+    }
+
+    /// #171：普通行跨过一个折叠区域时，整个区域算一个屏幕行。
+    #[test]
+    fn moving_across_a_folded_region_skips_it_as_one_screen_line() {
+        let text = "a\nfn {\n  x\n}\nb";
+        let (out, sels, plan) = run_folded(text, LineOp::MoveDown, &[caret(0, 0)], &[(1, 4)]);
+        assert_eq!(out, "fn {\n  x\n}\na\nb");
+        assert_eq!(sels[0], caret(3, 0));
+        assert_eq!((plan.map_line(0), plan.map_line(1)), (3, 0));
+
+        let (out, sels, _) = run_folded(text, LineOp::MoveUp, &[caret(4, 0)], &[(1, 4)]);
+        assert_eq!(out, "a\nb\nfn {\n  x\n}");
+        assert_eq!(sels[0], caret(1, 0));
+    }
+
+    /// #171：复制折叠首行复制整个区域；原块下移，折叠状态跟着原块走。
+    #[test]
+    fn copying_a_folded_header_copies_the_whole_region() {
+        let text = "fn {\n  x\n}\nb";
+        let (out, sels, plan) = run_folded(text, LineOp::CopyDown, &[caret(0, 0)], &[(0, 3)]);
+        assert_eq!(out, "fn {\n  x\n}\nfn {\n  x\n}\nb");
+        assert_eq!(sels[0], caret(3, 0));
+        assert_eq!((plan.map_line(0), plan.map_line(3)), (3, 6));
     }
 
     #[test]
