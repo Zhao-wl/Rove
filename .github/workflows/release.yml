@@ -117,14 +117,20 @@ jobs:
           "signed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: cargo xtask release
+        id: package
         shell: pwsh
         run: |
           # --component：组件包进产物目录、进 SHA256SUMS.txt、进签名清单的 components（#238）。
-          $args = @('--require-installer', '--component', '${{ steps.component.outputs.zip }}')
+          # 发布输出与 Cargo 缓存分开，后续步骤只读取本次生成的版本目录。
+          $out = Join-Path $env:RUNNER_TEMP 'rove-release-dist'
+          $args = @('--out', $out, '--require-installer', '--component', '${{ steps.component.outputs.zip }}')
           if ('${{ steps.key.outputs.signed }}' -ne 'true') { $args += '--unsigned' }
           cargo xtask release @args 2>&1 | Tee-Object -FilePath release-report.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Content release-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $dirs = @(Get-ChildItem -LiteralPath $out -Directory)
+          if ($dirs.Count -ne 1) { throw "预期只有一个发布产物目录，实际有 $($dirs.Count) 个" }
+          "dir=$($dirs[0].FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: 删除私钥
         if: always()
@@ -144,37 +150,37 @@ jobs:
       - name: 校验 latest.json 的签名
         if: steps.key.outputs.signed == 'true'
         shell: pwsh
-        run: |
-          $dir = Get-ChildItem target\release-dist -Directory | Select-Object -First 1
-          cargo xtask release-verify --file (Join-Path $dir.FullName 'latest.json')
+        env:
+          RELEASE_DIR: ${{ steps.package.outputs.dir }}
+        run: cargo xtask release-verify --file (Join-Path $env:RELEASE_DIR 'latest.json')
 
       - name: 上传产物（artifact）
         uses: actions/upload-artifact@v4
         with:
           name: rove-release
           path: |
-            target/release-dist/*/Rove-*.zip
-            target/release-dist/*/Rove-*-setup.exe
-            target/release-dist/*/rove-indexer-cs-*.zip
-            target/release-dist/*/SHA256SUMS.txt
-            target/release-dist/*/latest.json
-            target/release-dist/*/latest.json.sig
-            target/release-dist/*/release-notes.md
+            ${{ steps.package.outputs.dir }}/Rove-*.zip
+            ${{ steps.package.outputs.dir }}/Rove-*-setup.exe
+            ${{ steps.package.outputs.dir }}/rove-indexer-cs-*.zip
+            ${{ steps.package.outputs.dir }}/SHA256SUMS.txt
+            ${{ steps.package.outputs.dir }}/latest.json
+            ${{ steps.package.outputs.dir }}/latest.json.sig
+            ${{ steps.package.outputs.dir }}/release-notes.md
             toolchain.txt
 
       # 草稿 Release：等人工确认后再在网页上发布（不自动公开）。
       # 附件就是产物目录里的全部文件（除了 upload.ps1），组件包已由 `cargo xtask release`
       # 收进这个目录，所以附件与签名清单天然一致（#238；release 命令自己也会自检一遍）。
       - name: 创建草稿 Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_DIR: ${{ steps.package.outputs.dir }}
         run: |
-          $dir = Get-ChildItem target\release-dist -Directory | Select-Object -First 1
-          $files = Get-ChildItem $dir.FullName -File |
+          $files = Get-ChildItem -LiteralPath $env:RELEASE_DIR -File |
             Where-Object { $_.Name -notlike 'upload.ps1' } |
             ForEach-Object { $_.FullName }
           gh release create ${{ github.ref_name }} --draft `
             --title "Rove ${{ github.ref_name }}" `
-            --notes-file (Join-Path $dir.FullName 'release-notes.md') @files
+            --notes-file (Join-Path $env:RELEASE_DIR 'release-notes.md') @files
