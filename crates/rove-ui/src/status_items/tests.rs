@@ -230,6 +230,35 @@ fn read_only_entry_lists_reasons_and_disabled_features() {
     );
 }
 
+/// #185：大文件可编辑，没有只读原因时是普通样式的「大文件」标记（原 #22 的文件大小条目）。
+#[test]
+fn large_files_get_a_plain_size_mark_in_the_read_only_entry() {
+    let t = strings();
+    let large = model::read_only_entry(
+        &t,
+        SizeClass::Large,
+        &[],
+        rove_buffer::disabled_features(SizeClass::Large),
+    )
+    .unwrap();
+    assert_eq!(large.text, "大文件");
+    assert_eq!(large.kind, StatusKind::Standard);
+    let tooltip = large.tooltip.unwrap();
+    assert!(tooltip.contains("已关闭的功能"), "{tooltip}");
+    assert!(tooltip.contains("缩略图"), "{tooltip}");
+
+    // `editor.largeFileOptimizations` 关掉时这一级不生效：不列功能，明确说没有关闭。
+    let off = model::read_only_entry(&t, SizeClass::Large, &[], &[]).unwrap();
+    assert_eq!(off.text, "大文件");
+    assert!(off.tooltip.unwrap().contains("没有"));
+
+    // 大文件同时命中只读规则：按只读显示，仍是警告样式。
+    let rule = ReadOnlyReason::Rule(Arc::from(rove_workspace::REASON_READONLY_INCLUDE));
+    let both = model::read_only_entry(&t, SizeClass::Large, &[rule], &[]).unwrap();
+    assert_eq!(both.text, "只读");
+    assert_eq!(both.kind, StatusKind::Warning);
+}
+
 #[test]
 fn pickers_hide_items_that_would_rewrite_a_read_only_file() {
     let t = strings();

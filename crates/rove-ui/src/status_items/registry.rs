@@ -219,6 +219,11 @@ pub const STRINGS: &[(&str, &str)] = &[
     // 只读与超大文件。
     ("status.readOnly.text", "只读"),
     ("status.readOnly.hugeText", "超大文件 · 只读"),
+    ("status.readOnly.largeText", "大文件"),
+    (
+        "status.readOnly.noneDisabled",
+        "这个文件没有因为体积关闭任何功能。",
+    ),
     ("status.readOnly.disabled", "已关闭的功能：{features}"),
     ("status.readOnly.separator", "、"),
     // 按文件大小关闭的功能名（清单与顺序来自 #8 的 `rove_buffer::disabled_features`）。

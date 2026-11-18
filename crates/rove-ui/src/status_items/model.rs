@@ -319,13 +319,18 @@ pub fn read_only_entry(
     disabled: &[ReducedFeature],
 ) -> Option<StatusEntry> {
     let huge = size == SizeClass::Huge;
-    if reasons.is_empty() && !huge {
+    let large = size == SizeClass::Large;
+    if reasons.is_empty() && !huge && !large {
         return None;
     }
+    // 大文件可编辑：没有只读原因时只是一个普通的体积标记（#185，原 #22 的 `rove.status.fileSize`）。
+    let warning = huge || !reasons.is_empty();
     let text = s(
         strings,
         if huge {
             "status.readOnly.hugeText"
+        } else if reasons.is_empty() {
+            "status.readOnly.largeText"
         } else {
             "status.readOnly.text"
         },
@@ -351,11 +356,19 @@ pub fn read_only_entry(
             ));
         }
     }
+    if large && disabled.is_empty() {
+        // `editor.largeFileOptimizations` 关掉时这一级不生效。
+        lines.push(s(strings, "status.readOnly.noneDisabled", &[]));
+    }
     Some(StatusEntry {
         text,
         tooltip: Some(lines.join("\n")),
         command: None,
-        kind: StatusKind::Warning,
+        kind: if warning {
+            StatusKind::Warning
+        } else {
+            StatusKind::Standard
+        },
     })
 }
 

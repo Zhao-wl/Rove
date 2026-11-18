@@ -4,9 +4,8 @@
 //! 测试把 `rove.largeFile.threshold` 调小（几十 KB），用小文件走完**同一条**超大文件路径；
 //! 1 GB / 50 MB 的真实数据由 `cargo xtask bench` 的测试数据在人工验收时复跑（见 PR）。
 use super::*;
-use crate::large_file::{
-    goto, long_line, notice, progress::IndexProgress, registry as lf, status_entry,
-};
+use crate::large_file::{goto, long_line, notice, progress::IndexProgress, registry as lf};
+use crate::status_items::registry::READ_ONLY;
 // #27 删掉了骨架的固定状态栏内容，`workbench.rs` 不再导入 `StatusEntry`。
 use crate::shell::status::StatusEntry;
 use gpui::{TestAppContext, VisualTestContext};
@@ -136,7 +135,7 @@ fn opening_a_huge_file_shows_a_bar_and_status_but_never_a_notification(cx: &mut 
     });
 
     // 状态栏：超大文件 · 只读，悬停列出被关闭的功能。
-    let entry = status(&view, lf::SIZE_STATUS, cx).expect("文件大小条目");
+    let entry = status(&view, READ_ONLY, cx).expect("只读标记条目");
     assert_eq!(entry.text, "超大文件 · 只读");
     let tooltip = entry.tooltip.unwrap();
     for feature in ["语法高亮", "折叠", "缩略图"] {
@@ -145,7 +144,7 @@ fn opening_a_huge_file_shows_a_bar_and_status_but_never_a_notification(cx: &mut 
 
     // 普通文件没有提示条、也没有大小标记。
     open_file(&view, "small.txt", cx);
-    assert!(status(&view, lf::SIZE_STATUS, cx).is_none());
+    assert!(status(&view, READ_ONLY, cx).is_none());
     view.read_with(cx, |v, _| {
         assert_eq!(
             v.shell.feedback.all_editor_bars().len(),
@@ -578,9 +577,10 @@ fn appending_to_the_file_keeps_the_scroll_position(cx: &mut TestAppContext) {
     }
 }
 
-/// 状态栏数据本身：被关闭的功能来自 #20 的查询接口，普通文件没有条目。
+/// 状态栏数据本身：超大文件的只读标记按 UX_SPEC §3.1 的整张表（数据来自 #8）列出被关闭的功能，
+/// 不只是 #20 已经实现的那几项；体积标记只有这一条（#185 起不再有 `rove.status.fileSize`）。
 #[gpui::test]
-fn status_entry_lists_the_features_the_code_view_disabled(cx: &mut TestAppContext) {
+fn the_read_only_mark_lists_every_feature_the_size_level_disables(cx: &mut TestAppContext) {
     let f = Fixture::new(SETTINGS);
     let (view, cx) = f.open(cx);
     open_file(&view, "big.log", cx);
@@ -588,24 +588,24 @@ fn status_entry_lists_the_features_the_code_view_disabled(cx: &mut TestAppContex
     let disabled = view.read_with(cx, |v, cx| v.code_view().read(cx).disabled_features());
     assert!(!disabled.is_empty(), "超大文件关掉了功能");
 
+    let entry = status(&view, READ_ONLY, cx).expect("只读标记条目");
+    assert_eq!(entry.text, "超大文件 · 只读");
+    let tooltip = entry.tooltip.unwrap();
     view.read_with(cx, |v, _| {
-        let entry = status_entry(&v.strings, rove_buffer::SizeClass::Huge, &disabled).unwrap();
-        let tooltip = entry.tooltip.unwrap();
-        // UX_SPEC §3.1 的整张表（数据来自 #8），不只是 #20 已经实现的那几项。
         for feature in rove_buffer::disabled_features(rove_buffer::SizeClass::Huge) {
             let text = v
                 .strings
-                .text(&Message::key(crate::large_file::notice::feature_key(
+                .text(&Message::key(crate::status_items::model::feature_key(
                     *feature,
                 )))
                 .unwrap()
                 .to_string();
             assert!(tooltip.contains(&text), "悬停缺少 {text}：{tooltip}");
         }
-        // `editor.largeFileOptimizations` 关掉时这一级不生效：#20 报空集合，这里也不列功能。
-        let off = status_entry(&v.strings, rove_buffer::SizeClass::Large, &[]).unwrap();
-        assert!(off.tooltip.unwrap().contains("没有"));
-        assert!(status_entry(&v.strings, rove_buffer::SizeClass::Normal, &[]).is_none());
+        assert!(
+            v.shell.status_bar.get("rove.status.fileSize").is_none(),
+            "体积标记只出现一次"
+        );
     });
 }
 
