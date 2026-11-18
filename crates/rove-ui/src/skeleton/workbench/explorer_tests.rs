@@ -123,7 +123,13 @@ fn explorer_branch_menu_filters_real_commit_history(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
-    assert!(cx.debug_bounds("explorer-branch-toggle").is_none());
+    // GPUI retains debug_bounds across frames; inspect the live menu state.
+    assert!(!view.read_with(cx, |view, cx| view.explorer.read(cx).branch_menu_is_open()));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, cx| view.explorer.read(cx).branch_menu_is_open()));
 }
 
 struct Fixture {

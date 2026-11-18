@@ -387,6 +387,7 @@ impl ExplorerView {
             self.show_empty_state(true, cx);
             return;
         };
+        self.workspace = Some(workspace.clone());
         let source = Arc::new(
             ExplorerSource::new(
                 workspace.clone(),

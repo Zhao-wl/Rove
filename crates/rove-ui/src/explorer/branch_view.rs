@@ -77,6 +77,11 @@ fn button_color(theme: &dyn Theme, name: &str, fallback: Hsla) -> Hsla {
 }
 
 impl ExplorerView {
+    #[cfg(test)]
+    pub(crate) fn branch_menu_is_open(&self) -> bool {
+        self.branch_filter.open
+    }
+
     pub(crate) fn set_branch_root(&mut self, root: PathBuf) {
         self.branch_filter.reset_root(root);
     }
@@ -277,6 +282,7 @@ impl ExplorerView {
             .id("explorer-branch-filter")
             .debug_selector(|| "explorer-branch-filter".into())
             .track_focus(&filter.launcher)
+            .key_context(crate::keys::MODAL_CONTEXT)
             .cursor_pointer()
             .size(px(23.0))
             .flex()
@@ -316,6 +322,20 @@ impl ExplorerView {
         cx.notify();
     }
 
+    pub(crate) fn dismiss_branch_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.branch_filter.open {
+            return false;
+        }
+        self.branch_filter.close();
+        window.focus(&self.branch_filter.launcher);
+        cx.notify();
+        true
+    }
+
     fn branch_menu(&self, theme: &dyn Theme, _: &mut Window, cx: &Context<Self>) -> AnyElement {
         let filter = &self.branch_filter;
         let foreground = button_color(theme, "menu.foreground", gpui::white());
@@ -346,6 +366,7 @@ impl ExplorerView {
             .w_full()
             .occlude()
             .track_focus(&filter.menu)
+            .key_context(crate::keys::MODAL_CONTEXT)
             .p(px(6.0))
             .rounded(px(4.0))
             .border_1()
@@ -356,9 +377,7 @@ impl ExplorerView {
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
-                    this.branch_filter.close();
-                    window.focus(&this.branch_filter.launcher);
-                    cx.notify();
+                    this.dismiss_branch_menu(window, cx);
                 } else if event.keystroke.key == "space" {
                     cx.stop_propagation();
                     this.toggle_branch(cx);
@@ -424,9 +443,7 @@ impl ExplorerView {
                         .children(options.into_iter().enumerate().map(|(index, (_, label))| {
                             div()
                                 .id(("branch-option", index))
-                                .debug_selector(move || {
-                                    format!("explorer-branch-option-{index}").into()
-                                })
+                                .debug_selector(move || format!("explorer-branch-option-{index}"))
                                 .px(px(4.0))
                                 .py(px(2.0))
                                 .truncate()
