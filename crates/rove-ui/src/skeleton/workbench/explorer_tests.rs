@@ -511,6 +511,88 @@ fn the_active_editor_is_revealed_unless_auto_reveal_is_off_or_excluded(cx: &mut 
     assert!(cx.update(|window, cx| list.read(cx).focus_handle(cx).contains_focused(window, cx)));
 }
 
+/// #272：切回标签时，目标行恰好在可视区外一行（上方会被粘性目录行盖住），
+/// 定位后整行可见、不被粘性区遮挡，并且选中的是 `.cs` 本身而不是同名前缀的 `.cs.meta`。
+#[gpui::test]
+fn switching_tabs_reveals_the_exact_file_fully_below_the_sticky_band(cx: &mut TestAppContext) {
+    let mut files = vec![
+        "Assets/Scripts/A.cs".to_owned(),
+        "Assets/Scripts/A.cs.meta".to_owned(),
+        "Assets/Scripts/B.cs".to_owned(),
+    ];
+    files.extend((0..120).map(|i| format!("Assets/Scripts/Z{i:03}.cs")));
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let fx = Fixture::new("{}", &files);
+    let (view, cx) = fx.open(cx);
+    let open = |view: &Entity<Workbench>, cx: &mut VisualTestContext, rel: &str| {
+        view.update(cx, |v, cx| {
+            v.open_documents()
+                .open(
+                    Resource::Workspace(WorkspacePath::new(rel).unwrap()),
+                    OpenOptions {
+                        source: OpenSource::QuickOpen,
+                        ..Default::default()
+                    },
+                    Cancellation::default(),
+                )
+                .unwrap();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    };
+    let list = list(&view, cx);
+    // 焦点行完整可见，且不在粘性区下面。
+    let assert_visible = |cx: &mut VisualTestContext, what: &str| {
+        list.read_with(cx, |l, _| {
+            let w = &l.widget;
+            let i = w.focus().expect("focused row");
+            let band: f32 = w.sticky_rows().iter().map(|&r| w.row_height(r)).sum();
+            let (top, bottom) = (w.row_top(i), w.row_top(i) + w.row_height(i));
+            assert!(w.viewport() > 0.0);
+            assert!(
+                top >= w.scroll_top() + band && bottom <= w.scroll_top() + w.viewport(),
+                "{what}: row {i} [{top}, {bottom}) scroll {} band {band} viewport {}",
+                w.scroll_top(),
+                w.viewport()
+            );
+        });
+    };
+
+    open(&view, cx, "Assets/Scripts/A.cs");
+    assert_eq!(selected(&view, cx), ["Assets/Scripts/A.cs"]);
+    open(&view, cx, "Assets/Scripts/Z119.cs");
+    assert_eq!(selected(&view, cx), ["Assets/Scripts/Z119.cs"]);
+    assert_visible(cx, "below the viewport");
+
+    // 把 A.cs 放到可视区上方恰好一行，再切回它的标签。
+    list.update(cx, |l, cx| {
+        let w = &mut l.widget;
+        let a = w
+            .tree_model()
+            .and_then(|t| t.index_of(&crate::lists::ItemId("Assets/Scripts/A.cs".into())))
+            .unwrap();
+        let y = w.row_top(a) + w.row_height(a);
+        w.set_scroll_top(y);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    open(&view, cx, "Assets/Scripts/A.cs");
+    assert_eq!(selected(&view, cx), ["Assets/Scripts/A.cs"]);
+    assert_visible(cx, "one row above the viewport");
+
+    // 反方向：目标在可视区下方。
+    list.update(cx, |l, cx| {
+        l.widget.set_scroll_top(0.0);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    open(&view, cx, "Assets/Scripts/Z119.cs");
+    assert_eq!(selected(&view, cx), ["Assets/Scripts/Z119.cs"]);
+    assert_visible(cx, "below the viewport again");
+}
+
 #[gpui::test]
 fn filtering_expands_the_parents_of_matches_and_restores_the_tree_when_cleared(
     cx: &mut TestAppContext,

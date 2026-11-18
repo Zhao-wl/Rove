@@ -1102,10 +1102,19 @@ impl ListWidget {
         rows
     }
 
-    fn sticky_height_for(&self, _i: usize) -> f32 {
-        // Revealing above the viewport ignores the sticky band; VS Code reveals under it, which
-        // only shifts by whole rows. Keep reveal simple and stable.
-        0.0
+    /// Height of the sticky band that will be pinned once row `i` is the first row under it: its
+    /// ancestors, capped like [`Self::sticky_rows`]. Revealing upward lands the row below this
+    /// band instead of underneath it (VS Code does the same).
+    fn sticky_height_for(&self, i: usize) -> f32 {
+        let Some(t) = self.tree_model() else {
+            return 0.0;
+        };
+        if !self.options.sticky_scroll {
+            return 0.0;
+        }
+        let mut rows = t.ancestors(i);
+        rows.truncate(self.options.sticky_scroll_max_items);
+        rows.iter().map(|&r| self.row_height(r)).sum()
     }
 
     pub fn sticky_focus(&self) -> Option<usize> {
