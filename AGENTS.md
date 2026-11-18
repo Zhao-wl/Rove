@@ -405,3 +405,11 @@ cargo xtask check-release-gate      # 预算没有 pending；验收报告逐行�
   非时间指标（内存）的 `bench` 指向结果文件 `metrics` 表里的 id，不要往 criterion 的用例 id 上套。
 - **改了 `docs/issues/COVERAGE.md` 就要同步改验收报告**：`check-release-gate` 与
   `cargo test -p xtask` 会逐行对照「v0.1 = 是」的行，漏一行就失败。
+
+<!-- #280 追加：发布包体积报告 -->
+
+### 8.13 发布包体积报告（#280）
+
+2026-11-18 按 [PROJECT_CHARTER.md](docs/PROJECT_CHARTER.md) §6 取消发布包 30 MB 上限。
+本条更新 §10 和 §8.7 的体积判定说明。`cargo xtask check-size` 报告发布包体积、资产分项以及主程序相对 M0 基线的变化。
+CI 和发布流水线继续采集这些数据。包体大小不影响检查结果。

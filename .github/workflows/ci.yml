@@ -124,8 +124,7 @@ jobs:
           Get-Content licenses-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($code -ne 0) { exit $code }
 
-  # 体积守护（issue #4 建立，#76 扩展到整个发布包）：每个 PR 都报告 rove.exe 与发布包的体积，
-  # 发布包超过 perf/budgets.toml 的 [size].budget_bytes（30 MB）时失败。
+  # 每个 PR 都报告 rove.exe 与发布包的体积（#280）。
   size:
     name: 体积守护（rove.exe 与发布包）
     runs-on: windows-latest
@@ -167,7 +166,7 @@ jobs:
       - name: cargo build --release -p rove-app
         run: cargo build --release -p rove-app
 
-      - name: 报告体积与发布包分项并检查预算
+      - name: 报告体积与发布包分项
         shell: pwsh
         run: |
           cargo xtask check-size 2>&1 | Tee-Object -FilePath size-report.txt

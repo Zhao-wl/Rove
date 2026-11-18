@@ -14,20 +14,13 @@
 #   pending 的条目会被打印出来提醒，不参与判定。
 
 schema = 1
-updated = "2026-11-14"
+updated = "2026-11-18"
 source = "docs/PROJECT_CHARTER.md §6"
 
-# 体积守护（cargo xtask check-size）。#75 已把检查对象扩展到整个发布包：
-# 判定对象是 packaging/package-contents.toml 里登记的全部文件（rove.exe + 随包文档），
-# rove.exe 自己仍然单独报告（相对 M0 基线的变化）。C# 索引组件是独立的可选包，不计入。
+# 体积报告（cargo xtask check-size）保留 M0 的 rove.exe 比较基线。
+# 发布包按 packaging/package-contents.toml 统计，C# 索引组件单独报告。
 [size]
-# CHARTER §6：发布包体积（不含 C# 索引组件）< 30 MB。这里按十进制 30 MB 保守取 30,000,000 B。
-budget_bytes = 30_000_000
-# M0 实测 6.2 MB，作为「相对基线变化」的比较值（不是门槛）。
 baseline_bytes = 6_200_000
-owner = "#75"
-status = "enforced"
-reason = "判定对象是完整发布包（CHARTER §6：不含 C# 索引组件 < 30 MB）；随包资产全部嵌在 rove.exe 里，体积报告按来源分项列出，见 docs/RELEASE.md §5"
 
 # ---------------------------------------------------------------- 启动
 

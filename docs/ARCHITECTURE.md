@@ -2472,3 +2472,8 @@ Rust 侧一行没改：这些位置和标识符的出现位置同构，`CsIndex`
 `branch_tree.rs` 通过现有工作区排除规则过滤路径，为删除文件补回父目录，再交给 `ExplorerSource` 的分支快照适配层，排序、紧凑目录与树虚拟化继续走现有实现。新增字符串登记在 `explorer/registry.rs`，A/M/D 装饰复用已有主题颜色。删除文件在树内显示状态。
 
 入口验证为 `cargo test -p rove-ui --lib explorer_branch_menu_filters_real_commit_history`，使用两位提交者的真实临时 Git 仓库覆盖净变更、作者筛选、单次提交、关闭恢复以及 Esc 与焦点交接。
+
+## 发布包体积报告（#280）
+
+`xtask/src/size.rs` 报告 `rove.exe` 相对 M0 基线的变化、发布包总体积和资产分项。
+2026-11-18 取消发布包体积上限。CI 和 Release 继续运行 `cargo xtask check-size` 生成报告，取代上文的体积判定。

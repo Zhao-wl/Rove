@@ -27,7 +27,7 @@ cargo xtask bench --check-budgets --from target/bench.json  # 复核已保存的
 # 3) 校验预算（超预算以非零码退出，并打印超出项与幅度）
 cargo xtask bench --check-budgets
 
-# 4) 体积守护
+# 4) 体积报告
 cargo build --release -p rove-app
 cargo xtask check-size                    # 报告相对 M0 基线（6.2 MB）的变化
 
@@ -191,8 +191,8 @@ $env:ROVE_TYPING_PHASE = "frame-start"; cargo bench -p xtask --bench typing   # 
   量级的信号大得多，当前这些用例又都是占位实现（`EmptyText` / `EmptyWorkspace`）。
 - CI **不生成 `big1g.txt`**（1 GiB），只跑 `small.txt` / `uniq.txt` 级别的用例。
 - `ci.yml` 的「体积守护」任务构建 release 版 `rove.exe` 并运行 `cargo xtask check-size`
-  （结果同时以 `::notice::` 出现在 PR 的检查注解里），然后运行 `cargo xtask startup` 采集首帧；
-  `[size].status = "enforced"` 时超预算失败，改成 `pending` / `recorded` 时只报警不失败。
+  （结果同时以 `::notice::` 出现在 PR 的检查注解里），然后运行 `cargo xtask startup` 采集首帧。
+  `[size].baseline_bytes` 用来报告主程序相对 M0 基线的变化。
 
 ## 预算怎么加 / 怎么改
 

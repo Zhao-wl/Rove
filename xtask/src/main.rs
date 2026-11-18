@@ -3,7 +3,7 @@
 //! 子命令：
 //! - `gen-testdata`：生成 M0 口径的测试数据（`small.txt` / `uniq.txt` / `big1g.txt`）；
 //! - `bench`：跑 criterion 基准，输出机器可读结果，可选与基线比较、校验预算；
-//! - `check-size`：报告 `rove.exe` 与发布包体积，超预算时非零退出；
+//! - `check-size`：报告 `rove.exe` 与发布包体积；
 //! - `check-deps`：依赖图里禁止出现 HTTP / TLS 栈（#74）；
 //! - `release` / `release-keygen` / `release-sign` / `release-verify` / `check-version`：
 //!   本地发布流水线与更新清单签名（#76）；
@@ -67,7 +67,7 @@ const USAGE: &str = "\
       **不打 tag、不创建 Release、不上传**：上传要人工跑生成出来的 upload.ps1。
       --component ZIP 做三件事：把组件包收进产物目录（发布附件），让安装器多出
       「安装 C# 索引组件」勾选项（离线解压），并把它写进 SHA256SUMS.txt 与 latest.json
-      的 components（体积不计入 30 MB 预算）。
+      的 components（组件包体积单独报告）。
       正式发布（stable 频道 + 非预发布版本号）漏传 --component 直接失败（issue #238）；
       确实要发一版不带组件的，显式加 --no-component。
 
