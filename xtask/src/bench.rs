@@ -130,6 +130,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "workspace_symbols",
         requires: "",
     },
+    BenchTarget {
+        // #57：括号对树的增量更新与括号对着色的每帧开销（纯计算，不开窗口）。
+        name: "brackets",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

@@ -498,3 +498,45 @@ status = "recorded"
 bench = "typing/key_to_paint"
 aggregate = "p99"
 reason = "只记录、不设门槛：下界由显示器刷新率决定（按键均匀落在一个刷新间隔里时，空等的均值是半个间隔、p99 接近一个间隔），不是 Rove 能优化的量。#215 把注入相位铺开之后，开发机（120 Hz、负载较高）实测 mean 5.990 ms / p50 5.941 / p99 9.593；其中空等 mean 4.616 ms（≈ 半个刷新间隔，与均匀相位的理论值一致）。真正「上屏」还要再经 DWM 合成与扫描输出（至少一个刷新间隔），进程内测不到"
+
+# ---------------------------------------------------------------- 括号对着色（#57）
+
+[[budget]]
+id = "bracket_pair_incremental_update"
+metric = "5,000 行 C# 文件里做一次单字符编辑后，括号对树的增量更新"
+value = 1
+unit = "ms"
+owner = "#57"
+status = "enforced"
+bench = "brackets/edit_5000_lines_csharp"
+reason = "issue #57 验收：与 #9 的 2 ms 重解析预算分开计。括号对树按长度存节点，一次编辑只重建从根到被改行的那条路径（O(改动的 token 数 + log n)），旁边的子树按引用复用。口径是同一份 5,000 行 C#（约 2.6 万个括号）上来回改同一行的一个标识符，每次都走 note_lines + update"
+
+[[budget]]
+id = "bracket_pair_frame_extra"
+metric = "连续滚动时括号对着色带来的每帧额外 CPU"
+value = 100
+unit = "us"
+owner = "#57"
+status = "enforced"
+bench = "brackets/scroll_5000_lines_csharp"
+reason = "issue #57 验收：CHARTER §6 的 1 ms 每帧预算里括号着色只能占很小一块（< 100 µs）。口径取最坏情况——整屏 40 行全部重新生成样式区间；真实滚动时只有新进视口的一两行会重算，其余命中 #19 的按行装饰缓存"
+
+[[budget]]
+id = "bracket_pair_minified_json_parse"
+metric = "单行压缩 JSON（1 万个括号）的整篇括号对解析"
+value = 0
+unit = "ms"
+owner = "#57"
+status = "recorded"
+bench = "brackets/minified_json_parse"
+reason = "只记录、不设门槛：括号极多的文件（压缩 JSON、生成代码）由 rove.bracketPairColorization.maximumBrackets（默认 5 万，与 editor.foldingMaximumRegions 同量级）兜底，超过上限整体关闭着色而不是画错。本条用来观察上限以内的最坏情况"
+
+[[budget]]
+id = "bracket_pair_minified_json_edit"
+metric = "单行压缩 JSON 里一次编辑后的括号对更新（整行就是整篇，没有可复用的子树）"
+value = 0
+unit = "ms"
+owner = "#57"
+status = "recorded"
+bench = "brackets/minified_json_edit_worst_case"
+reason = "只记录、不设门槛：增量更新的失效粒度目前是行，所以整篇只有一行时退化成全量重解析。这是已知的最坏情况，由括号数上限兜底；要进一步优化得把失效粒度细到字节（VS Code 的 TextEditInfo），留给 #57 的后续部分"
