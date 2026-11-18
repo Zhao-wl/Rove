@@ -376,7 +376,7 @@ impl Sums {
         let mut tree = vec![0u64; n + 1];
         // 全 1 的 Fenwick 树可以直接构造：t[i] = lowbit(i)。
         for (i, slot) in tree.iter_mut().enumerate().skip(1) {
-            *slot = (i & i.wrapping_neg()) as u64;
+            *slot = i.isolate_lowest_one() as u64;
         }
         Self { tree }
     }
@@ -398,7 +398,7 @@ impl Sums {
         let mut i = index + 1;
         while i < self.tree.len() {
             self.tree[i] = (self.tree[i] as i64 + delta) as u64;
-            i += i & i.wrapping_neg();
+            i += i.isolate_lowest_one();
         }
     }
     /// `[0, index)` 的和。
@@ -407,7 +407,7 @@ impl Sums {
         let mut sum = 0;
         while i > 0 {
             sum += self.tree[i];
-            i -= i & i.wrapping_neg();
+            i -= i.isolate_lowest_one();
         }
         sum
     }

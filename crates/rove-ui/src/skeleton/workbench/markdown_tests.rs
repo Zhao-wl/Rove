@@ -339,7 +339,26 @@ fn theme_and_overlay_keep_preview_instance(cx: &mut TestAppContext) {
     open(&view, "README.md", explorer(), cx);
     // 主题切换：推 theme 消息，不重建。
     fx.change(r#"{ "workbench.colorTheme": "Light 2026" }"#, cx);
-    settle(cx);
+    // 主题在真实后台线程加载，推进 GPUI 队列不保证加载已结束。
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        settle(cx);
+        let ready = view.read_with(cx, |v, _| {
+            v.markdown
+                .fake
+                .borrow()
+                .posted
+                .iter()
+                .rev()
+                .find(|m| m["type"] == "theme")
+                .is_some_and(|m| m["kind"] == "vscode-light")
+        });
+        if ready {
+            break;
+        }
+        assert!(Instant::now() < deadline, "浅色主题未推送到预览实例");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     view.read_with(cx, |v, _| {
         let log = v.markdown.fake.borrow();
         assert_eq!(log.created, 1);

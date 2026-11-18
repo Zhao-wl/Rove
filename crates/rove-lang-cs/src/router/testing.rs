@@ -211,7 +211,9 @@ impl TestIndex {
         let to = relation_bytes(self.relations.iter().map(|&(f, t, k)| (t, f, k)).collect());
         // 段 9 的记录仍是 (from, to, kind)，只是按 (to, from) 排序。
         let to: Vec<u8> = to
-            .chunks_exact(12)
+            .as_chunks::<12>()
+            .0
+            .iter()
             .flat_map(|c| {
                 let mut r = [0u8; 12];
                 r[..4].copy_from_slice(&c[4..8]);
