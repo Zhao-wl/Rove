@@ -147,6 +147,11 @@ pub fn active_indent_guide(
 // ------------------------------------------------------------------ 括号对参考线（#57）
 
 /// `editor.guides.bracketPairs` / `editor.guides.bracketPairsHorizontal` 的三个取值。
+///
+/// 两者**不是互相独立的**：`bracketPairs` 为 `false` 时一条括号对参考线都不画，水平线也不画
+/// （VS Code 的 `indentGuides.ts` 只在 `bracketPairs !== false` 时才去取括号对参考线，
+/// 所以默认设置 `false` + `"active"` 下什么都看不到）。`bracketPairsHorizontal` 只决定
+/// **已经要画的那些括号对**里哪些再加一条水平连接线。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GuideMode {
     /// `false`
@@ -221,19 +226,18 @@ pub struct PairGeometry {
 
 /// 把一对括号对摊成 `visible` 区间里逐行的参考线段。
 ///
+/// 调用方只在这一对要画的时候才调过来（`editor.guides.bracketPairs` 的判定），所以竖线一定画；
+/// `horizontal` 是 `editor.guides.bracketPairsHorizontal` 对这一对的判定。
+///
 /// 竖线画在 `min(左括号可见列, 右括号可见列)` 上（VS Code 还会再和括号对内部的最小缩进取一次
 /// 最小值；那一步要扫过整对括号的所有行，代价与括号对长度成正比，而且只在「内容比括号本身更靠左」
 /// 这种少见的排版下才会生效，这里不做，见 `ARCHITECTURE.md` 的说明）。
 pub fn bracket_guide_lines(
     pair: &PairGeometry,
     visible: Range<u64>,
-    vertical: bool,
     horizontal: bool,
     out: &mut Vec<BracketGuide>,
 ) {
-    if !vertical && !horizontal {
-        return;
-    }
     let mut push = |line: u64, column: u32, v: VerticalPart, h: Option<Horizontal>| {
         if !visible.contains(&line) || (v == VerticalPart::None && h.is_none()) {
             return;
@@ -267,31 +271,25 @@ pub fn bracket_guide_lines(
     push(
         pair.open_line,
         column,
-        if vertical {
-            VerticalPart::Lower
-        } else {
-            VerticalPart::None
-        },
+        VerticalPart::Lower,
         horizontal.then_some(Horizontal {
             to_column: pair.open_column,
             at_bottom: false,
         }),
     );
-    if vertical {
-        let first = (pair.open_line + 1).max(visible.start);
-        let last = pair.close_line.min(visible.end);
-        for line in first..last {
-            push(line, column, VerticalPart::Full, None);
-        }
+    let first = (pair.open_line + 1).max(visible.start);
+    let last = pair.close_line.min(visible.end);
+    for line in first..last {
+        push(line, column, VerticalPart::Full, None);
     }
     let at_bottom = !pair.close_is_first;
     push(
         pair.close_line,
         column,
-        match (vertical, at_bottom) {
-            (false, _) => VerticalPart::None,
-            (true, true) => VerticalPart::Full,
-            (true, false) => VerticalPart::Upper,
+        if at_bottom {
+            VerticalPart::Full
+        } else {
+            VerticalPart::Upper
         },
         horizontal.then_some(Horizontal {
             to_column: pair.close_column,
@@ -483,11 +481,10 @@ mod tests {
     fn lines(
         pair: &PairGeometry,
         visible: Range<u64>,
-        vertical: bool,
         horizontal: bool,
     ) -> Vec<(u64, u32, VerticalPart, Option<Horizontal>)> {
         let mut out = Vec::new();
-        bracket_guide_lines(pair, visible, vertical, horizontal, &mut out);
+        bracket_guide_lines(pair, visible, horizontal, &mut out);
         out.into_iter()
             .map(|g| (g.line, g.column, g.vertical, g.horizontal))
             .collect()
@@ -498,7 +495,7 @@ mod tests {
         // `    if (x) {` … `    }`：竖线落在两个括号里靠左的那个（右括号，可见列 4）。
         let pair = geometry((0, 11), (3, 4), true);
         assert_eq!(
-            lines(&pair, 0..4, true, true),
+            lines(&pair, 0..4, true),
             vec![
                 (
                     0,
@@ -528,7 +525,7 @@ mod tests {
     fn the_bottom_line_hugs_the_line_bottom_when_the_close_bracket_is_not_first() {
         // `    b);`：右括号前面还有内容，水平线贴行底，竖线整行。
         let pair = geometry((0, 3), (2, 5), false);
-        let out = lines(&pair, 0..3, true, true);
+        let out = lines(&pair, 0..3, true);
         assert_eq!(
             out[2],
             (
@@ -547,7 +544,7 @@ mod tests {
     fn single_line_pairs_only_get_a_horizontal_line() {
         let pair = geometry((1, 4), (1, 9), false);
         assert_eq!(
-            lines(&pair, 0..3, true, true),
+            lines(&pair, 0..3, true),
             vec![(
                 1,
                 4,
@@ -559,33 +556,24 @@ mod tests {
             )]
         );
         // 水平线关掉之后单行括号对什么都不画。
-        assert!(lines(&pair, 0..3, true, false).is_empty());
+        assert!(lines(&pair, 0..3, false).is_empty());
     }
 
     #[test]
-    fn vertical_and_horizontal_can_be_switched_off_separately() {
+    fn horizontal_lines_can_be_switched_off_on_their_own() {
+        // `bracketPairsHorizontal` 只决定加不加水平线；竖线由 `bracketPairs` 在调用方那里判定，
+        // 走到这里就一定要画（整对四行都有竖线，一条水平线都没有）。
         let pair = geometry((0, 11), (3, 4), true);
-        // 只要竖线。
-        let only_vertical = lines(&pair, 0..4, true, false);
+        let only_vertical = lines(&pair, 0..4, false);
         assert_eq!(only_vertical.len(), 4);
         assert!(only_vertical.iter().all(|g| g.3.is_none()));
-        // 只要水平线：首尾两行各一条，中间不画。
-        let only_horizontal = lines(&pair, 0..4, false, true);
-        assert_eq!(
-            only_horizontal
-                .iter()
-                .map(|g| (g.0, g.2))
-                .collect::<Vec<_>>(),
-            vec![(0, VerticalPart::None), (3, VerticalPart::None)]
-        );
-        assert!(lines(&pair, 0..4, false, false).is_empty());
     }
 
     #[test]
     fn only_the_visible_lines_are_emitted() {
         let pair = geometry((0, 11), (9, 4), true);
         assert_eq!(
-            lines(&pair, 3..6, true, true)
+            lines(&pair, 3..6, true)
                 .iter()
                 .map(|g| g.0)
                 .collect::<Vec<_>>(),

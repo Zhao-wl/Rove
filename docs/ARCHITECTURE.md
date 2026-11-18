@@ -2546,8 +2546,8 @@ scope 以 `string` 或 `comment` 开头），不自己扫引号与注释起止�
 `level_of_kind` 与着色是同一套计数（`bracket_pairs::depth_index`），**参考线与括号的颜色序号必然一致**。
 参考线整帧算一次（`CodeView::bracket_pair_guides(可见区间)`）：视口内的行走行缓存，
 跨过视口的括号对每对最多多读两行文本（条数等于嵌套层数），不另建缓存。
-`editor.guides.bracketPairs` 或 `editor.guides.bracketPairsHorizontal` 任意一个不是 `false` 时
-`BracketPairs::guides` 为真，**着色关掉也照样建树**，否则参考线没有数据来源。
+`editor.guides.bracketPairs` 不是 `false` 时 `BracketPairs::guides` 为真，**着色关掉也照样建树**，
+否则参考线没有数据来源。
 
 **竖线画在哪一列**。`min(左括号可见列, 右括号可见列)`。VS Code 还会再和「括号对内部各行的最小缩进 + 1」
 取一次最小值，那一步要扫过整对括号的每一行（代价与括号对长度成正比，没法只看视口），
@@ -2563,8 +2563,13 @@ scope 以 `string` 或 `comment` 开头），不自己扫引号与注释起止�
 | 右括号那一行，前面还有别的内容 | 整行 | 贴行底，从竖线连到右括号 |
 | 单行括号对 | 无 | 行高中线，从左括号连到右括号 |
 
-于是整条参考线正好起于左括号、止于右括号。**两个设置项互相独立**：`bracketPairs: false` +
-`bracketPairsHorizontal: "active"`（VS Code 的默认组合）只画活动括号对的水平线。
+于是整条参考线正好起于左括号、止于右括号。
+
+**两个设置项不是互相独立的**：`editor.guides.bracketPairs` 说了算——它为 `false` 时一条参考线都不画，
+**水平线也不画**（VS Code 的 `indentGuides.ts` 只在 `bracketPairs !== false` 时才去取括号对参考线，
+`includeInactive` 再由 `bracketPairs === true` 决定），所以默认设置 `false` + `"active"` 下什么都看不到，
+这也是 Rove 的行为。`bracketPairsHorizontal` 只决定**已经要画的那些括号对**里哪些再加一条水平连接线。
+`bracketPairs` 为 `false` 时 `BracketPairs::guides` 也是假，树不会为了参考线而建。
 `"active"` 的判定是「包含光标、配对完整且**跨行**的最内层括号对」（`active_guide_pair`，
 单行括号对永远不算活动，与 VS Code 一致）。
 

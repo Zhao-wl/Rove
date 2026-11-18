@@ -664,31 +664,65 @@ fn horizontal_bracket_pair_guides_three_values(cx: &mut TestAppContext) {
     // 第 5 行的 `)` 前面还有内容：水平线贴着行底画。
     assert!(guides(&view, cx, 5).iter().any(|g| g.4 == Some((17, true))));
 
-    // "active"：只有光标所在的那一对有水平线。竖线单独关掉也照画。
-    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("false", "active"), true);
+    // "active"：全部括号对都有竖线，但只有光标所在的那一对再加水平线。
+    let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("true", "active"), true);
     caret(&view, cx, 4, 14);
+    let line4 = guides(&view, cx, 4);
+    assert_eq!(line4.len(), 4);
     assert_eq!(
-        guides(&view, cx, 4),
-        vec![(
-            13,
-            4,
-            true,
-            code_view::guides::VerticalPart::None,
-            Some((13, false))
-        )]
+        line4
+            .iter()
+            .filter(|g| g.4.is_some())
+            .map(|g| (g.0, g.2, g.4))
+            .collect::<Vec<_>>(),
+        vec![(13, true, Some((13, false)))],
+        "只有活动的那一对有水平线：{line4:?}"
     );
-    assert_eq!(
-        guides(&view, cx, 5),
-        vec![(
-            13,
-            4,
-            true,
-            code_view::guides::VerticalPart::None,
-            Some((17, true))
-        )]
+    assert!(guides(&view, cx, 2).iter().all(|g| g.4.is_none()));
+}
+
+/// `editor.guides.bracketPairs` 为 `false` 时一条括号对参考线都不画，**水平线也不画**：
+/// `bracketPairsHorizontal` 只决定「已经要画的那些括号对」里哪些再加一条水平线。
+/// 默认设置（`false` + `"active"`）下什么都看不到，与 VS Code 一致。
+#[gpui::test]
+fn bracket_pairs_false_switches_off_the_horizontal_lines_too(cx: &mut TestAppContext) {
+    for horizontal in ["true", "active", "false"] {
+        let (view, cx) = open(cx, GUIDE_SOURCE, guide_settings("false", horizontal), true);
+        caret(&view, cx, 4, 14);
+        for line in 0..9 {
+            assert!(
+                guides(&view, cx, line).is_empty(),
+                "bracketPairs = false + bracketPairsHorizontal = {horizontal}，第 {line} 行"
+            );
+        }
+    }
+    // 默认设置就是这一组，所以默认一条都不画。
+    let (view, cx) = open(cx, GUIDE_SOURCE, vec![], true);
+    caret(&view, cx, 4, 14);
+    assert!((0..9).all(|line| guides(&view, cx, line).is_empty()));
+
+    // 着色与活动括号对都关掉之后，光靠 `bracketPairsHorizontal` 不会把括号对树建起来。
+    let (view, cx) = open(
+        cx,
+        GUIDE_SOURCE,
+        vec![
+            ("editor.bracketPairColorization.enabled", Value::Bool(false)),
+            (
+                "editor.guides.highlightActiveBracketPair",
+                Value::Bool(false),
+            ),
+            ("editor.guides.bracketPairs", Value::Bool(false)),
+            (
+                "editor.guides.bracketPairsHorizontal",
+                Value::String("true".into()),
+            ),
+        ],
+        true,
     );
-    // 其他括号对一条都没有。
-    assert!(guides(&view, cx, 2).is_empty());
+    assert!(
+        view.read_with(cx, |v, _| v.bracket_depths(4)).is_empty(),
+        "树不该为了水平线而建"
+    );
 }
 
 #[gpui::test]

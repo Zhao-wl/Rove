@@ -264,8 +264,9 @@ pub struct BracketPairs {
     pub independent_pool: bool,
     /// `editor.guides.highlightActiveBracketPair`。
     pub highlight_active: bool,
-    /// #57 第二部分：`editor.guides.bracketPairs` 或 `editor.guides.bracketPairsHorizontal`
-    /// 任意一个不是 `false`——参考线也要用这棵树，着色关了也得建。
+    /// #57 第二部分：`editor.guides.bracketPairs` 不是 `false`——参考线也要用这棵树，
+    /// 着色关了也得建。（`bracketPairsHorizontal` 不参与判断：`bracketPairs` 为 `false` 时
+    /// 水平线也不画，树就不必为参考线而建。）
     pub guides: bool,
     pub limit: usize,
     pub colors: BracketColors,

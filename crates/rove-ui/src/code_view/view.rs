@@ -3247,8 +3247,9 @@ impl CodeView {
             pairs.independent_pool = self.options.independent_color_pool_per_bracket_type;
             pairs.highlight_active = self.options.highlight_active_bracket_pair;
             // #57 第二部分：参考线也要用这棵树，所以着色关了、参考线开着时照样建树。
-            pairs.guides = self.options.guides_bracket_pairs != super::guides::GuideMode::Off
-                || self.options.guides_bracket_pairs_horizontal != super::guides::GuideMode::Off;
+            // 只看 `editor.guides.bracketPairs`：它为 `false` 时一条参考线都不画
+            //（水平线也归它管），树就不必为参考线而建。
+            pairs.guides = self.options.guides_bracket_pairs != super::guides::GuideMode::Off;
             if pairs.limit != self.options.bracket_maximum {
                 pairs.limit = self.options.bracket_maximum;
                 // 上限变了要重新判定「是不是括号太多」。
@@ -3892,33 +3893,33 @@ impl CodeView {
     /// 可见区间内的括号对参考线（`editor.guides.bracketPairs` /
     /// `editor.guides.bracketPairsHorizontal`），按行升序。
     ///
-    /// 两个设置项互相独立：水平线可以单独开着（默认就是 `bracketPairs: false` +
-    /// `bracketPairsHorizontal: "active"`）。可见列要读左右括号那两行的文本，视口内的行走行缓存，
-    /// 跨过视口的括号对每对最多多读两行（条数等于嵌套层数）。
+    /// **`editor.guides.bracketPairs` 说了算**：它为 `false` 时一条都不画，水平线也不画
+    /// （VS Code 的 `indentGuides.ts` 只在它不为 `false` 时才去取括号对参考线，所以默认设置
+    /// `false` + `"active"` 下什么都看不到）。`bracketPairsHorizontal` 只决定已经要画的那些
+    /// 括号对里哪些再加一条水平连接线。
+    ///
+    /// 可见列要读左右括号那两行的文本，视口内的行走行缓存，跨过视口的括号对每对最多多读两行
+    /// （条数等于嵌套层数）。
     pub fn bracket_pair_guides(&self, visible: Range<u64>) -> Vec<super::guides::BracketGuide> {
         use super::guides::GuideMode;
-        let vertical_mode = self.options.guides_bracket_pairs;
+        let mode = self.options.guides_bracket_pairs;
         let horizontal_mode = self.options.guides_bracket_pairs_horizontal;
-        if (vertical_mode == GuideMode::Off && horizontal_mode == GuideMode::Off)
-            || visible.is_empty()
-        {
+        if mode == GuideMode::Off || visible.is_empty() {
             return Vec::new();
         }
         let active = self.active_guide_pair();
-        // 两边都只画活动的那一对，而光标又不在任何跨行括号对里：不用遍历树了
-        //（默认设置就是这种情况，每帧省掉一次遍历）。
-        if active.is_none() && vertical_mode != GuideMode::On && horizontal_mode != GuideMode::On {
+        // 只画活动的那一对，而光标又不在任何跨行括号对里：不用遍历树了。
+        if active.is_none() && mode != GuideMode::On {
             return Vec::new();
         }
         let pairs = self.bracket_pairs.borrow().guide_pairs(visible.clone());
         let mut out = Vec::new();
         for pair in pairs {
             let is_active = active.as_ref() == Some(&pair);
-            let vertical = vertical_mode.wants(is_active);
-            let horizontal = horizontal_mode.wants(is_active);
-            if !vertical && !horizontal {
+            if !mode.wants(is_active) {
                 continue;
             }
+            let horizontal = horizontal_mode.wants(is_active);
             let close_source = self.line_source(pair.close.lines);
             let close_is_first = close_source.as_deref().is_none_or(|text| {
                 text.find(|c: char| c != ' ' && c != '\t')
@@ -3934,13 +3935,7 @@ impl CodeView {
                 level_of_kind: pair.level_of_kind,
                 active: is_active,
             };
-            super::guides::bracket_guide_lines(
-                &geometry,
-                visible.clone(),
-                vertical,
-                horizontal,
-                &mut out,
-            );
+            super::guides::bracket_guide_lines(&geometry, visible.clone(), horizontal, &mut out);
         }
         out.sort_by_key(|g| (g.line, g.column, g.level));
         out
