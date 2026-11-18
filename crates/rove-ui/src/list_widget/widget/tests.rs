@@ -452,6 +452,36 @@ fn sticky_scroll_commands_act_on_the_pinned_ancestor() {
 }
 
 #[test]
+fn reveal_upward_lands_below_the_sticky_band() {
+    let mut paths: Vec<&'static str> = vec!["root"];
+    let names: Vec<&'static str> = (0..30)
+        .map(|i| &*Box::leak(format!("root/f{i:02}.cs").into_boxed_str()))
+        .collect();
+    paths.extend(names);
+    let mut w = tree_with(&paths, ListOptions::default());
+    run(&mut w, "list.focusFirst");
+    run(&mut w, "list.expand");
+    // Row 10 sits exactly one row above the viewport, so it would land under the pinned root.
+    w.set_scroll_top(11.0 * H);
+    w.reveal(10);
+    assert_eq!(w.sticky_rows(), [0]);
+    let band: f32 = w.sticky_rows().iter().map(|&r| w.row_height(r)).sum();
+    assert_eq!(
+        w.row_top(10),
+        w.scroll_top() + band,
+        "directly under the band"
+    );
+    let off = ListOptions {
+        sticky_scroll: false,
+        ..Default::default()
+    };
+    w.set_options(off);
+    w.set_scroll_top(11.0 * H);
+    w.reveal(10);
+    assert_eq!(w.scroll_top(), 10.0 * H, "no band, no offset");
+}
+
+#[test]
 fn highlight_and_filter_modes_with_both_match_types() {
     let rows = ["Player.cs", "PlayerInput.cs", "Enemy.cs", "pyramid.txt"];
     let make = |mode: FindMode, ty: MatchType| {
