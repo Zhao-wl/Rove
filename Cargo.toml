@@ -70,8 +70,7 @@ windows = "0.61"
 flate2 = "1"
 
 [profile.release]
-# #193：fat LTO 比 thin 再小约 0.85 MB（31.77 → 30.92 MB，同一棵树实测），发布包要守住
-# CHARTER §6 的 30 MB 预算；代价是 release 构建慢一些、链接阶段更吃内存。
+# #193：fat LTO 比 thin 再小约 0.85 MB（31.77 → 30.92 MB，同一棵树实测），代价是 release 构建慢一些、链接阶段更吃内存。
 lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"

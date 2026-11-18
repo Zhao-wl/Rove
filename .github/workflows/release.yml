@@ -133,7 +133,7 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'update-signing.key'
           if (Test-Path $path) { Remove-Item -Force $path }
 
-      - name: 体积守护（发布包 < 30 MB）
+      - name: 报告体积与发布包分项
         shell: pwsh
         run: |
           cargo xtask check-size 2>&1 | Tee-Object -FilePath size-report.txt

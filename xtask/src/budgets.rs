@@ -19,21 +19,15 @@ pub const SCHEMA: u32 = 1;
 pub struct Budgets {
     pub schema: u32,
     #[serde(default)]
-    pub size: Option<SizeBudget>,
+    pub size: Option<SizeBaseline>,
     #[serde(default)]
     pub budget: Vec<Budget>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SizeBudget {
-    /// 发布包体积上限（CHARTER §6：发布包 < 30 MB）。
-    pub budget_bytes: u64,
-    /// 体积守护的比较基线（M0 实测 6.2 MB）。
+pub struct SizeBaseline {
+    /// 体积报告的比较基线（M0 实测 6.2 MB）。
     pub baseline_bytes: u64,
-    pub owner: String,
-    pub status: String,
-    #[serde(default)]
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

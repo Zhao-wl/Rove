@@ -147,32 +147,31 @@ powershell -NoProfile -File target\release-dist\<版本>\upload.ps1
 - 校验：`cargo xtask release-verify --file <latest.json>`（发布命令自己也会先验一遍再收工）。
 - 换密钥对意味着已发布的清单全部失效：`release-keygen` 发现私钥已存在时会拒绝覆盖，确需重来加 `--force`。
 
-## 5. 体积守护
+## 5. 体积报告
 
-`cargo xtask check-size` 报告两个数并按**发布包**判定：
+`cargo xtask check-size` 为 CI 和发布流水线生成体积报告。
 
 - `rove.exe` 的体积与相对 M0 基线（6.2 MB）的变化；
-- 发布包（`package-contents.toml` 里的全部文件）的体积，占 `perf/budgets.toml` 的
-  `[size].budget_bytes`（30 MB，CHARTER §6）的百分比，**超限 CI 失败**；
+- 发布包（`package-contents.toml` 里的全部文件）的体积；
 - 嵌入 `rove.exe` 的资产分项（Markdown 预览资源、codicons、主题、语言配置、高亮查询、
   默认键位表、设置目录），这样体积长了能看出是谁长的。
 
-C# 索引组件是独立的可选包，**不计入** 30 MB：用 `--component <zip>` 让它只被报告。
+C# 索引组件是独立的可选包，用 `--component <zip>` 单独报告其体积。
+发布包的 30 MB 上限已于 2026-11-18 取消（#280）。
 
 **体积的两项约定（#193，2026-11-17 实测，同一棵树、本机 MSVC）**：
 
 | 配置 | `rove.exe` |
 |---|---|
-| `lto = "thin"`，`image` 默认全部格式 | 31,773,696 B（超预算 5.9%） |
-| `lto = "fat"` | 30,922,752 B（超预算 3.1%） |
-| `lto = "fat"` + `image` 只留 png / gif / webp / bmp / ico | **29,661,184 B**（发布包占预算 99.0%） |
+| `lto = "thin"`，`image` 默认全部格式 | 31,773,696 B |
+| `lto = "fat"` | 30,922,752 B |
+| `lto = "fat"` + `image` 只留 png / gif / webp / bmp / ico | **29,661,184 B** |
 
 1. release 用 **fat LTO**（根 `Cargo.toml`）；`[profile.bench]` 仍是 thin，基准只做相对比较。
 2. gpui 对 `image` 的依赖**关掉默认格式**（`vendor/gpui/Cargo.toml`），只留 gpui 自身代码要的
    解码器。Rove v0.1 不显示图片；R63 图片预览要加格式时，在那里按需加回并复测本命令。
 
 另外，`panic = "abort"` **不能用**：`rove-syntax` 靠 `catch_unwind` 兜住单个高亮任务的 panic。
-余量只有约 1%（≈ 340 KB）：新增依赖或嵌入资产前先跑 `cargo xtask check-size`。
 
 ## 6. 依赖许可
 
