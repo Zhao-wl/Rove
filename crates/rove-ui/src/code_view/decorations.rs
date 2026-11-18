@@ -19,6 +19,8 @@ pub mod priority {
     pub const SYNTAX: i32 = 0;
     /// #40：C# 语义 token。
     pub const SEMANTIC: i32 = 10;
+    /// #57：括号对着色（高于 token 与语义 token 的前景色，与 VS Code 一致）。
+    pub const BRACKET_PAIR: i32 = 15;
     /// #25：全局搜索结果的范围高亮。
     pub const SEARCH_RANGE: i32 = 20;
     /// #20：文本同名高亮与选区相似匹配（#40 的语义级同名高亮在其上）。

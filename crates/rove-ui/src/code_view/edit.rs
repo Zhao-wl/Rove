@@ -471,6 +471,16 @@ impl CodeView {
                 wrap_dirty.push(c.new.start().0..c.new.end().0 + 1);
             }
             self.syntax.borrow_mut().pending.push(changes.clone());
+            // #57：括号对树按行级变化做增量更新（一批之外的子树原样复用）。
+            let line_edits: Vec<super::bracket_pairs::parser::LineEdit> = changes
+                .ranges
+                .iter()
+                .map(|c| super::bracket_pairs::parser::LineEdit {
+                    old: c.old.start().0..c.old.end().0,
+                    new: c.new.start().0..c.new.end().0,
+                })
+                .collect();
+            self.bracket_pairs.borrow_mut().note_lines(line_edits);
         }
         self.mark_wrap_dirty(&wrap_dirty);
         if lines_moved {

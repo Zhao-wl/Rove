@@ -810,6 +810,8 @@ fn large_and_huge_levels(cx: &mut TestAppContext) {
             vec![
                 // #55：粘性滚动在大文件与超大文件都关闭。
                 Feature::StickyScroll,
+                // #57：括号对着色同样在大文件与超大文件都关闭。
+                Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
                 Feature::SyntaxFolding,
                 Feature::BackgroundHighlighting

@@ -2477,3 +2477,63 @@ Rust 侧一行没改：这些位置和标识符的出现位置同构，`CsIndex`
 ## 分支变更筛选的基准回退
 
 基准依次查找本地 `main`、本地保存的 `origin/main` 和 `origin/HEAD`。`origin/HEAD` 通常指向本地保存的远端默认分支引用，例如 `origin/dev`。筛选仍从基准与当前分支的共同祖先计算差异，全程只读取本地 Git 数据。
+
+## 括号对树与括号对着色（#57 第一部分）
+
+位置：`crates/rove-ui/src/code_view/bracket_pairs/`（`code_view/mod.rs` 只追加 `pub mod bracket_pairs;`）。
+纯计算，不含 GPUI 类型；只消费 #12 的语言配置、#9 的 token（scope）与 #13 的设置，经 #19 的装饰接口提交样式。
+
+| 文件 | 内容 | 对应的 VS Code 文件 |
+|---|---|---|
+| `length.rs` | 「长度」`Length { lines, columns }`：节点存长度而不是绝对偏移，编辑后旁边的子树不需要平移 | `bracketPairsTree/length.ts` |
+| `ast.rs` | 节点模型（文本 / 括号 / 多余的右括号 / 括号对 / 列表）、2-3 树的持久化拼接 `concat_all`、复用判定 `can_be_reused` | `bracketPairsTree/ast.ts`、`concat23Trees.ts` |
+| `tokenizer.rs` | 把文档切成「文本 / 左括号 / 右括号」；同一位置取最长符号；注释与字符串由 `BracketSource::ignored_ranges` 跳过；`skip(length)` 按长度跳过复用段，不读那一段文本 | `bracketPairsTree/tokenizer.ts` |
+| `parser.rs` | 递归下降解析 + `NodeReader`（在旧树上按文档顺序找「最长且可复用」的子树）+ `PositionMapper`（新坐标 → 旧坐标、到下一处改动的距离） | `parser.ts`、`nodeReader.ts`、`beforeEditPositionMapper.ts` |
+| `query.rs` | 按行取括号与嵌套深度；活动括号对（`editor.matchBrackets` 的 always / near / never 语义不变） | `bracketPairsTree/brackets.ts` |
+| `mod.rs` | 视图持有的 `BracketPairs` 状态：括号定义、配色、设置、上限、增量更新入口与着色提供方 | `bracketPairsTextModelPart.ts` |
+
+**数据结构与复杂度**。括号对树是一棵平衡的括号对 AST：每个节点只记自己的长度，兄弟序列按 2-3 树组织。
+一次编辑的流程是「标记改动行 → 重新解析 → 解析时向 `NodeReader` 要旧子树」：只要一棵旧子树整段落在
+下一处改动之前、并且在当前「已打开的括号集合」下重新解析结果不变，就原样复用（克隆一个 `Rc`）。
+因此一次编辑只重建从根到被改区域的那条路径：**O(改动涉及的 token 数 + log n)**，n 为括号数；
+整篇首次解析是 O(n)（自底向上建 2-3 树）；按行查询是 O(log n + 该行括号数)。
+失效粒度目前是**行**（来自 #47 的 `LineChanges` 与 #9 的变化行集合），所以整篇只有一行的压缩 JSON
+会退化成全量重解析——这类文件由括号数上限兜底，进一步优化要把粒度细到字节（VS Code 的 `TextEditInfo`）。
+
+**括号定义**。`brackets`（#12）决定哪些括号参与**匹配**，`colorizedBracketPairs` 决定哪些参与**着色**
+（未定义时回落到 `brackets`，YAML 即如此；Markdown 与 XML 定义成空表，所以默认一个都不着色）。
+两者取并集建同一棵树：C# 的 `colorizedBracketPairs` 比 `brackets` 多一对 `<>`，XML 的 `brackets` 多出注释标记。
+`editor.language.brackets` / `editor.language.colorizedBracketPairs` 分别覆盖其中一项（`kinds_for`）。
+
+**注释与字符串**。是否在注释 / 字符串里一律由 #9 的 token scope 判定（`SyntaxLayer::ignored_ranges`，
+scope 以 `string` 或 `comment` 开头），不自己扫引号与注释起止，所以 C# 的逐字字符串与 XML 的 CDATA 都能正确跳过。
+语法快照尚未到达时先按「没有忽略区间」建树（先显示已有内容），快照到达后只让变化行失效，重算前继续画旧结果，不闪烁。
+
+**着色**。`editor.bracketPairColorization.enabled`（默认 true）；深度 1 取 `editorBracketHighlight.foreground1`，
+每 6 层循环一次；`independentColorPoolPerBracketType` 为 true 时每种括号各自从 1 开始计数；未配对的括号
+（多余的右括号、缺右括号的左括号）用 `editorBracketHighlight.unexpectedBracket.foreground`。
+样式以行内区间经 `decorations::priority::BRACKET_PAIR`（15，高于 token 的 0 与语义 token 的 10、低于括号匹配的 35）
+提交，按行缓存、按行失效。VS Code 的 `foreground4`–`foreground6` 默认是完全透明，含义是「不改前景色」，所以不提交样式。
+
+**活动括号对**。`editor.guides.highlightActiveBracketPair`（默认 true）为 false 时完全不高亮；为 true 且树可用时
+由树判定并交给 #20 的 `editorBracketMatch.*` 绘制，比就近扫描准（嵌套、未配对的情况）；树不可用（大文件、
+超大文件、括号数超上限）时回落到 #20 的就近扫描。两条路径都遵守 `editor.matchBrackets` 的三个取值。
+
+**关闭条件**。大文件与超大文件整体关闭着色（`UX_SPEC` §3.1），树也不建；
+括号数超过 `rove.bracketPairColorization.maximumBrackets`（默认 50,000，与 `editor.foldingMaximumRegions` 同量级）
+时**整体关闭着色而不是画错**。两种原因都经 `CodeView::disabled_features()` 的 `Feature::BracketPairColorization`
+报给 #22 的状态栏悬停提示（对应 #8 的 `ReducedFeature::BracketPairColorization`）。
+
+**登记**：设置项 `editor.bracketPairColorization.enabled`、`.independentColorPoolPerBracketType`、
+`editor.guides.highlightActiveBracketPair`、`editor.language.brackets`、`editor.language.colorizedBracketPairs`、
+`rove.bracketPairColorization.maximumBrackets` 在 `code_view::options::SETTINGS`；颜色键
+`editorBracketHighlight.foreground1`–`6` 与 `.unexpectedBracket.foreground` 在 `code_view::colors::FEATURE_COLORS`；
+界面字符串 `codeView.feature.bracketPairColorization` 在 `code_view::commands` 的字符串表。
+
+验证：`cargo test -p rove-ui --lib bracket_pairs`（树、按语言的着色快照、注释 / 字符串、未配对、设置开关、
+增量与整篇重算的一致性、上限）、`cargo test -p rove-ui --test code_view_brackets`（打开 `.cs` 的入口集成测试，
+含 `editor.matchBrackets` 回归）、`cargo xtask bench --only brackets`（`perf/budgets.toml` 的
+`bracket_pair_incremental_update` 与 `bracket_pair_frame_extra`）。
+
+**留给 #57 第二部分**：`editor.guides.bracketPairs`、`editor.guides.bracketPairsHorizontal`、
+`editor.guides.highlightActiveIndentation` 与各自的截图。

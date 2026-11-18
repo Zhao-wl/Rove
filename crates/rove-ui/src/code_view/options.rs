@@ -170,6 +170,27 @@ pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.autoClosingDelete", DefaultValue::Str("auto")),
     ("editor.autoClosingOvertype", DefaultValue::Str("auto")),
     ("editor.autoSurround", DefaultValue::Str("languageDefined")),
+    // #57：括号对着色与活动括号对。
+    (
+        "editor.bracketPairColorization.enabled",
+        DefaultValue::Bool(true),
+    ),
+    (
+        "editor.bracketPairColorization.independentColorPoolPerBracketType",
+        DefaultValue::Bool(false),
+    ),
+    (
+        "editor.guides.highlightActiveBracketPair",
+        DefaultValue::Bool(true),
+    ),
+    // 语言级的括号覆盖（VS Code 同名设置，默认 null 表示用语言配置里的定义）。
+    ("editor.language.brackets", DefaultValue::Null),
+    ("editor.language.colorizedBracketPairs", DefaultValue::Null),
+    // 括号数上限：与 `editor.foldingMaximumRegions` 同量级，超过之后整体关闭着色而不是画错。
+    (
+        "rove.bracketPairColorization.maximumBrackets",
+        DefaultValue::Num(super::bracket_pairs::DEFAULT_MAX_BRACKETS as f64),
+    ),
 ];
 
 /// 设置项默认值（编译期表）。
@@ -178,6 +199,8 @@ pub enum DefaultValue {
     Bool(bool),
     Num(f64),
     Str(&'static str),
+    /// VS Code 里默认值就是 `null` 的设置项（例如 `editor.language.brackets`）。
+    Null,
 }
 
 impl DefaultValue {
@@ -186,6 +209,7 @@ impl DefaultValue {
             DefaultValue::Bool(b) => Value::Bool(b),
             DefaultValue::Num(n) => Value::Number(n),
             DefaultValue::Str(s) => Value::String(s.into()),
+            DefaultValue::Null => Value::Null,
         }
     }
 }
@@ -327,6 +351,16 @@ pub struct EditorOptions {
     /// `editor.maxTokenizationLineLength`（`None` 为不限）。
     pub max_tokenization_line_length: Option<usize>,
     pub match_brackets: super::brackets::MatchBrackets,
+    // #57：括号对着色与活动括号对。
+    pub bracket_pair_colorization: bool,
+    pub independent_color_pool_per_bracket_type: bool,
+    pub highlight_active_bracket_pair: bool,
+    /// `rove.bracketPairColorization.maximumBrackets`：超过之后整体关闭着色。
+    pub bracket_maximum: usize,
+    /// `editor.language.brackets` 覆盖（`None` 表示用 #12 的语言配置）。
+    pub language_brackets: Option<Vec<(Arc<str>, Arc<str>)>>,
+    /// `editor.language.colorizedBracketPairs` 覆盖。
+    pub language_colorized_brackets: Option<Vec<(Arc<str>, Arc<str>)>>,
     /// `editor.occurrencesHighlight` 不为 `off`。
     pub occurrences_highlight: bool,
     pub occurrences_highlight_delay_ms: u64,
@@ -486,6 +520,40 @@ pub fn parse_font_features(s: &str) -> Vec<(String, u32)> {
             Some((tag.to_string(), value))
         })
         .collect()
+}
+
+/// 解析 `editor.language.brackets` / `editor.language.colorizedBracketPairs`。
+///
+/// 接受 VS Code 的两种写法：`[["{", "}"]]` 与 `[{"open": "{", "close": "}"}]`。
+/// 不是数组（含默认的 `null`）时返回 `None`，表示「不覆盖语言配置」；
+/// 空数组返回 `Some(vec![])`，表示「这个语言不着色」（Markdown、XML 就是这么配的）。
+pub fn parse_bracket_pairs(value: &Value) -> Option<Vec<(Arc<str>, Arc<str>)>> {
+    let Value::Array(items) = value else {
+        return None;
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items.iter() {
+        let pair = match item {
+            Value::Array(two) => match (two.first(), two.get(1)) {
+                (Some(Value::String(open)), Some(Value::String(close))) => {
+                    (open.clone(), close.clone())
+                }
+                _ => continue,
+            },
+            Value::Object(map) => match (map.get("open"), map.get("close")) {
+                (Some(Value::String(open)), Some(Value::String(close))) => {
+                    (open.clone(), close.clone())
+                }
+                _ => continue,
+            },
+            _ => continue,
+        };
+        if pair.0.is_empty() || pair.1.is_empty() {
+            continue;
+        }
+        out.push(pair);
+    }
+    Some(out)
 }
 
 fn cursor_style(s: &str) -> CursorStyle {
@@ -692,6 +760,16 @@ impl EditorOptions {
                 "near" => super::brackets::MatchBrackets::Near,
                 _ => super::brackets::MatchBrackets::Always,
             },
+            bracket_pair_colorization: r.bool("editor.bracketPairColorization.enabled"),
+            independent_color_pool_per_bracket_type: r
+                .bool("editor.bracketPairColorization.independentColorPoolPerBracketType"),
+            highlight_active_bracket_pair: r.bool("editor.guides.highlightActiveBracketPair"),
+            bracket_maximum: r.num("rove.bracketPairColorization.maximumBrackets", 1.0, 1e7)
+                as usize,
+            language_brackets: parse_bracket_pairs(&r.raw("editor.language.brackets")),
+            language_colorized_brackets: parse_bracket_pairs(
+                &r.raw("editor.language.colorizedBracketPairs"),
+            ),
             occurrences_highlight: match r.raw("editor.occurrencesHighlight") {
                 Value::Bool(b) => b,
                 Value::String(s) => &*s != "off",

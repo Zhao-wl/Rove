@@ -18,6 +18,7 @@
 //! | 语法着色（#20）：快照与变化行 | [`CodeView::set_syntax`]、[`highlight`] |
 //! | 折叠（#20）：状态读写、区间、文档行 ↔ 屏幕行映射 | [`CodeView::folds`]、[`CodeView::set_folds`]、[`CodeViewEvent::FoldsChanged`]、[`folding::FoldMap`] |
 //! | 括号匹配 / 同名高亮（#20） | [`CodeView::bracket_match`]、[`CodeView::has_word_highlights`] |
+//! | 括号对树与括号对着色（#57） | [`CodeView::bracket_pairs`]、[`bracket_pairs`] |
 //! | 多光标与行操作（#52） | [`CodeView::selections`]、[`CodeView::set_selections`]、[`multicursor`]、[`lineops`] |
 //! | 编辑与输入法（#47）：编辑入口、编辑事件、组合串 | [`CodeView::set_edit_host`]、[`edit::EditHost`]、[`CodeViewEvent::Edited`]、[`CodeView::apply_edits`]、[`CodeView::type_text`]、[`CodeView::composition`] |
 //! | 只读与文档级别（#20） | [`CodeView::set_read_only`]、[`CodeViewEvent::EditBlocked`]、[`CodeView::set_document_level`]、[`CodeView::disabled_features`] |
@@ -32,6 +33,8 @@
 
 // #53：注释切换、自动缩进、自动闭合、包围与回车规则。
 pub mod autoedit;
+// #57：括号对树与括号对着色。
+pub mod bracket_pairs;
 pub mod brackets;
 pub mod cache;
 pub mod colors;

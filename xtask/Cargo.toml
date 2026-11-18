@@ -143,3 +143,8 @@ harness = false
 [[bench]]
 name = "workspace_symbols"
 harness = false
+
+# #57：括号对树的增量更新与括号对着色的每帧开销（纯 CPU）。
+[[bench]]
+name = "brackets"
+harness = false
