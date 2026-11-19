@@ -701,7 +701,14 @@ impl CodeView {
         }
     }
 
-    fn paint_minimap_headers(&mut self, panel: Panel, index: u64, window: &mut Window) {
+    fn paint_minimap_headers(
+        &mut self,
+        panel: Panel,
+        index: u64,
+        next_label_y: &mut f32,
+        background: Color,
+        window: &mut Window,
+    ) {
         let Some(headers) = self.minimap.headers.get_mut(&index) else {
             return;
         };
@@ -711,13 +718,27 @@ impl CodeView {
         let color = hsla(self.palette.foreground);
         let scale = window.scale_factor();
         let bounds = panel.bounds;
+        let band_height = options.header_font_size * 1.5;
         for header in headers {
-            let y =
+            let line_y =
                 (header.row as f64 * panel.track.sampling.row_height - panel.track.offset) as f32;
-            if y + options.header_font_size < 0.0 || px(y) >= bounds.size.height {
+            let has_label = !header.title.label.is_empty();
+            let y = if has_label {
+                line_y.max(*next_label_y)
+            } else {
+                line_y
+            };
+            if y + band_height < 0.0 || px(y) >= bounds.size.height {
                 continue;
             }
             let origin = point(bounds.origin.x, bounds.origin.y + px(y));
+            if has_label {
+                *next_label_y = y + band_height;
+                window.paint_quad(fill(
+                    Bounds::new(origin, size(bounds.size.width, px(band_height))),
+                    hsla(background),
+                ));
+            }
             if header.title.separator {
                 let line = crate::dpi::hline(
                     f32::from(origin.x),
@@ -728,7 +749,7 @@ impl CodeView {
                 );
                 window.paint_quad(fill(line, color));
             }
-            if header.title.label.is_empty() {
+            if !has_label {
                 continue;
             }
             let shaped = header.shape.get_or_insert_with(|| {
@@ -805,8 +826,17 @@ impl CodeView {
                 let _ = window.paint_image(rect, Corners::default(), image, 0, false);
             }
             self.paint_minimap_marks(panel, window);
+            let mut next_label_y = f32::NEG_INFINITY;
+            let mut label_background = background;
+            label_background.3 = (u16::from(background.3) * 179 / 255) as u8;
             for index in panel.track.tiles() {
-                self.paint_minimap_headers(panel, index, window);
+                self.paint_minimap_headers(
+                    panel,
+                    index,
+                    &mut next_label_y,
+                    label_background,
+                    window,
+                );
             }
             if slider_visible {
                 if let Some(thumb) = panel.track.thumb(&metrics, &self.zones, self.current_top()) {
