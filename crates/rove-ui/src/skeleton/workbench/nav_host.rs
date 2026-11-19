@@ -14,7 +14,9 @@
 use super::link_host::{LinkMenu, LinkOrigin};
 use super::*;
 use crate::code_view::links::Link;
-use crate::code_view::{priority, InlineDecoration, LayerId, LineDecorations, TextStyle};
+use crate::code_view::{
+    priority, InlineDecoration, LayerId, LineDecorations, TextDecoration, TextStyle,
+};
 use crate::documents::OpenTarget;
 use crate::nav::{
     hover::{parse_xml_doc, HoverContent, HoverMove, HoverScroll, PREVIEW_LINES},
@@ -276,7 +278,7 @@ fn styles(theme: &dyn Theme, kind: rove_theme::ThemeKind) -> ([TextStyle; 3], Te
         ],
         TextStyle {
             foreground: link,
-            underline: link,
+            underline: link.map(TextDecoration::Color),
             ..Default::default()
         },
     )

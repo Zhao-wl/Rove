@@ -33,6 +33,24 @@ pub mod priority {
     pub const FIND_MATCH: i32 = 40;
 }
 
+/// 字符装饰可以指定颜色、使用合并后的文字前景色，或关闭下层样式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextDecoration {
+    Color(Color),
+    Foreground,
+    Off,
+}
+
+impl TextDecoration {
+    pub fn color(self, foreground: Color) -> Option<Color> {
+        match self {
+            Self::Color(color) => Some(color),
+            Self::Foreground => Some(foreground),
+            Self::Off => None,
+        }
+    }
+}
+
 /// 一段文字的样式；`None` 表示不覆盖下层。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextStyle {
@@ -40,8 +58,8 @@ pub struct TextStyle {
     pub background: Option<Color>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
-    pub underline: Option<Color>,
-    pub strikethrough: Option<Color>,
+    pub underline: Option<TextDecoration>,
+    pub strikethrough: Option<TextDecoration>,
     /// 区间外框（查找匹配等）。
     pub border: Option<Color>,
 }

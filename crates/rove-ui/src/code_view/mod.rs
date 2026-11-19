@@ -65,7 +65,7 @@ pub mod wrap;
 
 pub use decorations::{
     priority, DecorationProvider, GlyphIcon, InlineDecoration, LayerId, LineDecorations, LineStyle,
-    Overlay, TextStyle,
+    Overlay, TextDecoration, TextStyle,
 };
 pub use edit::{Composition, EditHost, EditNotice, TextEdited};
 pub use multicursor::{ColumnSelect, MultiCursorModifier};

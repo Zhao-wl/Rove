@@ -37,6 +37,8 @@ pub struct Customizations {
     pub token_colors: Option<Value>,
     /// `editor.semanticTokenColorCustomizations`（#59）
     pub semantic_token_colors: Option<Value>,
+    /// 与全局语义颜色合并后的单语言设置。
+    pub language_semantic_token_colors: Option<(Arc<str>, Value)>,
 }
 
 /// `[Theme]`/`[*Theme*]`/`[Theme*]`/`[*Theme]` 是否命中当前主题（VS Code `isThemeScopeMatch`）。
@@ -234,6 +236,33 @@ fn add_custom_semantic_rules(
     }
 }
 
+fn semantic_customizations(
+    value: Option<&Value>,
+    settings_id: &str,
+    mut enabled: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (bool, Vec<SemanticTokenRule>) {
+    let mut rules = Vec::new();
+    if let Some(Value::Object(obj)) = value {
+        let field = "editor.semanticTokenColorCustomizations";
+        if let Some(Value::Bool(value)) = obj.get("enabled") {
+            enabled = *value;
+        }
+        add_custom_semantic_rules(obj.get("rules"), field, &mut rules, diagnostics);
+        let scoped = theme_specific(settings_id, obj);
+        if let Some(Value::Bool(value)) = scoped.get("enabled") {
+            enabled = *value;
+        }
+        add_custom_semantic_rules(
+            scoped.get("rules"),
+            &format!("{field}[{settings_id:?}]"),
+            &mut rules,
+            diagnostics,
+        );
+    }
+    (enabled, rules)
+}
+
 /// `defaultThemeColors`：日志类 token 的默认颜色。
 fn default_token_rules(kind: ThemeKind) -> [RawRule; 4] {
     let (info, warn, error, debug) = match kind {
@@ -256,6 +285,12 @@ fn default_token_rules(kind: ThemeKind) -> [RawRule; 4] {
     })
 }
 
+struct LanguageSemanticColors {
+    language: Arc<str>,
+    enabled: bool,
+    rules: Vec<SemanticTokenRule>,
+}
+
 /// 不可变的主题快照。`Send + Sync`；颜色查询 O(log 键数)，token 样式按 scope 路径缓存。
 pub struct ResolvedTheme {
     id: Arc<str>,
@@ -270,6 +305,7 @@ pub struct ResolvedTheme {
     /// `editor.semanticTokenColorCustomizations` 里的规则（全局形式在前、按主题形式在后）。
     custom_semantic_rules: Vec<SemanticTokenRule>,
     semantic_highlighting: bool,
+    language_semantic_colors: Option<LanguageSemanticColors>,
     diagnostics: Vec<Diagnostic>,
     cache: RwLock<HashMap<Box<[Arc<str>]>, TokenStyle>>,
     /// 语义 token 样式缓存：`(类型.修饰符…:语言)` → 样式。
@@ -339,6 +375,7 @@ impl ResolvedTheme {
             semantic_rules: doc.semantic_token_colors,
             custom_semantic_rules: Vec::new(),
             semantic_highlighting: doc.semantic_highlighting,
+            language_semantic_colors: None,
             diagnostics: Vec::new(),
             cache: RwLock::new(HashMap::new()),
             semantic_cache: RwLock::new(HashMap::new()),
@@ -384,27 +421,25 @@ impl ResolvedTheme {
         // `editor.semanticTokenColorCustomizations`（VS Code `setCustomSemanticTokenColors`）：
         // 先读全局形式的 `enabled` / `rules`，再用按主题形式覆盖；优先级高于主题自身的规则，
         // 也高于 `editor.tokenColorCustomizations.semanticHighlighting` 这个旧写法。
-        if let Some(Value::Object(obj)) = &custom.semantic_token_colors {
-            let field = "editor.semanticTokenColorCustomizations";
-            if let Some(Value::Bool(b)) = obj.get("enabled") {
-                theme.semantic_highlighting = *b;
-            }
-            add_custom_semantic_rules(
-                obj.get("rules"),
-                field,
-                &mut theme.custom_semantic_rules,
+        let baseline_enabled = theme.semantic_highlighting;
+        (theme.semantic_highlighting, theme.custom_semantic_rules) = semantic_customizations(
+            custom.semantic_token_colors.as_ref(),
+            settings_id,
+            baseline_enabled,
+            &mut diagnostics,
+        );
+        if let Some((language, value)) = &custom.language_semantic_token_colors {
+            let (enabled, rules) = semantic_customizations(
+                Some(value),
+                settings_id,
+                baseline_enabled,
                 &mut diagnostics,
             );
-            let scoped = theme_specific(settings_id, obj);
-            if let Some(Value::Bool(b)) = scoped.get("enabled") {
-                theme.semantic_highlighting = *b;
-            }
-            add_custom_semantic_rules(
-                scoped.get("rules"),
-                &format!("{field}[{settings_id:?}]"),
-                &mut theme.custom_semantic_rules,
-                &mut diagnostics,
-            );
+            theme.language_semantic_colors = Some(LanguageSemanticColors {
+                language: language.clone(),
+                enabled,
+                rules,
+            });
         }
         rules.extend(custom_rules);
         let has_default_tokens = rules
@@ -451,6 +486,17 @@ impl ResolvedTheme {
 
     pub fn semantic_highlighting(&self) -> bool {
         self.semantic_highlighting
+    }
+
+    pub fn semantic_highlighting_for_language(&self, language: &str) -> bool {
+        self.language_semantic_colors(language)
+            .map_or(self.semantic_highlighting, |colors| colors.enabled)
+    }
+
+    fn language_semantic_colors(&self, language: &str) -> Option<&LanguageSemanticColors> {
+        self.language_semantic_colors
+            .as_ref()
+            .filter(|colors| &*colors.language == language)
     }
 
     pub fn semantic_token_rules(&self) -> &[SemanticTokenRule] {
@@ -527,11 +573,10 @@ impl ResolvedTheme {
         language: &str,
     ) -> SemanticStyle {
         let mut acc = StyleAccumulator::new();
-        for rule in self
-            .semantic_rules
-            .iter()
-            .chain(&self.custom_semantic_rules)
-        {
+        let custom = self
+            .language_semantic_colors(language)
+            .map_or(&self.custom_semantic_rules, |colors| &colors.rules);
+        for rule in self.semantic_rules.iter().chain(custom) {
             let Some(selector) = Selector::parse(&rule.selector) else {
                 continue;
             };

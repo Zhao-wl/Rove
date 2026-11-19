@@ -200,6 +200,93 @@ fn csharp_semantic_override_applies_before_the_first_query(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn csharp_semantic_customizations_merge_without_affecting_other_languages(cx: &mut TestAppContext) {
+    use crate::code_view::TextDecoration;
+    use rove_config::{SettingsOptions, SettingsService};
+
+    let project = Project::new();
+    for enabled in [false, true] {
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join("settings.json"),
+            serde_json::json!({
+                "workbench.colorTheme": "Dark 2026",
+                "editor.semanticHighlighting.enabled": "configuredByTheme",
+                "editor.semanticTokenColorCustomizations": {
+                    "enabled": false,
+                    "rules": { "class": "#123456", "variable.readonly": "#112233" },
+                    "[Dark 2026]": {
+                        "rules": { "variable.readonly": { "foreground": "#556677", "italic": true } }
+                    }
+                },
+                "[csharp]": {
+                    "editor.semanticTokenColorCustomizations": {
+                        "enabled": enabled,
+                        "rules": { "variable.readonly": "#224466" },
+                        "[Dark 2026]": {
+                            "rules": { "variable.readonly": { "foreground": "#778899", "underline": true } }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut options = SettingsOptions::new(user.path(), user.path().join("backup"));
+        options.watch = None;
+        let settings = Arc::new(SettingsService::open(
+            options,
+            crate::app_settings::registry().unwrap(),
+        ));
+        let root = project.folder.path().to_path_buf();
+        let (view, window) = cx.add_window_view(|_, cx| {
+            Workbench::with_settings(root, Instant::now(), LayoutStore::disabled(), settings, cx)
+                .unwrap()
+        });
+        let source: Arc<dyn SemanticSource> =
+            Arc::new(ManualSemantic::ready(project.index.clone()));
+        view.update(window, |view, cx| view.attach_semantic(Some(source), cx));
+        open_file(&view, PATH, window);
+        let queries = view.read_with(window, |view, _| {
+            assert_eq!(view.semantic_highlighting_on(), enabled);
+            let theme = view.resolved_theme();
+            assert!(!theme.semantic_highlighting());
+            assert!(!theme.semantic_highlighting_for_language("java"));
+            let java = theme.semantic_token_style("variable", &["readonly"], "java");
+            assert_eq!(java.foreground, Some(Color(0x55, 0x66, 0x77, 0xff)));
+            assert_ne!(java.underline, Some(true));
+            view.semantic_query_count()
+        });
+        if !enabled {
+            assert_eq!(queries, 0);
+            continue;
+        }
+        assert!(queries > 0);
+        let field = find_word(SRC, "MaxHealth", 0);
+        let class = find_word(SRC, "Unit", 0);
+        let dark = style_at(&view, window, field).unwrap();
+        assert_eq!(dark.foreground, Some(Color(0x77, 0x88, 0x99, 0xff)));
+        assert_eq!(dark.italic, Some(true));
+        assert_eq!(dark.underline, Some(TextDecoration::Foreground));
+        assert_eq!(
+            style_at(&view, window, class).unwrap().foreground,
+            Some(Color(0x12, 0x34, 0x56, 0xff))
+        );
+        view.update(window, |view, _| {
+            view.theme_service.preview("Light Modern").unwrap()
+        });
+        refresh(window);
+        let light = style_at(&view, window, field).unwrap();
+        assert_eq!(light.foreground, Some(Color(0x22, 0x44, 0x66, 0xff)));
+        assert_ne!(light.underline, Some(TextDecoration::Foreground));
+        assert_eq!(
+            view.read_with(window, |view, _| view.semantic_query_count()),
+            queries
+        );
+    }
+}
+
+#[gpui::test]
 fn opening_a_cs_file_colours_a_field_by_its_semantic_token(cx: &mut TestAppContext) {
     let project = Project::new();
     let (view, cx) = project.open(cx);

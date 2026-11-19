@@ -12,7 +12,9 @@
 //! - 级别关闭（大文件 / 超大文件，UX_SPEC §3.1）时整层不画，原因登记到
 //!   [`super::view::CodeView::disabled_features`]。
 
-use super::decorations::{DecorationProvider, InlineDecoration, LineDecorations, TextStyle};
+use super::decorations::{
+    DecorationProvider, InlineDecoration, LineDecorations, TextDecoration, TextStyle,
+};
 use rove_buffer::edit::LineChanges;
 use rove_lang_cs::query::SemanticToken;
 use rove_theme::semantic::SemanticStyle;
@@ -60,14 +62,20 @@ impl SemanticStyles {
             if style.is_empty() {
                 continue;
             }
-            let fg = style.foreground;
+            let mark = |enabled| {
+                if enabled {
+                    TextDecoration::Foreground
+                } else {
+                    TextDecoration::Off
+                }
+            };
             let text = TextStyle {
-                foreground: fg,
+                foreground: style.foreground,
                 background: None,
                 bold: style.bold,
                 italic: style.italic,
-                underline: style.underline.and_then(|u| u.then_some(fg).flatten()),
-                strikethrough: style.strikethrough.and_then(|s| s.then_some(fg).flatten()),
+                underline: style.underline.map(mark),
+                strikethrough: style.strikethrough.map(mark),
                 border: None,
             };
             if text == TextStyle::default() {
@@ -310,6 +318,60 @@ mod tests {
 
     const RED: Color = Color(255, 0, 0, 255);
     const BLUE: Color = Color(0, 0, 255, 255);
+
+    #[test]
+    fn colorless_marks_inherit_the_effective_foreground_and_can_clear_lower_marks() {
+        use super::super::decorations::merge;
+
+        let token = token(0, 0, 5, "field", &[]);
+        let mut layer = SemanticLayer::default();
+        let rules = [Some(true), Some(false)];
+        let mut lexical = LineDecorations {
+            inline: vec![InlineDecoration {
+                range: 0..5,
+                style: TextStyle {
+                    foreground: Some(BLUE),
+                    underline: Some(TextDecoration::Color(RED)),
+                    strikethrough: Some(TextDecoration::Color(RED)),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        for enabled in rules {
+            let styles =
+                SemanticStyles::build(std::slice::from_ref(&token), &|_, _| SemanticStyle {
+                    underline: enabled,
+                    strikethrough: enabled,
+                    ..Default::default()
+                });
+            layer.update(styles);
+            let mut semantic = LineDecorations::default();
+            layer.decorate(0, "field", &mut semantic);
+            let current = merge(&[&lexical, &semantic], 5).runs[0].style;
+            let fg = current.foreground.unwrap_or(RED);
+            let expected = enabled.and_then(|enabled| enabled.then_some(BLUE));
+            assert_eq!(current.underline.and_then(|mark| mark.color(fg)), expected);
+            assert_eq!(
+                current.strikethrough.and_then(|mark| mark.color(fg)),
+                expected
+            );
+            if enabled == Some(true) {
+                let current = merge(&[&semantic], 5).runs[0].style;
+                let fg = current.foreground.unwrap_or(RED);
+                assert_eq!(current.underline.and_then(|mark| mark.color(fg)), Some(RED));
+                assert_eq!(
+                    current.strikethrough.and_then(|mark| mark.color(fg)),
+                    Some(RED)
+                );
+            }
+        }
+        lexical.inline[0].style.foreground = None;
+        let mut semantic = LineDecorations::default();
+        layer.decorate(0, "field", &mut semantic);
+        let link = merge(&[&semantic, &lexical], 5).runs[0].style;
+        assert_eq!(link.underline.and_then(|mark| mark.color(BLUE)), Some(RED));
+    }
 
     fn styles(tokens: &[SemanticToken]) -> SemanticStyles {
         SemanticStyles::build(tokens, &|ty, mods| match (ty, mods.first().copied()) {

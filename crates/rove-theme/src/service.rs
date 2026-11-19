@@ -263,6 +263,7 @@ pub struct ThemeService {
     registry: Arc<ColorRegistry>,
     catalog: ThemeCatalog,
     settings: Arc<dyn Settings>,
+    semantic_scope: Scope,
     revision: AtomicU64,
     hub: Hub,
     reload_pending: AtomicBool,
@@ -272,6 +273,19 @@ pub struct ThemeService {
     reload_applied: Mutex<u64>,
     log: Mutex<Vec<Diagnostic>>,
     _settings_subscription: Mutex<Option<Subscription>>,
+}
+
+// 语言设置覆盖匹配的属性，保留全局 rules、主题块和未覆盖的样式属性。
+fn merge_setting_objects(base: &mut Value, high: Value) {
+    match (base, high) {
+        (Value::Object(base), Value::Object(high)) => {
+            let base = Arc::make_mut(base);
+            for (key, high) in high.iter() {
+                merge_setting_objects(base.entry(key.clone()).or_insert(Value::Null), high.clone());
+            }
+        }
+        (base, high) => *base = high,
+    }
 }
 
 impl ThemeService {
@@ -285,7 +299,17 @@ impl ThemeService {
         catalog: ThemeCatalog,
         registry: Arc<ColorRegistry>,
     ) -> Arc<Self> {
-        let (theme, diags) = Self::build(&*settings, &catalog, &registry);
+        Self::with_catalog_in_semantic_scope(settings, catalog, registry, Scope::default())
+    }
+
+    /// 用指定的语言作用域加载语义颜色设置。窗口主题与语法主题仍使用全局设置。
+    pub fn with_catalog_in_semantic_scope(
+        settings: Arc<dyn Settings>,
+        catalog: ThemeCatalog,
+        registry: Arc<ColorRegistry>,
+        semantic_scope: Scope,
+    ) -> Arc<Self> {
+        let (theme, diags) = Self::build(&*settings, &catalog, &registry, &semantic_scope);
         // 首次加载失败（例如目录里的主题文件损坏）时退回内置默认主题，保证总有可用快照。
         let theme = theme.unwrap_or_else(|_| {
             let builtin = ThemeCatalog::builtin();
@@ -300,6 +324,7 @@ impl ThemeService {
             registry,
             catalog,
             settings: settings.clone(),
+            semantic_scope,
             revision: AtomicU64::new(1),
             hub: Hub(Arc::default()),
             reload_pending: AtomicBool::new(false),
@@ -326,6 +351,7 @@ impl ThemeService {
 
     fn read_settings(
         settings: &dyn Settings,
+        semantic_scope: &Scope,
         diags: &mut Vec<Diagnostic>,
     ) -> (Option<String>, Customizations) {
         let scope = Scope::default();
@@ -346,7 +372,7 @@ impl ThemeService {
                 Value::String(s) => Some(s.to_string()),
                 _ => None,
             });
-        let custom = Customizations {
+        let mut custom = Customizations {
             colors: opt(
                 COLOR_CUSTOMIZATIONS.id,
                 COLOR_CUSTOMIZATIONS.read(settings, &scope),
@@ -359,7 +385,20 @@ impl ThemeService {
                 SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.id,
                 SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.read(settings, &scope),
             ),
+            language_semantic_token_colors: None,
         };
+        if let Some(language) = &semantic_scope.language {
+            if let Some(scoped) = opt(
+                SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.id,
+                SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS.read(settings, semantic_scope),
+            )
+            .filter(|scoped| Some(scoped) != custom.semantic_token_colors.as_ref())
+            {
+                let mut merged = custom.semantic_token_colors.clone().unwrap_or(Value::Null);
+                merge_setting_objects(&mut merged, scoped);
+                custom.language_semantic_token_colors = Some((language.clone(), merged));
+            }
+        }
         (theme, custom)
     }
 
@@ -367,9 +406,10 @@ impl ThemeService {
         settings: &dyn Settings,
         catalog: &ThemeCatalog,
         registry: &Arc<ColorRegistry>,
+        semantic_scope: &Scope,
     ) -> (Result<ResolvedTheme>, Vec<Diagnostic>) {
         let mut diags = Vec::new();
-        let (wanted, custom) = Self::read_settings(settings, &mut diags);
+        let (wanted, custom) = Self::read_settings(settings, semantic_scope, &mut diags);
         let wanted = wanted.unwrap_or_else(|| DEFAULT_THEME.to_owned());
         let entry = match catalog.get(&wanted) {
             Some(e) => e,
@@ -423,7 +463,12 @@ impl ThemeService {
     /// 因此最后生效的总是最后开始（读到最新设置）的那一次。
     pub fn reload(&self) -> Result<Version> {
         let ticket = self.reload_requested.fetch_add(1, Ordering::AcqRel) + 1;
-        let (theme, diags) = Self::build(&*self.settings, &self.catalog, &self.registry);
+        let (theme, diags) = Self::build(
+            &*self.settings,
+            &self.catalog,
+            &self.registry,
+            &self.semantic_scope,
+        );
         let result = match theme {
             Ok(theme) => {
                 let v = {
@@ -456,7 +501,7 @@ impl ThemeService {
         let ticket = self.reload_requested.fetch_add(1, Ordering::AcqRel) + 1;
         let entry = self.catalog.get(id).ok_or(Error::NotFound)?.clone();
         let mut diags = Vec::new();
-        let (_, custom) = Self::read_settings(&*self.settings, &mut diags);
+        let (_, custom) = Self::read_settings(&*self.settings, &self.semantic_scope, &mut diags);
         let theme = load_theme(&entry, &custom, self.registry.clone())?;
         let version = {
             let mut applied = self.reload_applied.lock().expect("reload generation");

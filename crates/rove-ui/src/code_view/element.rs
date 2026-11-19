@@ -736,7 +736,9 @@ impl CodeView {
                                 &xs,
                                 entry.display.stop_index_for_display(range.end),
                             );
-                            if let Some(u) = style.underline {
+                            let foreground = style.foreground.unwrap_or(self.palette.foreground);
+                            if let Some(u) = style.underline.and_then(|mark| mark.color(foreground))
+                            {
                                 let r = dpi::hline(
                                     f32::from(left) + a,
                                     f32::from(y) + lh - 2.0,
@@ -746,7 +748,9 @@ impl CodeView {
                                 );
                                 window.paint_quad(fill(r, hsla(u)));
                             }
-                            if let Some(s) = style.strikethrough {
+                            if let Some(s) =
+                                style.strikethrough.and_then(|mark| mark.color(foreground))
+                            {
                                 let r = dpi::hline(
                                     f32::from(left) + a,
                                     f32::from(y) + lh / 2.0,

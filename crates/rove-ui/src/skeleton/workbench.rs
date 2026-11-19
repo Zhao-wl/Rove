@@ -451,10 +451,13 @@ impl Workbench {
             cx,
         );
         // #10 的主题服务同时供给骨架与代码视图（#19）；登记表补上代码视图用到的 P1 颜色键（#20）。
-        let theme_service = rove_theme::ThemeService::with_catalog(
+        let theme_service = rove_theme::ThemeService::with_catalog_in_semantic_scope(
             services.clone(),
             rove_theme::ThemeCatalog::builtin(),
             Arc::new(code_view::colors::theme_registry()),
+            Scope {
+                language: Some(code_view::semantic::LANGUAGE.into()),
+            },
         );
         let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;

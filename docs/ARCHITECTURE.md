@@ -2659,9 +2659,11 @@ VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
 这张表决定了那时候语义高亮还能不能看。
 
 **三条优先级**（高到低）：`editor.semanticTokenColorCustomizations` 的按主题形式 → 它的全局形式
-→ 主题自己的 `semanticTokenColors` → 回退表 → `tokenColors`。开关同理：
-`semanticTokenColorCustomizations.enabled`（按主题形式优先）> `tokenColorCustomizations.semanticHighlighting`
-（旧写法）> 主题 JSON 的 `semanticHighlighting`。
+→ 主题自己的 `semanticTokenColors` → 回退表 → `tokenColors`。C# 的语言级配置递归合并到全局定制，
+保留其他语言的全局样式。开关同理：`semanticTokenColorCustomizations.enabled`（按主题形式优先）
+> `tokenColorCustomizations.semanticHighlighting`（旧写法）> 主题 JSON 的 `semanticHighlighting`。
+颜色定制热加载等主题发布后更新语义层。未指定颜色的语义下划线和删除线在绘制时使用合并后的前景色，
+显式关闭会清除下层样式。
 
 **开关**（`semantic_host::SemanticHighlighting`）：`editor.semanticHighlighting.enabled` 的
 `true` / `false` / `configuredByTheme`（默认），按 `[csharp]` 的语言作用域读取，所以语言级覆盖

@@ -25,7 +25,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// 触发重新判定的设置键。
 pub(super) const SETTING_KEYS: [&str; 4] = [
     "editor.semanticHighlighting.enabled",
-    "editor.semanticTokenColorCustomizations",
     "editor.tokenColorCustomizations",
     "editor.maxTokenizationLineLength",
 ];
@@ -106,9 +105,11 @@ impl Workbench {
 
     /// 当前设置 + 主题下语义高亮是否开启。
     pub fn semantic_highlighting_on(&self) -> bool {
-        self.semantic
-            .setting
-            .resolve(self.theme_service.current().semantic_highlighting())
+        self.semantic.setting.resolve(
+            self.theme_service
+                .current()
+                .semantic_highlighting_for_language(LANGUAGE),
+        )
     }
 
     pub(super) fn semantic_settings_changed(
