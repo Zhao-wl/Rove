@@ -2,18 +2,18 @@
 
 use gpui::{
     prelude::*, px, size, AnyWindowHandle, Application, AsyncApp, Bounds, Entity, Focusable,
-    Keystroke, WindowBounds, WindowHandle, WindowOptions,
+    Keystroke, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use rove_base::{ByteOffset, Cancellation, Resource, WorkspacePath};
 use rove_ui::{
-    code_view::{CodeView, Selection},
+    code_view::{CodeView, FrameStats, Selection},
     documents::OpenOptions,
     shell::{layout::LayoutStore, Shell},
     skeleton::Workbench,
 };
 use serde_json::json;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
@@ -42,6 +42,18 @@ async fn wait_for(cx: &mut AsyncApp, mut ready: impl FnMut(&mut AsyncApp) -> boo
         }
         timer.timer(Duration::from_millis(3)).await;
     }
+}
+
+type FrameReadback = Rc<Cell<Option<(Instant, FrameStats)>>>;
+
+fn read_first_frame(window: &mut Window, code: Entity<CodeView>, readback: FrameReadback) {
+    window.on_next_frame(move |window, _| {
+        let frame_started = Instant::now();
+        // GPUI 先执行回调再绘制。下一次回调读回前一帧的结果，避免轮询混入更晚的帧。
+        window.on_next_frame(move |_, cx| {
+            readback.set(Some((frame_started, code.read(cx).last_frame())));
+        });
+    });
 }
 
 async fn measure(
@@ -86,27 +98,33 @@ async fn measure(
             });
         })?;
         timer.timer(Duration::from_millis(24)).await;
-        let (sent, returned) = any.update(cx, |_, window, app| {
+        let readback: FrameReadback = Rc::default();
+        let (sent, returned, immediate) = any.update(cx, |_, window, app| {
             let key = Keystroke::parse("shift-alt-right").unwrap();
             let sent = Instant::now();
             window.dispatch_keystroke(key, app);
-            (sent, Instant::now())
+            let returned = Instant::now();
+            let frame = code.read(app).last_frame();
+            let immediate = frame.end.is_some_and(|end| end >= sent);
+            if !immediate {
+                read_first_frame(window, code.clone(), readback.clone());
+            }
+            (sent, returned, immediate.then_some(frame))
         })?;
-        wait_for(cx, |cx| {
-            any.update(cx, |_, _, app| {
-                let code = code.read(app);
-                !code.selection().is_empty() && code.last_frame().end.is_some_and(|end| end >= sent)
-            })
-            .unwrap_or(false)
-        })
-        .await?;
-        let frame = any.update(cx, |_, _, app| code.read(app).last_frame())?;
-        let end = frame.end.unwrap();
-        let actual_active = if end <= returned {
-            returned - sent
+        let (frame_started, frame) = if let Some(frame) = immediate {
+            (returned, frame)
         } else {
-            (returned - sent) + frame.cpu
+            wait_for(cx, |_| readback.get().is_some()).await?;
+            readback.get().unwrap()
         };
+        let end = frame
+            .end
+            .filter(|end| *end >= sent && (immediate.is_some() || *end >= frame_started))
+            .ok_or("按键后第一个帧请求没有绘制代码视图")?;
+        if !frame.selection_painted {
+            return Err(format!("样本 {i} 未在按键后的第一帧绘制选区").into());
+        }
+        let actual_active = returned - sent + end.saturating_duration_since(frame_started);
         if i >= WARMUP {
             active.push(actual_active.as_nanos() as f64);
             wall.push((end - sent).as_nanos() as f64);
@@ -126,7 +144,8 @@ fn record(parent: &Path, id: &str, samples: &[f64]) -> Result<()> {
     std::fs::write(dir.join("sample.json"), serde_json::to_vec(&sample)?)?;
     let mut sorted = samples.to_vec();
     sorted.sort_by(f64::total_cmp);
-    let p99 = sorted[((sorted.len() - 1) as f64 * 0.99).round() as usize];
+    let rank = (sorted.len() as f64 * 0.99).ceil() as usize;
+    let p99 = sorted[rank - 1];
     println!(
         "smart_select/{id} n={}, p99={:.3}ms, max={:.3}ms",
         samples.len(),
@@ -180,6 +199,11 @@ fn main() -> Result<()> {
     });
     if let Some(measurements) = out.borrow_mut().take() {
         let measurements = measurements?;
+        println!(
+            "智能扩选在下一帧绘制：{}/{}",
+            measurements.active.len(),
+            SAMPLES
+        );
         let exe = std::env::current_exe()?;
         let target = exe.ancestors().nth(3).ok_or("找不到性能目标目录")?;
         record(target, "key_active", &measurements.active)?;

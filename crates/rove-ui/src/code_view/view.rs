@@ -247,6 +247,8 @@ pub struct FrameStats {
     /// 首个可见行相对文本区顶边的 y（像素）。占位与正式结果替换前后必须相同。
     pub first_line_y: f32,
     pub first_line: u64,
+    /// 本帧是否绘制了与正文相交的选区背景，用于扩选按键的帧吸收测量。
+    pub selection_painted: bool,
     /// #215：本帧**实际绘制所用**文本快照的版本（`TextSource::version()`，prepaint 时取）。
     /// 用来判定「这一帧有没有包含刚才那次按键」，不必靠字形数之类的间接信号。
     pub text_version: u64,
