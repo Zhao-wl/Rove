@@ -488,7 +488,7 @@ impl Tile {
         let mut spans = spans.into_iter().peekable();
         let mut characters = source.char_indices();
         let mut next_column = 0;
-        for (column, pixel) in row.chunks_exact_mut(4).enumerate() {
+        for (column, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             if column < next_column {
                 continue;
             }
@@ -511,7 +511,7 @@ impl Tile {
                 .filter(|(span, _)| span.contains(&byte))
                 .map_or(foreground, |(_, color)| *color);
             let alpha = (u16::from(color.3) * u16::from(opacity) + 127) / 255;
-            pixel.copy_from_slice(&[color.2, color.1, color.0, alpha as u8]);
+            *pixel = [color.2, color.1, color.0, alpha as u8];
         }
     }
 }
