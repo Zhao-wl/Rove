@@ -11,7 +11,7 @@ mod source;
 
 pub use csharp_parts::WorkerPool;
 pub use documents::{DocumentHighlighter, Stateless, SyntaxDocuments};
-pub use settings::{language_for_path, register_settings};
+pub use settings::{associated_language, language_for_path, register_settings};
 
 use crate::{Fold, Symbol, SyntaxService, SyntaxSnapshot, SyntaxUpdate, Token};
 use grammar::{Grammar, Work};

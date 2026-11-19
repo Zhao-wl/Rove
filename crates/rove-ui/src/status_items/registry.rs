@@ -60,6 +60,8 @@ pub const INDENT_USING_TABS: &str = "editor.action.indentUsingTabs";
 pub const DETECT_INDENTATION: &str = "editor.action.detectIndentation";
 pub const CHANGE_ENCODING: &str = "workbench.action.editor.changeEncoding";
 pub const CHANGE_LANGUAGE_MODE: &str = "workbench.action.editor.changeLanguageMode";
+pub const DETECT_LANGUAGE: &str = "editor.detectLanguage";
+pub const LANGUAGE_NOT_DETECTED: &str = "status.language.notDetected";
 
 /// 本模块登记的命令：(ID, 标题字符串 key, 中文标题)。
 pub const COMMANDS: &[(&str, &str, &str)] = &[
@@ -93,6 +95,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "status.command.changeLanguageMode",
         "更改语言模式",
     ),
+    (DETECT_LANGUAGE, "status.command.detectLanguage", "检测语言"),
 ];
 
 pub const CATEGORY_KEY: &str = "status.category";
@@ -209,6 +212,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     // 语言模式。
     ("status.language.tooltip", "选择语言模式"),
     ("status.language.placeholder", "选择文件的语言模式"),
+    (LANGUAGE_NOT_DETECTED, "未能识别此文件的语言"),
     ("status.language.csharp", "C#"),
     ("status.language.json", "JSON"),
     ("status.language.jsonc", "带注释的 JSON"),

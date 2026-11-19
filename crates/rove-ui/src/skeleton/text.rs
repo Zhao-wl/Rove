@@ -46,6 +46,7 @@ pub trait VirtualSource: Send + Sync {
 /// 虚拟文档的内容。
 pub struct VirtualContent {
     pub text: String,
+    /// 空字符串表示来源没有指定语言，打开时可以从内容检测。
     pub language: Arc<str>,
     pub read_only: Vec<ReadOnlyReason>,
 }
@@ -304,8 +305,9 @@ impl Documents for FileDocuments {
                     return Ok(doc);
                 }
             }
-            let language = rove_syntax::highlight::language_for_path(&path, Some(&*settings));
-            let mut options = LoadOptions::new(&language, &*settings);
+            let associated = rove_syntax::highlight::associated_language(&path, Some(&*settings));
+            let language = associated.as_deref().unwrap_or("plaintext");
+            let mut options = LoadOptions::new(language, &*settings);
             options.force_open = request.force_open;
             // 分级（普通/大文件/超大文件）与超大文件的内存映射都在 rove-buffer（#8）。
             let policy = rove_buffer::SizePolicy {
@@ -317,6 +319,12 @@ impl Documents for FileDocuments {
             // #15 的只读规则（files.readonlyInclude/Exclude/FromPermissions 与
             // rove.files.extraReadonlyInclude）；#20 负责表现。
             let mut loaded = loaded;
+            let text = loaded.text.source();
+            if associated.is_none() {
+                if let Ok(Some(detected)) = rove_syntax::detection::detect_text(&*text) {
+                    loaded.metadata.language = detected.language.into();
+                }
+            }
             let detection_guessed = loaded.detection.guessed;
             let mut read_only: Vec<ReadOnlyReason> = loaded.metadata.read_only.to_vec();
             read_only.extend(read_only_rules(&root, &resource, &path, &*settings));
@@ -325,7 +333,7 @@ impl Documents for FileDocuments {
                 id: DocumentId(next.fetch_add(1, Ordering::Relaxed)),
                 resource: resource.clone(),
                 metadata: loaded.metadata,
-                text: loaded.text.source(),
+                text,
             });
             // #27：状态栏的「自动识别」悬停提示（元信息里没有这个字段）。
             guessed.lock().unwrap().insert(doc.id, detection_guessed);
@@ -340,11 +348,18 @@ impl Documents for FileDocuments {
 
 /// 虚拟文档：UTF-8、LF，普通大小，只读原因由来源给出。
 fn virtual_document(id: DocumentId, resource: &Resource, content: VirtualContent) -> Document {
+    let language = if content.language.is_empty() {
+        rove_syntax::detection::detect_prefix(&content.text, true)
+            .map_or("plaintext", |detected| detected.language)
+            .into()
+    } else {
+        content.language
+    };
     Document {
         id,
         resource: resource.clone(),
         metadata: rove_buffer::DocumentMetadata {
-            language: content.language,
+            language,
             encoding: rove_buffer::Encoding::Utf8,
             bom: false,
             line_endings: rove_buffer::LineEndings::Uniform(rove_buffer::Eol::Lf),

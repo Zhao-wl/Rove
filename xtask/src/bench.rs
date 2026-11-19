@@ -140,6 +140,10 @@ const TARGETS: &[BenchTarget] = &[
         name: "semantic",
         requires: "",
     },
+    BenchTarget {
+        name: "language_detect",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

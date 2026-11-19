@@ -1,6 +1,7 @@
 //! rove-syntax
 
 pub mod contracts;
+pub mod detection;
 pub mod language_config;
 pub use contracts::*;
 pub mod highlight;

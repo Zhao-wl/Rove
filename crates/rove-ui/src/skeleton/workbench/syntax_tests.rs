@@ -217,6 +217,101 @@ fn results_for_another_version_or_a_closed_document_are_not_applied(cx: &mut Tes
     );
 }
 
+#[gpui::test]
+fn language_detection_restarts_analysis_of_the_same_text_version(cx: &mut TestAppContext) {
+    use gpui::Focusable;
+
+    struct Request {
+        language: Arc<str>,
+        cancel: Cancellation,
+        release: async_channel::Sender<()>,
+    }
+
+    #[derive(Default)]
+    struct LanguageGate(Mutex<Vec<Request>>);
+
+    impl DocumentHighlighter for LanguageGate {
+        fn analyze(
+            &self,
+            _: DocumentId,
+            text: Arc<dyn TextSource>,
+            language: Arc<str>,
+            _: Option<TextEdit>,
+            _: Option<LineRange>,
+            cancel: Cancellation,
+        ) -> Task<SyntaxUpdate> {
+            let (release, gate) = async_channel::bounded(1);
+            self.0.lock().unwrap().push(Request {
+                language,
+                cancel,
+                release,
+            });
+            Box::pin(async move {
+                gate.recv().await.map_err(|_| Error::Cancelled)?;
+                // Simulate a provider that completed after cancellation.
+                Ok(SyntaxUpdate {
+                    snapshot: Arc::new(EmptySyntax(text.version())),
+                    previous: None,
+                    changed_lines: None,
+                })
+            })
+        }
+
+        fn close(&self, _: DocumentId) {}
+    }
+
+    let folder = tempfile::tempdir().unwrap();
+    let node = "    <node>content</node>\n";
+    let body = node.repeat(syntax_limit() as usize / node.len() + 1);
+    std::fs::write(
+        folder.path().join("Switch.cs"),
+        format!("<root>\n{body}</root>\n"),
+    )
+    .unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Workbench::with_store(
+            folder.path().into(),
+            Instant::now(),
+            LayoutStore::disabled(),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let fake = Arc::new(LanguageGate::default());
+    view.update(cx, |v, _| v.editor.set_syntax(fake.clone()));
+    open(&view, cx, "Switch.cs", OpenTarget::Active);
+    let first = current(&view, cx);
+    assert!(first.syntax.is_none());
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_keystrokes("shift-alt-d");
+    cx.run_until_parked();
+
+    let switched = current(&view, cx);
+    assert_eq!(&*switched.document.metadata.language, "xml");
+    assert_eq!(switched.document.id, first.document.id);
+    assert_eq!(
+        switched.document.text.version(),
+        first.document.text.version()
+    );
+    let (old, new) = {
+        let calls = fake.0.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(&*calls[0].language, "csharp");
+        assert_eq!(&*calls[1].language, "xml");
+        assert_eq!(calls[0].cancel.check(), Err(Error::Cancelled));
+        (calls[0].release.clone(), calls[1].release.clone())
+    };
+    old.try_send(()).unwrap();
+    cx.run_until_parked();
+    assert!(current(&view, cx).syntax.is_none());
+    new.try_send(()).unwrap();
+    cx.run_until_parked();
+    assert!(current(&view, cx).syntax.is_some());
+    fake.0.lock().unwrap()[2].release.try_send(()).unwrap();
+    cx.run_until_parked();
+}
+
 #[test]
 fn file_associations_apply_on_the_open_path() {
     use rove_base::{Events, NoEvents, Value};

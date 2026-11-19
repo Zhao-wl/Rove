@@ -75,6 +75,12 @@ pub(super) fn limits(settings: Option<&dyn Settings>, language: Arc<str>) -> (u6
 /// Use configured file associations before built-in extensions. Path globs match the
 /// slash-separated path, while patterns without a slash match just the basename.
 pub fn language_for_path(path: &Path, settings: Option<&dyn Settings>) -> Arc<str> {
+    associated_language(path, settings).unwrap_or_else(|| "plaintext".into())
+}
+
+/// Returns None only when neither a configured association nor an extension identifies the file.
+/// An explicit association to plaintext is a known language and takes precedence over detection.
+pub fn associated_language(path: &Path, settings: Option<&dyn Settings>) -> Option<Arc<str>> {
     if let Some(Value::Object(patterns)) =
         settings.and_then(|settings| settings.read(ASSOCIATIONS, &Scope::default()).ok())
     {
@@ -102,7 +108,7 @@ pub fn language_for_path(path: &Path, settings: Option<&dyn Settings>) -> Arc<st
             })
             .max_by_key(|(len, _)| *len);
         if let Some((_, id)) = custom {
-            return id.clone();
+            return Some(id.clone());
         }
     }
 
@@ -110,7 +116,7 @@ pub fn language_for_path(path: &Path, settings: Option<&dyn Settings>) -> Arc<st
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or_default();
-    match extension.to_ascii_lowercase().as_str() {
+    let id = match extension.to_ascii_lowercase().as_str() {
         "cs" => "csharp",
         "json" | "asmdef" | "asmref" => "json",
         "jsonc" => "jsonc",
@@ -121,9 +127,9 @@ pub fn language_for_path(path: &Path, settings: Option<&dyn Settings>) -> Arc<st
         "shader" => "shaderlab",
         "lua" => "lua",
         "proto" => "proto",
-        _ => "plaintext",
-    }
-    .into()
+        _ => return None,
+    };
+    Some(id.into())
 }
 
 #[cfg(test)]

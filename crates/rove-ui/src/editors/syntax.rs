@@ -221,7 +221,7 @@ impl Highlights {
         Some(partial)
     }
 
-    /// The last tab of `document` closed: cancel its analysis and drop its baseline.
+    /// Cancel analysis and drop the baseline when the last tab closes or the language changes.
     pub(crate) fn release(&mut self, document: DocumentId) {
         self.pending.remove(&document);
         self.alias.remove(&document);

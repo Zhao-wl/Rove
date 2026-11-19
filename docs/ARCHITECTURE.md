@@ -2711,3 +2711,16 @@ VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
 置灰、关闭时零查询、按级别关闭）。`cargo xtask bench --only semantic` 测量样式计算和滚动装饰开销，
 滚动预算为每帧增加 < 100 µs。`cargo run --release -p xtask --example semantic_open_probe` 使用预载索引，
 从 5,000 行合成 C# 首个实际绘制文字的帧开始，测量语义着色确认耗时的上界，验收要求 < 100 ms。
+
+## 65. 内容语言检测（#73）
+
+`FileDocuments` 在后台读取打开文件时，优先使用 `files.associations`（含明确关联到纯文本）和内置扩展名规则。没有已知语言时，`rove_syntax::detection` 通过 `TextSource` 最多访问首 8 KiB，分析其中前 100 行。规则按 shebang、首行标志、完整 JSON/JSONC、XML 起始元素、连续 YAML 项的顺序匹配。无法判断的文件保持纯文本。结果写进文档语言字段，由既有的语法高亮、大纲和状态栏消费。语言变化时取消旧分析并重置增量基线；文本版本相同的迟到回包也要通过分析代次校验。C# 缓冲区的后台登记同样核对文档当前的语言和路径。
+
+无标题编辑器变更后在安静期重新检测，回包仅应用到同一文档和版本。手动选择一次后，即使选中当前模式，也会停止该文档的自动改写。`editor.detectLanguage` 可以对活动文档显式重跑；无结论时使用状态栏的三秒临时反馈。
+
+| VS Code 设置 | Rove 行为 |
+|---|---|
+| `workbench.editor.languageDetection`、`workbench.editor.languageDetectionHints` | 静默忽略。只使用本地启发式。 |
+| `workbench.editor.historyBasedLanguageDetection`、`workbench.editor.preferHistoryBasedLanguageDetection` | 静默忽略。无用户选择历史。 |
+
+`cargo test -p rove-syntax detection` 覆盖规则及前缀边界，`cargo test -p rove-ui status_language_detection` 覆盖打开入口、手动覆盖和反馈。`cargo xtask bench --only language_detect --no-startup --check-budgets` 测量语言检测本身。
