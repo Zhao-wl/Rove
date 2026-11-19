@@ -1416,6 +1416,9 @@ impl CsQueries for CsRouter {
             version: Some(version),
             index_generation: snap.generation,
         };
+        if cap.precision != Precision::Exact {
+            return Ok(result(Vec::new(), cap.precision, cap.reason));
+        }
         let Some(id) = index.file_id(&rel) else {
             return Ok(result(
                 Vec::new(),
@@ -1426,12 +1429,17 @@ impl CsQueries for CsRouter {
         let has_stale = doc.is_none() && self.semantic.has_stale();
         let state = self.file_state(index, id, &rel, doc.as_ref(), has_stale);
         let lines = index.inactive_lines(id);
-        let line_start = |l: u32| position(l, 0);
+        let line_start = |line| Position {
+            line: Line(line),
+            column: Utf8Column(0),
+        };
         let (ranges, precision, reason) = match &state {
             FileState::Clean => (
                 lines
                     .iter()
-                    .filter_map(|r| Span::new(line_start(r.start), line_start(r.end)).ok())
+                    .filter_map(|r| {
+                        Span::new(line_start(u64::from(r.start)), line_start(u64::from(r.end))).ok()
+                    })
                     .collect(),
                 cap.precision,
                 cap.reason,
@@ -1439,22 +1447,16 @@ impl CsQueries for CsRouter {
             FileState::Mapped(map) => (
                 lines
                     .iter()
-                    .filter_map(|r| {
-                        Span::new(
-                            map.old_to_new_nearest(line_start(r.start)),
-                            map.old_to_new_nearest(line_start(r.end)),
-                        )
-                        .ok()
+                    .flat_map(|r| map.map_clean_old_lines(u64::from(r.start)..u64::from(r.end)))
+                    .filter_map(|range| {
+                        Span::new(line_start(range.start), line_start(range.end)).ok()
                     })
                     .collect(),
                 Precision::Approximate,
                 Some(ApproximationReason::ModifiedRegion),
             ),
             FileState::Diverged => (
-                lines
-                    .iter()
-                    .filter_map(|r| Span::new(line_start(r.start), line_start(r.end)).ok())
-                    .collect(),
+                Vec::new(),
                 Precision::Approximate,
                 Some(ApproximationReason::ModifiedRegion),
             ),

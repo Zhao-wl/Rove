@@ -49,7 +49,7 @@ impl CsRouter {
         let kind = self.l1.as_ref()?.find_type(qualified)?.kind;
         Some(match kind {
             DeclKind::Class => CsSymbolKind::Class,
-            DeclKind::Struct => CsSymbolKind::Struct,
+            DeclKind::Struct | DeclKind::RecordStruct => CsSymbolKind::Struct,
             DeclKind::Interface => CsSymbolKind::Interface,
             DeclKind::Enum => CsSymbolKind::Enum,
             DeclKind::Record => CsSymbolKind::Record,
@@ -95,7 +95,15 @@ impl CsRouter {
             if !crate::index::Role(o.role).is_def() {
                 continue;
             }
-            if let Some(d) = facts.at(o.line, o.col.0 as u32) {
+            let Some(mapped) = map_position(state, position(o.line, o.col.0), true) else {
+                continue;
+            };
+            let (Ok(line), Ok(column)) =
+                (u32::try_from(mapped.line.0), u32::try_from(mapped.column.0))
+            else {
+                continue;
+            };
+            if let Some(d) = facts.at(line, column) {
                 details.entry(o.symbol).or_insert(d);
             }
         }
@@ -193,6 +201,11 @@ impl CsRouter {
         Some(facts)
     }
 
+    /// The current index generation used by per-document semantic queries.
+    pub fn semantic_generation(&self) -> Option<u64> {
+        self.semantic.snapshot().map(|snapshot| snapshot.generation)
+    }
+
     /// 语义 token 的入口（契约实现见 `CsQueries::semantic_tokens`）。
     pub(super) fn semantic_tokens_impl(
         &self,
@@ -220,6 +233,9 @@ impl CsRouter {
             version: Some(version),
             index_generation: snap.generation,
         };
+        if cap.precision != Precision::Exact {
+            return Ok(result(Vec::new(), cap.precision, cap.reason));
+        }
         let Some(id) = index.file_id(&rel) else {
             return Ok(result(
                 Vec::new(),

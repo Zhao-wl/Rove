@@ -1270,6 +1270,57 @@ fn an_edited_region_falls_back_to_syntax_only() {
 }
 
 #[test]
+fn mapped_semantic_declarations_keep_modifiers_after_whole_line_insertion() {
+    const FILE: &str = "Assets/ZZ.cs";
+    const SOURCE: &str = "class Example { static readonly int Count = 1; }\n";
+    let f = fixture_files(&[(FILE, SOURCE)], |index, _| {
+        let field = index.symbol("Game|F:Example.Count", "Count", KIND_FIELD, None);
+        let (line, column) = find_word(SOURCE, "Count", 0);
+        index.def(field, 2, line, column);
+    });
+    let before = open(&f, FILE, SOURCE);
+    let after = edit(&f, FILE, &before, 0, 0, "// header\n");
+    let result = semantic(&f, FILE, after.version());
+    assert_eq!(result.precision, Precision::Approximate);
+    let (_, column) = find_word(SOURCE, "Count", 0);
+    let (kind, modifiers) = token_at(&result, (1, column));
+    assert_eq!(kind, "field");
+    assert!(modifiers.iter().any(|modifier| modifier == "readonly"));
+    assert!(modifiers.iter().any(|modifier| modifier == "static"));
+}
+
+#[test]
+fn dirty_buffer_does_not_make_an_untrusted_index_drawable() {
+    let f = fixture_with(|index| index.inactive.push((1, 2, 8)));
+    let before = open(&f, PLAYER_PATH, PLAYER_CS);
+    let after = edit(&f, PLAYER_PATH, &before, 0, 0, "// header\n");
+    let mut snapshot = f.semantic.snapshot().unwrap();
+    snapshot.trusted = false;
+    f.semantic
+        .set(Some(snapshot), SemanticStatus::Building { percent: None });
+
+    let tokens = semantic(&f, PLAYER_PATH, after.version());
+    assert!(tokens.value.is_empty());
+    assert!(matches!(
+        tokens.reason,
+        Some(ApproximationReason::IndexNotReady)
+    ));
+    let inactive = f
+        .router
+        .inactive_regions(
+            &Resource::Workspace(wp(PLAYER_PATH)),
+            after.version(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert!(inactive.value.is_empty());
+    assert!(matches!(
+        inactive.reason,
+        Some(ApproximationReason::IndexNotReady)
+    ));
+}
+
+#[test]
 fn an_unindexed_file_and_a_missing_index_produce_no_tokens() {
     let f = fixture();
     let missing = semantic(&f, "Assets/Nope.cs", Version(0));
@@ -1316,9 +1367,9 @@ fn a_stale_version_is_rejected_instead_of_answered() {
 }
 
 #[test]
-fn an_untrusted_index_caps_the_precision_without_dropping_tokens() {
+fn an_untrusted_index_does_not_produce_semantic_tokens() {
     let f = fixture();
-    let before = semantic(&f, PLAYER_PATH, Version(0));
+    assert!(!semantic(&f, PLAYER_PATH, Version(0)).value.is_empty());
     let snapshot = f.semantic.snapshot().unwrap();
     f.semantic.set(
         Some(L2Snapshot {
@@ -1328,7 +1379,7 @@ fn an_untrusted_index_caps_the_precision_without_dropping_tokens() {
         SemanticStatus::Building { percent: Some(90) },
     );
     let after = semantic(&f, PLAYER_PATH, Version(0));
-    assert_eq!(after.value.len(), before.value.len());
+    assert!(after.value.is_empty());
     assert_eq!(after.precision, Precision::Approximate);
     assert!(matches!(
         after.reason,
