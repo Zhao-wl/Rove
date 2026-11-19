@@ -352,6 +352,148 @@ fn newline_insertion_preserves_unchanged_tokens_with_rebased_bytes() {
 }
 
 #[test]
+fn hlsl_token_snapshot() {
+    let input = "float4 shade(float4 p : POSITION);";
+    let result = parse(&TreeSitterSyntax::default(), "hlsl", input, 1);
+    assert_eq!(
+        snapshot(result.snapshot.as_ref(), input.lines().count() as u64),
+        concat!(
+            "0 0..6 storage.type.basic.hlsl\n",
+            "0 7..12 support.function.hlsl\n",
+            "0 13..19 storage.type.basic.hlsl\n",
+            "0 24..32 support.variable.semantic.hlsl\n",
+        ),
+    );
+}
+
+#[test]
+fn shaderlab_token_snapshot() {
+    let input = "Shader \"A\" {\n Properties { _Gloss (\"Gloss\", Float) = 1 }\n}\n";
+    let result = parse(&TreeSitterSyntax::default(), "shaderlab", input, 1);
+    assert_eq!(
+        snapshot(result.snapshot.as_ref(), input.lines().count() as u64),
+        concat!(
+            "0 0..6 storage.type.structure.shaderlab\n",
+            "0 7..10 string.quoted.double.shaderlab\n",
+            "1 14..24 storage.type.structure.shaderlab\n",
+            "1 27..33 support.variable.declaration.shaderlab\n",
+            "1 35..42 string.quoted.double.shaderlab\n",
+            "1 44..49 support.type.basic.shaderlab\n",
+            "1 53..54 constant.numeric.shaderlab\n",
+        ),
+    );
+}
+
+#[test]
+fn lua_token_snapshot() {
+    let input = "local n = 3\nreturn n\n";
+    let result = parse(&TreeSitterSyntax::default(), "lua", input, 1);
+    assert_eq!(
+        snapshot(result.snapshot.as_ref(), input.lines().count() as u64),
+        concat!(
+            "0 0..5 keyword.local.lua\n",
+            "0 6..7 variable.other.lua\n",
+            "0 8..9 keyword.operator.lua\n",
+            "0 10..11 constant.numeric.float.lua\n",
+            "1 12..18 keyword.control.lua\n",
+            "1 19..20 variable.other.lua\n",
+        ),
+    );
+}
+
+#[test]
+fn proto_token_snapshot() {
+    let input = "message Example {\n  string name = 1;\n}\n";
+    let result = parse(&TreeSitterSyntax::default(), "proto", input, 1);
+    assert_eq!(
+        snapshot(result.snapshot.as_ref(), input.lines().count() as u64),
+        concat!(
+            "0 0..7 keyword\n",
+            "0 8..15 entity.name.type\n",
+            "1 20..26 storage.type\n",
+            "1 34..35 constant.numeric\n",
+        ),
+    );
+}
+
+#[test]
+fn unity_language_extensions_and_association_overrides() {
+    for (path, language) in [
+        ("a.hlsl", "hlsl"),
+        ("a.cginc", "hlsl"),
+        ("a.COMPUTE", "hlsl"),
+        ("a.shader", "shaderlab"),
+        ("a.lua", "lua"),
+        ("a.proto", "proto"),
+    ] {
+        assert_eq!(&*language_for_path(Path::new(path), None), language);
+    }
+}
+
+#[test]
+fn shaderlab_injects_all_four_hlsl_blocks_and_reparses_after_an_edit() {
+    let input = concat!(
+        "Shader \"Test\" {\n",
+        "  SubShader {\n",
+        "    CGINCLUDE\nfloat4 cg_helper() { return 1; }\nENDCG\n",
+        "    HLSLINCLUDE\nfloat4 hlsl_helper() { return 2; }\nENDHLSL\n",
+        "    Pass {\n",
+        "      CGPROGRAM\nfloat4 cg_main() { return 3; }\nENDCG\n",
+        "      HLSLPROGRAM\nfloat4 hlsl_main() { return 4; }\nENDHLSL\n",
+        "    }\n  }\n}\n",
+    );
+    let syntax = TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::from_secs(5))
+        .document();
+    let result = parse(&syntax, "shaderlab", input, 1);
+    for (line, text) in input
+        .lines()
+        .enumerate()
+        .filter(|(_, text)| text.starts_with("float4"))
+    {
+        let tokens = result.snapshot.tokens(Line(line as u64)).unwrap();
+        assert!(
+            tokens.iter().any(|token| {
+                token
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.as_ref() == "storage.type.basic.hlsl")
+            }),
+            "{text}"
+        );
+        assert!(
+            tokens.iter().any(|token| {
+                token
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.as_ref() == "keyword.control.hlsl")
+            }),
+            "{text}"
+        );
+    }
+    let at = input.find("return 2").unwrap() + "return ".len();
+    let modified = input.replacen("return 2", "return 2 +\n  5", 1);
+    let changed = parse(
+        &syntax.with_edit(replacement(1, at, 1, "2 +\n  5")),
+        "shaderlab",
+        &modified,
+        2,
+    );
+    assert_eq!(changed.previous, Some(Version(1)));
+    assert_eq!(changed.snapshot.version(), Version(2));
+    assert!(changed
+        .changed_lines
+        .as_ref()
+        .is_some_and(|ranges| !ranges.is_empty()));
+    let clean = parse(&TreeSitterSyntax::default(), "shaderlab", &modified, 2);
+    let rows = modified.lines().count() as u64;
+    assert_eq!(
+        snapshot(changed.snapshot.as_ref(), rows),
+        snapshot(clean.snapshot.as_ref(), rows)
+    );
+}
+
+#[test]
 fn settings_override_file_associations_and_highlighting_limits() {
     use rove_base::{Events, NoEvents, Result, Task, Value};
     use rove_config::{Scope, Settings};
@@ -363,13 +505,17 @@ fn settings_override_file_associations_and_highlighting_limits() {
                 "files.associations" => Ok(Value::Object(Arc::new(
                     [
                         ("*.asset".into(), Value::String("json".into())),
+                        ("*.shader".into(), Value::String("hlsl".into())),
                         ("**/config/*.asset".into(), Value::String("xml".into())),
                     ]
                     .into_iter()
                     .collect(),
                 ))),
                 "editor.maxTokenizationLineLength"
-                    if scope.language.as_deref() == Some("csharp") =>
+                    if matches!(
+                        scope.language.as_deref(),
+                        Some("csharp" | "hlsl" | "shaderlab" | "lua" | "proto")
+                    ) =>
                 {
                     Ok(Value::Number(10.0))
                 }
@@ -396,12 +542,40 @@ fn settings_override_file_associations_and_highlighting_limits() {
         &*language_for_path(Path::new("src/config/a.asset"), Some(settings.as_ref())),
         "xml"
     );
+    assert_eq!(
+        &*language_for_path(Path::new("src/a.shader"), Some(settings.as_ref())),
+        "hlsl"
+    );
     let syntax = TreeSitterSyntax::default().with_settings(settings);
     let result = parse(&syntax, "csharp", "public class A {}\n// note", 1);
     assert!(result.snapshot.tokens(Line(0)).unwrap().is_empty());
     assert!(!result.snapshot.tokens(Line(1)).unwrap().is_empty());
     let result = parse(&syntax, "json", &format!("true\n{}", " ".repeat(59)), 2);
     assert!(result.snapshot.tokens(Line(0)).unwrap().is_empty());
+
+    for (language, comment, source) in [
+        ("hlsl", "//", "float f;\n"),
+        ("shaderlab", "//", "Shader \"A\"\n{\n}\n"),
+        ("lua", "--", "return 1\n"),
+        ("proto", "//", "message A\n{\n}\n"),
+    ] {
+        let with_long_line = format!("{comment} {}\n{source}", "x".repeat(16));
+        let ordinary = parse(&syntax, language, &with_long_line, 3);
+        assert!(
+            ordinary.snapshot.tokens(Line(0)).unwrap().is_empty(),
+            "{language}"
+        );
+        assert!(
+            !ordinary.snapshot.tokens(Line(1)).unwrap().is_empty(),
+            "{language}"
+        );
+        let above_size_limit = format!("{source}{comment}{}\n", "x".repeat(96));
+        let huge = parse(&syntax, language, &above_size_limit, 4);
+        assert!(
+            huge.snapshot.tokens(Line(0)).unwrap().is_empty(),
+            "{language}"
+        );
+    }
     // 语言未知时不注入任何语法：只剩围栏代码块本身的 scope（VS Code 在没有对应语法时也是这样）。
     let line = result.snapshot.tokens(Line(1)).unwrap();
     assert!(line

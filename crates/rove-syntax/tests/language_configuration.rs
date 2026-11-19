@@ -108,17 +108,30 @@ fn fold_ranges(folds: &[Fold], kind: FoldKind) -> Vec<(u64, u64)> {
 }
 
 #[test]
-fn builtins_load_all_m1_languages() {
+fn builtins_load_all_shipped_languages() {
     let builtins = BuiltinLanguages::load().expect("built-in configurations load");
     let ids: Vec<&str> = builtins.languages().collect();
-    assert_eq!(ids, ["csharp", "json", "jsonc", "markdown", "xml", "yaml"]);
+    assert_eq!(
+        ids,
+        [
+            "csharp",
+            "hlsl",
+            "json",
+            "jsonc",
+            "lua",
+            "markdown",
+            "shaderlab",
+            "xml",
+            "yaml"
+        ]
+    );
     for id in &ids {
         let data = builtins.get(id).unwrap_or_else(|| panic!("{id} is served"));
         let compiled = builtins.compiled(id).expect("compiled view");
         assert!(Arc::ptr_eq(&data, compiled.data()));
         assert!(!data.brackets.is_empty(), "{id} has brackets");
     }
-    assert!(builtins.get("lua").is_none());
+    assert!(builtins.get("proto").is_none());
     assert!(builtins.get("jsonl").is_none());
 }
 
@@ -308,10 +321,6 @@ fn every_regex_in_every_configuration_compiles() {
         }
         let compiled = load_configuration(relative_path);
         let regexes = language_config::javascript_regexes(compiled.data());
-        assert!(
-            !regexes.is_empty(),
-            "{relative_path} declares no regular expressions"
-        );
         for (field, js) in &regexes {
             assert!(!js.source.is_empty(), "{relative_path} {field} is empty");
         }
@@ -834,6 +843,42 @@ fn every_language_regex_matches_javascript_samples() {
             "  } ",
             false,
         ),
+        (
+            "lua",
+            "indentationRules.increaseIndentPattern",
+            "local function go()",
+            true,
+        ),
+        (
+            "lua",
+            "indentationRules.increaseIndentPattern",
+            "if ready then return end",
+            false,
+        ),
+        (
+            "lua",
+            "indentationRules.increaseIndentPattern",
+            "-- if ready then",
+            false,
+        ),
+        (
+            "lua",
+            "indentationRules.decreaseIndentPattern",
+            "  elseif ready then",
+            true,
+        ),
+        (
+            "lua",
+            "indentationRules.decreaseIndentPattern",
+            "  end",
+            true,
+        ),
+        (
+            "lua",
+            "indentationRules.decreaseIndentPattern",
+            "  endpoint()",
+            false,
+        ),
     ];
     const WORD_PATTERN_SAMPLES: &[WordPatternCase] = &[
         (
@@ -1048,7 +1093,15 @@ fn word_pattern_agrees_with_vscode_for_markdown_and_xml() {
 fn languages_without_word_pattern_use_the_vscode_default() {
     // Expected values from VS Code's getWordAtText with DEFAULT_WORD_REGEXP.
     let builtins = BuiltinLanguages::load().unwrap();
-    for id in ["csharp", "json", "jsonc", "yaml"] {
+    for id in [
+        "csharp",
+        "json",
+        "jsonc",
+        "yaml",
+        "hlsl",
+        "shaderlab",
+        "lua",
+    ] {
         let configuration = builtins.compiled(id).unwrap();
         assert_eq!(
             configuration.word_pattern().javascript().source.as_ref(),

@@ -1,0 +1,923 @@
+[
+  {
+    "type": "attribute",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "attribute_text",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "category",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "legacy_block",
+          "named": true
+        },
+        {
+          "type": "pass_name",
+          "named": true
+        },
+        {
+          "type": "program_block",
+          "named": true
+        },
+        {
+          "type": "render_state",
+          "named": true
+        },
+        {
+          "type": "stencil",
+          "named": true
+        },
+        {
+          "type": "subshader",
+          "named": true
+        },
+        {
+          "type": "tags",
+          "named": true
+        },
+        {
+          "type": "use_pass",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "custom_editor",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "dependency",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "fallback",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "legacy_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "property_reference",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "vector",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "pass",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "legacy_block",
+          "named": true
+        },
+        {
+          "type": "pass_name",
+          "named": true
+        },
+        {
+          "type": "program_block",
+          "named": true
+        },
+        {
+          "type": "render_state",
+          "named": true
+        },
+        {
+          "type": "stencil",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "tags",
+          "named": true
+        },
+        {
+          "type": "use_pass",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "pass_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "program_block",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "program_body",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "properties",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "property",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "property",
+    "named": true,
+    "fields": {
+      "default": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "property_default",
+            "named": true
+          }
+        ]
+      },
+      "label": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "property_type",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "attribute",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "property_default",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "texture_options",
+          "named": true
+        },
+        {
+          "type": "vector",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "property_reference",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "property_type",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "dimension",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "render_state",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "property_reference",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "vector",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "shader",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "category",
+          "named": true
+        },
+        {
+          "type": "custom_editor",
+          "named": true
+        },
+        {
+          "type": "dependency",
+          "named": true
+        },
+        {
+          "type": "fallback",
+          "named": true
+        },
+        {
+          "type": "program_block",
+          "named": true
+        },
+        {
+          "type": "properties",
+          "named": true
+        },
+        {
+          "type": "subshader",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "source_file",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "shader",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "stencil",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "stencil_state",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "stencil_state",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "property_reference",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "vector",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "subshader",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "legacy_block",
+          "named": true
+        },
+        {
+          "type": "pass",
+          "named": true
+        },
+        {
+          "type": "pass_name",
+          "named": true
+        },
+        {
+          "type": "program_block",
+          "named": true
+        },
+        {
+          "type": "render_state",
+          "named": true
+        },
+        {
+          "type": "stencil",
+          "named": true
+        },
+        {
+          "type": "tags",
+          "named": true
+        },
+        {
+          "type": "use_pass",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "tag",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "tags",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "tag",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "texture_options",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "use_pass",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "vector",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "number",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "(",
+    "named": false
+  },
+  {
+    "type": ")",
+    "named": false
+  },
+  {
+    "type": "*",
+    "named": false
+  },
+  {
+    "type": "+",
+    "named": false
+  },
+  {
+    "type": ",",
+    "named": false
+  },
+  {
+    "type": "-",
+    "named": false
+  },
+  {
+    "type": ".",
+    "named": false
+  },
+  {
+    "type": "=",
+    "named": false
+  },
+  {
+    "type": "AlphaTest",
+    "named": false
+  },
+  {
+    "type": "AlphaToMask",
+    "named": false
+  },
+  {
+    "type": "BindChannels",
+    "named": false
+  },
+  {
+    "type": "Blend",
+    "named": false
+  },
+  {
+    "type": "BlendOp",
+    "named": false
+  },
+  {
+    "type": "CGINCLUDE",
+    "named": false
+  },
+  {
+    "type": "CGPROGRAM",
+    "named": false
+  },
+  {
+    "type": "Category",
+    "named": false
+  },
+  {
+    "type": "Color",
+    "named": false
+  },
+  {
+    "type": "ColorMask",
+    "named": false
+  },
+  {
+    "type": "ColorMaterial",
+    "named": false
+  },
+  {
+    "type": "Comp",
+    "named": false
+  },
+  {
+    "type": "CompBack",
+    "named": false
+  },
+  {
+    "type": "CompFront",
+    "named": false
+  },
+  {
+    "type": "Conservative",
+    "named": false
+  },
+  {
+    "type": "Cull",
+    "named": false
+  },
+  {
+    "type": "CustomEditor",
+    "named": false
+  },
+  {
+    "type": "CustomEditorForRenderPipeline",
+    "named": false
+  },
+  {
+    "type": "Dependency",
+    "named": false
+  },
+  {
+    "type": "ENDCG",
+    "named": false
+  },
+  {
+    "type": "ENDHLSL",
+    "named": false
+  },
+  {
+    "type": "Fail",
+    "named": false
+  },
+  {
+    "type": "FailBack",
+    "named": false
+  },
+  {
+    "type": "FailFront",
+    "named": false
+  },
+  {
+    "type": "Fallback",
+    "named": false
+  },
+  {
+    "type": "Fog",
+    "named": false
+  },
+  {
+    "type": "GrabPass",
+    "named": false
+  },
+  {
+    "type": "HLSLINCLUDE",
+    "named": false
+  },
+  {
+    "type": "HLSLPROGRAM",
+    "named": false
+  },
+  {
+    "type": "LOD",
+    "named": false
+  },
+  {
+    "type": "Lighting",
+    "named": false
+  },
+  {
+    "type": "Material",
+    "named": false
+  },
+  {
+    "type": "Name",
+    "named": false
+  },
+  {
+    "type": "Off",
+    "named": false
+  },
+  {
+    "type": "Offset",
+    "named": false
+  },
+  {
+    "type": "Pass",
+    "named": false
+  },
+  {
+    "type": "PassBack",
+    "named": false
+  },
+  {
+    "type": "PassFront",
+    "named": false
+  },
+  {
+    "type": "Properties",
+    "named": false
+  },
+  {
+    "type": "ReadMask",
+    "named": false
+  },
+  {
+    "type": "Ref",
+    "named": false
+  },
+  {
+    "type": "SeparateSpecular",
+    "named": false
+  },
+  {
+    "type": "SetTexture",
+    "named": false
+  },
+  {
+    "type": "Shader",
+    "named": false
+  },
+  {
+    "type": "Stencil",
+    "named": false
+  },
+  {
+    "type": "SubShader",
+    "named": false
+  },
+  {
+    "type": "Tags",
+    "named": false
+  },
+  {
+    "type": "UsePass",
+    "named": false
+  },
+  {
+    "type": "WriteMask",
+    "named": false
+  },
+  {
+    "type": "ZClip",
+    "named": false
+  },
+  {
+    "type": "ZFail",
+    "named": false
+  },
+  {
+    "type": "ZFailBack",
+    "named": false
+  },
+  {
+    "type": "ZFailFront",
+    "named": false
+  },
+  {
+    "type": "ZTest",
+    "named": false
+  },
+  {
+    "type": "ZWrite",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
+    "type": "attribute_text",
+    "named": true
+  },
+  {
+    "type": "comment",
+    "named": true,
+    "extra": true
+  },
+  {
+    "type": "dimension",
+    "named": true
+  },
+  {
+    "type": "identifier",
+    "named": true
+  },
+  {
+    "type": "number",
+    "named": true
+  },
+  {
+    "type": "program_body",
+    "named": true
+  },
+  {
+    "type": "string",
+    "named": true
+  },
+  {
+    "type": "{",
+    "named": false
+  },
+  {
+    "type": "}",
+    "named": false
+  }
+]

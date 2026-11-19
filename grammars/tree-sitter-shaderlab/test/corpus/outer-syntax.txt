@@ -1,0 +1,59 @@
+==================
+Properties, tags and render states
+==================
+
+Shader "Example/Properties" {
+    Properties {
+        [HDR] _Tint ("Tint", Color) = (1, 0.5, 0, 1)
+        [Header(Cutout Settings)] _Cutoff ("Cutoff", RANGE(0, 1)) = 0.5
+        _MainTex ("Texture", 2d) = "white" {}
+    }
+    Subshader {
+        Tags { "Queue" = "Transparent" }
+        Pass {
+            CUll Back
+            Zwrite Off
+            blend SrcAlpha OneMinusSrcAlpha
+            Color [_Tint]
+            Stencil { Ref 2 Comp Always Pass Replace }
+        }
+    }
+    Fallback "Diffuse"
+    CustomEditor "Example.Editor"
+}
+
+---
+
+(source_file
+  (shader name: (string)
+    (properties
+      (property
+        (attribute (identifier))
+        name: (identifier)
+        label: (string)
+        type: (property_type (identifier))
+        default: (property_default (vector (number) (number) (number) (number))))
+      (property
+        (attribute (identifier) (attribute_text))
+        name: (identifier)
+        label: (string)
+        type: (property_type (identifier) (number) (number))
+        default: (property_default (number)))
+      (property
+        name: (identifier)
+        label: (string)
+        type: (property_type (dimension))
+        default: (property_default (string) (texture_options))))
+    (subshader
+      (tags (tag name: (string) value: (string)))
+      (pass
+        (render_state (identifier))
+        (render_state (identifier))
+        (render_state (identifier) (identifier))
+        (render_state (property_reference (identifier)))
+        (stencil
+          (stencil_state (number))
+          (stencil_state (identifier))
+          (stencil_state (identifier)))))
+    (fallback (string))
+    (custom_editor (string))))

@@ -117,6 +117,10 @@ pub fn language_for_path(path: &Path, settings: Option<&dyn Settings>) -> Arc<st
         "yaml" | "yml" | "meta" | "prefab" | "unity" | "asset" => "yaml",
         "xml" => "xml",
         "md" | "markdown" => "markdown",
+        "hlsl" | "cginc" | "compute" => "hlsl",
+        "shader" => "shaderlab",
+        "lua" => "lua",
+        "proto" => "proto",
         _ => "plaintext",
     }
     .into()

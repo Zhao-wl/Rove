@@ -21,7 +21,11 @@ Rove 直接使用这些文件实现括号、注释、自动闭合、缩进、单
 | `xml/xml.language-configuration.json` | `extensions/xml/xml.language-configuration.json` | `385a24a9da4ed89366d691881e1dfcdac984de6ac7e805776add43ed1731fa7c` |
 | `yaml/language-configuration.json` | `extensions/yaml/language-configuration.json` | `306c8f6951dddc6214ff80766123a0315fc63773a0bd2909423968fa712b4a26` |
 
-语言 ID 与文件的对应关系（六个语言 ID 共用五份文件，与 VS Code 相同）：
+| `hlsl/language-configuration.json` | `extensions/hlsl/language-configuration.json` | `28799d8ca46a660481b60636e15d106bf980932bb0456238fe5a9fe9b705c564` |
+| `shaderlab/language-configuration.json` | `extensions/shaderlab/language-configuration.json` | `6995e05b8f2b03bf6e064c13f34b0499d7fe6d8f1689f751c6d51c57e052c5bb` |
+| `lua/language-configuration.json` | `extensions/lua/language-configuration.json` | `df548aa9a1290cadf7fb3762c7770eb28c68f05d24b08e4e1504e0e3d3e73998` |
+
+语言 ID 与文件的对应关系（九个语言 ID 共用八份文件，与 VS Code 相同）。
 
 | 语言 ID | 文件 |
 |---|---|
@@ -30,9 +34,11 @@ Rove 直接使用这些文件实现括号、注释、自动闭合、缩进、单
 | `markdown` | `markdown-basics/language-configuration.json` |
 | `xml` | `xml/xml.language-configuration.json` |
 | `yaml` | `yaml/language-configuration.json` |
+| `hlsl` | `hlsl/language-configuration.json` |
+| `shaderlab` | `shaderlab/language-configuration.json` |
+| `lua` | `lua/language-configuration.json` |
 
-`kebab-case`、`jsonl`、`snippets`、`xsl`、`dockercompose` 等其余语言 ID 不在 M1 范围内；
-`hlsl`、`shaderlab`、`lua` 随其他语言高亮一起接入（见 issue #12 的说明）。
+Protobuf 使用默认语言配置。
 
 ## 升级步骤
 

@@ -504,6 +504,39 @@ fn status_language_picker_switches_an_asmdef_and_rehighlights(cx: &mut TestAppCo
     assert!(highlighted(&view, cx), "切回 JSON 后重新着色");
 }
 
+#[gpui::test]
+fn status_shaderlab_opens_with_outer_and_embedded_highlights(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    fx.file(
+        "Assets/Fixture.shader",
+        "Shader \"Fixture\" {\nSubShader {\nHLSLINCLUDE\nfloat4 shade() { return 1; }\nENDHLSL\n}\n}\n",
+    );
+    let (view, cx) = fx.open(cx);
+    open_file(&view, cx, "Assets/Fixture.shader");
+    assert_eq!(text_of(&view, cx, ids::LANGUAGE), "ShaderLab");
+
+    view.read_with(cx, |v, cx| {
+        let snapshot = v
+            .code_view()
+            .read(cx)
+            .syntax_snapshot()
+            .expect("syntax snapshot");
+        for (line, expected) in [
+            (0, "storage.type.structure.shaderlab"),
+            (3, "storage.type.basic.hlsl"),
+        ] {
+            assert!(
+                snapshot
+                    .tokens(Line(line))
+                    .unwrap()
+                    .iter()
+                    .any(|token| { token.scopes.iter().any(|scope| scope.as_ref() == expected) }),
+                "{expected}"
+            );
+        }
+    });
+}
+
 /// 活动标签的语法快照里有没有 token（语言模式切换后的重新高亮）。
 fn highlighted(view: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
     refresh(cx);

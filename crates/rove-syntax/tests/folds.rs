@@ -92,6 +92,20 @@ namespace Demo
 ";
 
 #[test]
+fn hlsl_shaderlab_lua_and_protobuf_supply_syntax_folds() {
+    for (language, source) in [
+        ("hlsl", "float4 shade() {\n return 1;\n}\n"),
+        ("shaderlab", "Shader \"A\" {\n Fallback Off\n}\n"),
+        ("lua", "if true then\n local n = 1\nend\n"),
+        ("proto", "message Example {\n string name = 1;\n}\n"),
+    ] {
+        let ranges = folds(language, source);
+        assert_eq!(ranges, [(0, 3)], "{language}");
+        check_shape(&ranges, 3);
+    }
+}
+
+#[test]
 fn csharp_types_members_blocks_and_comments_fold() {
     let got = folds("csharp", CSHARP);
     assert_eq!(

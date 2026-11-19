@@ -139,9 +139,18 @@ impl Cause {
 /// Rove 不内置的语言在 scope 路径里的标志（后缀或 `meta.embedded.block.<语言>`）。
 /// 根 scope（路径第一段，例如 Markdown 的 `text.html.markdown`）不参与判定。
 const FOREIGN: &[&str] = &[
-    ".html", ".tex", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".less", ".lua", ".php",
-    ".python", ".shell", ".coffee",
+    ".html", ".tex", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".less", ".php", ".python",
+    ".shell", ".coffee",
 ];
+
+#[cfg(test)]
+#[test]
+fn builtin_lua_difference_is_classified_as_rove() {
+    assert!(matches!(
+        cause("source.lua support.function.library.lua", false),
+        Cause::Rove
+    ));
+}
 
 fn cause(vscode_scopes: &str, placeholder: bool) -> Cause {
     if placeholder {

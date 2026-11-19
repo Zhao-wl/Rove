@@ -24,6 +24,7 @@ json = { fixtures = ["test.json", "tsconfig_off.json"], threshold = 0.98 }
 xml = { fixtures = ["test.xml", "test-7115.xml"], threshold = 0.97, reason = "实测 97.97%。test-7115.xml 是 VS Code issue 7115 的复现用例：tree-sitter-xml 的 Name 模式要求首字符是 ASCII 字母，`Поле=\"...\"` 解析成 ERROR（19 个字符）。其余 fixture 100%。" }
 yaml = { fixtures = ["test.yaml", "issue-1550.yaml", "issue-224862.yaml", "issue-4008.yaml", "issue-6303.yaml"], threshold = 0.77, reason = "实测 77.55%（Dark/Light 2026）/ 90.11%（其余）。三个问题用例本身是写坏的 YAML：VS Code 用 invalid.illegal.* 标红，tree-sitter 则产生 ERROR 节点、连块结构（meta.block.sequence）都给不出来，两种纠错方式不可能一致。结构完好的 fixture 都在 98% 以上。" }
 markdown = { fixtures = ["test.md", "issue-279576.md", "md-math.md", "test-33886.md"], threshold = 0.77, reason = "实测 77.31%。差异的 79% 落在 VS Code 注入、而 Rove 不内置的语言上（HTML、LaTeX、TypeScript/JavaScript/CSS——都不在章程的语言清单里）；扣掉这部分后是 94.20%。test.md 单独 88.22%。" }
-# 占位语言：Rove 还没有 Lua 语法，这一行演示「加一种语言只需加一行配置」。
-# R64 接入 tree-sitter-lua 后，把 `threshold = 0.90` 补上即可开始判定。
-lua = { fixtures = ["test.lua"] }
+# #65 的兼容性预算为每个主题至少 90%，字符级差异由测试报告列出。
+lua = { fixtures = ["test.lua"], threshold = 0.90, reason = "#65，Lua 以 tree-sitter 解析结构，VS Code 以 TextMate 模式着色。" }
+hlsl = { fixtures = ["test.hlsl"], threshold = 0.90, reason = "#65，HLSL 按语法节点着色，VS Code 也为不完整的标记分配 scope。" }
+shaderlab = { fixtures = ["test.shader"], threshold = 0.90, reason = "#65，ShaderLab 使用独立的外层语法和 HLSL 注入。" }

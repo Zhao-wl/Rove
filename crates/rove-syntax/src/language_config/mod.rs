@@ -154,7 +154,7 @@ pub struct BuiltinSource {
     pub text: &'static str,
 }
 
-const SOURCE_FILES: [BuiltinSource; 5] = [
+const SOURCE_FILES: [BuiltinSource; 8] = [
     BuiltinSource {
         relative_path: "csharp/language-configuration.json",
         config_path: "extensions/csharp/language-configuration.json",
@@ -182,17 +182,34 @@ const SOURCE_FILES: [BuiltinSource; 5] = [
         config_path: "extensions/yaml/language-configuration.json",
         text: include_str!("../../data/vscode-extensions/yaml/language-configuration.json"),
     },
+    BuiltinSource {
+        relative_path: "hlsl/language-configuration.json",
+        config_path: "extensions/hlsl/language-configuration.json",
+        text: include_str!("../../data/vscode-extensions/hlsl/language-configuration.json"),
+    },
+    BuiltinSource {
+        relative_path: "shaderlab/language-configuration.json",
+        config_path: "extensions/shaderlab/language-configuration.json",
+        text: include_str!("../../data/vscode-extensions/shaderlab/language-configuration.json"),
+    },
+    BuiltinSource {
+        relative_path: "lua/language-configuration.json",
+        config_path: "extensions/lua/language-configuration.json",
+        text: include_str!("../../data/vscode-extensions/lua/language-configuration.json"),
+    },
 ];
 
-/// Language ID to catalog index. `jsonc` shares the `json` extension file, as in
-/// VS Code; HLSL, ShaderLab and Lua are added together with their highlighters.
-const LANGUAGE_IDS: [(&str, usize); 6] = [
+/// Language ID to catalog index. `jsonc` shares the `json` extension file.
+const LANGUAGE_IDS: [(&str, usize); 9] = [
     ("csharp", 0),
     ("json", 1),
     ("jsonc", 1),
     ("markdown", 2),
     ("xml", 3),
     ("yaml", 4),
+    ("hlsl", 5),
+    ("shaderlab", 6),
+    ("lua", 7),
 ];
 
 /// Every shipped configuration file, for upgrade checks and tests.
@@ -630,11 +647,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtins_cover_the_m1_languages() {
+    fn builtins_cover_the_shipped_languages() {
         let ids: Vec<&str> = builtin_languages().map(|(id, _)| id).collect();
-        assert_eq!(ids, ["csharp", "json", "jsonc", "markdown", "xml", "yaml"]);
+        assert_eq!(
+            ids,
+            [
+                "csharp",
+                "json",
+                "jsonc",
+                "markdown",
+                "xml",
+                "yaml",
+                "hlsl",
+                "shaderlab",
+                "lua"
+            ]
+        );
         let sources: Vec<&str> = builtin_sources().map(|s| s.relative_path).collect();
-        assert_eq!(sources.len(), 5);
+        assert_eq!(sources.len(), 8);
         assert!(sources.contains(&"xml/xml.language-configuration.json"));
     }
 
@@ -645,8 +675,8 @@ mod tests {
         let jsonc = builtins.get("jsonc").unwrap();
         assert!(Arc::ptr_eq(&json, &jsonc));
         assert_eq!(json.line_comment.as_deref(), Some("//"));
-        assert!(builtins.get("lua").is_none());
-        assert_eq!(builtins.languages().count(), 6);
+        assert!(builtins.get("proto").is_none());
+        assert_eq!(builtins.languages().count(), 9);
     }
 
     #[test]
@@ -748,7 +778,7 @@ mod tests {
     fn partial_load_reports_errors_without_hiding_good_languages() {
         let (languages, errors) = BuiltinLanguages::load_partial();
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(languages.languages().count(), 6);
+        assert_eq!(languages.languages().count(), 9);
         assert!(languages.compiled("jsonc").is_some());
     }
 
@@ -797,7 +827,7 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(BuiltinLanguages::load().unwrap().languages().count(), 6);
+        assert_eq!(BuiltinLanguages::load().unwrap().languages().count(), 9);
     }
 
     #[test]
@@ -807,7 +837,7 @@ mod tests {
         let (second, errors) = BuiltinLanguages::shared();
         assert!(errors.is_empty());
         assert!(std::ptr::eq(first, second));
-        assert_eq!(first.languages().count(), 6);
+        assert_eq!(first.languages().count(), 9);
     }
 
     #[test]

@@ -216,6 +216,10 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("status.language.xml", "XML"),
     ("status.language.yaml", "YAML"),
     ("status.language.plaintext", "纯文本"),
+    ("status.language.hlsl", "HLSL"),
+    ("status.language.shaderlab", "ShaderLab"),
+    ("status.language.lua", "Lua"),
+    ("status.language.proto", "Protobuf"),
     // 只读与超大文件。
     ("status.readOnly.text", "只读"),
     ("status.readOnly.hugeText", "超大文件 · 只读"),
