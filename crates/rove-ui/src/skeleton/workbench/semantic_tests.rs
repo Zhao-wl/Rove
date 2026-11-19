@@ -103,10 +103,9 @@ impl Project {
 }
 
 fn refresh(cx: &mut VisualTestContext) {
-    cx.update(|window, cx| {
-        window.refresh();
-        cx.refresh_windows();
-    });
+    // The test platform has no compositor frame requests. Draw explicitly so
+    // CodeView can schedule preparation of invalidated rows before assertions.
+    cx.update(|window, cx| window.draw(cx).clear());
     cx.run_until_parked();
 }
 
