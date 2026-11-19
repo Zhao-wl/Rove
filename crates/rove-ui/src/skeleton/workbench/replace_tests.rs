@@ -552,7 +552,7 @@ fn replace_all_updates_its_document_before_switching_tabs(cx: &mut TestAppContex
             .open(
                 Resource::Workspace(WorkspacePath::new("repeated.txt").unwrap()),
                 OpenOptions {
-                    pinned: true,
+                    preview_tab: false,
                     ..Default::default()
                 },
                 Cancellation::default(),
