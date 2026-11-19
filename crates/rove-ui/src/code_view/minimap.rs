@@ -351,6 +351,16 @@ impl Sampling {
         };
         lower_bound(visible.start)..lower_bound(visible.end)
     }
+
+    /// 包含该视觉区间的采样桶，包括色块没有实际取样的行。
+    pub fn covering_rows(&self, visible: Range<u64>) -> Range<u64> {
+        let end = visible.end.min(self.visual_rows);
+        if visible.start >= end || self.raster_rows == 0 {
+            return 0..0;
+        }
+        let first = self.sampled_rows(0..visible.start + 1).end - 1;
+        first..self.sampled_rows(0..end).end
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

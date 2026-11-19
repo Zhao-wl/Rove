@@ -190,6 +190,156 @@ fn minimap_workbench_builds_themed_tiles_and_drags_through_code_view(cx: &mut Te
 }
 
 #[gpui::test]
+fn minimap_compressed_layouts_keep_titles_on_unsampled_visual_rows(cx: &mut TestAppContext) {
+    use rove_config::{SettingsOptions, SettingsService};
+
+    let folder = tempfile::tempdir().unwrap();
+    let mut source = format!(
+        "class Program {{\n    // MARK: - Unsampled {}\n    #region Helpers\n",
+        "part ".repeat(120)
+    );
+    for row in 0..5000 {
+        source.push_str(&format!("    int field_{row};\n"));
+    }
+    source.push_str("    #endregion\n}\n");
+    std::fs::write(folder.path().join("Program.cs"), source).unwrap();
+
+    for mode in ["fill", "fit"] {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            profile.path().join("settings.json"),
+            format!(
+                r#"{{"editor.minimap.size":"{mode}","editor.minimap.scale":3,"editor.wordWrap":"on"}}"#
+            ),
+        )
+        .unwrap();
+        let mut options = SettingsOptions::new(profile.path(), profile.path().join("backup"));
+        options.watch = None;
+        let settings = Arc::new(SettingsService::open(
+            options,
+            crate::app_settings::registry().unwrap(),
+        ));
+        let (view, visual) = cx.add_window_view(|_, cx| {
+            Workbench::with_settings(
+                folder.path().into(),
+                std::time::Instant::now(),
+                LayoutStore::disabled(),
+                settings,
+                cx,
+            )
+            .unwrap()
+        });
+        view.update(visual, |view, cx| {
+            view.open_documents()
+                .open(
+                    Resource::Workspace(WorkspacePath::new("Program.cs").unwrap()),
+                    OpenOptions::default(),
+                    Cancellation::default(),
+                )
+                .unwrap();
+            cx.notify();
+        });
+        settle(visual);
+        let code = view.read_with(visual, |view, _| view.code_view().clone());
+        let first = code.update(visual, |code, _| {
+            let panel = code.minimap.panel.expect("opened document has a minimap");
+            let sampling = panel.track.sampling;
+            assert!(sampling.raster_rows < sampling.visual_rows, "{mode}");
+            let mark = code.visual_map().visual_range(1);
+            assert!(mark.end > mark.start + 1, "the marker line wraps: {mode}");
+            let headers = code.minimap.headers.values().flatten().collect::<Vec<_>>();
+            for (line, title, separator) in [(1, "Unsampled", true), (2, "Helpers", false)] {
+                let visual_row = code.visual_map().first_visual(line);
+                assert!(
+                    sampling.sampled_rows(visual_row..visual_row + 1).is_empty(),
+                    "{mode}: {title} must start on an unsampled row"
+                );
+                let header = headers
+                    .iter()
+                    .find(|header| header.title.label.starts_with(title))
+                    .unwrap_or_else(|| panic!("{mode}: missing {title}"));
+                assert_eq!(header.title.separator, separator);
+                assert!(sampling.visual_row(header.row) <= visual_row);
+                assert!(sampling.visual_row(header.row + 1) > visual_row);
+            }
+            code.minimap.cache.get(0).unwrap().id
+        });
+
+        // 着色更新只报告未取样的标题起始行，该标题所属分块也必须重建。
+        code.update(visual, |code, cx| {
+            let changed = rove_base::Span::new(Line(1), Line(2)).unwrap();
+            let snapshot = code.syntax_snapshot().unwrap();
+            code.set_syntax(Some(snapshot), Some(&[changed]), cx);
+        });
+        settle(visual);
+        code.update(visual, |code, _| {
+            assert_ne!(code.minimap.cache.get(0).unwrap().id, first, "{mode}");
+        });
+    }
+}
+
+#[gpui::test]
+fn minimap_click_centers_the_painted_row_with_scroll_beyond_enabled(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("rows.txt"),
+        "line of text\n".repeat(1000),
+    )
+    .unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Workbench::with_store(
+            folder.path().into(),
+            std::time::Instant::now(),
+            LayoutStore::disabled(),
+            cx,
+        )
+    });
+    view.update(cx, |view, cx| {
+        view.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new("rows.txt").unwrap()),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    settle(cx);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    let (click, expected) = code.read_with(cx, |code, _| {
+        let panel = code.minimap.panel.unwrap();
+        let metrics = code.metrics().unwrap();
+        let sampling = panel.track.sampling;
+        let visible_rows =
+            (panel.track.height / sampling.row_height).min(sampling.raster_rows as f64);
+        let target = (visible_rows * 0.75).floor() as u64;
+        let y = (target as f64 + 0.5) * sampling.row_height;
+        assert_eq!(panel.track.offset, 0.0);
+        assert_eq!(panel.track.sampling.visual_row(target), target);
+        assert!(y < panel.track.height);
+        let thumb = panel.track.thumb(&metrics, &code.zones, 0.0).unwrap();
+        assert!(y > thumb.start + thumb.len);
+        assert!(metrics.total_lines(&code.zones) > panel.track.sampling.visual_rows as f64);
+        let expected = ScrollPosition::default()
+            .reveal_line(target, Reveal::Center, 0, &metrics, &code.zones)
+            .top;
+        (
+            point(
+                panel.bounds.origin.x + panel.bounds.size.width / 2.0,
+                panel.bounds.origin.y + px(y as f32),
+            ),
+            expected,
+        )
+    });
+    cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(click, MouseButton::Left, Modifiers::none());
+    cx.executor().advance_clock(Duration::from_millis(500));
+    settle(cx);
+    let actual = code.read_with(cx, |code, _| code.scroll_position().top);
+    assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+}
+
+#[gpui::test]
 fn minimap_marks_follow_editor_inputs_and_registered_theme_colors(cx: &mut TestAppContext) {
     let folder = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -259,9 +409,15 @@ fn minimap_marks_follow_editor_inputs_and_registered_theme_colors(cx: &mut TestA
     settle(cx);
     code.read_with(cx, |code, _| {
         assert!(!code.minimap.visual_marks.contains_key(&MarkerKind::Find));
-        assert_eq!(code.minimap.visual_marks[&MarkerKind::Selection], [1..2]);
+        assert_eq!(
+            code.minimap.visual_marks[&MarkerKind::Selection].as_slice(),
+            std::slice::from_ref(&(1..2))
+        );
         assert!(code.minimap.visual_marks[&MarkerKind::Occurrence].contains(&(3..4)));
-        assert_eq!(code.minimap.visual_marks[&MarkerKind::Warning], [4..5]);
+        assert_eq!(
+            code.minimap.visual_marks[&MarkerKind::Warning].as_slice(),
+            std::slice::from_ref(&(4..5))
+        );
         let overview = code.minimap.overview.as_ref().unwrap();
         for (kind, lane) in [
             (MarkerKind::Selection, 1),

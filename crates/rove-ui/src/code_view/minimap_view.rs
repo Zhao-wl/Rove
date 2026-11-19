@@ -141,8 +141,13 @@ impl MinimapView {
 struct RasterRow {
     line: u64,
     segment: u32,
-    region: bool,
     wrap: Option<LineWrap>,
+}
+
+impl RasterRow {
+    fn first_header_line(&self) -> u64 {
+        self.line + u64::from(self.segment > 0)
+    }
 }
 
 struct TileJob {
@@ -151,6 +156,9 @@ struct TileJob {
     semantic: SemanticLayer,
     columns: u32,
     row_info: Vec<RasterRow>,
+    header_end: u64,
+    hidden_rows: Vec<Range<u64>>,
+    region_rows: Vec<u64>,
     marker_pattern: Option<Arc<str>>,
     region_start: Option<rove_syntax::language_config::CompiledRegex>,
     wrap: Option<(u32, WrapOptions)>,
@@ -161,38 +169,67 @@ struct TileJob {
 }
 
 impl TileJob {
+    fn section_headers(&self) -> Vec<(u64, SectionHeader)> {
+        let matcher = self.marker_pattern.clone().and_then(MarkHeaders::compile);
+        let mut headers = Vec::new();
+        if matcher.is_none() && self.region_rows.is_empty() {
+            return headers;
+        }
+
+        let mut comments = Vec::new();
+        for (index, row) in self.row_info.iter().enumerate() {
+            let next = self
+                .row_info
+                .get(index + 1)
+                .map_or(self.header_end, RasterRow::first_header_line);
+            for line in row.first_header_line()..next {
+                let hidden = self.hidden_rows.partition_point(|range| range.end <= line);
+                if self
+                    .hidden_rows
+                    .get(hidden)
+                    .is_some_and(|range| range.start <= line)
+                {
+                    continue;
+                }
+                let region = self
+                    .region_start
+                    .as_ref()
+                    .filter(|_| self.region_rows.binary_search(&line).is_ok());
+                comments.clear();
+                if matcher.is_some() {
+                    self.syntax.comment_ranges(line, &mut comments);
+                }
+                if region.is_none() && comments.is_empty() {
+                    continue;
+                }
+                let Some(source) = columns::read_line(&*self.text, line) else {
+                    continue;
+                };
+                if let Some(title) = region
+                    .and_then(|start| minimap::region_header(&source, start))
+                    .or_else(|| matcher.as_ref()?.find(&source, comments.iter().cloned()))
+                {
+                    headers.push((index as u64, title));
+                }
+            }
+        }
+        headers
+    }
+
     fn run(self) -> (Arc<gpui::RenderImage>, Vec<(u64, SectionHeader)>) {
+        let headers = self.section_headers();
         let mut tile = Tile::new(self.columns, self.row_info.len() as u32);
         let mut lexical = LineDecorations::default();
         let mut semantic = LineDecorations::default();
-        let mut comments = Vec::new();
-        let mut headers = Vec::new();
-        let matcher = self.marker_pattern.and_then(MarkHeaders::compile);
         for (index, row) in self.row_info.into_iter().enumerate() {
             let RasterRow {
                 line,
                 segment,
-                region,
                 wrap,
             } = row;
             let Some(source) = columns::read_line(&*self.text, line) else {
                 continue;
             };
-            if segment == 0 {
-                let region_title = self
-                    .region_start
-                    .as_ref()
-                    .filter(|_| region)
-                    .and_then(|start| minimap::region_header(&source, start));
-                if let Some(title) = region_title.or_else(|| {
-                    let matcher = matcher.as_ref()?;
-                    comments.clear();
-                    self.syntax.comment_ranges(line, &mut comments);
-                    matcher.find(&source, comments.iter().cloned())
-                }) {
-                    headers.push((index as u64, title));
-                }
-            }
             let mut range = 0..source.len() as u32;
             let mut indent = 0;
             if let Some((limit, options)) = &self.wrap {
@@ -611,24 +648,54 @@ impl CodeView {
         let first = index * u64::from(TILE_ROWS);
         let sampling = panel.track.sampling;
         let end = (first + u64::from(TILE_ROWS)).min(sampling.raster_rows);
+        let visual_map = self.visual_map();
         let row_info: Vec<_> = (first..end)
             .map(|row| {
-                let visual = sampling.visual_row(row);
-                let logical = self.doc_line(visual);
-                let folds = self.folding.ranges();
-                let begin = folds.partition_point(|f| f.start < logical);
-                let region = folds[begin..]
-                    .iter()
-                    .take_while(|f| f.start == logical)
-                    .any(|f| f.source == super::folding::FoldSource::Region);
+                let (line, segment) = visual_map.to_doc(sampling.visual_row(row));
                 RasterRow {
-                    line: logical,
-                    segment: visual.saturating_sub(self.view_line(logical)) as u32,
-                    region,
-                    wrap: self.cached_minimap_wrap(logical),
+                    line,
+                    segment,
+                    wrap: self.cached_minimap_wrap(line),
                 }
             })
             .collect();
+        // 标题归属由逻辑行的首个视觉段决定，分块的最后一行需要下一块的边界。
+        let header_end = if end < sampling.raster_rows {
+            let (line, segment) = visual_map.to_doc(sampling.visual_row(end));
+            line + u64::from(segment > 0)
+        } else {
+            visual_map.doc_lines()
+        };
+        let header_start = row_info
+            .first()
+            .map_or(header_end, RasterRow::first_header_line);
+        let marker_pattern = (self.options.minimap.mark_headers
+            && self.syntax.borrow().current.is_some())
+        .then(|| self.options.minimap.header_pattern.clone());
+        let region_start = self
+            .language_config()
+            .and_then(|config| config.folding_markers())
+            .filter(|_| self.options.minimap.region_headers)
+            .map(|markers| markers.start().clone());
+        let mut region_rows = Vec::new();
+        if region_start.is_some() {
+            let folds = self.folding.ranges();
+            let first = folds.partition_point(|fold| fold.start < header_start);
+            region_rows.extend(
+                folds[first..]
+                    .iter()
+                    .take_while(|fold| fold.start < header_end)
+                    .filter(|fold| fold.source == super::folding::FoldSource::Region)
+                    .map(|fold| fold.start),
+            );
+        }
+        let mut hidden_rows = Vec::new();
+        if marker_pattern.is_some() || !region_rows.is_empty() {
+            let hidden = visual_map.folds().hidden_ranges();
+            let first = hidden.partition_point(|range| range.end <= header_start);
+            let end = hidden.partition_point(|range| range.start < header_end);
+            hidden_rows.extend_from_slice(&hidden[first..end]);
+        }
         let job = TileJob {
             text,
             syntax: self.syntax.borrow().clone(),
@@ -638,16 +705,11 @@ impl CodeView {
                 .snapshot_for_rows(row_info.iter().map(|row| row.line)),
             columns: self.options.minimap.columns,
             row_info,
-            marker_pattern: self
-                .options
-                .minimap
-                .mark_headers
-                .then(|| self.options.minimap.header_pattern.clone()),
-            region_start: self
-                .language_config()
-                .and_then(|config| config.folding_markers())
-                .filter(|_| self.options.minimap.region_headers)
-                .map(|markers| markers.start().clone()),
+            header_end,
+            hidden_rows,
+            region_rows,
+            marker_pattern,
+            region_start,
             wrap: (self.wrap.columns > 0).then(|| (self.wrap.columns, self.wrap_options())),
             tab_size: self.options.tab_size,
             render_limit: self.options.stop_rendering_line_after,
@@ -693,10 +755,17 @@ impl CodeView {
         let Some(panel) = self.minimap.panel else {
             return;
         };
+        let options = &self.options.minimap;
+        let headers_enabled = options.mark_headers || options.region_headers;
+        let sampling = panel.track.sampling;
         for lines in changes.iter().filter(|r| !r.is_empty()) {
             let last = self.visual_map().visual_range(lines.end - 1);
             let visual = self.view_line(lines.start)..last.end;
-            let raster = panel.track.sampling.sampled_rows(visual);
+            let raster = if headers_enabled {
+                sampling.covering_rows(visual)
+            } else {
+                sampling.sampled_rows(visual)
+            };
             self.minimap.invalidate(raster, cx);
         }
     }
@@ -891,14 +960,9 @@ impl CodeView {
                 return true;
             }
         }
-        let content_height =
-            panel.track.sampling.raster_rows as f64 * panel.track.sampling.row_height;
-        let visual = scroll::line_for_track_y(
-            content_height,
-            y + panel.track.offset,
-            &metrics,
-            &self.zones,
-        );
+        let sampling = panel.track.sampling;
+        let row = ((y + panel.track.offset) / sampling.row_height).floor() as u64;
+        let visual = sampling.visual_row(row);
         self.reveal_line(self.doc_line(visual), Reveal::Center, cx);
         true
     }
