@@ -295,8 +295,9 @@ fn format_version_change_rebuilds() {
     let p = project(2);
     let builder = Arc::new(FakeIndexer::default());
     built(&p, &builder);
-    rewrite_cached(&p, |f| f.format_version = 3);
-    expect_rebuild(&p, &builder, "format version 3");
+    // A v2 cache has no declared-type relations and requires a rebuild.
+    rewrite_cached(&p, |f| f.format_version = 2);
+    expect_rebuild(&p, &builder, "format version 2");
 }
 
 #[test]
