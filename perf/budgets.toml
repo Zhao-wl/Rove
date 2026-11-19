@@ -572,3 +572,15 @@ owner = "#59"
 status = "recorded"
 bench = "semantic/declaration_facts_5000_lines_csharp"
 reason = "只记录、不设门槛：索引格式（#32）里每个符号只有 Roslyn SymbolKind，没有 TypeKind 与修饰符，所以这两项由本文件的语法树补。打开文件与索引换代时各做一次，结果按（路径, 版本）缓存。索引补上这两项之后这一步可以整个去掉"
+
+# ---------------------------------------------------------------- 内容语言检测（#73）
+
+[[budget]]
+id = "language_detection_full_prefix"
+metric = "未知扩展名：读取并验证接近 8 KiB 的单行 JSONC 前缀"
+value = 1
+unit = "ms"
+owner = "#73"
+status = "enforced"
+bench = "language_detect/full_prefix_jsonc"
+reason = "issue #73 验收：完整 JSONC 路径包含有界快照读取和解析，执行在后台。"

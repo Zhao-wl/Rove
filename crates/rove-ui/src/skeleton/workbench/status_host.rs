@@ -38,7 +38,11 @@ use rove_buffer::{
 };
 use rove_config::{Key, Scope};
 use rove_i18n::Message;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 /// 检测缩进时最多读的行数（VS Code 读 10000 行；阅读器只需要前若干行就能判定）。
 const DETECT_LINES: usize = 500;
@@ -98,12 +102,18 @@ pub(super) struct StatusItems {
     indent: BTreeMap<DocumentId, Indentation>,
     /// 内容检测的缓存（按文本版本）。
     detected: BTreeMap<DocumentId, (Version, Indentation)>,
-    /// 会话内的语言模式覆盖。
+    /// 手动选择的语言模式（包括选择与当前模式相同的语言）。
     language: BTreeMap<DocumentId, Arc<str>>,
+    language_detection: BTreeMap<DocumentId, gpui::Task<()>>,
     last: Option<Snapshot>,
 }
 
 impl StatusItems {
+    pub(super) fn retain_language_documents(&mut self, open: &BTreeSet<DocumentId>) {
+        self.language.retain(|id, _| open.contains(id));
+        self.language_detection.retain(|id, _| open.contains(id));
+    }
+
     /// 丢掉缓存的快照，强制下一次 [`Workbench::sync_status`] 重算全部条目（测试用）。
     #[cfg(test)]
     pub(super) fn invalidate(&mut self) {
@@ -303,7 +313,11 @@ impl Workbench {
             self.change_eol_command(args, cx);
             return;
         }
-        if self.focused_document().is_none() {
+        let Some(document) = self.focused_document() else {
+            return;
+        };
+        if id == ids::DETECT_LANGUAGE {
+            self.schedule_language_detection(&document, true, cx);
             return;
         }
         self.status.pending = match id {
@@ -605,10 +619,79 @@ impl Workbench {
         language: Arc<str>,
         cx: &mut Context<Self>,
     ) {
+        self.status.language_detection.remove(&document.id);
+        self.status.language.insert(document.id, language.clone());
+        self.apply_language_mode(document, language, cx);
+    }
+
+    /// 无标题文本可以随编辑重新检测。显式选择过语言的文档保持用户选择。
+    pub(super) fn detect_untitled_language(
+        &mut self,
+        document: &Arc<Document>,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(&document.resource, Resource::Virtual(name) if name.starts_with("untitled/"))
+            && !self.status.language.contains_key(&document.id)
+        {
+            self.schedule_language_detection(document, false, cx);
+        }
+    }
+
+    fn schedule_language_detection(
+        &mut self,
+        document: &Arc<Document>,
+        explicit: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = document.id;
+        let text = document.text.clone();
+        let version = text.version();
+        let background = cx.background_executor().clone();
+        let task = cx.spawn(async move |this, cx| {
+            if !explicit {
+                background.timer(Duration::from_millis(150)).await;
+            }
+            let found = background
+                .spawn(async move { rove_syntax::detection::detect_text(&*text).ok().flatten() })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.status.language_detection.remove(&id);
+                let Some(current) = view
+                    .open_document(id)
+                    .filter(|doc| doc.text.version() == version)
+                else {
+                    return;
+                };
+                if !explicit {
+                    if !view.status.language.contains_key(&id) {
+                        let language = found.map_or("plaintext", |detected| detected.language);
+                        view.apply_language_mode(&current, language.into(), cx);
+                    }
+                } else if let Some(detected) = found {
+                    view.set_language_mode(&current, detected.language.into(), cx);
+                } else if view.focused_document().is_some_and(|doc| doc.id == id) {
+                    let _ = crate::shell::view::report(
+                        view,
+                        ids::LANGUAGE_NOT_DETECTED,
+                        Reason::Receipt,
+                        Message::key(ids::LANGUAGE_NOT_DETECTED),
+                        Arc::from([]),
+                        cx,
+                    );
+                }
+            });
+        });
+        self.status.language_detection.insert(id, task);
+    }
+
+    fn apply_language_mode(
+        &mut self,
+        document: &Arc<Document>,
+        language: Arc<str>,
+        cx: &mut Context<Self>,
+    ) {
         if document.metadata.language == language {
-            self.status.language.remove(&document.id);
-        } else {
-            self.status.language.insert(document.id, language.clone());
+            return;
         }
         let mut metadata = document.metadata.clone();
         metadata.language = language.clone();
@@ -620,6 +703,7 @@ impl Workbench {
         });
         self.metadata.files.replace(&switched);
         let id = switched.id;
+        self.status.detected.remove(&id);
         self.editor.reload_document(switched);
         // 文本版本没变，`sync_slot` 不会重新推送：直接把新语言与“等待新结果”的状态给视图。
         for code in self.code_views_of(id) {

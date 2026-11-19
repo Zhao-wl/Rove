@@ -206,6 +206,191 @@ fn gbk(text: &str) -> Vec<u8> {
 }
 
 #[gpui::test]
+fn status_language_detection_highlights_extensionless_documents(cx: &mut TestAppContext) {
+    use rove_base::Line;
+
+    let fx = Fixture::new("{}");
+    let cases = [
+        ("package", r#"{"name":"rove"}"#, "json", "JSON", ".json"),
+        ("project", "<project key='a'/>", "xml", "XML", ".xml"),
+        (
+            "pipeline",
+            "name: sample\nsteps: build\nkind: test",
+            "yaml",
+            "YAML",
+            ".yaml",
+        ),
+        (
+            "build.script",
+            "#!/usr/bin/env lua\nprint(1)",
+            "lua",
+            "Lua",
+            ".lua",
+        ),
+    ];
+    for (name, text, ..) in cases {
+        fx.file(name, text);
+    }
+    let (view, cx) = fx.open(cx);
+    for (name, _, language, label, suffix) in cases {
+        open_file(&view, cx, name);
+        assert_eq!(text_of(&view, cx, ids::LANGUAGE), label);
+        view.read_with(cx, |v, _| {
+            let opened = v.editor.active().current().and_then(Tab::opened).unwrap();
+            assert_eq!(&*opened.document.metadata.language, language);
+            // Lua's shebang is a language marker, and the second line contains code.
+            let line = Line(u64::from(language == "lua"));
+            let tokens = opened.syntax.as_ref().unwrap().tokens(line).unwrap();
+            assert!(
+                tokens
+                    .iter()
+                    .any(|token| token.scopes.iter().any(|scope| scope.ends_with(suffix))),
+                "{name} had no {language} scopes on line {}",
+                line.0
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn status_language_detection_honors_extensions_and_explicit_plaintext_associations(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new(
+        r#"{
+        "files.associations": {"associated": "plaintext", "overridden.cs": "lua"},
+        "workbench.editor.languageDetection": false,
+        "workbench.editor.languageDetectionHints": {"untitledEditors": false},
+        "workbench.editor.historyBasedLanguageDetection": true,
+        "workbench.editor.preferHistoryBasedLanguageDetection": true
+    }"#,
+    );
+    for name in [
+        "with-extension.cs",
+        "associated",
+        "overridden.cs",
+        "unknown",
+    ] {
+        fx.file(name, r#"{"detected":true}"#);
+    }
+    fx.file("run", "#!/bin/sh\nexit 0");
+    assert!(fx.service.problems().is_empty());
+    let (view, cx) = fx.open(cx);
+    for (name, expected) in [
+        ("with-extension.cs", "C#"),
+        ("associated", "纯文本"),
+        ("overridden.cs", "Lua"),
+        ("run", "纯文本"),
+        ("unknown", "JSON"),
+    ] {
+        open_file(&view, cx, name);
+        assert_eq!(text_of(&view, cx, ids::LANGUAGE), expected, "{name}");
+        view.read_with(cx, |v, _| {
+            assert!(crate::shell::view::status_message_text(v).is_none())
+        });
+    }
+}
+
+#[gpui::test]
+fn status_language_detection_can_be_invoked_and_its_feedback_expires(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    fx.file("forced.cs", r#"{"name":"rove"}"#);
+    fx.file("no-language", "just text");
+    let (view, cx) = fx.open(cx);
+    open_file(&view, cx, "forced.cs");
+    assert_eq!(text_of(&view, cx, ids::LANGUAGE), "C#");
+    cx.simulate_keystrokes("shift-alt-d");
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(text_of(&view, cx, ids::LANGUAGE), "JSON");
+
+    open_file(&view, cx, "no-language");
+    cx.simulate_keystrokes("shift-alt-d");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| crate::shell::view::status_message_text(v))
+            .as_deref(),
+        Some("未能识别此文件的语言")
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(2999));
+    cx.run_until_parked();
+    assert!(view
+        .read_with(cx, |v, _| crate::shell::view::status_message_text(v))
+        .is_some());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1));
+    cx.run_until_parked();
+    assert!(view
+        .read_with(cx, |v, _| crate::shell::view::status_message_text(v))
+        .is_none());
+}
+
+#[gpui::test]
+fn status_language_detection_stops_after_an_untitled_document_is_manually_classified(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    cx.simulate_keystrokes("ctrl-n");
+    cx.run_until_parked();
+    refresh(cx);
+    cx.simulate_input(r#"{"name":"rove"}"#);
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(150));
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(text_of(&view, cx, ids::LANGUAGE), "JSON");
+
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input("<project/>");
+    cx.run_until_parked();
+    // While the automatic pass is pending, choosing the current language still locks it.
+    click(&view, cx, ids::LANGUAGE);
+    pick(&view, cx, "JSON");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(150));
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(document_text(&view, cx), "<project/>");
+    assert_eq!(text_of(&view, cx, ids::LANGUAGE), "JSON");
+    view.read_with(cx, |v, _| {
+        let opened = v.editor.active().current().and_then(Tab::opened).unwrap();
+        assert_eq!(&*opened.document.metadata.language, "json");
+    });
+}
+
+#[gpui::test]
+fn status_language_detection_clears_an_untitled_guess_when_the_content_changes(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new(r#"{"editor.tabSize": 2, "[json]": {"editor.tabSize": 8}}"#);
+    let (view, cx) = fx.open(cx);
+    cx.simulate_keystrokes("ctrl-n");
+    cx.run_until_parked();
+    refresh(cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    for (source, expected, indent) in [
+        (r#"{"enabled":true}"#, "JSON", "空格: 8"),
+        ("#!/bin/sh\nexit 0", "纯文本", "空格: 2"),
+    ] {
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_input(source);
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(150));
+        cx.run_until_parked();
+        refresh(cx);
+        assert_eq!(text_of(&view, cx, ids::LANGUAGE), expected);
+        assert_eq!(text_of(&view, cx, ids::INDENT), indent);
+    }
+}
+
+#[gpui::test]
 fn status_right_items_follow_vscode_order_and_text(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     fx.file("Assets/A.cs", "class A {}\n");

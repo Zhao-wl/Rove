@@ -153,3 +153,8 @@ harness = false
 [[bench]]
 name = "semantic"
 harness = false
+
+# #73：受限内容前缀的语言检测。
+[[bench]]
+name = "language_detect"
+harness = false

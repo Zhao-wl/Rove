@@ -122,6 +122,7 @@ impl Workbench {
                 .collect()
         };
         let ids: BTreeSet<DocumentId> = open.iter().map(|d| d.id).collect();
+        self.status.retain_language_documents(&ids);
         let attached: Vec<DocumentId> = self.editing.saves.borrow().documents().collect();
         for id in attached {
             if !ids.contains(&id) {
@@ -359,6 +360,8 @@ impl Workbench {
         self.editor.set_dirty(document.id, dirty);
         // #50：持续备份按编辑去抖（不是只在退出时备份）。
         self.note_hot_exit_edit(document.id, cx);
+        // #73：只有无标题文档随正文变化重新检测，工作区文件在打开时确定语言。
+        self.detect_untitled_language(&replaced, cx);
         cx.notify();
     }
 
