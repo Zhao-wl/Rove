@@ -114,33 +114,46 @@ impl From<Option<AppliedEdit>> for EditOutcome {
 
 /// 旧行号 → 新行号；落在被修改的行里时为 `None`。
 pub fn old_to_new(changes: &LineChanges, line: u64) -> Option<u64> {
-    let mut delta: i64 = 0;
-    for c in &changes.ranges {
-        if line < c.old.start().0 {
-            break;
-        }
-        if line < c.old.end().0 {
-            return None;
-        }
-        delta = c.new.end().0 as i64 - c.old.end().0 as i64;
+    let first = changes
+        .ranges
+        .partition_point(|change| change.old.end().0 <= line);
+    if changes
+        .ranges
+        .get(first)
+        .is_some_and(|change| change.old.start().0 <= line)
+    {
+        return None;
     }
+    let delta = first.checked_sub(1).map_or(0, |previous| {
+        let change = &changes.ranges[previous];
+        change.new.end().0 as i64 - change.old.end().0 as i64
+    });
     Some((line as i64 + delta).max(0) as u64)
 }
 
 /// 新行号 → 旧行号（被修改的行映射到旧区间里同一偏移处，越界取旧区间末行）。
 pub fn new_to_old(changes: &LineChanges, line: u64) -> u64 {
-    let mut delta: i64 = 0;
-    for c in &changes.ranges {
-        if line < c.new.start().0 {
-            break;
-        }
-        if line < c.new.end().0 {
-            let offset = line - c.new.start().0;
-            let last = c.old.end().0.saturating_sub(1).max(c.old.start().0);
-            return (c.old.start().0 + offset).min(last);
-        }
-        delta = c.old.end().0 as i64 - c.new.end().0 as i64;
+    let first = changes
+        .ranges
+        .partition_point(|change| change.new.end().0 <= line);
+    if let Some(change) = changes
+        .ranges
+        .get(first)
+        .filter(|change| change.new.start().0 <= line)
+    {
+        let offset = line - change.new.start().0;
+        let last = change
+            .old
+            .end()
+            .0
+            .saturating_sub(1)
+            .max(change.old.start().0);
+        return (change.old.start().0 + offset).min(last);
     }
+    let delta = first.checked_sub(1).map_or(0, |previous| {
+        let change = &changes.ranges[previous];
+        change.old.end().0 as i64 - change.new.end().0 as i64
+    });
     (line as i64 + delta).max(0) as u64
 }
 
@@ -469,20 +482,31 @@ impl CodeView {
             self.decorations.remap(|l| old_to_new(changes, l));
             self.links.remap(|l| old_to_new(changes, *l));
             self.remap_wrap(changes);
-            for c in &changes.ranges {
-                wrap_dirty.push(c.new.start().0..c.new.end().0 + 1);
+            if self.wrap.columns > 0 {
+                wrap_dirty.extend(
+                    changes
+                        .ranges
+                        .iter()
+                        .map(|c| c.new.start().0..c.new.end().0 + 1),
+                );
             }
-            self.syntax.borrow_mut().pending.push(changes.clone());
+            let mut syntax = self.syntax.borrow_mut();
+            if syntax.current.is_some() {
+                syntax.pending.push(changes.clone());
+            }
             // #57：括号对树按行级变化做增量更新（一批之外的子树原样复用）。
-            let line_edits: Vec<super::bracket_pairs::parser::LineEdit> = changes
-                .ranges
-                .iter()
-                .map(|c| super::bracket_pairs::parser::LineEdit {
-                    old: c.old.start().0..c.old.end().0,
-                    new: c.new.start().0..c.new.end().0,
-                })
-                .collect();
-            self.bracket_pairs.borrow_mut().note_lines(line_edits);
+            let mut pairs = self.bracket_pairs.borrow_mut();
+            if !pairs.kinds().is_empty() {
+                let line_edits = changes
+                    .ranges
+                    .iter()
+                    .map(|c| super::bracket_pairs::parser::LineEdit {
+                        old: c.old.start().0..c.old.end().0,
+                        new: c.new.start().0..c.new.end().0,
+                    })
+                    .collect();
+                pairs.note_lines(line_edits);
+            }
         }
         self.mark_wrap_dirty(&wrap_dirty);
         if lines_moved {
@@ -510,15 +534,15 @@ impl CodeView {
                 e.changes
                     .ranges
                     .iter()
-                    .flat_map(|c| c.new.start().0..c.new.end().0)
+                    .flat_map(|c| {
+                        c.new.start().0.max(visible.start)..c.new.end().0.min(visible.end)
+                    })
                     .collect()
             })
             .unwrap_or_default();
         lines.push(self.cursor.selection.active.line.0);
         for line in lines {
-            if visible.contains(&line) || line == self.cursor.selection.active.line.0 {
-                self.ensure_line_now(line, window);
-            }
+            self.ensure_line_now(line, window);
         }
     }
 
@@ -2065,6 +2089,21 @@ mod tests {
         assert_eq!(new_to_old(&c, 5), 5);
         assert_eq!(new_to_old(&c, 6), 5);
         assert_eq!(new_to_old(&c, 7), 6);
+    }
+
+    #[test]
+    fn line_maps_use_the_previous_change_at_separated_ranges() {
+        let mut changes = change((5, 6), (5, 7), 1);
+        changes.ranges.extend(change((20, 22), (21, 22), -1).ranges);
+        changes.line_delta = 0;
+
+        assert_eq!(old_to_new(&changes, 19), Some(20));
+        assert_eq!(old_to_new(&changes, 20), None);
+        assert_eq!(old_to_new(&changes, 21), None);
+        assert_eq!(old_to_new(&changes, 22), Some(22));
+        assert_eq!(new_to_old(&changes, 20), 19);
+        assert_eq!(new_to_old(&changes, 21), 20);
+        assert_eq!(new_to_old(&changes, 22), 22);
     }
 
     #[test]
