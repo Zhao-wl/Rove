@@ -225,7 +225,7 @@ impl Workbench {
         }
         let consumed = std::mem::take(&mut self.hotexit.consumed);
         if let Some(path) = self.hotexit.activate.take() {
-            self.activate_restored_tab(&path);
+            self.activate_restored_tab(&path, cx);
         }
         if let Some(service) = &self.hotexit.service {
             service.finish_restore(&consumed);
@@ -247,7 +247,7 @@ impl Workbench {
         cx.notify();
     }
 
-    fn activate_restored_tab(&mut self, path: &Path) {
+    fn activate_restored_tab(&mut self, path: &Path, cx: &mut Context<Self>) {
         let key = hot_exit_key(path);
         let found = self.editor.groups.iter().find_map(|(group, pane)| {
             pane.tabs
@@ -260,6 +260,7 @@ impl Workbench {
         });
         if let Some((group, tab)) = found {
             self.editor.activate(group, tab, false);
+            self.sync_views(cx);
         }
     }
 

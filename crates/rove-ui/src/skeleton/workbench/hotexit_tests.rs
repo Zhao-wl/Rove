@@ -229,6 +229,12 @@ fn a_crash_restores_every_dirty_document_with_its_tab_order_and_a_status_message
     );
     let code = view.read_with(cx, |v, _| v.code_view().clone());
     assert_eq!(shown_text(&code, cx), "Xbbb\n", "活动标签显示恢复后的内容");
+    let active_buffer = code.read_with(cx, |code, _| {
+        code.edit_host()
+            .and_then(|host| host.session())
+            .map(|session| session.contents())
+    });
+    assert_eq!(active_buffer.as_deref(), Some("Xbbb\n"));
     assert_eq!(
         view.read_with(cx, |v, _| v.status()),
         "已恢复上次未保存的修改",
