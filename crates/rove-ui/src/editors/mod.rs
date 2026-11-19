@@ -824,22 +824,27 @@ impl EditorService {
         self.highlights = syntax::Highlights::new(syntax);
     }
 
-    /// A new snapshot of an open document (same identity, new text): every tab showing it switches to
-    /// the new snapshot in place, keeping scroll and selection (#42: the metadata view re-renders when
-    /// `rove.metadataView.showDocs` or the index changes). Highlighting restarts for the new version.
+    /// Replace snapshots in place, keeping scroll and selection. Metadata views use this when
+    /// their content changes. Language mode changes can reuse the same text and version.
     /// Returns whether any tab changed.
     pub(crate) fn reload_document(&mut self, document: Arc<Document>) -> bool {
         let mut changed = Vec::new();
+        let mut language_changed = false;
         for (&group, pane) in &mut self.groups {
             for tab in &mut pane.tabs {
                 if let Content::Ready(opened) = &mut tab.content {
                     if opened.document.id == document.id {
+                        language_changed |=
+                            opened.document.metadata.language != document.metadata.language;
                         opened.document = document.clone();
                         opened.syntax = None;
                         changed.push((group, tab.id));
                     }
                 }
             }
+        }
+        if language_changed {
+            self.highlights.release(document.id);
         }
         for &(group, tab) in &changed {
             self.start_highlight(group, tab);

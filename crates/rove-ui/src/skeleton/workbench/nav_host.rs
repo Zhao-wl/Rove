@@ -540,7 +540,7 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let Ok(hash) = task.await else { return };
             let _ = this.update(cx, |view, cx| {
-                // 计算期间文档已关闭或又换了快照：这次结果作废（新的变化会再触发一次）。
+                // 文档关闭、换快照或切离 C# 后，丢弃旧登记结果。
                 let still = view
                     .editor
                     .groups
@@ -550,6 +550,8 @@ impl Workbench {
                     .any(|o| {
                         o.document.id == buffer.document
                             && o.document.text.version() == buffer.version
+                            && is_csharp(&o.document.metadata.language)
+                            && matches!(&o.document.resource, Resource::Workspace(path) if path == &buffer.path)
                     });
                 if !still {
                     return;
