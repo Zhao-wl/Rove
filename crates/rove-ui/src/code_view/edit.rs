@@ -464,6 +464,7 @@ impl CodeView {
                 self.lines
                     .rekey(|l| old_to_new(changes, *l).filter(|_| keep.contains(l)));
             }
+            self.semantic.borrow_mut().remap(changes);
             self.decorations.remap(|l| old_to_new(changes, l));
             self.links.remap(|l| old_to_new(changes, *l));
             self.remap_wrap(changes);

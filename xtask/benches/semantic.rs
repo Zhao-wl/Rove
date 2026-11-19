@@ -101,7 +101,7 @@ fn bench(c: &mut Criterion) {
     let lines: Vec<&str> = text.lines().collect();
     let mut group = c.benchmark_group("semantic");
 
-    // 打开文件后首屏之后的「补齐」：全文件的 token → 样式区间。
+    // 单独测全文件 token 到样式区间的转换，真窗口另测首屏到补齐。
     group.bench_function("styles_5000_lines_csharp", |b| {
         b.iter(|| {
             let styles = SemanticStyles::build(black_box(&tokens), &|ty, mods| {
@@ -116,21 +116,24 @@ fn bench(c: &mut Criterion) {
         b.iter(|| black_box(FileFacts::parse(black_box(&text)).len()))
     });
 
-    // 连续滚动：整屏 40 行全部重新生成装饰（最坏情况）。
+    // 滚动经过全文件，每帧重新生成当前 40 行的全部语义装饰。
     let mut layer = SemanticLayer::default();
     layer.update(SemanticStyles::build(&tokens, &|ty, mods| {
         theme.semantic_token_style(ty, mods, LANGUAGE)
     }));
-    layer.update_inactive(vec![100..140]);
+    layer.update_inactive(vec![20..30, 100..140, 1000..1100, 3190..3210]);
     layer.unnecessary_opacity = Some(0xaa);
     group.bench_function("scroll_5000_lines_csharp", |b| {
+        let mut first = 0;
+        let last = lines.len() as u64 - 40;
         b.iter(|| {
             let mut total = 0usize;
-            for line in 0..40u64 {
+            for line in first..first + 40 {
                 let mut out = LineDecorations::default();
                 layer.decorate(line, lines[line as usize], &mut out);
-                total += out.inline.len();
+                total += out.inline.len() + usize::from(out.line.opacity.is_some());
             }
+            first = if first == last { 0 } else { first + 1 };
             black_box(total)
         })
     });

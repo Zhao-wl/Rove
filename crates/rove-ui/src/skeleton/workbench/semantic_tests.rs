@@ -163,6 +163,43 @@ fn expected_color(
 }
 
 #[gpui::test]
+fn csharp_semantic_override_applies_before_the_first_query(cx: &mut TestAppContext) {
+    use rove_config::{SettingsOptions, SettingsService};
+
+    let project = Project::new();
+    for enabled in [false, true] {
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join("settings.json"),
+            serde_json::json!({
+                "[csharp]": { "editor.semanticHighlighting.enabled": enabled },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut options = SettingsOptions::new(user.path(), user.path().join("backup"));
+        options.watch = None;
+        let settings: Arc<dyn Settings> = Arc::new(SettingsService::open(
+            options,
+            crate::app_settings::registry().unwrap(),
+        ));
+        let root = project.folder.path().to_path_buf();
+        let (view, window) = cx.add_window_view(|_, cx| {
+            Workbench::with_settings(root, Instant::now(), LayoutStore::disabled(), settings, cx)
+                .unwrap()
+        });
+        let source: Arc<dyn SemanticSource> =
+            Arc::new(ManualSemantic::ready(project.index.clone()));
+        view.update(window, |view, cx| view.attach_semantic(Some(source), cx));
+        open_file(&view, PATH, window);
+        view.read_with(window, |view, _| {
+            assert_eq!(view.semantic_highlighting_on(), enabled);
+            assert_eq!(view.semantic_query_count() > 0, enabled);
+        });
+    }
+}
+
+#[gpui::test]
 fn opening_a_cs_file_colours_a_field_by_its_semantic_token(cx: &mut TestAppContext) {
     let project = Project::new();
     let (view, cx) = project.open(cx);
@@ -242,6 +279,30 @@ fn opening_a_cs_file_colours_a_field_by_its_semantic_token(cx: &mut TestAppConte
         !covered.contains(&u64::from(decl.0)),
         "field 没有样式，不必让这一行失效：{invalid:?}"
     );
+}
+
+#[gpui::test]
+fn switching_csharp_documents_clears_old_semantics_when_the_index_is_unavailable(
+    cx: &mut TestAppContext,
+) {
+    use rove_lang_cs::router::SemanticStatus;
+
+    let project = Project::new();
+    const OTHER: &str = "Assets/Other.cs";
+    std::fs::write(project.folder.path().join(OTHER), SRC).unwrap();
+    let source = Arc::new(ManualSemantic::ready(project.index.clone()));
+    let (view, cx) = project.open(cx);
+    view.update(cx, |view, cx| {
+        view.attach_semantic(Some(source.clone()), cx);
+        view.set_semantic_setting(semantic_host::SemanticHighlighting::On, cx);
+    });
+    open_file(&view, PATH, cx);
+    let line = u64::from(inactive_lines().0);
+    assert!(line_opacity(&view, cx, line).is_some());
+
+    source.set(None, SemanticStatus::Building { percent: None });
+    open_file(&view, OTHER, cx);
+    assert_eq!(line_opacity(&view, cx, line), None);
 }
 
 #[gpui::test]

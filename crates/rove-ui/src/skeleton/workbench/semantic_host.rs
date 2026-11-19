@@ -16,6 +16,7 @@
 
 use super::*;
 use crate::code_view::semantic::{SemanticStyles, LANGUAGE};
+use gpui::EntityId;
 use rove_lang_cs::query::{ApproximationReason, CsQueries, Precision, SemanticToken};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -69,6 +70,7 @@ type LastResult = (DocumentId, Version, Arc<[SemanticToken]>, Vec<Range<u64>>);
 /// 一个代码视图槽位上的语义状态。
 #[derive(Default)]
 struct SemanticSlot {
+    owner: Option<(EntityId, DocumentId)>,
     /// 请求代次：文档换了、版本变了、索引换代了都会作废旧请求。
     epoch: u64,
     /// 已经发出过请求的 (文档, 版本, 刷新代次)。**每帧都会走一遍 `refresh_semantic`
@@ -85,6 +87,15 @@ pub(super) struct SemanticState {
     queries: Arc<AtomicUsize>,
     /// 刷新代次：索引换代、设置变化、主题变化时 +1，让所有槽位重新请求一次。
     generation: u64,
+}
+
+impl SemanticState {
+    pub(super) fn new(settings: &dyn Settings) -> Self {
+        Self {
+            setting: SemanticHighlighting::read(settings),
+            ..Self::default()
+        }
+    }
 }
 
 impl Workbench {
@@ -127,14 +138,21 @@ impl Workbench {
             self.refresh_semantic(cx);
             return;
         }
+        self.refresh_semantic(cx);
         let theme = self.theme_service.current();
         let slots: Vec<(EditorGroupId, bool)> = self.semantic.slots.keys().copied().collect();
         for key in slots {
-            let Some((_, _, tokens, _)) =
+            let Some((document, version, tokens, _)) =
                 self.semantic.slots.get(&key).and_then(|s| s.last.clone())
             else {
                 continue;
             };
+            if self
+                .shown_document(key.0, key.1)
+                .is_none_or(|shown| shown.id != document || shown.text.version() != version)
+            {
+                continue;
+            }
             let Some(code) = self.group_code(key.0, key.1).cloned() else {
                 continue;
             };
@@ -146,7 +164,6 @@ impl Workbench {
             });
         }
         // 置灰的不透明度跟着主题走（代码视图在 `set_theme` 里重算调色板）。
-        self.refresh_semantic(cx);
     }
 
     /// 重新判定每个代码视图的语义着色：开关、语言、文档级别，必要时发起查询。
@@ -161,6 +178,7 @@ impl Workbench {
                     .chain(views.secondary.is_some().then_some((*id, true)))
             })
             .collect();
+        self.semantic.slots.retain(|key, _| groups.contains(key));
         for (group, secondary) in groups {
             let document = self.shown_document(group, secondary);
             let is_csharp = document
@@ -194,6 +212,16 @@ impl Workbench {
             }
             // 每帧都会走到这里：同一份（文档, 版本, 刷新代次）只请求一次。
             let key = (document.id, document.text.version(), generation);
+            let view_id = code.entity_id();
+            if slot.owner != Some((view_id, document.id)) {
+                code.update(cx, |c, cx| {
+                    c.set_semantic_styles(SemanticStyles::default(), cx);
+                    c.set_inactive_regions(Vec::new(), cx);
+                });
+                slot.owner = Some((view_id, document.id));
+                slot.requested = None;
+                slot.last = None;
+            }
             if slot.requested == Some(key) {
                 continue;
             }
@@ -210,11 +238,11 @@ impl Workbench {
         document: Arc<Document>,
         cx: &mut Context<Self>,
     ) {
-        let epoch = self
-            .semantic
-            .slots
-            .get(&(group, secondary))
-            .map_or(0, |s| s.epoch);
+        let Some(slot) = self.semantic.slots.get(&(group, secondary)) else {
+            return;
+        };
+        let epoch = slot.epoch;
+        let owner = slot.owner;
         let key = (document.id, document.text.version());
         let resource = document.resource.clone();
         let router = self.cs_router().clone();
@@ -232,7 +260,7 @@ impl Workbench {
                     .semantic
                     .slots
                     .get(&(group, secondary))
-                    .is_none_or(|s| s.epoch != epoch)
+                    .is_none_or(|s| s.epoch != epoch || s.owner != owner)
                     || view
                         .shown_document(group, secondary)
                         .map(|d| (d.id, d.text.version()))
@@ -243,6 +271,23 @@ impl Workbench {
                 let Some(code) = view.group_code(group, secondary).cloned() else {
                     return;
                 };
+                if Some((code.entity_id(), key.0)) != owner {
+                    return;
+                }
+                let generation = view.cs_router().semantic_generation();
+                if tokens
+                    .as_ref()
+                    .is_ok_and(|result| Some(result.index_generation) != generation)
+                    || inactive
+                        .as_ref()
+                        .is_ok_and(|result| Some(result.index_generation) != generation)
+                {
+                    if let Some(slot) = view.semantic.slots.get_mut(&(group, secondary)) {
+                        slot.requested = None;
+                    }
+                    cx.notify();
+                    return;
+                }
                 // 查询本身失败（过期、索引换掉、组件不可用）：**沿用旧样式，不清空、不闪烁**。
                 // 新的请求会在文档版本或索引代次变化时自动发出。
                 if tokens.is_err() && inactive.is_err() {

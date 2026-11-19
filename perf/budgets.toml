@@ -545,13 +545,13 @@ reason = "只记录、不设门槛：增量更新的失效粒度目前是行，�
 
 [[budget]]
 id = "semantic_highlight_catch_up"
-metric = "5,000 行 C# 文件打开后，语义着色在首屏之后补齐的耗时（索引就绪）"
+metric = "5,000 行 C# 文件的语义 token 转换成视图样式区间的耗时"
 value = 100
 unit = "ms"
 owner = "#59"
 status = "enforced"
 bench = "semantic/styles_5000_lines_csharp"
-reason = "issue #59 验收：查询本身是微秒级的（索引内存映射、按文件二分），成本在装饰构建。口径是整份文件的语义 token → 样式区间（含主题侧的选择器匹配与回退表探测，样式按「类型 + 修饰符」组合缓存）。首屏仍然是语法高亮，这一项只决定语义颜色多久覆盖上去"
+reason = "issue #59 的样式构建微基准，覆盖主题选择器、回退表及样式缓存。索引、调度与绘制耗时通过真实 Workbench 的首屏到语义补齐测量，仍使用 100 ms 的 issue 验收门槛。"
 
 [[budget]]
 id = "semantic_highlight_frame_extra"

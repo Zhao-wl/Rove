@@ -13,6 +13,7 @@
 //!   [`super::view::CodeView::disabled_features`]。
 
 use super::decorations::{DecorationProvider, InlineDecoration, LineDecorations, TextStyle};
+use rove_buffer::edit::LineChanges;
 use rove_lang_cs::query::SemanticToken;
 use rove_theme::semantic::SemanticStyle;
 use rove_theme::{Color, ThemeKind};
@@ -100,7 +101,7 @@ pub type InactiveLines = Vec<Range<u64>>;
 
 /// 语义层的状态（视图持有，提供方只读）。
 pub struct SemanticLayer {
-    styles: Rc<SemanticStyles>,
+    styles: SemanticStyles,
     inactive: InactiveLines,
     /// `editorUnnecessaryCode.opacity` 的 alpha 通道（`None` 为不置灰）。
     pub unnecessary_opacity: Option<u8>,
@@ -116,7 +117,7 @@ pub struct SemanticLayer {
 impl Default for SemanticLayer {
     fn default() -> Self {
         Self {
-            styles: Rc::new(SemanticStyles::default()),
+            styles: SemanticStyles::default(),
             inactive: Vec::new(),
             unnecessary_opacity: None,
             max_line_length: Some(2500),
@@ -148,7 +149,7 @@ impl SemanticLayer {
     /// 换一份语义结果。返回需要失效的行：新旧结果覆盖到的行的并集（**只有这些行**重画）。
     pub fn update(&mut self, styles: SemanticStyles) -> Vec<Range<u64>> {
         let mut lines: Vec<u64> = self.styles.lines().chain(styles.lines()).collect();
-        self.styles = Rc::new(styles);
+        self.styles = styles;
         lines.sort_unstable();
         lines.dedup();
         to_ranges(lines)
@@ -160,6 +161,59 @@ impl SemanticLayer {
         out.extend(self.inactive.iter().cloned());
         out.retain(|r| r.start < r.end);
         out
+    }
+
+    /// Keep styling already displayed on unchanged rows while the next query runs.
+    pub(super) fn remap(&mut self, changes: &LineChanges) {
+        let Some(first) = changes.ranges.first() else {
+            return;
+        };
+        if self.is_empty() {
+            return;
+        }
+        let same_rows = changes.ranges.iter().all(|change| change.old == change.new);
+        if same_rows {
+            for change in &changes.ranges {
+                for line in change.old.start().0..change.old.end().0 {
+                    self.styles.lines.remove(&line);
+                }
+            }
+        } else {
+            let changed = self.styles.lines.split_off(&first.old.start().0);
+            self.styles
+                .lines
+                .extend(changed.into_iter().filter_map(|(line, runs)| {
+                    super::edit::old_to_new(changes, line).map(|line| (line, runs))
+                }));
+        }
+        let previous = std::mem::take(&mut self.inactive);
+        for region in previous {
+            let mut start = region.start;
+            for change in &changes.ranges {
+                let start_of_edit = change.old.start().0;
+                let end_of_edit = change.old.end().0;
+                if start_of_edit >= region.end {
+                    break;
+                }
+                if end_of_edit <= start {
+                    continue;
+                }
+                if start < start_of_edit {
+                    self.keep_inactive(changes, start..start_of_edit);
+                }
+                start = end_of_edit;
+            }
+            if start < region.end {
+                self.keep_inactive(changes, start..region.end);
+            }
+        }
+    }
+
+    fn keep_inactive(&mut self, changes: &LineChanges, range: Range<u64>) {
+        if let Some(mapped) = super::edit::old_to_new(changes, range.start) {
+            self.inactive
+                .push(mapped..mapped + (range.end - range.start));
+        }
     }
 
     /// 清空（文档关闭、语言不是 C#、开关关闭）。返回需要失效的行。
@@ -286,6 +340,37 @@ mod tests {
         let mut out = LineDecorations::default();
         layer.decorate(7, "    ok", &mut out);
         assert_eq!(out.inline[0].style.bold, Some(true));
+    }
+
+    #[test]
+    fn edits_remap_clean_styles_and_split_inactive_regions() {
+        use rove_base::Span;
+        use rove_buffer::edit::LineChange;
+
+        let mut layer = SemanticLayer::default();
+        layer.update(styles(&[
+            token(1, 0, 3, "field", &[]),
+            token(3, 0, 3, "field", &[]),
+            token(4, 0, 3, "field", &[]),
+            token(7, 0, 3, "field", &[]),
+        ]));
+        layer.update_inactive(vec![1..6]);
+        let lines = |start, end| Span::new(Line(start), Line(end)).unwrap();
+        layer.remap(&LineChanges {
+            ranges: vec![
+                LineChange {
+                    old: lines(1, 2),
+                    new: lines(1, 3),
+                },
+                LineChange {
+                    old: lines(4, 5),
+                    new: lines(5, 6),
+                },
+            ],
+            line_delta: 1,
+        });
+        assert_eq!(layer.styles.lines().collect::<Vec<_>>(), [4, 8]);
+        assert_eq!(layer.inactive, [3..5, 6..7]);
     }
 
     #[test]
