@@ -21,7 +21,7 @@ const SRC: &str = "namespace Game
 
         public void Hit(int amount)
         {
-            _health -= amount;
+            _health -= amount + MaxHealth;
         }
 #if UNITY_EDITOR
         void EditorOnly() { }
@@ -38,9 +38,9 @@ fn inactive_lines() -> (u32, u32) {
     (start, start + 3)
 }
 
-fn build_index() -> TestIndex {
+fn build_index(source: &str) -> TestIndex {
     let mut t = TestIndex::default();
-    let f = t.file(PATH, hash_bytes(SRC.as_bytes()));
+    let f = t.file(PATH, hash_bytes(source.as_bytes()));
     let unit = t.symbol("Game|T:Game.Unit", "Unit", KIND_TYPE, None);
     let max = t.symbol("Game|F:Game.Unit.MaxHealth", "MaxHealth", KIND_FIELD, None);
     let name = t.symbol("Game|F:Game.Unit._name", "_name", KIND_FIELD, None);
@@ -53,13 +53,13 @@ fn build_index() -> TestIndex {
     );
     for (sym, word, defs, refs) in [
         (unit, "Unit", 1, 0),
-        (max, "MaxHealth", 1, 0),
+        (max, "MaxHealth", 1, 1),
         (name, "_name", 1, 0),
         (health, "_health", 1, 1),
         (hit, "Hit", 1, 0),
     ] {
         for nth in 0..defs + refs {
-            let (line, col) = find_word(SRC, word, nth);
+            let (line, col) = find_word(source, word, nth);
             if nth < defs {
                 t.def(sym, f, line, col);
             } else {
@@ -83,7 +83,7 @@ impl Project {
         std::fs::create_dir(folder.path().join("Assets")).unwrap();
         std::fs::write(folder.path().join(PATH), SRC).unwrap();
         let file = folder.path().join("index.idx");
-        build_index().write(&file).unwrap();
+        build_index(SRC).write(&file).unwrap();
         let index = Arc::new(CsIndex::open(&file).unwrap());
         Self { folder, index }
     }
@@ -278,6 +278,77 @@ fn opening_a_cs_file_colours_a_field_by_its_semantic_token(cx: &mut TestAppConte
     assert!(
         !covered.contains(&u64::from(decl.0)),
         "field 没有样式，不必让这一行失效：{invalid:?}"
+    );
+}
+
+#[gpui::test]
+fn editing_a_csharp_method_only_hides_semantic_color_until_the_new_index(cx: &mut TestAppContext) {
+    use rove_base::{Position, Utf8Column};
+    use rove_lang_cs::router::{L2Snapshot, SemanticStatus};
+
+    let project = Project::new();
+    let (view, cx) = project.open(cx);
+    open_file(&view, PATH, cx);
+    let mark = find_word(SRC, "MaxHealth", 1);
+    let unchanged = find_word(SRC, "MaxHealth", 0);
+    let color = expected_color(&view, cx, "variable", &["static", "readonly"]).unwrap();
+    assert_eq!(
+        style_at(&view, cx, mark).and_then(|s| s.foreground),
+        Some(color)
+    );
+
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let end = Position {
+            line: rove_base::Line(u64::from(mark.0)),
+            column: Utf8Column(u64::from(mark.1) + "MaxHealth".len() as u64),
+        };
+        code.set_selection(crate::code_view::Selection::caret(end), None, cx);
+    });
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input(" + 1");
+    refresh(cx);
+    assert_ne!(
+        style_at(&view, cx, mark).and_then(|s| s.foreground),
+        Some(color)
+    );
+    assert_eq!(
+        style_at(&view, cx, unchanged).and_then(|s| s.foreground),
+        Some(color)
+    );
+
+    let save = crate::save::registry::action_for("workbench.action.files.save").unwrap();
+    cx.update(|window, cx| window.dispatch_action(save, cx));
+    refresh(cx);
+    let saved = std::fs::read_to_string(project.folder.path().join(PATH)).unwrap();
+    assert_eq!(saved, SRC.replace("MaxHealth;", "MaxHealth + 1;"));
+    assert_ne!(
+        style_at(&view, cx, mark).and_then(|s| s.foreground),
+        Some(color)
+    );
+
+    let new_index = project.folder.path().join("after-save.idx");
+    build_index(&saved).write(&new_index).unwrap();
+    let new_index = Arc::new(CsIndex::open(&new_index).unwrap());
+    let semantic = ManualSemantic::ready(new_index.clone());
+    semantic.set(
+        Some(L2Snapshot {
+            holder: new_index,
+            generation: 2,
+            trusted: true,
+        }),
+        SemanticStatus::Ready,
+    );
+    let before = view.read_with(cx, |v, _| v.shell.feedback.notifications().len());
+    view.update(cx, |v, cx| v.attach_semantic(Some(Arc::new(semantic)), cx));
+    refresh(cx);
+    assert_eq!(
+        style_at(&view, cx, mark).and_then(|s| s.foreground),
+        Some(color)
+    );
+    assert_eq!(
+        view.read_with(cx, |v, _| v.shell.feedback.notifications().len()),
+        before
     );
 }
 
