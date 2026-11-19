@@ -26,11 +26,11 @@ use crate::list_widget::text_input::{TextInput, TextInputColors, TextInputEvent}
 use crate::shell::icons;
 use gpui::{
     div, prelude::*, px, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    IntoElement, KeyContext, MouseButton, Render, SharedString, Window,
+    IntoElement, KeyContext, MouseButton, Render, SharedString, Task, Window,
 };
-use rove_base::{Cancellation, Position, Span, TextRange};
-use rove_buffer::edit::Transaction;
-use rove_buffer::TextSource;
+use rove_base::{ByteOffset, Cancellation, Position, Span, TextRange};
+use rove_buffer::edit::{EditBuffer, Transaction};
+use rove_buffer::{RopeText, TextSource};
 use rove_config::{Key, Scope, Settings};
 use rove_i18n::{Message, Strings};
 use rove_theme::{Theme, ThemeKind};
@@ -44,6 +44,19 @@ const WIDTH: f32 = 419.0;
 /// 查找条一行的高度（含上下内边距），也是 `editor.find.addExtraSpaceOnTop` 留出的空间。
 const ROW_HEIGHT: f32 = 33.0;
 const HISTORY_LIMIT: usize = 100;
+const BACKGROUND_REPLACE_MATCHES: usize = 128;
+
+type ReplacementScope = (ByteOffset, ByteOffset, i64);
+
+struct ReplacementPlan {
+    transaction: Transaction,
+    scope: Option<ReplacementScope>,
+}
+
+fn updated_scope(scope: Option<ReplacementScope>, text: &dyn TextSource) -> Option<TextRange> {
+    let (start, end, delta) = scope?;
+    replace::shifted_scope(start, end, delta, text).ok()
+}
 
 /// `editor.find.*` 设置的当前值。
 #[derive(Clone, Debug, PartialEq)]
@@ -350,6 +363,7 @@ pub struct FindHost {
     pending_after: After,
     /// #48：这一次文本变化是本查找条的替换引起的，范围已经自己算好了，不要清掉。
     keep_scope: bool,
+    replace_task: Option<(Cancellation, Task<()>)>,
     /// 文档的大小级别（#8 分级）：超大文件只读，不提供替换（#22）。
     size: rove_buffer::SizeClass,
     /// 查找文本改了但还没搜索（`editor.find.findOnType` 关闭时等回车）。
@@ -365,6 +379,12 @@ pub enum FindEvent {
 }
 
 impl EventEmitter<FindEvent> for FindHost {}
+
+impl Drop for FindHost {
+    fn drop(&mut self) {
+        self.cancel_replacements();
+    }
+}
 
 impl FindHost {
     pub fn new(
@@ -448,6 +468,7 @@ impl FindHost {
             pending_research: false,
             pending_after: After::Nothing,
             keep_scope: false,
+            replace_task: None,
             size: rove_buffer::SizeClass::Normal,
             dirty: false,
             _subs: subs,
@@ -683,7 +704,7 @@ impl FindHost {
         self.model.set_search(&search);
         if opts.update_scope {
             if let Some(scope) = plan.scope {
-                self.model.set_in_selection(Some(scope));
+                self.change_search_scope(Some(scope));
             }
         }
         // 输入框与历史。
@@ -727,6 +748,7 @@ impl FindHost {
         if !self.visible {
             return;
         }
+        self.cancel_replacements();
         self.record_history(cx);
         let input_focused = self.input.read(cx).focus_handle(cx).is_focused(window)
             || self
@@ -1088,17 +1110,24 @@ impl FindHost {
         if !self.visible {
             return;
         }
-        if self.model.in_selection() {
-            self.model.set_in_selection(None);
+        let scope = if self.model.in_selection() {
+            None
         } else {
             let sel = self.code.read(cx).selection();
             if sel.is_empty() {
                 return;
             }
-            self.model
-                .set_in_selection(Some(Span::new(sel.start(), sel.end()).expect("ordered")));
-        }
+            Some(Span::new(sel.start(), sel.end()).expect("ordered"))
+        };
+        self.change_search_scope(scope);
         self.research(After::Nothing, cx);
+    }
+
+    fn change_search_scope(&mut self, scope: Option<TextRange>) {
+        if self.model.scope() != scope.as_ref() {
+            self.cancel_replacements();
+            self.model.set_in_selection(scope);
+        }
     }
 
     // ------------------------------------------------------------------ 替换（#48）
@@ -1184,14 +1213,14 @@ impl FindHost {
         self.run_replacements(None, window, cx);
     }
 
-    /// 替换 `single`（`None` = 全部）。区间与替换文本都在编辑会话的快照上算，所以界面上的匹配
-    /// 列表过期时也不会改错位置：模型的列表对不上版本或被截断时，这里就地重新扫描一遍。
+    /// Build a replacement against the text and search options at invocation.
     fn run_replacements(
         &mut self,
         single: Option<Match>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_replacements();
         let Some(searcher) = self.model.searcher().cloned() else {
             return;
         };
@@ -1199,71 +1228,181 @@ impl FindHost {
         let pattern = replace::ReplacePattern::parse(&template, self.model.options().regex);
         let preserve_case = self.shared.borrow().preserve_case;
         let scope = self.model.scope().cloned();
+        let original_scope = scope.clone();
         let searched_version = self.searched_version;
         let usable =
             !self.model.limit_exceeded() && matches!(self.model.state(), SearchState::Idle);
         let cached = self.model.matches().clone();
-        let moved_scope: Rc<RefCell<Option<TextRange>>> = Rc::default();
-        let out = moved_scope.clone();
-        // 文本变化事件会先于下面的收尾到达：别让它把范围清掉。
+        let background = if single.is_none() {
+            let code = self.code.read(cx);
+            let Some(buffer) = code
+                .edit_host()
+                .and_then(|host| host.session().map(|session| session.buffer().clone()))
+            else {
+                return;
+            };
+            if code.text().map(|text| text.version()) != Some(buffer.version()) {
+                return;
+            }
+            (!usable
+                || searched_version != Some(buffer.version())
+                || cached.len() >= BACKGROUND_REPLACE_MATCHES)
+                .then_some(buffer)
+        } else {
+            None
+        };
+        let plan = move |snap: &RopeText,
+                         cancel: &Cancellation|
+              -> rove_base::Result<Option<ReplacementPlan>> {
+            let fresh = searched_version == Some(snap.version());
+            let scanned;
+            let matches: &[Match] = match &single {
+                Some(m) if fresh => std::slice::from_ref(m),
+                Some(_) => return Err(rove_base::Error::Stale),
+                None if fresh && usable => cached.as_slice(),
+                None => {
+                    scanned = engine::search_all(
+                        snap,
+                        &searcher,
+                        scope.as_ref(),
+                        usize::MAX,
+                        cancel,
+                        &mut |_, _| {},
+                    )?
+                    .matches;
+                    &scanned
+                }
+            };
+            if matches.is_empty() {
+                return Ok(None);
+            }
+            let edits = replace::plan_replacements_in_scope(
+                snap,
+                &searcher,
+                matches,
+                scope.as_ref(),
+                &pattern,
+                preserve_case,
+            )?;
+            let bounds = match &scope {
+                Some(scope) => {
+                    let start = snap.offset(scope.start())?;
+                    let end = snap.offset(scope.end())?;
+                    Some((start, end, replace::scope_delta(end, &edits)))
+                }
+                None => None,
+            };
+            Ok(Some(ReplacementPlan {
+                transaction: Transaction::new(edits)?,
+                scope: bounds,
+            }))
+        };
+        if let Some(buffer) = background {
+            self.queue_replacements(buffer, plan, template, original_scope, window, cx);
+            return;
+        }
+
+        let mut moved_scope = None;
         self.keep_scope = true;
         let edited = self.code.update(cx, |code, cx| {
-            code.run_edit(Some(window), cx, move |session, snap, now| {
-                let fresh = searched_version == Some(snap.version());
-                let scanned;
-                let matches: &[Match] = match &single {
-                    Some(m) if fresh => std::slice::from_ref(m),
-                    // 列表与快照对不上：单处替换放弃（位置可能已经不对），全部替换重新扫描。
-                    Some(_) => return Err(rove_base::Error::InvalidInput),
-                    None if fresh && usable => cached.as_slice(),
-                    None => {
-                        scanned = engine::search_all(
-                            &**snap,
-                            &searcher,
-                            scope.as_ref(),
-                            usize::MAX,
-                            &Cancellation::default(),
-                            &mut |_, _| {},
-                        )?
-                        .matches;
-                        &scanned
-                    }
-                };
-                if matches.is_empty() {
+            code.run_edit(Some(window), cx, |session, snap, now| {
+                let Some(plan) = plan(snap, &Cancellation::default())? else {
                     return Ok(Default::default());
-                }
-                let edits = replace::plan_replacements_in_scope(
-                    &**snap,
-                    &searcher,
-                    matches,
-                    scope.as_ref(),
-                    &pattern,
-                    preserve_case,
-                )?;
-                let bounds = match &scope {
-                    Some(s) => Some((snap.offset(s.start())?, snap.offset(s.end())?)),
-                    None => None,
                 };
-                let delta = bounds
-                    .map(|(_, end)| replace::scope_delta(end, &edits))
-                    .unwrap_or(0);
-                let applied = session.edit(Transaction::new(edits)?, now)?;
-                if let Some((start, end)) = bounds {
-                    *out.borrow_mut() =
-                        replace::shifted_scope(start, end, delta, &*session.snapshot()).ok();
-                }
+                let applied = session.edit(plan.transaction, now)?;
+                moved_scope = updated_scope(plan.scope, &*session.snapshot());
                 Ok(Some(applied).into())
             })
         });
+        self.finish_replacements(edited, single, moved_scope, &template, cx);
+    }
+
+    fn cancel_replacements(&mut self) {
+        if let Some((cancel, _task)) = self.replace_task.take() {
+            cancel.cancel();
+        }
+    }
+
+    fn queue_replacements(
+        &mut self,
+        buffer: EditBuffer,
+        plan: impl FnOnce(&RopeText, &Cancellation) -> rove_base::Result<Option<ReplacementPlan>>
+            + Send
+            + 'static,
+        template: String,
+        original_scope: Option<TextRange>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cancel = Cancellation::default();
+        let Some(mut session) = self
+            .code
+            .read(cx)
+            .edit_host()
+            .and_then(|host| host.session())
+        else {
+            return;
+        };
+        if session
+            .begin_preparation(buffer.version(), cancel.clone())
+            .is_err()
+        {
+            return;
+        }
+        drop(session);
+        let worker_cancel = cancel.clone();
+        let work = cx.background_executor().spawn(async move {
+            let Some(plan) = plan(buffer.text(), &worker_cancel)? else {
+                return Ok(None);
+            };
+            worker_cancel.check()?;
+            let prepared = buffer.prepare(&plan.transaction)?;
+            worker_cancel.check()?;
+            let scope = updated_scope(plan.scope, prepared.text());
+            let combined = prepared.coalesced()?;
+            Ok::<_, rove_base::Error>(Some((prepared, scope, combined)))
+        });
+        let finished = cancel.clone();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            if finished.check().is_err() {
+                return;
+            }
+            // Clear the session's pending status before committing or returning.
+            finished.cancel();
+            let Ok(Some((prepared, scope, combined))) = result else {
+                return;
+            };
+            let _ = this.update_in(cx, |view, window, cx| {
+                if view.model.scope() != original_scope.as_ref() {
+                    return;
+                }
+                view.keep_scope = true;
+                let edited = view.code.update(cx, |code, cx| {
+                    code.run_prepared_edit(window, cx, prepared, combined)
+                });
+                view.finish_replacements(edited, None, scope, &template, cx);
+            });
+        });
+        self.replace_task = Some((cancel, task));
+    }
+
+    fn finish_replacements(
+        &mut self,
+        edited: bool,
+        single: Option<Match>,
+        moved_scope: Option<TextRange>,
+        template: &str,
+        cx: &mut Context<Self>,
+    ) {
         if !edited {
             self.keep_scope = false;
             return;
         }
-        if let Some(moved) = moved_scope.borrow_mut().take() {
+        if let Some(moved) = moved_scope {
             self.model.set_in_selection(Some(moved));
         }
-        self.record_replace_history(cx);
-        // 替换之后重新搜索（文本变化事件会登记）；替换一处时再前进到下一处匹配。
+        self.record_replace_history(template, cx);
         self.pending_after = match single {
             Some(_) => After::MoveFrom(self.code.read(cx).selection().end()),
             None => After::Nothing,
@@ -1272,17 +1411,16 @@ impl FindHost {
         cx.notify();
     }
 
-    fn record_replace_history(&mut self, cx: &mut Context<Self>) {
+    fn record_replace_history(&mut self, text: &str, cx: &mut Context<Self>) {
         if !self.cfg.replace_history_workspace {
             return;
         }
-        let text = self.replace_input.read(cx).text().to_string();
         self.replace_input.update(cx, |input, _| {
             if let Some(h) = input.history.as_mut() {
-                h.add(&text);
+                h.add(text);
             }
         });
-        let write = self.shared.borrow_mut().add_replace_history(&text);
+        let write = self.shared.borrow_mut().add_replace_history(text);
         self.write_history(write, cx);
     }
 

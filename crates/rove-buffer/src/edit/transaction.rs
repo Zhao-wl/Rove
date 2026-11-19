@@ -1,7 +1,7 @@
 //! 编辑事务与可编辑缓冲（#46）。
 //!
 //! - [`Transaction`]：一组按位置排序、互不重叠的 [`Replacement`]，原子执行；所有区间都以
-//!   **事务开始前**的字节偏移给出，执行时从后往前应用，后面的区间不需要调用方自己平移。
+//!   **事务开始前**的字节偏移给出，调用方无需平移。编辑通知按从后往前的应用顺序产生。
 //! - [`EditBuffer`]：持有当前文本（写时复制的 rope），每次成功的事务产出新的不可变快照
 //!   [`RopeText`]（新 [`Version`]）以及 [`AppliedEdit`]：给 tree-sitter 的 [`InputEdit`]、
 //!   给视图的按行失效通知 [`LineChanges`]、以及撤销用的反向事务。
@@ -285,6 +285,28 @@ pub fn normalize_newlines(text: &str, eol: Eol) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// A transaction prepared against an immutable snapshot. The live session
+/// accepts it only while the source version and newline policy still match.
+#[derive(Debug)]
+pub struct PreparedEdit {
+    buffer: EditBuffer,
+    applied: AppliedEdit,
+}
+
+impl PreparedEdit {
+    pub fn before_version(&self) -> Version {
+        self.applied.before
+    }
+
+    pub fn text(&self) -> &RopeText {
+        self.buffer.text()
+    }
+
+    pub fn coalesced(&self) -> Result<Option<TextEdit>> {
+        self.applied.coalesced(self.text())
+    }
+}
+
 /// 可编辑的文本：当前快照 + 主换行符 + 只读原因。
 ///
 /// 只读原因非空或文档是超大文件时，编辑接口返回 [`Error::Unsupported`]（超大文件一律只读，
@@ -394,6 +416,26 @@ impl EditBuffer {
         }
     }
 
+    /// Apply a transaction to a buffer snapshot owned by a background worker.
+    pub fn prepare(mut self, transaction: &Transaction) -> Result<PreparedEdit> {
+        let applied = self.apply(transaction)?;
+        Ok(PreparedEdit {
+            buffer: self,
+            applied,
+        })
+    }
+
+    pub(super) fn install(&mut self, prepared: PreparedEdit) -> Result<AppliedEdit> {
+        if !self.read_only.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        if self.version() != prepared.applied.before || self.eol() != prepared.buffer.eol() {
+            return Err(Error::Stale);
+        }
+        self.text = prepared.buffer.text;
+        Ok(prepared.applied)
+    }
+
     /// 原子执行一个事务。区间越界、不在 Unicode scalar 边界、或（规范化模式下）落在 CRLF
     /// 中间时返回 [`Error::OutOfBounds`]，文本保持不变。
     pub fn apply(&mut self, transaction: &Transaction) -> Result<AppliedEdit> {
@@ -417,58 +459,45 @@ impl EditBuffer {
             spans.push((start, end));
         }
         let eol = self.eol();
-        let texts: Vec<Cow<'_, str>> = transaction
+        let texts: Vec<Arc<str>> = transaction
             .edits
             .iter()
             .map(|edit| match transaction.newlines {
-                NewlineMode::Normalize => normalize_newlines(&edit.text, eol),
-                NewlineMode::Verbatim => Cow::Borrowed(&*edit.text),
+                NewlineMode::Normalize => match normalize_newlines(&edit.text, eol) {
+                    Cow::Borrowed(_) => edit.text.clone(),
+                    Cow::Owned(normalized) => normalized.into(),
+                },
+                NewlineMode::Verbatim => edit.text.clone(),
             })
             .collect();
 
         let before = self.text.version();
-        let mut rope = old.clone();
         let count = spans.len();
-        let mut removed: Vec<String> = vec![String::new(); count];
-        let mut input_edits = Vec::with_capacity(count);
-        let mut text_edits = Vec::with_capacity(count);
-        for index in (0..count).rev() {
-            let (start, end) = spans[index];
-            let inserted = &texts[index];
-            let start_position = position_in(&rope, start);
-            let old_end_position = position_in(&rope, end);
-            if start < end {
-                removed[index] = rope.byte_slice(start..end).to_string();
-                let start_char = rope.byte_to_char(start);
-                let end_char = rope.byte_to_char(end);
-                rope.remove(start_char..end_char);
-            }
-            if !inserted.is_empty() {
-                rope.insert(rope.byte_to_char(start), inserted);
-            }
-            let new_end = start + inserted.len();
-            let new_end_position = position_in(&rope, new_end);
-            input_edits.push(InputEdit {
-                start_byte: ByteOffset(start as u64),
-                old_end_byte: ByteOffset(end as u64),
-                new_end_byte: ByteOffset(new_end as u64),
-                start_position,
-                old_end_position,
-                new_end_position,
-            });
-            text_edits.push(TextEdit {
+        let Rewrite {
+            rope,
+            removed,
+            input_edits,
+            line_changes: dense_changes,
+        } = rewrite_dense_lines(old, &spans, &texts)
+            .unwrap_or_else(|| rewrite_backwards(old, &spans, &texts));
+        let text_edits = transaction
+            .edits
+            .iter()
+            .zip(&texts)
+            .rev()
+            .map(|(edit, inserted)| TextEdit {
                 version: before,
-                range: transaction.edits[index].range.clone(),
-                inserted: Arc::from(&**inserted),
-            });
-        }
+                range: edit.range.clone(),
+                inserted: inserted.clone(),
+            })
+            .collect();
 
         let mut old_ranges = Vec::with_capacity(count);
         let mut new_ranges = Vec::with_capacity(count);
         let mut forward = Vec::with_capacity(count);
         let mut inverse = Vec::with_capacity(count);
         let mut byte_delta: i64 = 0;
-        for index in 0..count {
+        for (index, removed) in removed.into_iter().enumerate() {
             let (start, end) = spans[index];
             let inserted_len = texts[index].len();
             let new_start = (start as i64 + byte_delta) as u64;
@@ -480,16 +509,16 @@ impl EditBuffer {
             old_ranges.push(transaction.edits[index].range.clone());
             forward.push(Replacement::new(
                 transaction.edits[index].range.clone(),
-                &*texts[index],
+                texts[index].clone(),
             ));
-            inverse.push(Replacement::new(
-                new_range.clone(),
-                std::mem::take(&mut removed[index]),
-            ));
+            inverse.push(Replacement::new(new_range.clone(), removed));
             new_ranges.push(new_range);
         }
 
-        let changes = line_changes(old, &rope, &old_ranges, &new_ranges)?;
+        let changes = match dense_changes {
+            Some(changes) => changes,
+            None => line_changes(old, &rope, &old_ranges, &new_ranges)?,
+        };
         self.text = Arc::new(RopeText::from_rope(rope));
         Ok(AppliedEdit {
             before,
@@ -508,6 +537,130 @@ impl EditBuffer {
                 newlines: NewlineMode::Verbatim,
             },
         })
+    }
+}
+
+struct Rewrite {
+    rope: Rope,
+    removed: Vec<Arc<str>>,
+    input_edits: Vec<InputEdit>,
+    line_changes: Option<LineChanges>,
+}
+
+/// Bulk Replace All tends to change most rope leaves. For dense edits that
+/// leave all line terminators intact, build the new rope in document order.
+/// Only bytes to the right of an edit have already changed in the equivalent
+/// reverse application, so its original line and byte column are still valid.
+fn rewrite_dense_lines(
+    old: &Rope,
+    spans: &[(usize, usize)],
+    texts: &[Arc<str>],
+) -> Option<Rewrite> {
+    // Sparse edits benefit from sharing untouched subtrees with old snapshots.
+    if spans.len() < 128 || old.len_bytes() / spans.len() > 4096 {
+        return None;
+    }
+    let mut builder = ropey::RopeBuilder::new();
+    let mut removed = Vec::with_capacity(spans.len());
+    let mut input_edits = Vec::with_capacity(spans.len());
+    let mut changes = LineChanges::default();
+    let mut copied = 0;
+    for (&(start, end), inserted) in spans.iter().zip(texts) {
+        let slice = old.byte_slice(start..end);
+        let has_line_break = |text: &str| memchr::memchr2(b'\r', b'\n', text.as_bytes()).is_some();
+        if has_line_break(inserted)
+            || slice.chunks().any(has_line_break)
+            || inside_crlf(old, start)
+            // Deleting text just after a CR could join it with a following LF,
+            // including an LF exposed by another touching deletion.
+            || (inserted.is_empty() && start > 0 && old.byte(start - 1) == b'\r')
+        {
+            return None;
+        }
+        for chunk in old.byte_slice(copied..start).chunks() {
+            builder.append(chunk);
+        }
+        builder.append(inserted);
+        copied = end;
+        removed.push(match slice.as_str() {
+            Some(text) => Arc::from(text),
+            None => Arc::from(slice.to_string()),
+        });
+        let start_position = position_in(old, start);
+        let line = start_position.line;
+        if changes
+            .ranges
+            .last()
+            .is_none_or(|change| change.old.start() != line)
+        {
+            let range = Span::new(line, Line(line.0 + 1)).expect("单行区间有效");
+            changes.ranges.push(LineChange {
+                old: range.clone(),
+                new: range,
+            });
+        }
+        let position_after = |bytes: usize| Position {
+            line: start_position.line,
+            column: Utf8Column(start_position.column.0 + bytes as u64),
+        };
+        input_edits.push(InputEdit {
+            start_byte: ByteOffset(start as u64),
+            old_end_byte: ByteOffset(end as u64),
+            new_end_byte: ByteOffset((start + inserted.len()) as u64),
+            start_position,
+            old_end_position: position_after(end - start),
+            new_end_position: position_after(inserted.len()),
+        });
+    }
+    for chunk in old.byte_slice(copied..).chunks() {
+        builder.append(chunk);
+    }
+    input_edits.reverse();
+    Some(Rewrite {
+        rope: builder.finish(),
+        removed,
+        input_edits,
+        line_changes: Some(changes),
+    })
+}
+
+fn rewrite_backwards(old: &Rope, spans: &[(usize, usize)], texts: &[Arc<str>]) -> Rewrite {
+    let mut rope = old.clone();
+    let mut removed: Vec<Arc<str>> = vec![Arc::from(""); spans.len()];
+    let mut input_edits = Vec::with_capacity(spans.len());
+    for index in (0..spans.len()).rev() {
+        let (start, end) = spans[index];
+        let inserted = &texts[index];
+        let start_position = position_in(&rope, start);
+        let old_end_position = position_in(&rope, end);
+        if start < end {
+            let slice = rope.byte_slice(start..end);
+            removed[index] = match slice.as_str() {
+                Some(text) => Arc::from(text),
+                None => Arc::from(slice.to_string()),
+            };
+            let start_char = rope.byte_to_char(start);
+            let end_char = rope.byte_to_char(end);
+            rope.remove(start_char..end_char);
+        }
+        if !inserted.is_empty() {
+            rope.insert(rope.byte_to_char(start), inserted);
+        }
+        let new_end = start + inserted.len();
+        input_edits.push(InputEdit {
+            start_byte: ByteOffset(start as u64),
+            old_end_byte: ByteOffset(end as u64),
+            new_end_byte: ByteOffset(new_end as u64),
+            start_position,
+            old_end_position,
+            new_end_position: position_in(&rope, new_end),
+        });
+    }
+    Rewrite {
+        rope,
+        removed,
+        input_edits,
+        line_changes: None,
     }
 }
 

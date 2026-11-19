@@ -30,7 +30,7 @@ pub use selection::{CursorPlacement, Selection, Selections};
 pub use session::{CursorEdit, EditSession};
 pub use settings::EditOptions;
 pub use transaction::{
-    AppliedEdit, Bias, EditBuffer, InputEdit, LineChange, LineChanges, NewlineMode, Replacement,
-    Transaction,
+    AppliedEdit, Bias, EditBuffer, InputEdit, LineChange, LineChanges, NewlineMode, PreparedEdit,
+    Replacement, Transaction,
 };
 pub use word::{DeleteWord, MoveWord, WordClassifier};

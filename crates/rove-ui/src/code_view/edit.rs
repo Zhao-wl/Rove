@@ -544,6 +544,39 @@ impl CodeView {
             Instant,
         ) -> rove_base::Result<EditOutcome>,
     ) -> bool {
+        self.run_edit_inner(window, cx, None, f)
+    }
+
+    pub(crate) fn run_prepared_edit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        prepared: ed::PreparedEdit,
+        combined: Option<TextEdit>,
+    ) -> bool {
+        let version = self
+            .edit_host()
+            .and_then(|host| host.session().map(|session| session.buffer().version()));
+        let expected = Some(prepared.before_version());
+        if version != expected || self.text.as_ref().map(|text| text.version()) != expected {
+            return false;
+        }
+        self.run_edit_inner(Some(window), cx, combined, |session, _, now| {
+            Ok(Some(session.edit_prepared(prepared, now)?).into())
+        })
+    }
+
+    fn run_edit_inner(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+        combined: Option<TextEdit>,
+        f: impl FnOnce(
+            &mut EditSession,
+            &Arc<rove_buffer::RopeText>,
+            Instant,
+        ) -> rove_base::Result<EditOutcome>,
+    ) -> bool {
         if self.is_read_only() {
             self.edit_blocked(cx);
             return false;
@@ -620,7 +653,7 @@ impl CodeView {
             self.rebuild_lines_now(&outcome.edits, window);
             window.invalidate_character_coordinates();
         }
-        let combined = combine_edits(&outcome.edits, &*after);
+        let combined = combined.or_else(|| combine_edits(&outcome.edits, &*after));
         let notice = EditNotice(Arc::new(TextEdited {
             before,
             after,

@@ -470,6 +470,51 @@ fn replace_all_rewrites_five_thousand_matches_in_one_undo_unit(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn pending_replace_preserves_undo_order_and_respects_scope_changes(cx: &mut TestAppContext) {
+    use crate::find::registry::{REPLACE_ALL, TOGGLE_IN_SELECTION};
+
+    let fixture = Fixture::new("{}");
+    let source = "foo\n".repeat(160);
+    fixture.file("pending.txt", &source);
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "pending.txt", cx);
+    type_text("x", cx);
+    let with_earlier_edit = format!("x{source}");
+    assert_eq!(text(&view, cx), with_earlier_edit);
+    prepare("foo", "bar", cx);
+    select(&view, pos(0, 0), pos(159, 3), cx);
+    press("alt-l", cx);
+    assert_eq!(matches(&view, cx), 160);
+    assert!(host(&view, cx).read_with(cx, |find, _| find.model().in_selection()));
+
+    let find = host(&view, cx);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    cx.update(|window, cx| {
+        find.update(cx, |find, cx| {
+            assert!(find.execute(REPLACE_ALL, window, cx))
+        });
+        code.update(cx, |code, cx| {
+            assert!(code.execute_edit("undo", window, cx).is_some())
+        });
+    });
+    refresh(cx);
+    assert_eq!(text(&view, cx), with_earlier_edit);
+
+    cx.update(|window, cx| {
+        find.update(cx, |find, cx| {
+            assert!(find.execute(REPLACE_ALL, window, cx));
+            assert!(find.execute(TOGGLE_IN_SELECTION, window, cx));
+        });
+        code.update(cx, |code, cx| {
+            assert!(code.execute_edit("undo", window, cx).is_some())
+        });
+    });
+    refresh(cx);
+    assert_eq!(text(&view, cx), source);
+    assert!(!find.read_with(cx, |find, _| find.model().in_selection()));
+}
+
+#[gpui::test]
 fn replace_history_is_browsed_with_up_and_down(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);

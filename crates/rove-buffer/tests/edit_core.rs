@@ -406,6 +406,99 @@ fn line_changes_merge_ranges_on_the_same_line() {
 }
 
 #[test]
+fn undo_cancels_a_pending_preparation_without_consuming_earlier_history() {
+    for has_history in [false, true] {
+        let mut session = lf_session("abc");
+        if has_history {
+            session
+                .edit(Transaction::single(span(0, 1), "x"), Instant::now())
+                .unwrap();
+        }
+        let contents = session.contents();
+        let cancel = rove_base::Cancellation::default();
+        session
+            .begin_preparation(session.buffer().version(), cancel.clone())
+            .unwrap();
+        assert!(session.can_undo());
+        assert_eq!(session.clone().can_undo(), has_history);
+        assert!(session.undo().unwrap().is_empty());
+        assert!(matches!(cancel.check(), Err(Error::Cancelled)));
+        assert_eq!(session.contents(), contents);
+        assert_eq!(session.can_undo(), has_history);
+        session.undo().unwrap();
+        assert_eq!(session.contents(), "abc");
+    }
+}
+
+#[test]
+fn prepared_edits_check_the_live_version_and_form_one_undo_unit() {
+    let mut session = lf_session("abc");
+    let source = session.buffer().clone();
+    let prepared = source
+        .clone()
+        .prepare(&Transaction::single(span(0, 1), "xy"))
+        .unwrap();
+    let stale = source
+        .prepare(&Transaction::single(span(1, 2), "z"))
+        .unwrap();
+    assert_eq!(&*prepared.coalesced().unwrap().unwrap().inserted, "xy");
+    assert_eq!(session.contents(), "abc");
+
+    cursor(&mut session, 3);
+    session.edit_prepared(prepared, Instant::now()).unwrap();
+    assert_eq!(session.contents(), "xybc");
+    assert_eq!(offsets(&session), [(4, 4)]);
+    assert!(matches!(
+        session.edit_prepared(stale, Instant::now()),
+        Err(Error::Stale)
+    ));
+    assert_eq!(session.contents(), "xybc");
+    session.undo().unwrap();
+    assert_eq!(session.contents(), "abc");
+    assert!(!session.can_undo());
+    session.redo().unwrap();
+    assert_eq!(session.contents(), "xybc");
+}
+
+#[test]
+fn dense_edits_match_reverse_application_and_undo_as_one_transaction() {
+    let text = "文字 target x\r\nβ target y\n".repeat(180);
+    let edits: Vec<_> = text
+        .match_indices("target")
+        .enumerate()
+        .map(|(index, (byte, old))| {
+            let replacement = if index % 3 == 0 { "" } else { "樹" };
+            Replacement::new(span(byte as u64, (byte + old.len()) as u64), replacement)
+        })
+        .collect();
+    let mut reference = EditBuffer::new(&text, LineEndings::Mixed { preferred: Eol::Lf });
+    let expected: Vec<_> = edits
+        .iter()
+        .rev()
+        .map(|edit| {
+            reference
+                .apply(&Transaction::single(edit.range.clone(), edit.text.clone()))
+                .unwrap()
+                .input_edits[0]
+        })
+        .collect();
+
+    let mut session = lf_session(&text);
+    let applied = session
+        .edit(Transaction::new(edits).unwrap(), Instant::now())
+        .unwrap();
+    assert_eq!(applied.input_edits, expected);
+    assert_eq!(session.contents(), reference.contents());
+    assert_eq!(applied.changes.line_delta, 0);
+    assert_eq!(applied.changes.ranges.len(), expected.len());
+    session.undo().unwrap();
+    assert_eq!(session.contents(), text);
+    assert!(!session.can_undo());
+    session.redo().unwrap();
+    assert_eq!(session.contents(), reference.contents());
+}
+
+#[test]
 fn undo_and_redo_multirange_edit_that_forms_crlf() {
     let initial = "ab\n中\r\n";
     let edited = "\r\n中\r\n";

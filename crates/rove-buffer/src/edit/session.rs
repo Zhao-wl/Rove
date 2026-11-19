@@ -34,6 +34,24 @@ impl CursorEdit {
     }
 }
 
+#[derive(Default)]
+struct PendingPreparation(Option<(Version, Cancellation)>);
+
+impl Clone for PendingPreparation {
+    fn clone(&self) -> Self {
+        // A session copy must not take ownership of the live session's worker.
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for PendingPreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PendingPreparation")
+            .field(&self.0.as_ref().map(|(version, _)| version))
+            .finish()
+    }
+}
+
 /// 可编辑文档的会话状态。
 #[derive(Clone, Debug)]
 pub struct EditSession {
@@ -44,6 +62,7 @@ pub struct EditSession {
     options: EditOptions,
     classifier: WordClassifier,
     previous_kind: EditKind,
+    pending_preparation: PendingPreparation,
 }
 
 impl EditSession {
@@ -60,6 +79,7 @@ impl EditSession {
             ),
             options,
             previous_kind: EditKind::Other,
+            pending_preparation: PendingPreparation::default(),
         }
     }
 
@@ -125,11 +145,41 @@ impl EditSession {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.history.undo.is_empty()
+        self.preparation_pending() || !self.history.undo.is_empty()
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.history.redo.is_empty()
+        !self.preparation_pending() && !self.history.redo.is_empty()
+    }
+
+    /// Register an edit being prepared from this version so Undo can cancel it.
+    pub fn begin_preparation(&mut self, version: Version, cancel: Cancellation) -> Result<()> {
+        if !self.buffer.read_only().is_empty() {
+            return Err(Error::Unsupported);
+        }
+        if self.buffer.version() != version {
+            return Err(Error::Stale);
+        }
+        self.cancel_preparation();
+        self.pending_preparation.0 = Some((version, cancel));
+        Ok(())
+    }
+
+    fn preparation_pending(&self) -> bool {
+        self.pending_preparation
+            .0
+            .as_ref()
+            .is_some_and(|(version, cancel)| {
+                *version == self.buffer.version() && cancel.check().is_ok()
+            })
+    }
+
+    fn cancel_preparation(&mut self) -> bool {
+        let pending = self.preparation_pending();
+        if let Some((_, cancel)) = self.pending_preparation.0.take() {
+            cancel.cancel();
+        }
+        pending
     }
 
     /// 执行一个任意事务（R47 的“全部替换”、R62 的跨文件批量编辑）：永远是一个撤销单元，
@@ -139,6 +189,26 @@ impl EditSession {
         self.commit(&transaction, EditKind::Other, now, false, None, |applied| {
             before.map(|s| Ok(map_selection(applied, s)))
         })
+    }
+
+    /// Commit a background-prepared transaction as one undo unit. Current
+    /// selections are mapped only after the source version check succeeds.
+    pub fn edit_prepared(
+        &mut self,
+        prepared: super::transaction::PreparedEdit,
+        now: Instant,
+    ) -> Result<AppliedEdit> {
+        let selections = self.selections.clone();
+        let line_endings = self.buffer.line_endings().clone();
+        let applied = self.buffer.install(prepared)?;
+        Ok(self.record_applied(
+            applied,
+            EditKind::Other,
+            now,
+            true,
+            line_endings,
+            |applied| selections.map(|selection| Ok(map_selection(applied, selection))),
+        ))
     }
 
     /// 每个选区各自做一次替换（`None` 表示该选区不动），合成一个事务。区间重叠时
@@ -238,6 +308,25 @@ impl EditSession {
         if let Some(line_endings) = line_endings_after {
             self.buffer.set_line_endings(line_endings);
         }
+        Ok(self.record_applied(
+            applied,
+            kind,
+            now,
+            start_new,
+            line_endings_before,
+            selections_after,
+        ))
+    }
+
+    fn record_applied(
+        &mut self,
+        applied: AppliedEdit,
+        kind: EditKind,
+        now: Instant,
+        start_new: bool,
+        line_endings_before: LineEndings,
+        selections_after: impl FnOnce(&AppliedEdit) -> Result<Selections>,
+    ) -> AppliedEdit {
         // 选区映射只依赖已经算好的区间，不会失败；失败时保底放在原光标的映射位置。
         let after = selections_after(&applied).unwrap_or_else(|_| {
             Selections::single(Selection::cursor(
@@ -269,7 +358,7 @@ impl EditSession {
         self.previous_kind = kind;
         self.selections = after;
         self.cursors.clear();
-        Ok(applied)
+        applied
     }
 
     /// 输入文本：替换每个选区，光标停在输入之后。撤销分组按 VS Code 的输入规则。
@@ -396,10 +485,14 @@ impl EditSession {
     /// 撤销一个单元：文本逐字节回到编辑之前，选区回到**编辑前**的位置。没有可撤销的内容时
     /// 返回空列表。返回的每个 [`AppliedEdit`] 都要像普通编辑一样交给语法与视图。
     pub fn undo(&mut self) -> Result<Vec<AppliedEdit>> {
-        self.history.close();
         if !self.buffer.read_only().is_empty() {
+            self.history.close();
             return Err(Error::Unsupported);
         }
+        if self.cancel_preparation() {
+            return Ok(Vec::new());
+        }
+        self.history.close();
         let Some(group) = self.history.undo.pop() else {
             return Ok(Vec::new());
         };
@@ -418,10 +511,14 @@ impl EditSession {
 
     /// 重做一个单元，选区回到该单元编辑之后的位置。
     pub fn redo(&mut self) -> Result<Vec<AppliedEdit>> {
-        self.history.close();
         if !self.buffer.read_only().is_empty() {
+            self.history.close();
             return Err(Error::Unsupported);
         }
+        if self.preparation_pending() {
+            return Ok(Vec::new());
+        }
+        self.history.close();
         let Some(group) = self.history.redo.pop() else {
             return Ok(Vec::new());
         };
