@@ -595,6 +595,7 @@ unit = "us"
 owner = "#56"
 status = "enforced"
 bench = "scroll/minimap_frame_cpu_cache_hit"
+reason = "R55 验收给出的 200 µs 预算。基准记录连续滚动的缓存命中帧中缩略图和标尺更新、绘制的额外 CPU p99。"
 aggregate = "p99"
 
 [[budget]]
@@ -605,6 +606,7 @@ unit = "ms"
 owner = "#56"
 status = "enforced"
 bench = "scroll/minimap_total_frame_cpu_cache_hit"
+reason = "项目章程第 6 节规定整形缓存命中的连续滚动帧 CPU 低于 1 ms。以同一缩略图场景中整帧代码视图 CPU p99 判定。"
 aggregate = "p99"
 
 [[budget]]
@@ -615,3 +617,4 @@ unit = "ms"
 owner = "#56"
 status = "recorded"
 bench = "minimap/rasterize_300000_rows"
+reason = "R55 验收要求记录 30 万行生成耗时与内存占用。离线基准计时全部色块生成，并单列全量纹理与缓存峰值。"
