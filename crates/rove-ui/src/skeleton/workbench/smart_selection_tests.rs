@@ -328,6 +328,31 @@ fn smart_selection_bracket_delete_rejects_a_gap_in_tokenization(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn smart_selection_bracket_fallback_honors_an_empty_override(cx: &mut TestAppContext) {
+    let source = "class C { void M() { F(a); } }";
+    let (_folder, view, cx) = open(cx, "Program.cs", source);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.language_brackets = Some(Vec::new());
+        options.bracket_pair_colorization = false;
+        options.highlight_active_bracket_pair = false;
+        options.guides_bracket_pairs = crate::code_view::guides::GuideMode::Off;
+        code.set_options(options, cx);
+    });
+    settle(cx);
+    let start = caret(&view, cx, source.find("(a)").unwrap() + 1);
+    cx.simulate_keystrokes("ctrl-shift-\\");
+    assert_eq!(
+        selected(&view, cx).1,
+        crate::code_view::Selection::caret(start)
+    );
+    cx.simulate_keystrokes("ctrl-alt-backspace");
+    settle(cx);
+    assert_eq!(shown_text(&view, cx), source);
+}
+
+#[gpui::test]
 fn smart_selection_language_change_discards_the_cached_ancestors(cx: &mut TestAppContext) {
     let source = "class C {\n    int M() { return value + 1; }\n}\n";
     let (_folder, view, cx) = open(cx, "Program.cs", source);
@@ -373,6 +398,24 @@ fn smart_selection_long_line_uses_bounded_coordinate_fallback(cx: &mut TestAppCo
     });
     cx.simulate_keystrokes("shift-alt-right");
     assert_eq!(selected(&view, cx).0, source);
+}
+
+#[gpui::test]
+fn smart_selection_bounds_bracket_highlighting_on_an_oversized_row(cx: &mut TestAppContext) {
+    let source = format!(r#"{{"value":"{}"}}"#, "x".repeat(70 * 1024));
+    let (_folder, view, cx) = open(cx, "Settings.json", &source);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.highlight_active_bracket_pair = true;
+        options.match_brackets = crate::code_view::brackets::MatchBrackets::Always;
+        code.set_options(options, cx);
+        code.set_document_level(rove_buffer::SizeClass::Huge, cx);
+    });
+    caret(&view, cx, 0);
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, source);
+    assert!(code.read_with(cx, |code, _| code.bracket_match().is_none()));
 }
 
 #[gpui::test]

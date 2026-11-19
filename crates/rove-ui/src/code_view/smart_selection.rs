@@ -389,7 +389,7 @@ fn has_tokenized_pair(
         return false;
     };
     last - first <= brackets::SCAN_LINES
-        && end.end().0 - start.start().0 <= brackets::COMMAND_SCAN_BYTES
+        && end.end().0 - start.start().0 <= brackets::SCAN_BYTES
         && (first..=last).all(|line| {
             bounded_tokenization_line(text, line, line_limit) && snapshot.tokens(Line(line)).is_ok()
         })

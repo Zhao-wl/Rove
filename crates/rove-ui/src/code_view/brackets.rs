@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 /// 每个方向最多扫描的行数。
 pub const SCAN_LINES: u64 = 5_000;
-/// 显式命令的扫描与校验最多涉及 64 KiB 的原文。
-pub(super) const COMMAND_SCAN_BYTES: u64 = 64 * 1024;
+/// 单次括号回退扫描与删除校验最多涉及 64 KiB 的原文。
+pub(super) const SCAN_BYTES: u64 = 64 * 1024;
 
 /// `editor.matchBrackets`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

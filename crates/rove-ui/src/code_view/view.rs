@@ -4218,13 +4218,21 @@ impl CodeView {
             }
         }
         let text = self.text.as_ref()?;
-        let config = self.language_config()?;
-        // 树尚未就绪时限制显式命令的同步扫描量。绘制沿用原有的行数上限。
-        let remaining = Cell::new(if mode == brackets::MatchBrackets::AlwaysAtCursor {
-            brackets::COMMAND_SCAN_BYTES
-        } else {
-            u64::MAX
+        let overrides = self.options.language_brackets.as_ref().map(|pairs| {
+            pairs
+                .iter()
+                .map(|(open, close)| rove_syntax::Pair {
+                    open: open.clone(),
+                    close: close.clone(),
+                })
+                .collect::<Vec<_>>()
         });
+        let pairs = overrides.as_deref().or_else(|| {
+            self.language_config()
+                .map(|config| config.data().brackets.as_ref())
+        })?;
+        // 选区变化也会同步刷新高亮。未建树时，绘制和显式命令共用扫描预算。
+        let remaining = Cell::new(brackets::SCAN_BYTES);
         let read = |l: u64| -> Option<Arc<str>> {
             let source = self
                 .lines
@@ -4239,14 +4247,7 @@ impl CodeView {
         };
         let syntax = self.syntax.borrow();
         let skip = |l: u64, c: u32| syntax.in_string_or_comment(l, c);
-        brackets::find(
-            &config.data().brackets,
-            a.line.0,
-            a.column.0 as u32,
-            mode,
-            &read,
-            &skip,
-        )
+        brackets::find(pairs, a.line.0, a.column.0 as u32, mode, &read, &skip)
     }
 
     /// `hasWordHighlights` 上下文键的取值。
