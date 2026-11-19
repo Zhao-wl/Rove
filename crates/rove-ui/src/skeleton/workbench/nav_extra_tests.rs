@@ -164,6 +164,7 @@ fn symbol(name: &str, container: &str, path: &str, line: u64, col: u64) -> Works
     WorkspaceSymbol {
         name: name.into(),
         container: container.into(),
+        kind: rove_syntax::SymbolKind::Class,
         target: Target {
             resource: Resource::Workspace(WorkspacePath::new(path).unwrap()),
             range: span.clone(),

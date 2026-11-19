@@ -11,8 +11,7 @@
 //! - 列表项的渲染、键盘导航与浮层来自 #18 的快速输入组件；选中后经 #17 的打开文档服务打开并定位
 //!   （`.md` 也打开源码，`UX_SPEC` §4.3）。
 //!
-//! 列表项目前没有 `symbolIcon.*` 种类图标：#1 契约的 `WorkspaceSymbol` 只有名字、容器与位置，
-//! 不带符号种类，而契约改动要单独提 PR（AGENTS §5.2 第 2 条）。已开跟进 issue #178。
+//! #178 的 `WorkspaceSymbol` 契约提供种类字段，供工作区符号列表绘制 `symbolIcon.*`。
 //!
 //! 本模块不依赖 GPUI（只有命令的 action 是 GPUI 类型）。
 
@@ -177,6 +176,7 @@ mod tests {
         WorkspaceSymbol {
             name: name.into(),
             container: container.into(),
+            kind: rove_syntax::SymbolKind::Class,
             target: Target {
                 resource: Resource::Workspace(WorkspacePath::new(path).unwrap()),
                 range: span.clone(),

@@ -141,7 +141,11 @@ fn partial_class_in_three_files_is_one_symbol_with_three_locations() {
     let ui = &player.locations[2];
     assert_eq!(ui.selection.start(), pos(2, 14));
     assert_eq!(ui.selection.end(), pos(2, 20));
-    assert_eq!(player.to_workspace_symbols().count(), 3);
+    let symbols: Vec<_> = player.to_workspace_symbols().collect();
+    assert_eq!(symbols.len(), 3);
+    assert!(symbols
+        .iter()
+        .all(|symbol| symbol.kind == SymbolKind::Class));
 
     let hits = index
         .workspace_symbols("Player", 10, &Cancellation::default())
@@ -181,9 +185,11 @@ fn nested_generic_record_and_file_scoped_namespace() {
         index.find_type("N.Outer<T>.Point").unwrap().kind,
         DeclKind::Record
     );
+    let pair = index.find_type("N.Outer<T>.Pair").unwrap();
+    assert_eq!(pair.kind, DeclKind::RecordStruct);
     assert_eq!(
-        index.find_type("N.Outer<T>.Pair").unwrap().kind,
-        DeclKind::Record
+        pair.to_workspace_symbols().next().unwrap().kind,
+        SymbolKind::Struct
     );
     let handler = index.find_type("N.Outer<T>.Handler<X>").unwrap();
     assert_eq!((handler.kind, handler.arity), (DeclKind::Delegate, 1));
@@ -274,7 +280,7 @@ fn type_resolution_follows_namespaces_usings_static_and_aliases() {
 fn members_are_extracted_and_always_approximate() {
     let f = Fixture::new(&[(
         "M.cs",
-        "namespace M {\nclass C<T> {\n  public C() {}\n  ~C() {}\n  int a, b;\n  public event System.Action Fired, Done;\n  public event System.Action Custom { add {} remove {} }\n  public int P { get; set; }\n  public int this[int i] => i;\n  public static C<T> operator +(C<T> x, C<T> y) => x;\n  public static implicit operator int(C<T> c) => 0;\n  public void Init() {}\n  public void Init<TA, TB>(int x) { void Local() {} }\n#if UNITY_EDITOR\n  void EditorOnly() {}\n#else\n  void PlayerOnly() {}\n#endif\n}\nenum E { One, Two }\nclass D { void Init() {} }\n}\n",
+        "namespace M {\nclass C<T> {\n  public C() {}\n  ~C() {}\n  int a, b;\n  public const int Limit = 5;\n  public event System.Action Fired, Done;\n  public event System.Action Custom { add {} remove {} }\n  public int P { get; set; }\n  public int this[int i] => i;\n  public static C<T> operator +(C<T> x, C<T> y) => x;\n  public static implicit operator int(C<T> c) => 0;\n  public void Init() {}\n  public void Init<TA, TB>(int x) { void Local() {} }\n#if UNITY_EDITOR\n  void EditorOnly() {}\n#else\n  void PlayerOnly() {}\n#endif\n}\nenum E { One, Two }\nclass D { void Init() {} }\n}\n",
     )]);
     let index = f.index();
     let c = Cancellation::default();
@@ -287,6 +293,10 @@ fn members_are_extracted_and_always_approximate() {
     assert_eq!(kinds("~C"), [DeclKind::Destructor]);
     assert_eq!(kinds("a"), [DeclKind::Field]);
     assert_eq!(kinds("b"), [DeclKind::Field]);
+    let limit = index.workspace_symbols("Limit", 10, &c).unwrap();
+    let limit = limit.value[0].to_workspace_symbols().next().unwrap();
+    assert_eq!(limit.name.as_ref(), "Limit");
+    assert_eq!(limit.kind, SymbolKind::Constant);
     assert_eq!(kinds("Fired"), [DeclKind::Event]);
     assert_eq!(kinds("Done"), [DeclKind::Event]);
     assert_eq!(kinds("Custom"), [DeclKind::Event]);

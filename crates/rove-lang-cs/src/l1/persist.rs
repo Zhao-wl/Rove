@@ -23,7 +23,7 @@ use rove_base::WorkspacePath;
 use std::sync::Arc;
 
 const MAGIC: &[u8; 8] = b"ROVEL1\0\0";
-pub(crate) const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 
 pub(crate) struct LoadedFile {
     pub path: WorkspacePath,
