@@ -279,6 +279,79 @@ fn minimap_compressed_layouts_keep_titles_on_unsampled_visual_rows(cx: &mut Test
 }
 
 #[gpui::test]
+fn minimap_region_headers_follow_live_folding_settings(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let source = "class Program {\n    #region Alpha\n    int first;\n    #endregion\n    #region Beta\n    int second;\n    #endregion\n}\n";
+    std::fs::write(folder.path().join("Program.cs"), source).unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Workbench::with_store(
+            folder.path().into(),
+            std::time::Instant::now(),
+            LayoutStore::disabled(),
+            cx,
+        )
+    });
+    view.update(cx, |view, cx| {
+        view.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new("Program.cs").unwrap()),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    settle(cx);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    let title_count = |code: &CodeView| {
+        code.minimap
+            .headers
+            .values()
+            .flatten()
+            .filter(|header| matches!(header.title.label.as_ref(), "Alpha" | "Beta"))
+            .count()
+    };
+    let expanded = code.read_with(cx, |code, _| {
+        assert!(code.folding.collapsed_keys().is_empty());
+        assert_eq!(title_count(code), 2);
+        code.options.clone()
+    });
+
+    code.update(cx, |code, cx| {
+        let mut limited = expanded.clone();
+        limited.folding_maximum_regions = 1;
+        code.set_options(limited, cx);
+    });
+    settle(cx);
+    code.read_with(cx, |code, _| {
+        let effective = code
+            .folding
+            .ranges()
+            .iter()
+            .filter(|range| range.source == super::super::folding::FoldSource::Region)
+            .count();
+        assert!(effective < 2);
+        assert_eq!(title_count(code), effective);
+    });
+
+    code.update(cx, |code, cx| code.set_options(expanded.clone(), cx));
+    settle(cx);
+    code.read_with(cx, |code, _| assert_eq!(title_count(code), 2));
+
+    code.update(cx, |code, cx| {
+        let mut disabled = expanded.clone();
+        disabled.folding = false;
+        code.set_options(disabled, cx);
+    });
+    settle(cx);
+    code.read_with(cx, |code, _| assert_eq!(title_count(code), 0));
+
+    code.update(cx, |code, cx| code.set_options(expanded, cx));
+    settle(cx);
+    code.read_with(cx, |code, _| assert_eq!(title_count(code), 2));
+}
+
+#[gpui::test]
 fn minimap_click_centers_the_painted_row_with_scroll_beyond_enabled(cx: &mut TestAppContext) {
     let folder = tempfile::tempdir().unwrap();
     std::fs::write(

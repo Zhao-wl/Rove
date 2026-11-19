@@ -3679,7 +3679,16 @@ impl CodeView {
         let folding = self.folding_enabled();
         if !folding {
             if !self.folding.ranges().is_empty() || !self.folding.collapsed_keys().is_empty() {
+                let had_region_headers = self.options.minimap.region_headers
+                    && self
+                        .folding
+                        .ranges()
+                        .iter()
+                        .any(|range| range.source == super::folding::FoldSource::Region);
                 self.folding.clear();
+                if had_region_headers {
+                    self.invalidate_minimap_mapping();
+                }
                 self.folds_changed(cx);
             }
             // #55：`editor.folding` 关着时粘性滚动的缩进模型仍然要有区间，所以不在这里返回。
@@ -3748,9 +3757,13 @@ impl CodeView {
                                 .map(|range| range.start)
                                 .collect::<Vec<_>>()
                         };
-                        let changed = regions(v.folding.ranges()) != regions(&ranges);
+                        let previous = v
+                            .options
+                            .minimap
+                            .region_headers
+                            .then(|| regions(v.folding.ranges()));
                         v.folding.set_computed(ranges, max);
-                        if changed {
+                        if previous.is_some_and(|old| old != regions(v.folding.ranges())) {
                             v.invalidate_minimap_mapping();
                         }
                         v.folds_changed(cx);
