@@ -124,12 +124,18 @@ fn smart_selection_keys_round_trip_the_real_csharp_ancestors(cx: &mut TestAppCon
         "(value + 42) * 2",
         "return (value + 42) * 2;",
         "{ return (value + 42) * 2; }",
+        "int M() { return (value + 42) * 2; }",
+        "{ int M() { return (value + 42) * 2; } }",
+        source,
     ];
     for step in expected {
         cx.simulate_keystrokes("shift-alt-right");
         assert_eq!(selected(&view, cx).0, step);
     }
     for step in [
+        "{ int M() { return (value + 42) * 2; } }",
+        "int M() { return (value + 42) * 2; }",
+        "{ return (value + 42) * 2; }",
         "return (value + 42) * 2;",
         "(value + 42) * 2",
         "(value + 42)",
@@ -152,6 +158,16 @@ fn smart_selection_keys_round_trip_the_real_csharp_ancestors(cx: &mut TestAppCon
         selected(&view, cx).1,
         crate::code_view::Selection::caret(moved)
     );
+
+    caret(&view, cx, source.find("value").unwrap() + 1);
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, "value");
+    cx.simulate_input("another");
+    settle(cx);
+    let after_edit = selected(&view, cx).1;
+    cx.simulate_keystrokes("shift-alt-left");
+    assert_eq!(selected(&view, cx).1, after_edit);
+    assert_eq!(shown_text(&view, cx), source.replace("value", "another"));
 }
 
 #[gpui::test]
@@ -166,7 +182,26 @@ fn smart_selection_fallback_uses_subwords_line_whitespace_and_utf8_boundaries(
         assert_eq!(selected(&view, cx).0, step);
     }
 
+    let at = caret(&view, cx, source.find("Bar").unwrap() + 1);
+    execute(&view, cx, "cursorWordPartRight", Value::Null);
+    execute(&view, cx, "cursorWordPartLeftSelect", Value::Null);
+    assert_eq!(selected(&view, cx).0, "Bar");
     let code = view.read_with(cx, |view, _| view.code_view().clone());
+    let hit = code.update(cx, |code, _| {
+        let mut hit = code.point_for_position(at).unwrap();
+        hit.y += gpui::px(code.line_height() / 2.0);
+        hit
+    });
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: hit,
+        modifiers: gpui::Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_mouse_up(hit, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(selected(&view, cx).0, "fooBarBaz");
+
     code.update(cx, |code, cx| {
         let mut options = code.options().clone();
         options.smart_select_subwords = false;
