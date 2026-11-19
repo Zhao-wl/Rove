@@ -225,6 +225,16 @@ impl Workbench {
             if slot.requested == Some(key) {
                 continue;
             }
+            // The editor can adopt its editable snapshot before the navigation
+            // router finishes registering that version. Query from the matched
+            // buffer so a stale response cannot strand the view without colors.
+            if code.read(cx).version() != key.1
+                || matches!(&document.resource, Resource::Workspace(path)
+                    if self.nav.router.buffers().get(path.as_str())
+                        .is_none_or(|buffer| buffer.version != key.1))
+            {
+                continue;
+            }
             slot.requested = Some(key);
             slot.epoch += 1;
             self.request_semantic(group, secondary, document, cx);
@@ -271,7 +281,7 @@ impl Workbench {
                 let Some(code) = view.group_code(group, secondary).cloned() else {
                     return;
                 };
-                if Some((code.entity_id(), key.0)) != owner {
+                if Some((code.entity_id(), key.0)) != owner || code.read(cx).version() != key.1 {
                     return;
                 }
                 let generation = view.cs_router().semantic_generation();

@@ -560,6 +560,8 @@ impl Workbench {
                 if !reloaded {
                     states.opened(&buffer.path, buffer.text.clone(), hash);
                 }
+                // A semantic request waiting for this buffer version can now run.
+                view.refresh_semantic(cx);
                 // 登记前的高亮可能来自“未打开文件”的路径：刷新一次。
                 let slots: Vec<_> = view.nav.slots.keys().copied().collect();
                 for (group, secondary) in slots {
