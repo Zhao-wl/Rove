@@ -23,9 +23,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 触发重新判定的设置键。
-pub(super) const SETTING_KEYS: [&str; 4] = [
+pub(super) const SETTING_KEYS: &[&str] = &[
     "editor.semanticHighlighting.enabled",
-    "editor.tokenColorCustomizations",
     "editor.maxTokenizationLineLength",
 ];
 

@@ -12,7 +12,7 @@ use rove_syntax::{Fold, FoldKind, Symbol, SyntaxSnapshot, Token};
 use rove_theme::{Color, ColorRegistry, DefaultTheme, Theme, ThemeKind, TokenStyle};
 use rove_ui::code_view::{
     self, folding::FoldSource, selection::pos, CodeView, CodeViewEvent, CodeViewServices, Feature,
-    ScrollPosition, Selection,
+    ScrollPosition, Selection, TextDecoration,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -257,7 +257,11 @@ fn first_frame_is_highlighted(cx: &mut TestAppContext) {
     let comment = style_at(&view, cx, 3, 21..25).unwrap();
     assert_eq!(comment.foreground, Some(COMMENT));
     assert_eq!(comment.italic, Some(true), "fontStyle 斜体");
-    assert_eq!(comment.strikethrough, Some(COMMENT), "fontStyle 删除线");
+    assert_eq!(
+        comment.strikethrough,
+        Some(TextDecoration::Color(COMMENT)),
+        "fontStyle 删除线"
+    );
     view.read_with(cx, |v, _| {
         assert!(v.is_line_shaped(0));
         assert_eq!(v.last_frame().placeholders, 0);

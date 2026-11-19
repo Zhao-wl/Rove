@@ -213,7 +213,7 @@ fn csharp_semantic_customizations_merge_without_affecting_other_languages(cx: &m
                 "workbench.colorTheme": "Dark 2026",
                 "editor.semanticHighlighting.enabled": "configuredByTheme",
                 "editor.semanticTokenColorCustomizations": {
-                    "enabled": false,
+                    "enabled": !enabled,
                     "rules": { "class": "#123456", "variable.readonly": "#112233" },
                     "[Dark 2026]": {
                         "rules": { "variable.readonly": { "foreground": "#556677", "italic": true } }
@@ -250,8 +250,8 @@ fn csharp_semantic_customizations_merge_without_affecting_other_languages(cx: &m
         let queries = view.read_with(window, |view, _| {
             assert_eq!(view.semantic_highlighting_on(), enabled);
             let theme = view.resolved_theme();
-            assert!(!theme.semantic_highlighting());
-            assert!(!theme.semantic_highlighting_for_language("java"));
+            assert_eq!(theme.semantic_highlighting(), !enabled);
+            assert_eq!(theme.semantic_highlighting_for_language("java"), !enabled);
             let java = theme.semantic_token_style("variable", &["readonly"], "java");
             assert_eq!(java.foreground, Some(Color(0x55, 0x66, 0x77, 0xff)));
             assert_ne!(java.underline, Some(true));

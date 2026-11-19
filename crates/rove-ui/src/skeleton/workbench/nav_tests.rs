@@ -5,6 +5,7 @@
 //! 索引用 #38 的测试写出器（`router::testing::TestIndex`）按源码现场生成，读取端是真实的 `CsIndex`。
 use super::nav_host::Phase;
 use super::*;
+use crate::code_view::TextDecoration;
 use crate::nav::model::HighlightKind;
 use gpui::{Modifiers, TestAppContext, VisualTestContext};
 use rove_base::{Position, Utf8Column};
@@ -692,7 +693,7 @@ fn definition_takes_priority_over_the_editor_link_at_the_same_position(cx: &mut 
         let underlines: Vec<_> = decorate
             .runs
             .iter()
-            .filter(|run| run.style.underline == Some(color))
+            .filter(|run| run.style.underline == Some(TextDecoration::Color(color)))
             .map(|run| run.range.clone())
             .collect();
         let expected = target.column.0 as u32..target.column.0 as u32 + "Destination".len() as u32;
@@ -721,7 +722,7 @@ fn ctrl_hover_underlines_and_ctrl_click_jumps(cx: &mut TestAppContext) {
         let merged = c.merged_decorations(target.line.0).expect("line prepared");
         assert!(merged.runs.iter().any(|r| r.range
             == (target.column.0 as u32..target.column.0 as u32 + 4)
-            && r.style.underline == link
+            && r.style.underline == link.map(TextDecoration::Color)
             && link.is_some()));
     });
     // 定义预览：到达 editor.hover.delay 后出现，内容是定义处的源码。
