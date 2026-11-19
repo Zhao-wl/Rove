@@ -149,14 +149,16 @@ async fn inject(
         window.on_next_frame(move |window, cx| {
             let frame_start = Instant::now();
             let deadline = frame_start + phase;
+            let timer = cx.background_executor().clone();
             window
                 .spawn(cx, async move |cx| {
+                    // Wait off the UI thread so the probe cannot delay a frame
+                    // while it waits for the intended input phase.
+                    timer
+                        .timer(deadline.saturating_duration_since(Instant::now()))
+                        .await;
                     let _ = cx.update(|window, cx| {
                         let before = code.read(cx).text().expect("loaded text").version().0;
-                        // 与 typing 相同，前台任务在本帧完成后运行。日志使用实测的注入位置。
-                        while Instant::now() < deadline {
-                            std::hint::spin_loop();
-                        }
                         let wall_at = SystemTime::now();
                         let at = Instant::now();
                         press("ctrl-alt-enter", window, cx);
