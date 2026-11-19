@@ -3,8 +3,7 @@
 use super::*;
 use crate::code_view::smart_selection as ids;
 use gpui::{TestAppContext, VisualTestContext};
-use rove_base::{ByteOffset, Span};
-use rove_buffer::TextSource;
+use rove_base::{ByteOffset, Position, Span};
 
 fn open<'a>(
     cx: &'a mut TestAppContext,
