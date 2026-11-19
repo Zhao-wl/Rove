@@ -133,7 +133,6 @@ impl Element for CodeElement {
             }
             let measure = v.recording.is_some().then(Instant::now);
             v.paint_minimap(window);
-            v.paint_overview(window);
             if let Some(start) = measure {
                 v.last_frame.minimap_cpu += start.elapsed();
             }
@@ -227,8 +226,18 @@ impl CodeView {
         let minimap_w = self.minimap_width(width);
         let minimap_left = self.options.minimap.left;
         let left_w = if minimap_left { minimap_w } else { 0.0 };
-        let overview_w = if self.text.is_some() { 8.0 } else { 0.0 };
-        let text_w_guess = (width - gutter_w - vs.max(overview_w) - minimap_w).max(0.0) as f64;
+        let vertical_hidden = o.vertical_scrollbar == ScrollbarVisibility::Hidden;
+        let overview_w = if self.text.is_some() && !vertical_hidden {
+            8.0
+        } else {
+            0.0
+        };
+        let vertical_w = if vertical_hidden {
+            0.0
+        } else {
+            vs.max(overview_w)
+        };
+        let text_w_guess = (width - gutter_w - vertical_w - minimap_w).max(0.0) as f64;
         // #58：软换行开着时不需要横向滚动（照搬 VS Code 隐藏水平滚动条），
         // 并且固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
         let wrapping = self.word_wrap_enabled();
@@ -265,11 +274,7 @@ impl CodeView {
             ScrollbarVisibility::Hidden => false,
             ScrollbarVisibility::Auto => metrics.max_top(&self.zones) > 0.0,
         };
-        let vbar_w = if show_v {
-            vs.max(overview_w)
-        } else {
-            overview_w
-        };
+        let vbar_w = if show_v { vertical_w } else { overview_w };
         // 软换行时文本区宽度与 `sync_wrap` 用的估算值一致（恒定留出垂直滚动条）。
         let text_w = if wrapping {
             text_w_guess as f32
@@ -286,8 +291,8 @@ impl CodeView {
         );
         let vbar = show_v.then(|| {
             Bounds::new(
-                point(bounds.origin.x + px(width - vbar_w), bounds.origin.y),
-                size(px(vbar_w), px(viewport_h)),
+                point(bounds.origin.x + px(width - vs), bounds.origin.y),
+                size(px(vs), px(viewport_h)),
             )
         });
         let hbar = show_h.then(|| {
@@ -548,7 +553,11 @@ impl CodeView {
     }
 
     /// 绘制一帧；返回插入符的窗口坐标（输入法候选框定位用）。
-    pub(crate) fn paint_frame(&self, frame: &Frame, window: &mut Window) -> Option<Bounds<Pixels>> {
+    pub(crate) fn paint_frame(
+        &mut self,
+        frame: &Frame,
+        window: &mut Window,
+    ) -> Option<Bounds<Pixels>> {
         let p = &self.palette;
         let o = &self.options;
         let lay = &frame.layout;
@@ -944,6 +953,12 @@ impl CodeView {
         });
 
         self.paint_gutter(frame, window);
+        // 标尺在滑块下绘制，不透明的自定义背景也不会遮住滑块。
+        let measure = self.recording.is_some().then(Instant::now);
+        self.paint_overview(window);
+        if let Some(start) = measure {
+            self.last_frame.minimap_cpu += start.elapsed();
+        }
         self.paint_scrollbars(frame, window);
         // #55：粘性区盖在最上面（它遮住正文顶部的若干行，滚动条与滑块不在它的范围里）。
         self.paint_sticky(frame, window);
@@ -1624,6 +1639,8 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
                 v.scrollbar_down(p, true, cx);
             } else if lay.hbar.is_some_and(|b| b.contains(&p)) {
                 v.scrollbar_down(p, false, cx);
+            } else if v.overview_contains(p) {
+                // 标尺留出的独立区域不参与正文命中。
             } else if lay.gutter.contains(&p) {
                 v.mouse_down_gutter(p, e.modifiers.shift, cx);
             } else if e.modifiers.shift && e.modifiers.alt && e.click_count == 1 {

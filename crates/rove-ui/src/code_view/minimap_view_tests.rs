@@ -180,12 +180,49 @@ fn minimap_workbench_builds_themed_tiles_and_drags_through_code_view(cx: &mut Te
 
     code.update(cx, |code, cx| code.set_document_level(SizeClass::Large, cx));
     settle(cx);
-    code.read_with(cx, |code, _| {
+    let default_width = code.read_with(cx, |code, _| {
         assert!(code
             .disabled_features()
             .contains(&super::super::Feature::Minimap));
         assert!(code.minimap.panel.is_none());
         assert!(code.minimap.overview.is_some());
+        assert_eq!(code.layout.vbar.unwrap().size.width, px(14.0));
+        code.layout.text.size.width
+    });
+    code.update(cx, |code, cx| {
+        let mut options = code.options.clone();
+        options.vertical_scrollbar_size = 4.0;
+        code.set_options(options, cx);
+    });
+    settle(cx);
+    let (ruler_only, selection, scroll) = code.read_with(cx, |code, _| {
+        assert_eq!(code.layout.vbar.unwrap().size.width, px(4.0));
+        let bounds = code.minimap.overview.as_ref().unwrap().bounds;
+        assert_eq!(code.layout.text.size.width, default_width + px(6.0));
+        let at = point(
+            bounds.origin.x + px(1.0),
+            bounds.origin.y + bounds.size.height / 2.0,
+        );
+        assert!(!code.layout.vbar.unwrap().contains(&at));
+        (at, code.selection(), code.scroll_position())
+    });
+    cx.simulate_mouse_down(ruler_only, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(ruler_only, MouseButton::Left, Modifiers::none());
+    settle(cx);
+    code.read_with(cx, |code, _| {
+        assert_eq!(code.selection(), selection);
+        assert_eq!(code.scroll_position(), scroll);
+    });
+    code.update(cx, |code, cx| {
+        let mut options = code.options.clone();
+        options.vertical_scrollbar = super::super::options::ScrollbarVisibility::Hidden;
+        code.set_options(options, cx);
+    });
+    settle(cx);
+    code.read_with(cx, |code, _| {
+        assert!(code.layout.vbar.is_none());
+        assert!(code.minimap.overview.is_none());
+        assert_eq!(code.layout.text.size.width, default_width + px(14.0));
     });
 }
 

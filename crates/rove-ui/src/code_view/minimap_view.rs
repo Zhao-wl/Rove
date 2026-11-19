@@ -450,7 +450,14 @@ impl CodeView {
         self.minimap.overview = Some(Overview { key, bounds, bands });
     }
 
-    pub(crate) fn paint_overview(&self, window: &mut Window) {
+    pub(super) fn overview_contains(&self, position: Point<Pixels>) -> bool {
+        self.minimap
+            .overview
+            .as_ref()
+            .is_some_and(|overview| overview.bounds.contains(&position))
+    }
+
+    pub(super) fn paint_overview(&self, window: &mut Window) {
         let Some(overview) = &self.minimap.overview else {
             return;
         };
