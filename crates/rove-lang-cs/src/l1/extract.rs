@@ -179,13 +179,15 @@ struct Walker<'a> {
     out: Parsed<String>,
 }
 
-fn type_kind(kind: &str) -> Option<DeclKind> {
-    Some(match kind {
+fn type_kind(node: Node<'_>) -> Option<DeclKind> {
+    Some(match node.kind() {
         "class_declaration" => DeclKind::Class,
         "struct_declaration" => DeclKind::Struct,
         "interface_declaration" => DeclKind::Interface,
         "enum_declaration" => DeclKind::Enum,
-        "record_declaration" | "record_struct_declaration" => DeclKind::Record,
+        "record_struct_declaration" => DeclKind::RecordStruct,
+        "record_declaration" if find_token(node, "struct").is_some() => DeclKind::RecordStruct,
+        "record_declaration" => DeclKind::Record,
         "delegate_declaration" => DeclKind::Delegate,
         _ => return None,
     })
@@ -231,13 +233,20 @@ impl Walker<'_> {
                     self.children(child, scope, NONE, depth + 1);
                 }
                 "using_directive" => self.using(child, scope),
-                "field_declaration" | "event_field_declaration" => {
-                    let kind = if child.kind() == "field_declaration" {
-                        DeclKind::Field
+                "field_declaration" => {
+                    let mut field_cursor = child.walk();
+                    let constant = child
+                        .named_children(&mut field_cursor)
+                        .any(|node| node.kind() == "modifier" && self.text(node) == "const");
+                    let kind = if constant {
+                        DeclKind::Constant
                     } else {
-                        DeclKind::Event
+                        DeclKind::Field
                     };
                     self.variables(child, kind, scope, parent);
+                }
+                "event_field_declaration" => {
+                    self.variables(child, DeclKind::Event, scope, parent);
                 }
                 "declaration_list"
                 | "enum_member_declaration_list"
@@ -245,8 +254,8 @@ impl Walker<'_> {
                 | "preproc_elif"
                 | "preproc_else"
                 | "ERROR" => self.children(child, scope, parent, depth + 1),
-                kind => {
-                    if let Some(kind) = type_kind(kind) {
+                _ => {
+                    if let Some(kind) = type_kind(child) {
                         self.type_decl(child, kind, scope, parent, depth);
                     } else {
                         self.member(child, scope, parent);

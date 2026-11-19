@@ -1,6 +1,6 @@
 //! C# query contracts for #38. Independent of index.rs and its v1/v2 storage representation.
 use rove_base::*;
-use rove_syntax::Symbol;
+use rove_syntax::{Symbol, SymbolKind};
 use std::sync::Arc;
 /// Exact compiler binding, approximate candidate, or syntax-only result. Never silently upgraded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +63,8 @@ pub struct WorkspaceSymbol {
     pub name: Arc<str>,
     pub container: Arc<str>,
     pub target: Target,
+    /// Declaration kind shared with document symbols.
+    pub kind: SymbolKind,
 }
 /// Single-line UTF-8 byte length (not UTF-16 units or scalar count). Modifiers/type use VS Code IDs.
 #[derive(Clone, Debug)]

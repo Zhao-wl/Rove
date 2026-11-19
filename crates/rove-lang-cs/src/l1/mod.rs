@@ -35,6 +35,7 @@ use rove_base::{
     Cancellation, Error, Line, Position, Resource, Result, Span, TextRange, Utf8Column,
     WorkspacePath,
 };
+use rove_syntax::{symbols::kinds, SymbolKind};
 use std::{
     borrow::Cow,
     collections::{BTreeSet, HashSet},
@@ -52,7 +53,7 @@ pub const CACHE_FILE_NAME: &str = "l1-decls.bin";
 /// 超过这个大小的 `.cs` 不解析（多半是生成的数据表），记为已扫描、没有声明。
 pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// 声明种类。类型 6 种，成员 9 种。
+/// 声明种类。类型 7 种，成员 10 种。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum DeclKind {
@@ -62,6 +63,7 @@ pub enum DeclKind {
     Enum = 3,
     Record = 4,
     Delegate = 5,
+    RecordStruct = 6,
     Method = 10,
     Property = 11,
     Field = 12,
@@ -71,6 +73,7 @@ pub enum DeclKind {
     Indexer = 16,
     Operator = 17,
     EnumMember = 18,
+    Constant = 19,
 }
 
 impl DeclKind {
@@ -87,6 +90,7 @@ impl DeclKind {
             3 => Enum,
             4 => Record,
             5 => Delegate,
+            6 => RecordStruct,
             10 => Method,
             11 => Property,
             12 => Field,
@@ -96,6 +100,7 @@ impl DeclKind {
             16 => Indexer,
             17 => Operator,
             18 => EnumMember,
+            19 => Constant,
             _ => return None,
         })
     }
@@ -124,10 +129,26 @@ pub struct L1Symbol {
 impl L1Symbol {
     /// 转成 #1 契约的工作区符号：每个声明位置一条（partial 类型给出多条）。
     pub fn to_workspace_symbols(&self) -> impl Iterator<Item = WorkspaceSymbol> + '_ {
-        self.locations.iter().map(|target| WorkspaceSymbol {
+        let kind = match self.kind {
+            DeclKind::Class | DeclKind::Record => SymbolKind::Class,
+            DeclKind::Struct | DeclKind::RecordStruct => SymbolKind::Struct,
+            DeclKind::Interface => SymbolKind::Interface,
+            DeclKind::Enum => SymbolKind::Enum,
+            DeclKind::Delegate => SymbolKind::Function,
+            DeclKind::Method | DeclKind::Destructor => SymbolKind::Method,
+            DeclKind::Property | DeclKind::Indexer => SymbolKind::Property,
+            DeclKind::Field => SymbolKind::Field,
+            DeclKind::Constant => SymbolKind::Constant,
+            DeclKind::Event => SymbolKind::Event,
+            DeclKind::Constructor => SymbolKind::Constructor,
+            DeclKind::Operator => SymbolKind::Other(kinds::OPERATOR.into()),
+            DeclKind::EnumMember => SymbolKind::Other(kinds::ENUM_MEMBER.into()),
+        };
+        self.locations.iter().map(move |target| WorkspaceSymbol {
             name: self.name.clone(),
             container: self.container.clone(),
             target: target.clone(),
+            kind: kind.clone(),
         })
     }
 }

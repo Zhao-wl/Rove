@@ -383,5 +383,10 @@ fn component_missing_falls_back_to_l1_and_l0() {
     assert_eq!(r.value.len(), 2);
     // 工作区符号来自 L1。
     let symbols = router.workspace_symbols("Hero", &cancel).unwrap();
-    assert!(symbols.value.iter().any(|s| &*s.name == "Hero"));
+    let hero = symbols.value.iter().find(|s| &*s.name == "Hero").unwrap();
+    assert_eq!(hero.kind, rove_syntax::SymbolKind::Class);
+
+    let symbols = router.workspace_symbols("Move", &cancel).unwrap();
+    let method = symbols.value.iter().find(|s| &*s.name == "Move").unwrap();
+    assert_eq!(method.kind, rove_syntax::SymbolKind::Method);
 }
