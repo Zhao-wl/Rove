@@ -2672,7 +2672,7 @@ VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
 `Approximate` + `ModifiedRegion`。界面只采用两种结果：`Exact`，以及 `Approximate` 且原因正好是
 `ModifiedRegion`；索引未就绪、文件不在索引里、`Syntax` 一律不产出语义 token，**也不加任何提示**
 （`UX_SPEC` §2.2）。过期结果（请求代次或文档版本对不上）丢弃，屏幕上留着旧样式。精确度变化
-（索引建好、保存后重建完成）由 `refresh_semantic` 静默重查。
+（索引建好、保存后重建完成）由 `refresh_semantic` 静默重查。首开和重载中，工作区文档等待路由登记当前缓冲区版本，登记完成立即发起查询，回包也校验代码视图版本。
 
 **只让被覆盖的行失效**。`SemanticLayer::update` 返回新旧结果覆盖行的并集并把连续行并成区间，
 宿主只对这些区间调 `DecorationStore::invalidate`，不整文件重画。主题换了只重新解析样式、
@@ -2706,5 +2706,6 @@ VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
 不是 C# 的文件、过期版本、索引不可信）、`cargo test -p rove-theme --test semantic_colors`
 （两条着色路径、用户覆盖的合并、三处开关）、`cargo test -p rove-ui --lib code_view::semantic`、
 `cargo test -p rove-ui --lib semantic_tests`（打开 `.cs` → 字段的类型 / 修饰符 / 最终颜色、
-置灰、关闭时零查询、按级别关闭）。基准：`cargo xtask bench --only semantic`，预算
-`semantic_highlight_catch_up`（< 100 ms）与 `semantic_highlight_frame_extra`（< 100 µs）。
+置灰、关闭时零查询、按级别关闭）。`cargo xtask bench --only semantic` 测量样式计算和滚动装饰开销，
+滚动预算为每帧增加 < 100 µs。`cargo run --release -p xtask --example semantic_open_probe` 使用预载索引，
+从 5,000 行合成 C# 首个实际绘制文字的帧开始，测量语义着色确认耗时的上界，验收要求 < 100 ms。

@@ -3,7 +3,6 @@ use gpui::{
     prelude::*, px, size, App, Application, Bounds, Entity, Window, WindowBounds, WindowOptions,
 };
 use rove_base::{Cancellation, Resource, WorkspacePath};
-use rove_config::{SettingsOptions, SettingsService};
 use rove_lang_cs::{
     router::{
         hash_bytes,
@@ -33,7 +32,9 @@ const PATH: &str = "Bench.cs";
 const LINES: usize = 5_000;
 const PREFIX: &str = "    public const int ";
 const MARKER_ROW: u64 = 2;
-const MARKER_COLOR: Color = Color(255, 0, 255, 255);
+// Dark 2026 selects this foreground for variable.readonly and a different
+// foreground for the syntax-only identifier.
+const MARKER_COLOR: Color = Color(121, 192, 255, 255);
 
 fn indexed_document() -> (String, TestIndex) {
     let mut source = String::from("static class Bench\n{\n");
@@ -116,28 +117,12 @@ fn on_frame(code: Entity<CodeView>, seen: Rc<Observation>, window: &mut Window, 
 
 fn main() -> Result<(), Box<dyn Error>> {
     let project = tempfile::tempdir()?;
-    let user = tempfile::tempdir()?;
+    let index_output = tempfile::tempdir()?;
     let (source, index) = indexed_document();
     std::fs::write(project.path().join(PATH), source)?;
-    let index_path = user.path().join("bench.idx");
+    let index_path = index_output.path().join("bench.idx");
     index.write(&index_path)?;
     let index = Arc::new(CsIndex::open(&index_path)?);
-    std::fs::write(
-        user.path().join("settings.json"),
-        serde_json::to_vec(&json!({
-            "rove.update.mode": "none",
-            "editor.semanticHighlighting.enabled": true,
-            "editor.semanticTokenColorCustomizations": {
-                "rules": { "variable.readonly": "#FF00FF" }
-            }
-        }))?,
-    )?;
-    let mut options = SettingsOptions::new(user.path(), user.path().join("backup"));
-    options.watch = None;
-    let settings = Arc::new(SettingsService::open(
-        options,
-        rove_ui::app_settings::registry()?,
-    ));
     let root = project.path().to_path_buf();
     let result = Rc::new(Observation::default());
     let observed = result.clone();
@@ -160,14 +145,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 |window, cx| {
                     cx.new(|cx| {
-                        let mut workbench = Workbench::with_settings(
+                        // Use the isolated assembly entry so user caches, hot-exit
+                        // backups and update services are outside the probe.
+                        let mut workbench = Workbench::with_store(
                             root,
                             Instant::now(),
                             LayoutStore::disabled(),
-                            settings,
                             cx,
-                        )
-                        .expect("workbench");
+                        );
                         Shell::attach_window(&mut workbench, window, cx);
                         workbench.attach_semantic(Some(Arc::new(ManualSemantic::ready(index))), cx);
                         workbench
@@ -203,7 +188,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         json!({ "lines": LINES, "catch_up_upper_bound_ms": ms })
     );
     if ms >= 100.0 {
-        return Err("semantic color exceeded the 100 ms catch-up budget".into());
+        return Err("the measured upper bound did not meet the 100 ms catch-up budget".into());
     }
     Ok(())
 }
