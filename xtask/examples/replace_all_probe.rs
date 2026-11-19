@@ -166,10 +166,11 @@ async fn inject(
                         .await;
                     let _ = cx.update(|window, cx| {
                         if let Some(template) = cold_template {
-                            let focus = find.read(cx).replace_input_focus(cx);
-                            window.focus(&focus);
-                            press("ctrl-a", window, cx);
                             type_word(template, window, cx);
+                            let actual = find.read(cx).replace_text(cx);
+                            if actual != template {
+                                eprintln!("sample {sample}: expected replacement input {template:?}, got {actual:?}");
+                            }
                         }
                         let prepared = find.read(cx).replacement_ready(cx);
                         let before = code.read(cx).text().expect("loaded text").version().0;
@@ -280,6 +281,16 @@ async fn run(
     };
 
     for sample in 0..(WARMUP + SAMPLES) {
+        if cold {
+            // Let focus and Select All reach the replacement field before the
+            // timed event. The template changes immediately before Replace All.
+            input_window.update(cx, |_, w, cx| {
+                w.focus(&find.read(cx).replace_input_focus(cx));
+            })?;
+            timer.timer(Duration::from_millis(24)).await;
+            input_window.update(cx, |_, w, cx| press("ctrl-a", w, cx))?;
+            timer.timer(Duration::from_millis(24)).await;
+        }
         let changed_template = if sample % 2 == 0 {
             ALTERNATE
         } else {
