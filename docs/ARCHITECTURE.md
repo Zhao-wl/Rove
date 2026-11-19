@@ -2605,3 +2605,106 @@ scope 以 `string` 或 `comment` 开头），不自己扫引号与注释起止�
 §46 中沿声明文本查询的路径保留作回退。RVCSIDX v3 增加 `REL_DECLARED_TYPE`，由 Roslyn 写入字段、属性、参数、局部变量、事件和方法的声明类型。方法记录返回类型，构造泛型指向原始定义，可空类型与数组取可导航的底层类型。全量索引与保存后的增量重绑使用同一套提取规则。v2 缓存会失效，重建期间继续提供已有的语法和近似导航。
 
 查询优先使用与当前声明一致的语义边。存在未保存编辑时，声明范围通过 `EditMap` 做双向映射。推断变量的范围包括初始化式和随后的分隔符，才能发现整行删除导致的类型变化。声明变动后使用当前位置能验证的类型名并降为近似，即使原索引没有声明类型边也保留这条精确度规则。
+
+## 64. C# 语义高亮与不生效预处理代码置灰（#59）
+
+位置：**产出**在 `rove-lang-cs`（`semantic/`：映射表与声明细节提取；`router/semantic_tokens.rs`：
+按文件取 token，实现 #1 契约的 `CsQueries::semantic_tokens`）；**着色**在 `rove-theme`
+（`semantic.rs`：选择器、回退表；`resolved.rs`：`ResolvedTheme::semantic_token_style`）；
+**绘制**在 `rove-ui`（`code_view/semantic.rs`：装饰层；`skeleton/workbench/semantic_host.rs`：
+开关、查询调度与失效）。核心层一如既往不依赖 `gpui`。
+
+**三段式，各管一段**：
+
+```text
+L2 索引（符号种类、容器、是否声明处、程序集）   ┐
+本文件的语法树（类型种类、static/readonly/...）  ├→ 语义 token（类型 + 修饰符，VS Code 标准名）
+L1 声明索引（别处声明的类型是 class 还是 struct）┘
+                                              ↓
+          主题 semanticTokenColors ──命中──→ 样式
+                   └─未命中─→ 回退表 → TextMate scope → tokenColors → 样式
+                                              ↓
+          行内样式区间（优先级 SEMANTIC=10，高于语法层的 SYNTAX=0）
+```
+
+**索引里缺两样东西**。`CS_INDEX_FORMAT` 的符号段只有 Roslyn 的 `SymbolKind`（一个字节）与
+「有没有源码位置 / 是不是外部程序集」两个标志位：**没有 `TypeKind`**（class / struct /
+interface / enum / delegate 分不开）、**也没有修饰符**（`static` / `readonly` / `const` /
+`abstract` / `async`）。补上这两项要改 .NET 索引进程与跨进程的二进制格式，属于 #32 / #33 的范围，
+本 issue 不动它。在那之前：
+
+- **类型种类**：本文件声明的类型看本文件的语法树；别处声明的看 L1 声明索引（`DeclKind`，
+  覆盖整个工作区的源码）；外部 DLL 里的类型两处都没有，退回笼统的 `type`
+  （VS Code 会给出 `class` / `struct`，这是一处已知差异）。
+- **修饰符**：只有**本文件里声明**的符号有。同一个符号在一个文件里的所有出现位置共用同一份
+  细节（在声明处读到 `const`，这个文件里对它的每一次引用也是 `const`），所以同一屏里不会出现
+  同一个符号两种颜色；但别的文件里引用它时拿不到 `readonly` / `static`。
+  `defaultLibrary` 是例外：符号键的前半段就是程序集名，BCL 的那几个程序集直接判定得出。
+
+**映射表**（`rove_lang_cs::semantic::KIND_TABLE`，20 行，每行一个测试）。几条需要解释的选择：
+`record` / `record struct` 取 class / struct 的 token 类型；C# 的 `delegate` 是一个类，标准集合里
+没有 `delegate`（VS Code 的 C# 扩展用的是它自己登记的类型名），按「不发明类型名」归到 `class`；
+`const` 字段取 `variable` + `static` + `readonly`，这样回退表里的
+`variable.readonly → variable.other.constant` 正好是 VS Code C# 扩展给常量用的 scope；
+构造函数的名字就是类型名，按**所在类型的种类**着色（与 VS Code 一致），判定靠符号键里的 `#ctor`
+与容器符号。`modification` 与 `documentation` 两个修饰符需要写访问与文档注释的判定，本实现不产出
+（留空比标错好）。
+
+**回退表是移植来的数据，不是设计**（`rove_theme::semantic::FALLBACK_RULES`，35 条）。逐条抄自
+VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
+`createDefaultTokenClassificationRegistry()`，连登记顺序都保留（同分时后登记的覆盖先登记的）。
+选择器语法（`[类型|*](.修饰符)*(:语言)?`）、匹配打分（语言 +10、类型 +100−层级、每个修饰符 +100，
+缺一个修饰符就不匹配）、类型继承（只有 `member` 的父类型是 `method`）与逐属性记分的叠加
+（`ColorThemeData.getTokenStyle`）也一并照搬。**大多数第三方主题不写 `semanticTokenColors`**，
+这张表决定了那时候语义高亮还能不能看。
+
+**三条优先级**（高到低）：`editor.semanticTokenColorCustomizations` 的按主题形式 → 它的全局形式
+→ 主题自己的 `semanticTokenColors` → 回退表 → `tokenColors`。开关同理：
+`semanticTokenColorCustomizations.enabled`（按主题形式优先）> `tokenColorCustomizations.semanticHighlighting`
+（旧写法）> 主题 JSON 的 `semanticHighlighting`。
+
+**开关**（`semantic_host::SemanticHighlighting`）：`editor.semanticHighlighting.enabled` 的
+`true` / `false` / `configuredByTheme`（默认），按 `[csharp]` 的语言作用域读取，所以语言级覆盖
+自动生效。**关闭时一次查询都不发**（`Workbench::semantic_query_count` 可以断言），不是「查了但不画」。
+
+**降级与不闪烁**。路由按 #38 已有的「这一行改过没有」判定（`EditMap::old_to_new_clean`）把位置搬到
+当前坐标，**改过的行上的 token 直接丢弃**，那些地方退回纯语法高亮，其余仍然精确；批级精确度标
+`Approximate` + `ModifiedRegion`。界面只采用两种结果：`Exact`，以及 `Approximate` 且原因正好是
+`ModifiedRegion`；索引未就绪、文件不在索引里、`Syntax` 一律不产出语义 token，**也不加任何提示**
+（`UX_SPEC` §2.2）。过期结果（请求代次或文档版本对不上）丢弃，屏幕上留着旧样式。精确度变化
+（索引建好、保存后重建完成）由 `refresh_semantic` 静默重查。
+
+**只让被覆盖的行失效**。`SemanticLayer::update` 返回新旧结果覆盖行的并集并把连续行并成区间，
+宿主只对这些区间调 `DecorationStore::invalidate`，不整文件重画。主题换了只重新解析样式、
+**不重新查询**（token 没变，只是颜色映射换了）。
+
+**fontStyle 进整形缓存键**：语义层只改前景色与粗体 / 斜体 / 下划线 / 删除线，走的是 #19 装饰层
+同一条路径，`LineEntry::font_runs` 已经把粗体与斜体编进整形键（`view.rs::decorate_entry`），
+语义层不需要另做一套——这正是 #20 踩过「颜色对了但列对不上」的那个坑的防线。
+
+**不生效的 `#if` 区域（D9）**。区间来自索引（#32 的不生效行区间），经 #1 契约的
+`CsQueries::inactive_regions` 取得（#38 已经实现，含位置映射）。它们是**整行**区间，所以置灰做成
+行级：`LineStyle::opacity`（0–255）在装饰合并时向上传递，绘制时乘进前景色的 alpha
+（`element.rs::paint_glyphs`）——不改下层的颜色本身，也不影响整形。数值取
+`editorUnnecessaryCode.opacity` 的 **alpha 通道**（VS Code 的做法：深色 `#000a`、浅色 `#0007`、
+高对比度不置灰），主题可以覆盖。超长行不产出语义 token，但**照样置灰**（置灰与着色是两件事）。
+
+**按级别关闭**：大文件与超大文件关闭语义高亮（`UX_SPEC` §3.1），原因登记为
+`Feature::SemanticHighlighting`，经 `CodeView::disabled_features()` 可查，界面字符串
+`codeView.feature.semanticHighlighting`（`rove_buffer::ReducedFeature::SemanticHighlighting` 早就
+在状态栏那一侧登记好了）。超长行遵循 `editor.maxTokenizationLineLength`（`[csharp]` 默认 2500）。
+
+**登记**：三个设置项（`editor.semanticHighlighting.enabled`、
+`editor.semanticTokenColorCustomizations`、`editor.maxTokenizationLineLength`）本来就在
+`rove-config` 的内置目录里；颜色键 `editorUnnecessaryCode.opacity` 在
+`code_view::colors::COLORS`；界面字符串 `codeView.feature.semanticHighlighting` 在
+`code_view::commands` 的字符串表。**没有新增 #1 的契约**：`CsQueries::semantic_tokens` 与
+`inactive_regions` 在 #1 里就有，本 issue 只是把前者从 `Unsupported` 换成正式实现。
+
+验证：`cargo test -p rove-lang-cs --lib semantic::`（映射表逐行、声明细节提取）、
+`cargo test -p rove-lang-cs --lib router::tests::`（按文件取 token、改过的行退回语法、
+不是 C# 的文件、过期版本、索引不可信）、`cargo test -p rove-theme --test semantic_colors`
+（两条着色路径、用户覆盖的合并、三处开关）、`cargo test -p rove-ui --lib code_view::semantic`、
+`cargo test -p rove-ui --lib semantic_tests`（打开 `.cs` → 字段的类型 / 修饰符 / 最终颜色、
+置灰、关闭时零查询、按级别关闭）。基准：`cargo xtask bench --only semantic`，预算
+`semantic_highlight_catch_up`（< 100 ms）与 `semantic_highlight_frame_extra`（< 100 µs）。

@@ -58,6 +58,14 @@ pub const COLORS: &[ColorDefault] = &[
     ),
     ("editorLineNumber.dimmedForeground", None, None, None, None),
     ("editorGutter.background", None, None, None, None),
+    // #59（D9）：不生效预处理代码的不透明度（alpha 通道即不透明度；高对比度主题不置灰）。
+    (
+        "editorUnnecessaryCode.opacity",
+        rgba(0x000000AA),
+        rgba(0x00000077),
+        None,
+        None,
+    ),
     ("editor.lineHighlightBackground", None, None, None, None),
     (
         "editor.lineHighlightBorder",
@@ -300,6 +308,8 @@ pub struct Palette {
     pub sticky_shadow: Option<Color>,
     pub sticky_gutter_background: Color,
     pub sticky_hover_background: Option<Color>,
+    /// #59（D9）：不生效预处理代码的不透明度（`editorUnnecessaryCode.opacity` 的 alpha）。
+    pub unnecessary_code_opacity: Option<u8>,
 }
 
 /// 完全透明（`#00000000`）在 VS Code 的参考线配色里表示「没设这个颜色」，不是「画成透明」。
@@ -436,6 +446,11 @@ impl Palette {
             sticky_gutter_background: get("editorStickyScrollGutter.background")
                 .unwrap_or(get("editorGutter.background").unwrap_or(background)),
             sticky_hover_background: get("editorStickyScrollHover.background"),
+            // #59（D9）：不生效的预处理区域按 `editorUnnecessaryCode.opacity` 的 alpha 变淡。
+            unnecessary_code_opacity: super::semantic::opacity_of(
+                get("editorUnnecessaryCode.opacity"),
+                kind,
+            ),
         }
     }
 }

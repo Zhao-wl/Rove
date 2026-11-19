@@ -337,6 +337,23 @@ Rove 只读加载该主题，不修改字体与图标定义。**#69 合并前仓
 合并时由 #69 在这里补上文件清单、版本与哈希（做法与上面的 codicons 一节相同）。
 发布包的体积分项（`packaging/package-contents.toml` 的 `[[embedded]]`）也要同时加上一条。
 
+## VS Code 语义 token 的分类与回退表（#59）
+
+以下移植自 Microsoft VS Code（MIT 许可，版权与许可全文见上文“VS Code 默认主题与主题引擎”一节）：
+
+- `crates/rove-theme/src/semantic.rs`：标准语义 token 类型与修饰符集合、选择器语法与匹配打分
+  （`parseClassifierString` / `TokenSelector.match` / `getTypeHierarchy`）、
+  `TokenStyle.fromSettings`，以及**语义 token → TextMate scope 的回退表**
+  （`createDefaultTokenClassificationRegistry()` 里的 `registerTokenType` 与
+  `registerTokenStyleDefault`，连登记顺序一并保留），取自
+  `src/vs/platform/theme/common/tokenClassificationRegistry.ts`。
+- `crates/rove-theme/src/resolved.rs` 的 `semantic_token_style_uncached` / `probe_scopes` 与
+  `editor.semanticTokenColorCustomizations` 的合并：`ColorThemeData.getTokenStyle`、
+  `resolveScopes`、`setCustomSemanticTokenColors`、`readSemanticTokenRule`，取自
+  `src/vs/workbench/services/themes/common/colorThemeData.ts`。
+
+来源：<https://github.com/microsoft/vscode/tree/release/1.95>
+
 ## Rust 依赖的完整清单（#76）
 
 见 [`packaging/licenses/rust-dependencies.md`](packaging/licenses/rust-dependencies.md)：

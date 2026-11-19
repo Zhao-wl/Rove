@@ -610,6 +610,8 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("codeView.feature.links", "链接检测"),
     // #57
     ("codeView.feature.bracketPairColorization", "括号对着色"),
+    // #59
+    ("codeView.feature.semanticHighlighting", "语义高亮"),
 ];
 
 /// 分类标题（命令面板里显示为“编辑器: …”）。

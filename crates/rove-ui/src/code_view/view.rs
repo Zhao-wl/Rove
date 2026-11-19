@@ -23,6 +23,7 @@ use super::scroll::{self, Metrics, Reveal, ScrollPosition, ViewZones, WheelOptio
 use super::selection::{
     self, extend_by_unit, line_unit, pos, Cursor, Granularity, Move, Selection,
 };
+use super::semantic::{SemanticLayer, SemanticProvider, SemanticStyles};
 use super::sticky::{StickyLine, StickyModel, StickyScroll, StickySources};
 use super::wrap::{
     self, LineWrap, VisualMap, WordWrap, WrapOptions, WrapPending, WrappingStrategy,
@@ -152,6 +153,8 @@ pub enum Feature {
     Links,
     /// 括号对着色（#57；大文件与超大文件关闭，括号太多时也关闭）。
     BracketPairColorization,
+    /// C# 语义高亮（#59；UX_SPEC §3.1：大文件与超大文件都关闭）。
+    SemanticHighlighting,
 }
 
 impl Feature {
@@ -167,6 +170,7 @@ impl Feature {
             Feature::WordWrap => "codeView.feature.wordWrap",
             Feature::Links => "codeView.feature.links",
             Feature::BracketPairColorization => "codeView.feature.bracketPairColorization",
+            Feature::SemanticHighlighting => "codeView.feature.semanticHighlighting",
         }
     }
 }
@@ -477,6 +481,9 @@ pub struct CodeView {
     pub(crate) symbols: Option<Arc<rove_syntax::symbols::DocumentSymbols>>,
     pub(crate) syntax: Rc<RefCell<SyntaxLayer>>,
     syntax_layer: LayerId,
+    /// #59：C# 语义着色与不生效预处理区域置灰。
+    pub(crate) semantic: Rc<RefCell<SemanticLayer>>,
+    semantic_layer: LayerId,
     last_syntax_invalidation: Option<Option<Vec<Range<u64>>>>,
     brackets: Rc<RefCell<(Option<BracketMatch>, TextStyle)>>,
     bracket_layer: LayerId,
@@ -691,6 +698,14 @@ impl CodeView {
                 Rc::new(SyntaxProvider(syntax.clone())),
             )
             .expect("built-in layer");
+        let semantic = Rc::new(RefCell::new(SemanticLayer::default()));
+        let semantic_layer = decorations
+            .add(
+                "rove.semantic",
+                priority::SEMANTIC,
+                Rc::new(SemanticProvider(semantic.clone())),
+            )
+            .expect("built-in layer");
         let occurrences = Rc::new(RefCell::new(Occurrences::default()));
         let occurrence_layer = decorations
             .add(
@@ -753,6 +768,8 @@ impl CodeView {
             symbols: None,
             syntax,
             syntax_layer,
+            semantic,
+            semantic_layer,
             last_syntax_invalidation: None,
             brackets,
             bracket_layer,
@@ -3168,6 +3185,64 @@ impl CodeView {
     /// 换语法快照（#9/#94 的分析结果，与当前文本同一版本）。`changed` 来自
     /// `SyntaxUpdate::changed_lines`：`None` 让整层失效（首次解析、丢失基线），`Some(ranges)` 只让这些行
     /// 失效。重算前继续用旧样式绘制；首次结果到达前显示纯文本，到达后一次性替换。
+    /// #59：换一份语义着色结果。只让**被覆盖的行**（新旧结果的并集）失效，
+    /// 重算前继续用旧样式绘制（不闪烁）。返回失效的行区间，便于测试断言。
+    pub fn set_semantic_styles(
+        &mut self,
+        styles: SemanticStyles,
+        cx: &mut Context<Self>,
+    ) -> Vec<Range<u64>> {
+        let invalid = self.semantic.borrow_mut().update(styles);
+        self.invalidate_semantic_lines(&invalid, cx);
+        invalid
+    }
+
+    /// #59（D9）：换一份不生效的预处理区域（整行区间，半开）。
+    pub fn set_inactive_regions(
+        &mut self,
+        regions: Vec<Range<u64>>,
+        cx: &mut Context<Self>,
+    ) -> Vec<Range<u64>> {
+        let invalid = self.semantic.borrow_mut().update_inactive(regions);
+        self.invalidate_semantic_lines(&invalid, cx);
+        invalid
+    }
+
+    /// #59：语义着色的总开关（设置关闭、语言不是 C#、级别关闭时为假）。
+    /// 关掉时清空结果，宿主据此**不再发起查询**。
+    pub fn set_semantic_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.semantic.borrow().enabled == enabled {
+            return;
+        }
+        self.semantic.borrow_mut().enabled = enabled;
+        let invalid = if enabled {
+            Vec::new()
+        } else {
+            self.semantic.borrow_mut().clear()
+        };
+        if invalid.is_empty() {
+            self.decorations.invalidate(&self.semantic_layer, None);
+            cx.notify();
+        } else {
+            self.invalidate_semantic_lines(&invalid, cx);
+        }
+    }
+
+    /// 语义着色当前是否生效（级别关闭或开关为假时为假）。
+    pub fn semantic_enabled(&self) -> bool {
+        self.semantic.borrow().enabled && self.effective_level() == SizeClass::Normal
+    }
+
+    fn invalidate_semantic_lines(&mut self, lines: &[Range<u64>], cx: &mut Context<Self>) {
+        for r in lines {
+            self.decorations
+                .invalidate(&self.semantic_layer, Some(r.clone()));
+        }
+        if !lines.is_empty() {
+            cx.notify();
+        }
+    }
+
     pub fn set_syntax(
         &mut self,
         snapshot: Option<Arc<dyn SyntaxSnapshot>>,
@@ -3235,6 +3310,15 @@ impl CodeView {
             let mut syntax = self.syntax.borrow_mut();
             syntax.max_line_length = self.options.max_tokenization_line_length;
             syntax.enabled = self.effective_level() != SizeClass::Huge;
+        }
+        // #59：语义着色在大文件与超大文件上关闭（`UX_SPEC` §3.1），原因登记在
+        // `disabled_features()` 里；超长行同样不着色（`editor.maxTokenizationLineLength`）。
+        {
+            let level_allows = self.effective_level() == SizeClass::Normal;
+            let mut semantic = self.semantic.borrow_mut();
+            semantic.max_line_length = self.options.max_tokenization_line_length;
+            semantic.level_allows = level_allows;
+            semantic.unnecessary_opacity = p.unnecessary_code_opacity;
         }
         // #57：括号对着色。大文件与超大文件整体关闭（`UX_SPEC` §3.1）。
         {
@@ -3326,6 +3410,7 @@ impl CodeView {
                 Feature::StickyScroll,
                 Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
+                Feature::SemanticHighlighting,
                 Feature::SyntaxFolding,
                 Feature::BackgroundHighlighting,
             ],
@@ -3333,6 +3418,7 @@ impl CodeView {
                 Feature::StickyScroll,
                 Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
+                Feature::SemanticHighlighting,
                 Feature::SyntaxHighlighting,
                 Feature::Folding,
                 Feature::WordWrap,

@@ -135,6 +135,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "brackets",
         requires: "",
     },
+    BenchTarget {
+        // #59：C# 语义着色的样式解析与每帧额外开销（纯 CPU）。
+        name: "semantic",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

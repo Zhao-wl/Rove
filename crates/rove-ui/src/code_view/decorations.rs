@@ -84,6 +84,10 @@ pub struct LineStyle {
     pub background: Option<Color>,
     pub border: Option<Color>,
     pub glyph: Option<GlyphIcon>,
+    /// #59（D9）：整行文字的不透明度（0–255，`None` 为不透明）。
+    /// 不生效的 `#if` 区域按 `editorUnnecessaryCode.opacity` 的 alpha 通道变淡，
+    /// 只影响绘制时的前景色 alpha，不影响整形，也不改下层的颜色本身。
+    pub opacity: Option<u8>,
 }
 
 /// 行内覆盖物：在 `column` 处叠画一段文字（不参与本行整形与列换算），
@@ -194,6 +198,9 @@ pub fn merge(layers: &[&LineDecorations], line_len: u32) -> MergedLine {
         }
         if l.line.glyph.is_some() {
             line.glyph = l.line.glyph.clone();
+        }
+        if l.line.opacity.is_some() {
+            line.opacity = l.line.opacity;
         }
         overlays.extend(l.overlays.iter().cloned());
     }

@@ -460,6 +460,8 @@ impl Workbench {
         for (group, secondary) in slots {
             self.refresh_highlights(group, secondary, true, false, cx);
         }
+        // #59：精确度变化（索引建好、保存后重建完成）时静默刷新语义着色。
+        self.semantic_index_changed(cx);
     }
 
     pub(super) fn nav_settings_changed(
