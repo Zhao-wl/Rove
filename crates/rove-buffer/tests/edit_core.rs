@@ -437,7 +437,7 @@ fn prepared_edits_check_the_live_version_and_form_one_undo_unit() {
 
 #[test]
 fn dense_edits_match_reverse_application_and_undo_as_one_transaction() {
-    let text = "文字 target x\r\nβ target y\n".repeat(180);
+    let text = "文字 target x\r\nβ target y\n単行 target z\r".repeat(180);
     let edits: Vec<_> = text
         .match_indices("target")
         .enumerate()
@@ -471,6 +471,24 @@ fn dense_edits_match_reverse_application_and_undo_as_one_transaction() {
     assert!(!session.can_undo());
     session.redo().unwrap();
     assert_eq!(session.contents(), reference.contents());
+}
+
+#[test]
+fn dense_edits_with_invalid_utf8_boundaries_are_atomic() {
+    let text = "中a\r\n".repeat(160);
+    let mut session = lf_session(&text);
+    let mut edits: Vec<_> = text
+        .match_indices('a')
+        .map(|(offset, _)| Replacement::new(span(offset as u64, offset as u64 + 1), "b"))
+        .collect();
+    edits.push(Replacement::insert(ByteOffset(1), "invalid"));
+
+    assert!(matches!(
+        session.edit(Transaction::new(edits).unwrap(), Instant::now()),
+        Err(Error::OutOfBounds)
+    ));
+    assert_eq!(session.contents(), text);
+    assert!(!session.can_undo());
 }
 
 #[test]

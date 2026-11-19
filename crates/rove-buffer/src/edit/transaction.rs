@@ -448,12 +448,7 @@ impl EditBuffer {
         for edit in &transaction.edits {
             let start = to_usize(edit.range.start())?;
             let end = to_usize(edit.range.end())?;
-            if end > len || !is_boundary(old, start) || !is_boundary(old, end) {
-                return Err(Error::OutOfBounds);
-            }
-            if transaction.newlines == NewlineMode::Normalize
-                && (inside_crlf(old, start) || inside_crlf(old, end))
-            {
+            if end > len {
                 return Err(Error::OutOfBounds);
             }
             spans.push((start, end));
@@ -478,8 +473,21 @@ impl EditBuffer {
             removed,
             input_edits,
             line_changes: dense_changes,
-        } = rewrite_dense_lines(old, &spans, &texts)
-            .unwrap_or_else(|| rewrite_backwards(old, &spans, &texts));
+        } = match rewrite_dense_lines(old, &spans, &texts) {
+            Some(rewritten) => rewritten,
+            None => {
+                for &(start, end) in &spans {
+                    if !is_boundary(old, start)
+                        || !is_boundary(old, end)
+                        || (transaction.newlines == NewlineMode::Normalize
+                            && (inside_crlf(old, start) || inside_crlf(old, end)))
+                    {
+                        return Err(Error::OutOfBounds);
+                    }
+                }
+                rewrite_backwards(old, &spans, &texts)
+            }
+        };
         let text_edits = transaction
             .edits
             .iter()
@@ -556,38 +564,51 @@ fn rewrite_dense_lines(
     spans: &[(usize, usize)],
     texts: &[Arc<str>],
 ) -> Option<Rewrite> {
-    // Sparse edits benefit from sharing untouched subtrees with old snapshots.
-    if spans.len() < 128 || old.len_bytes() / spans.len() > 4096 {
+    // 稀疏编辑继续共享未受影响的子树。密集路径最多为普通文件额外持有一份源文本。
+    if spans.len() < 128
+        || old.len_bytes() / spans.len() > 4096
+        || old.len_bytes() as u64 > crate::size::LARGE_FILE_BYTES
+    {
         return None;
     }
+    let source = old.to_string();
+    let bytes = source.as_bytes();
     let mut builder = ropey::RopeBuilder::new();
     let mut removed = Vec::with_capacity(spans.len());
     let mut input_edits = Vec::with_capacity(spans.len());
     let mut changes = LineChanges::default();
     let mut copied = 0;
+    let mut line = Line(0);
+    let mut line_start = 0;
     for (&(start, end), inserted) in spans.iter().zip(texts) {
-        let slice = old.byte_slice(start..end);
-        let has_line_break = |text: &str| memchr::memchr2(b'\r', b'\n', text.as_bytes()).is_some();
-        if has_line_break(inserted)
-            || slice.chunks().any(has_line_break)
-            || inside_crlf(old, start)
-            // Deleting text just after a CR could join it with a following LF,
-            // including an LF exposed by another touching deletion.
-            || (inserted.is_empty() && start > 0 && old.byte(start - 1) == b'\r')
+        // 切片同时校验两个 UTF-8 边界。跨换行符、拆分 CRLF 或可能把 CR/LF
+        // 接合时沿用通用路径，确保原有的中间坐标与换行失效规则。
+        let erased = source.get(start..end)?;
+        let follows_cr = start > 0 && bytes[start - 1] == b'\r';
+        if memchr::memchr2(b'\r', b'\n', inserted.as_bytes()).is_some()
+            || memchr::memchr2(b'\r', b'\n', erased.as_bytes()).is_some()
+            || (follows_cr && (bytes.get(start) == Some(&b'\n') || inserted.is_empty()))
         {
             return None;
         }
-        for chunk in old.byte_slice(copied..start).chunks() {
-            builder.append(chunk);
+
+        let unchanged = &source[copied..start];
+        // 已删区间完全在行内。统计本次跳过的原文即可沿用同一套旧文本坐标。
+        for offset in memchr::memchr2_iter(b'\r', b'\n', unchanged.as_bytes()) {
+            let at = copied + offset;
+            if bytes[at] == b'\r' || at == 0 || bytes[at - 1] != b'\r' {
+                line.0 += 1;
+            }
+            line_start = at + 1;
         }
+        builder.append(unchanged);
         builder.append(inserted);
         copied = end;
-        removed.push(match slice.as_str() {
-            Some(text) => Arc::from(text),
-            None => Arc::from(slice.to_string()),
-        });
-        let start_position = position_in(old, start);
-        let line = start_position.line;
+        removed.push(Arc::from(erased));
+        let start_position = Position {
+            line,
+            column: Utf8Column((start - line_start) as u64),
+        };
         if changes
             .ranges
             .last()
@@ -612,9 +633,7 @@ fn rewrite_dense_lines(
             new_end_position: position_after(inserted.len()),
         });
     }
-    for chunk in old.byte_slice(copied..).chunks() {
-        builder.append(chunk);
-    }
+    builder.append(&source[copied..]);
     input_edits.reverse();
     Some(Rewrite {
         rope: builder.finish(),
