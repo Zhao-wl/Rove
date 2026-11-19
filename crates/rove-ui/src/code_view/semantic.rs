@@ -396,8 +396,10 @@ mod tests {
 
     #[test]
     fn long_lines_are_left_to_the_syntax_layer() {
-        let mut layer = SemanticLayer::default();
-        layer.max_line_length = Some(10);
+        let mut layer = SemanticLayer {
+            max_line_length: Some(10),
+            ..Default::default()
+        };
         layer.update(styles(&[token(0, 0, 3, "field", &[])]));
         let mut out = LineDecorations::default();
         layer.decorate(0, &"x".repeat(11), &mut out);
@@ -409,8 +411,10 @@ mod tests {
 
     #[test]
     fn inactive_regions_dim_the_whole_line() {
-        let mut layer = SemanticLayer::default();
-        layer.unnecessary_opacity = Some(0xaa);
+        let mut layer = SemanticLayer {
+            unnecessary_opacity: Some(0xaa),
+            ..Default::default()
+        };
         let invalid = layer.update_inactive(std::iter::once(4..7).collect());
         assert_eq!(invalid.as_slice(), std::slice::from_ref(&(4..7)));
         let mut out = LineDecorations::default();
@@ -428,9 +432,11 @@ mod tests {
 
     #[test]
     fn a_disabled_layer_draws_nothing() {
-        let mut layer = SemanticLayer::default();
-        layer.level_allows = false;
-        layer.unnecessary_opacity = Some(0xaa);
+        let mut layer = SemanticLayer {
+            level_allows: false,
+            unnecessary_opacity: Some(0xaa),
+            ..Default::default()
+        };
         layer.update(styles(&[token(0, 0, 3, "field", &[])]));
         layer.update_inactive(std::iter::once(0..2).collect());
         let mut out = LineDecorations::default();

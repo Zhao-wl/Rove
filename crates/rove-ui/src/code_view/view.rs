@@ -3327,9 +3327,19 @@ impl CodeView {
         {
             let level_allows = self.effective_level() == SizeClass::Normal;
             let mut semantic = self.semantic.borrow_mut();
-            semantic.max_line_length = self.options.max_tokenization_line_length;
-            semantic.level_allows = level_allows;
-            semantic.unnecessary_opacity = p.unnecessary_code_opacity;
+            let max_line_length = self.options.max_tokenization_line_length;
+            let opacity = p.unnecessary_code_opacity;
+            if (
+                semantic.max_line_length,
+                semantic.level_allows,
+                semantic.unnecessary_opacity,
+            ) != (max_line_length, level_allows, opacity)
+            {
+                semantic.max_line_length = max_line_length;
+                semantic.level_allows = level_allows;
+                semantic.unnecessary_opacity = opacity;
+                self.decorations.invalidate(&self.semantic_layer, None);
+            }
         }
         // #57：括号对着色。大文件与超大文件整体关闭（`UX_SPEC` §3.1）。
         {
