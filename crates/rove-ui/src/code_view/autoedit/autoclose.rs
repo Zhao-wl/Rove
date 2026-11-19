@@ -325,10 +325,7 @@ pub fn should_delete_pair(
     } else if options.brackets == AutoClosing::Never {
         return false;
     }
-    if options.delete == AutoClosingEdit::Auto && !tracker.contains(line, column) {
-        return false;
-    }
-    true
+    options.delete != AutoClosingEdit::Auto || tracker.contains(line, column)
 }
 
 /// `_shouldSurroundChar` + `_isSurroundSelectionType`：选区该不该被 `ch` 包围；返回包围用的那一对。
