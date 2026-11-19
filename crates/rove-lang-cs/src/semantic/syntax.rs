@@ -227,7 +227,7 @@ impl Walker<'_> {
                 self.named(child, CsSymbolKind::LocalFunction, modifiers);
                 self.children(child, enclosing, depth + 1);
             }
-            // 构造函数 / 析构函数的名字就是类型名：按所在类型的种类着色，与 VS Code 一致。
+            // 构造函数 / 析构函数按所属类型的种类着色。
             "constructor_declaration" | "destructor_declaration" => {
                 let (modifiers, _) = self.modifiers_of(child);
                 self.named(child, enclosing.unwrap_or(CsSymbolKind::Type), modifiers);

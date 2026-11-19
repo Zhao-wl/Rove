@@ -813,6 +813,7 @@ fn large_and_huge_levels(cx: &mut TestAppContext) {
                 // #57：括号对着色同样在大文件与超大文件都关闭。
                 Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
+                Feature::SemanticHighlighting,
                 Feature::SyntaxFolding,
                 Feature::BackgroundHighlighting
             ]
@@ -839,6 +840,9 @@ fn large_and_huge_levels(cx: &mut TestAppContext) {
         assert!(!v.folding_enabled());
         assert!(v.fold_ranges().is_empty());
         assert!(v.disabled_features().contains(&Feature::SyntaxHighlighting));
+        assert!(v
+            .disabled_features()
+            .contains(&Feature::SemanticHighlighting));
         assert!(v.disabled_features().contains(&Feature::Folding));
     });
     assert!(

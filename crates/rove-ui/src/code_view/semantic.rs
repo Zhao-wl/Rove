@@ -359,7 +359,7 @@ mod tests {
             token(4, 0, 3, "field", &[]),
             token(7, 0, 3, "field", &[]),
         ]));
-        layer.update_inactive(vec![1..6]);
+        layer.update_inactive(std::iter::once(1..6).collect());
         let lines = |start, end| Span::new(Line(start), Line(end)).unwrap();
         layer.remap(&LineChanges {
             ranges: vec![
@@ -411,8 +411,8 @@ mod tests {
     fn inactive_regions_dim_the_whole_line() {
         let mut layer = SemanticLayer::default();
         layer.unnecessary_opacity = Some(0xaa);
-        let invalid = layer.update_inactive(vec![4..7]);
-        assert_eq!(invalid, vec![4..7]);
+        let invalid = layer.update_inactive(std::iter::once(4..7).collect());
+        assert_eq!(invalid.as_slice(), std::slice::from_ref(&(4..7)));
         let mut out = LineDecorations::default();
         layer.decorate(5, "#if UNITY_EDITOR", &mut out);
         assert_eq!(out.line.opacity, Some(0xaa));
@@ -432,7 +432,7 @@ mod tests {
         layer.level_allows = false;
         layer.unnecessary_opacity = Some(0xaa);
         layer.update(styles(&[token(0, 0, 3, "field", &[])]));
-        layer.update_inactive(vec![0..2]);
+        layer.update_inactive(std::iter::once(0..2).collect());
         let mut out = LineDecorations::default();
         layer.decorate(0, "abc", &mut out);
         assert!(out.inline.is_empty());

@@ -342,7 +342,10 @@ mod tests {
         map.push(LineEdit::new(p(3, 0), p(3, 0), "inserted\n"));
         map.push(LineEdit::new(p(5, 1), p(5, 2), "x"));
         assert_eq!(map.map_clean_old_lines(1..7), [1..3, 4..5, 6..8]);
-        assert_eq!(map.map_clean_old_lines(3..4), [4..5]);
+        assert_eq!(
+            map.map_clean_old_lines(3..4).as_slice(),
+            std::slice::from_ref(&(4..5))
+        );
     }
 
     /// 测试用文本模型：按 `\n` 分行。

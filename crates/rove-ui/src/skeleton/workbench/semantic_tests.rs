@@ -413,6 +413,18 @@ fn inactive_preprocessor_lines_are_dimmed(cx: &mut TestAppContext) {
         );
     }
     assert_eq!(line_opacity(&view, cx, u64::from(end)), None);
+
+    let queries = view.read_with(cx, |view, _| view.semantic_query_count());
+    view.update(cx, |view, _| {
+        view.theme_service.preview("Light+").unwrap();
+    });
+    refresh(cx);
+    assert_eq!(line_opacity(&view, cx, u64::from(start)), Some(0x77));
+    assert_eq!(line_opacity(&view, cx, u64::from(end)), None);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.semantic_query_count()),
+        queries
+    );
 }
 
 /// 三值开关的读取：按 `[csharp]` 的语言作用域读，所以语言级覆盖自动生效（#13 负责作用域合并）。
