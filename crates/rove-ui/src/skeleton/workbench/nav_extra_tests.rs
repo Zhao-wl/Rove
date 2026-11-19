@@ -527,10 +527,12 @@ fn type_definition_goto_mode_jumps_without_peeking(cx: &mut TestAppContext) {
 // ------------------------------------------------------- 转到工作区中的符号
 
 fn fake_symbols(precision: Precision) -> Arc<dyn CsQueries> {
+    let mut player = symbol("Player", "Game.Core", "Assets/Player.cs", 0, 17);
+    player.kind = rove_syntax::SymbolKind::Struct;
     Arc::new(FakeSymbols {
         symbols: vec![
             symbol("PlayerController", "Game", "Assets/Writes.cs", 1, 4),
-            symbol("Player", "Game.Core", "Assets/Player.cs", 0, 17),
+            player,
             symbol("Playbook", "", "Assets/notes.md", 2, 0),
         ],
         precision,
@@ -578,7 +580,24 @@ fn type_query(cx: &mut VisualTestContext, text: &str) {
     refresh(cx);
 }
 
-/// `Ctrl+T` 与快速打开的 `#` 前缀：同一份数据、同一套排序（逐条断言两者相同）。
+fn quick_icons(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> Vec<Option<crate::list_widget::quick_input::RowIcon>> {
+    view.read_with(cx, |v, cx| {
+        let overlay = v.quick.view.as_ref().unwrap().read(cx);
+        overlay
+            .service
+            .active()
+            .unwrap()
+            .decor
+            .iter()
+            .map(|row| row.icon)
+            .collect()
+    })
+}
+
+/// `Ctrl+T` 与快速打开的 `#` 前缀共用查询结果、排序和种类图标。
 #[gpui::test]
 fn workspace_symbols_ctrl_t_and_the_hash_prefix_return_the_same_sequence(cx: &mut TestAppContext) {
     let project = Project::new("{}");
@@ -592,6 +611,17 @@ fn workspace_symbols_ctrl_t_and_the_hash_prefix_return_the_same_sequence(cx: &mu
     refresh(cx);
     type_query(cx, "play");
     let by_ctrl_t = quick_rows(&view, cx);
+    let icons_by_ctrl_t = quick_icons(&view, cx);
+    let class = icons_by_ctrl_t[0].unwrap();
+    let structure = icons_by_ctrl_t[1].unwrap();
+    assert_eq!(
+        (class.name, class.color_key),
+        ("symbol-class", "symbolIcon.classForeground")
+    );
+    assert_eq!(
+        (structure.name, structure.color_key),
+        ("symbol-structure", "symbolIcon.structForeground")
+    );
     assert_eq!(
         by_ctrl_t
             .iter()
@@ -611,6 +641,7 @@ fn workspace_symbols_ctrl_t_and_the_hash_prefix_return_the_same_sequence(cx: &mu
     refresh(cx);
     type_query(cx, "#play");
     assert_eq!(quick_rows(&view, cx), by_ctrl_t);
+    assert_eq!(quick_icons(&view, cx), icons_by_ctrl_t);
 }
 
 /// 近似结果在列表顶部加一行克制的说明；精确结果没有任何标记。

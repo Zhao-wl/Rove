@@ -218,6 +218,13 @@ impl QuickInputView {
                     self.strings.text(&Message::key(key)).unwrap_or_default(),
                 ));
             }
+            if let Some(icon) = a.decor.get(i).and_then(|decor| decor.icon) {
+                content = content.child(crate::outline::view::codicon(
+                    icon.name,
+                    px(16.),
+                    color(&*self.theme, icon.color_key),
+                ));
+            }
             content = content.child(highlighted_label(&ctx));
             if let Some(d) = &row.detail {
                 let detail = SharedString::from(d.to_string());

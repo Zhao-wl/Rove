@@ -122,6 +122,7 @@ pub fn palette_picks(
                 disabled: false,
             },
             RowDecor {
+                icon: None,
                 label_highlights: hit.highlights.clone(),
                 detail_highlights: Vec::new(),
                 trailing: hit.entry.keybinding.clone(),

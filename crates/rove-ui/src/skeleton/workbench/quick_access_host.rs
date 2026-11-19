@@ -643,6 +643,7 @@ impl Workbench {
                     disabled: false,
                 },
                 crate::list_widget::quick_input::RowDecor {
+                    icon: None,
                     label_highlights: p.highlights.clone(),
                     detail_highlights: Vec::new(),
                     trailing: None,
