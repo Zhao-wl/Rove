@@ -6,6 +6,100 @@ use gpui::{
 };
 use rove_base::{Cancellation, Line, Position, Resource, Utf8Column, WorkspacePath};
 
+#[test]
+fn raster_reads_one_source_line_for_all_of_its_wrapped_segments() {
+    use rove_base::{ByteOffset, ByteRange, Result, Utf16Column, Version};
+    use rove_buffer::{LineCount, RopeText};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingText {
+        text: RopeText,
+        reads: AtomicUsize,
+    }
+
+    impl TextSource for CountingText {
+        fn version(&self) -> Version {
+            self.text.version()
+        }
+
+        fn byte_len(&self) -> u64 {
+            self.text.byte_len()
+        }
+
+        fn lines(&self) -> LineCount {
+            self.text.lines()
+        }
+
+        fn line_range(&self, line: Line) -> Result<ByteRange> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.text.line_range(line)
+        }
+
+        fn visit_chunks(&self, range: ByteRange, visitor: &mut dyn FnMut(&str)) -> Result<()> {
+            self.text.visit_chunks(range, visitor)
+        }
+
+        fn offset(&self, position: Position) -> Result<ByteOffset> {
+            self.text.offset(position)
+        }
+
+        fn position(&self, offset: ByteOffset) -> Result<Position> {
+            self.text.position(offset)
+        }
+
+        fn utf16_to_utf8(&self, line: Line, column: Utf16Column) -> Result<Utf8Column> {
+            self.text.utf16_to_utf8(line, column)
+        }
+
+        fn utf8_to_utf16(&self, line: Line, column: Utf8Column) -> Result<Utf16Column> {
+            self.text.utf8_to_utf16(line, column)
+        }
+    }
+
+    let text = Arc::new(CountingText {
+        text: RopeText::from_text(&format!("{}\ny", "x".repeat(100_000))),
+        reads: AtomicUsize::new(0),
+    });
+    let row_info = [(0, 0), (0, 20), (0, 83), (0, 84), (1, 0)]
+        .into_iter()
+        .map(|(line, segment)| RasterRow {
+            line,
+            segment,
+            wrap: None,
+        })
+        .collect();
+    let (image, headers) = TileJob {
+        text: text.clone(),
+        syntax: SyntaxLayer::new(Arc::new(rove_theme::DefaultTheme {
+            colors: Default::default(),
+            kind: rove_theme::ThemeKind::Dark,
+        })),
+        semantic: SemanticLayer::default(),
+        columns: 4,
+        row_info,
+        header_end: 2,
+        hidden_rows: Vec::new(),
+        region_rows: Vec::new(),
+        marker_pattern: None,
+        region_start: None,
+        wrap: Some((120, WrapOptions::default())),
+        tab_size: 4,
+        render_limit: Some(10_000),
+        foreground: Color(23, 17, 11, 255),
+        opacity: 255,
+    }
+    .run();
+
+    let tile = image.as_bytes(0).unwrap();
+    for row in [0, 1, 2, 4] {
+        let first_pixel = row * 4 * 4;
+        assert_eq!(&tile[first_pixel..first_pixel + 4], &[11, 17, 23, 255]);
+    }
+    assert_eq!(&tile[3 * 16..4 * 16], &[0; 16], "超出渲染截断的段为空白");
+    assert_eq!(text.reads.load(Ordering::Relaxed), 2);
+    assert!(headers.is_empty());
+}
+
 fn settle(cx: &mut VisualTestContext) {
     for _ in 0..10 {
         cx.run_until_parked();

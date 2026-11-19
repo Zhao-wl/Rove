@@ -150,6 +150,12 @@ impl RasterRow {
     }
 }
 
+struct RasterLine {
+    source: String,
+    wrap: Option<(LineWrap, u32)>,
+    opacity: u8,
+}
+
 struct TileJob {
     text: Arc<dyn TextSource>,
     syntax: SyntaxLayer,
@@ -216,59 +222,74 @@ impl TileJob {
         headers
     }
 
+    fn raster_line(
+        &self,
+        row: &RasterRow,
+        lexical: &mut LineDecorations,
+        semantic: &mut LineDecorations,
+    ) -> Option<RasterLine> {
+        let source = columns::read_line(&*self.text, row.line)?;
+        let wrap = self.wrap.as_ref().map(|(limit, options)| {
+            let display = DisplayLine::build(&source, self.tab_size, self.render_limit);
+            let wraps = row.wrap.clone().unwrap_or_else(|| {
+                wrap::wrap_line(
+                    &source,
+                    &display,
+                    wrap::Metric::Columns { limit: *limit },
+                    options,
+                )
+            });
+            (wraps, display.rendered_source_len())
+        });
+        lexical.inline.clear();
+        semantic.inline.clear();
+        semantic.line.opacity = None;
+        self.syntax.styles(row.line, &source, &mut lexical.inline);
+        self.semantic.decorate(row.line, &source, semantic);
+        if !semantic.inline.is_empty() {
+            let merged = merge(&[lexical, semantic], source.len() as u32);
+            lexical.inline.clear();
+            lexical
+                .inline
+                .extend(merged.runs.into_iter().map(|run| InlineDecoration {
+                    range: run.range,
+                    style: run.style,
+                }));
+        }
+        let opacity =
+            (u16::from(self.opacity) * u16::from(semantic.line.opacity.unwrap_or(255)) / 255) as u8;
+        Some(RasterLine {
+            source,
+            wrap,
+            opacity,
+        })
+    }
+
     fn run(self) -> (Arc<gpui::RenderImage>, Vec<(u64, SectionHeader)>) {
         let headers = self.section_headers();
         let mut tile = Tile::new(self.columns, self.row_info.len() as u32);
         let mut lexical = LineDecorations::default();
         let mut semantic = LineDecorations::default();
-        for (index, row) in self.row_info.into_iter().enumerate() {
-            let RasterRow {
-                line,
-                segment,
-                wrap,
-            } = row;
-            let Some(source) = columns::read_line(&*self.text, line) else {
+        let mut previous_line = None;
+        let mut raster = None;
+        // 采样的视觉行按文档顺序排列，同一逻辑行的各段共享源文本、断行与样式。
+        for (index, row) in self.row_info.iter().enumerate() {
+            if previous_line.replace(row.line) != Some(row.line) {
+                raster = self.raster_line(row, &mut lexical, &mut semantic);
+            }
+            let Some(raster) = &raster else { continue };
+            let (range, indent) = match &raster.wrap {
+                Some((wrap, end)) if row.segment < wrap.count() => (
+                    wrap.segment_range(row.segment, *end),
+                    wrap.indent_columns(row.segment),
+                ),
+                Some(_) => continue,
+                None => (0..raster.source.len() as u32, 0),
+            };
+            let Some(segment_text) = raster.source.get(range.start as usize..range.end as usize)
+            else {
                 continue;
             };
-            let mut range = 0..source.len() as u32;
-            let mut indent = 0;
-            if let Some((limit, options)) = &self.wrap {
-                let display = DisplayLine::build(&source, self.tab_size, self.render_limit);
-                let wraps = wrap.unwrap_or_else(|| {
-                    wrap::wrap_line(
-                        &source,
-                        &display,
-                        wrap::Metric::Columns { limit: *limit },
-                        options,
-                    )
-                });
-                let Some(actual_segment) = (segment < wraps.count()).then_some(segment) else {
-                    continue;
-                };
-                range = wraps.segment_range(actual_segment, display.rendered_source_len());
-                indent = wraps.indent_columns(actual_segment);
-            }
-            let Some(segment_text) = source.get(range.start as usize..range.end as usize) else {
-                continue;
-            };
-            lexical.inline.clear();
-            semantic.inline.clear();
-            semantic.line.opacity = None;
-            self.syntax.styles(line, &source, &mut lexical.inline);
-            self.semantic.decorate(line, &source, &mut semantic);
-            if !semantic.inline.is_empty() {
-                let merged = merge(&[&lexical, &semantic], source.len() as u32);
-                lexical.inline.clear();
-                lexical
-                    .inline
-                    .extend(merged.runs.into_iter().map(|run| InlineDecoration {
-                        range: run.range,
-                        style: run.style,
-                    }));
-            }
-            let opacity = (u16::from(self.opacity)
-                * u16::from(semantic.line.opacity.unwrap_or(255))
-                / 255) as u8;
             let spans = lexical.inline.iter().filter_map(|part| {
                 let start = part.range.start.max(range.start);
                 let end = part.range.end.min(range.end);
@@ -291,7 +312,7 @@ impl TileJob {
                 &text,
                 spans,
                 self.foreground,
-                opacity,
+                raster.opacity,
                 self.tab_size,
             );
         }
@@ -656,13 +677,19 @@ impl CodeView {
         let sampling = panel.track.sampling;
         let end = (first + u64::from(TILE_ROWS)).min(sampling.raster_rows);
         let visual_map = self.visual_map();
+        let mut previous_line = None;
         let row_info: Vec<_> = (first..end)
             .map(|row| {
                 let (line, segment) = visual_map.to_doc(sampling.visual_row(row));
+                let wrap = if previous_line.replace(line) == Some(line) {
+                    None
+                } else {
+                    self.cached_minimap_wrap(line)
+                };
                 RasterRow {
                     line,
                     segment,
-                    wrap: self.cached_minimap_wrap(line),
+                    wrap,
                 }
             })
             .collect();
