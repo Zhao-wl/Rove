@@ -6,12 +6,14 @@ mod tests;
 
 use super::{
     columns::{self, DisplayLine},
+    decorations::{merge, InlineDecoration, LineDecorations},
     highlight::SyntaxLayer,
     minimap::{
         self, Autohide, MarkHeaders, Marker, MarkerKind, Sampling, SectionHeader, Tile, TileCache,
         TILE_ROWS,
     },
     scroll::{self, Metrics, ScrollPosition, Thumb, ViewZones},
+    semantic::SemanticLayer,
     view::{hsla, Drag},
     wrap::{self, LineWrap, WrapOptions},
     CodeView, Reveal,
@@ -146,6 +148,7 @@ struct RasterRow {
 struct TileJob {
     text: Arc<dyn TextSource>,
     syntax: SyntaxLayer,
+    semantic: SemanticLayer,
     columns: u32,
     row_info: Vec<RasterRow>,
     marker_pattern: Option<Arc<str>>,
@@ -160,7 +163,8 @@ struct TileJob {
 impl TileJob {
     fn run(self) -> (Arc<gpui::RenderImage>, Vec<(u64, SectionHeader)>) {
         let mut tile = Tile::new(self.columns, self.row_info.len() as u32);
-        let mut decorations = Vec::new();
+        let mut lexical = LineDecorations::default();
+        let mut semantic = LineDecorations::default();
         let mut comments = Vec::new();
         let mut headers = Vec::new();
         let matcher = self.marker_pattern.and_then(MarkHeaders::compile);
@@ -210,9 +214,25 @@ impl TileJob {
             let Some(segment_text) = source.get(range.start as usize..range.end as usize) else {
                 continue;
             };
-            decorations.clear();
-            self.syntax.styles(line, &source, &mut decorations);
-            let spans = decorations.iter().filter_map(|part| {
+            lexical.inline.clear();
+            semantic.inline.clear();
+            semantic.line.opacity = None;
+            self.syntax.styles(line, &source, &mut lexical.inline);
+            self.semantic.decorate(line, &source, &mut semantic);
+            if !semantic.inline.is_empty() {
+                let merged = merge(&[&lexical, &semantic], source.len() as u32);
+                lexical.inline.clear();
+                lexical
+                    .inline
+                    .extend(merged.runs.into_iter().map(|run| InlineDecoration {
+                        range: run.range,
+                        style: run.style,
+                    }));
+            }
+            let opacity = (u16::from(self.opacity)
+                * u16::from(semantic.line.opacity.unwrap_or(255))
+                / 255) as u8;
+            let spans = lexical.inline.iter().filter_map(|part| {
                 let start = part.range.start.max(range.start);
                 let end = part.range.end.min(range.end);
                 (start < end)
@@ -234,7 +254,7 @@ impl TileJob {
                 &text,
                 spans,
                 self.foreground,
-                self.opacity,
+                opacity,
                 self.tab_size,
             );
         }
@@ -591,7 +611,7 @@ impl CodeView {
         let first = index * u64::from(TILE_ROWS);
         let sampling = panel.track.sampling;
         let end = (first + u64::from(TILE_ROWS)).min(sampling.raster_rows);
-        let row_info = (first..end)
+        let row_info: Vec<_> = (first..end)
             .map(|row| {
                 let visual = sampling.visual_row(row);
                 let logical = self.doc_line(visual);
@@ -612,6 +632,10 @@ impl CodeView {
         let job = TileJob {
             text,
             syntax: self.syntax.borrow().clone(),
+            semantic: self
+                .semantic
+                .borrow()
+                .snapshot_for_rows(row_info.iter().map(|row| row.line)),
             columns: self.options.minimap.columns,
             row_info,
             marker_pattern: self

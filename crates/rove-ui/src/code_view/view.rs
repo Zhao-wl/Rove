@@ -1367,7 +1367,11 @@ impl CodeView {
 
     /// 直接设置选项快照（测试与嵌入方使用）。
     pub fn set_options(&mut self, options: EditorOptions, cx: &mut Context<Self>) {
-        if self.options.minimap != options.minimap || self.options.tab_size != options.tab_size {
+        if self.options.minimap != options.minimap
+            || self.options.tab_size != options.tab_size
+            || self.options.stop_rendering_line_after != options.stop_rendering_line_after
+            || self.options.max_tokenization_line_length != options.max_tokenization_line_length
+        {
             self.minimap.clear(cx);
             self.invalidate_minimap_marks();
         }
@@ -3297,6 +3301,7 @@ impl CodeView {
                 .invalidate(&self.semantic_layer, Some(r.clone()));
         }
         if !lines.is_empty() {
+            self.invalidate_minimap_rows(Some(lines), cx);
             cx.notify();
         }
     }

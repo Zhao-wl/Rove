@@ -249,6 +249,38 @@ impl SemanticLayer {
         self.inactive.iter().any(|r| r.contains(&line))
     }
 
+    /// 为后台光栅化复制当前块采样到的行。一个块只复制一次软换行重复用到的源行。
+    pub(super) fn snapshot_for_rows(&self, rows: impl IntoIterator<Item = u64>) -> Self {
+        let mut snapshot = Self {
+            enabled: self.is_active(),
+            max_line_length: self.max_line_length,
+            unnecessary_opacity: self.unnecessary_opacity,
+            ..Self::default()
+        };
+        if !snapshot.enabled || self.is_empty() {
+            return snapshot;
+        }
+
+        let mut previous = None;
+        for line in rows {
+            if previous == Some(line) {
+                continue;
+            }
+            previous = Some(line);
+            if let Some(runs) = self.styles.lines.get(&line) {
+                snapshot.styles.lines.insert(line, runs.clone());
+            }
+            if self.unnecessary_opacity.is_some() && self.is_inactive(line) {
+                if let Some(last) = snapshot.inactive.last_mut().filter(|last| last.end == line) {
+                    last.end += 1;
+                } else {
+                    snapshot.inactive.push(line..line + 1);
+                }
+            }
+        }
+        snapshot
+    }
+
     /// 某行源文本的语义样式区间。
     pub fn decorate(&self, line: u64, source: &str, out: &mut LineDecorations) {
         if !self.is_active() {

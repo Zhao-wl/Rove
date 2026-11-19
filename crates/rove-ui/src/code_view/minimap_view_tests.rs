@@ -113,6 +113,44 @@ fn minimap_workbench_builds_themed_tiles_and_drags_through_code_view(cx: &mut Te
         assert_ne!(code.minimap.cache.get(1).unwrap().id, second);
     });
 
+    let (before_semantic, after_theme_second, opacity) = code.update(cx, |code, cx| {
+        use crate::code_view::semantic::SemanticStyles;
+        use rove_lang_cs::query::SemanticToken;
+        use rove_theme::semantic::SemanticStyle;
+
+        let first = code.minimap.cache.get(0).unwrap().id;
+        let second = code.minimap.cache.get(1).unwrap().id;
+        code.set_semantic_enabled(true, cx);
+        let token = SemanticToken {
+            line: Line(0),
+            column: Utf8Column(0),
+            length_bytes: 5,
+            token_type: "keyword".into(),
+            modifiers: Arc::from([]),
+        };
+        code.set_semantic_styles(
+            SemanticStyles::build(&[token], &|_, _| SemanticStyle {
+                foreground: Some(Color(127, 63, 41, 255)),
+                ..Default::default()
+            }),
+            cx,
+        );
+        code.set_inactive_regions(std::iter::once(0..1).collect(), cx);
+        let opacity = code.semantic.borrow().unnecessary_opacity.unwrap();
+        (first, second, opacity)
+    });
+    settle(cx);
+    code.update(cx, |code, _| {
+        let foreground_opacity = code
+            .minimap_color("minimap.foregroundOpacity")
+            .map_or(255, |color| color.3);
+        let alpha = (u16::from(opacity) * u16::from(foreground_opacity) / 255) as u8;
+        let tile = code.minimap.cache.get(0).unwrap();
+        assert_ne!(tile.id, before_semantic);
+        assert_eq!(&tile.as_bytes(0).unwrap()[..4], &[41, 63, 127, alpha]);
+        assert_eq!(code.minimap.cache.get(1).unwrap().id, after_theme_second);
+    });
+
     cx.simulate_mouse_down(top, MouseButton::Left, Modifiers::none());
     cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::none());
     cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
