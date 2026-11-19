@@ -470,48 +470,132 @@ fn replace_all_rewrites_five_thousand_matches_in_one_undo_unit(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn pending_replace_preserves_undo_order_and_respects_scope_changes(cx: &mut TestAppContext) {
-    use crate::find::registry::{REPLACE_ALL, TOGGLE_IN_SELECTION};
+fn replace_all_then_save_persists_the_replacement_in_the_same_event(cx: &mut TestAppContext) {
+    use crate::find::registry::REPLACE_ALL;
+
+    for warm in [false, true] {
+        let fixture = Fixture::new("{}");
+        fixture.file("repeated.txt", &"foo\n".repeat(160));
+        let (view, cx) = fixture.open(cx);
+        open_file(&view, "repeated.txt", cx);
+        prepare("foo", "bar", cx);
+        assert_eq!(matches(&view, cx), 160);
+        let find = host(&view, cx);
+        if warm {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(30));
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            find.read_with(cx, |find, cx| find.replacement_ready(cx)),
+            warm
+        );
+
+        cx.update(|window, cx| {
+            find.update(cx, |find, cx| {
+                assert!(find.execute(REPLACE_ALL, window, cx));
+            });
+            view.update(cx, |view, cx| {
+                view.save_command(crate::save::registry::SAVE, window, cx);
+            });
+        });
+        refresh(cx);
+        let replaced = "bar\n".repeat(160);
+        assert_eq!(text(&view, cx), replaced);
+        assert_eq!(
+            std::fs::read_to_string(fixture.folder.path().join("repeated.txt")).unwrap(),
+            replaced
+        );
+    }
+}
+
+#[gpui::test]
+fn consecutive_replace_all_commands_each_read_the_previous_result(cx: &mut TestAppContext) {
+    use crate::find::registry::REPLACE_ALL;
 
     let fixture = Fixture::new("{}");
-    let source = "foo\n".repeat(160);
-    fixture.file("pending.txt", &source);
+    fixture.file("repeated.txt", &"a\n".repeat(160));
     let (view, cx) = fixture.open(cx);
-    open_file(&view, "pending.txt", cx);
-    type_text("x", cx);
-    let with_earlier_edit = format!("x{source}");
-    assert_eq!(text(&view, cx), with_earlier_edit);
-    prepare("foo", "bar", cx);
-    select(&view, pos(0, 0), pos(159, 3), cx);
-    press("alt-l", cx);
-    assert_eq!(matches(&view, cx), 160);
-    assert!(host(&view, cx).read_with(cx, |find, _| find.model().in_selection()));
-
+    open_file(&view, "repeated.txt", cx);
+    prepare("a", "aa", cx);
     let find = host(&view, cx);
-    let code = view.read_with(cx, |view, _| view.code_view().clone());
-    cx.update(|window, cx| {
-        find.update(cx, |find, cx| {
-            assert!(find.execute(REPLACE_ALL, window, cx))
-        });
-        code.update(cx, |code, cx| {
-            assert!(code.execute_edit("undo", window, cx).is_some())
-        });
-    });
-    refresh(cx);
-    assert_eq!(text(&view, cx), with_earlier_edit);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(30));
+    cx.run_until_parked();
+    assert!(find.read_with(cx, |find, cx| find.replacement_ready(cx)));
 
     cx.update(|window, cx| {
         find.update(cx, |find, cx| {
             assert!(find.execute(REPLACE_ALL, window, cx));
-            assert!(find.execute(TOGGLE_IN_SELECTION, window, cx));
-        });
-        code.update(cx, |code, cx| {
-            assert!(code.execute_edit("undo", window, cx).is_some())
+            assert!(find.execute(REPLACE_ALL, window, cx));
         });
     });
     refresh(cx);
-    assert_eq!(text(&view, cx), source);
-    assert!(!find.read_with(cx, |find, _| find.model().in_selection()));
+    assert_eq!(text(&view, cx), "aaaa\n".repeat(160));
+    press("escape", cx);
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), "aa\n".repeat(160));
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), "a\n".repeat(160));
+}
+
+#[gpui::test]
+fn replace_all_updates_its_document_before_switching_tabs(cx: &mut TestAppContext) {
+    use crate::find::registry::REPLACE_ALL;
+
+    let fixture = Fixture::new("{}");
+    fixture.file("repeated.txt", &"foo\n".repeat(160));
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "notes.txt", cx);
+    view.update(cx, |view, cx| {
+        view.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new("repeated.txt").unwrap()),
+                OpenOptions {
+                    pinned: true,
+                    ..Default::default()
+                },
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    refresh(cx);
+    refresh(cx);
+    focus_code(&view, cx);
+    prepare("foo", "bar", cx);
+    let find = host(&view, cx);
+    let document = view.read_with(cx, |view, _| {
+        view.editor
+            .active()
+            .current()
+            .unwrap()
+            .opened()
+            .unwrap()
+            .document
+            .id
+    });
+    let other = Resource::Workspace(WorkspacePath::new("notes.txt").unwrap());
+
+    cx.update(|window, cx| {
+        find.update(cx, |find, cx| {
+            assert!(find.execute(REPLACE_ALL, window, cx));
+        });
+        view.update(cx, |view, cx| {
+            view.open_documents()
+                .open(other, OpenOptions::default(), Cancellation::default())
+                .unwrap();
+            cx.notify();
+        });
+    });
+    refresh(cx);
+    assert_eq!(text(&view, cx), NOTES);
+    view.read_with(cx, |view, _| {
+        let saves = view.editing.saves.borrow();
+        let file = saves.file(document).unwrap();
+        assert_eq!(file.session().contents(), "bar\n".repeat(160));
+        assert!(saves.is_dirty(document));
+    });
 }
 
 #[gpui::test]

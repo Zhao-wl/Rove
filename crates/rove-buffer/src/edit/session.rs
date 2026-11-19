@@ -34,24 +34,6 @@ impl CursorEdit {
     }
 }
 
-#[derive(Default)]
-struct PendingPreparation(Option<(Version, Cancellation)>);
-
-impl Clone for PendingPreparation {
-    fn clone(&self) -> Self {
-        // A session copy must not take ownership of the live session's worker.
-        Self::default()
-    }
-}
-
-impl std::fmt::Debug for PendingPreparation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("PendingPreparation")
-            .field(&self.0.as_ref().map(|(version, _)| version))
-            .finish()
-    }
-}
-
 /// 可编辑文档的会话状态。
 #[derive(Clone, Debug)]
 pub struct EditSession {
@@ -62,7 +44,6 @@ pub struct EditSession {
     options: EditOptions,
     classifier: WordClassifier,
     previous_kind: EditKind,
-    pending_preparation: PendingPreparation,
 }
 
 impl EditSession {
@@ -79,7 +60,6 @@ impl EditSession {
             ),
             options,
             previous_kind: EditKind::Other,
-            pending_preparation: PendingPreparation::default(),
         }
     }
 
@@ -145,41 +125,11 @@ impl EditSession {
     }
 
     pub fn can_undo(&self) -> bool {
-        self.preparation_pending() || !self.history.undo.is_empty()
+        !self.history.undo.is_empty()
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.preparation_pending() && !self.history.redo.is_empty()
-    }
-
-    /// Register an edit being prepared from this version so Undo can cancel it.
-    pub fn begin_preparation(&mut self, version: Version, cancel: Cancellation) -> Result<()> {
-        if !self.buffer.read_only().is_empty() {
-            return Err(Error::Unsupported);
-        }
-        if self.buffer.version() != version {
-            return Err(Error::Stale);
-        }
-        self.cancel_preparation();
-        self.pending_preparation.0 = Some((version, cancel));
-        Ok(())
-    }
-
-    fn preparation_pending(&self) -> bool {
-        self.pending_preparation
-            .0
-            .as_ref()
-            .is_some_and(|(version, cancel)| {
-                *version == self.buffer.version() && cancel.check().is_ok()
-            })
-    }
-
-    fn cancel_preparation(&mut self) -> bool {
-        let pending = self.preparation_pending();
-        if let Some((_, cancel)) = self.pending_preparation.0.take() {
-            cancel.cancel();
-        }
-        pending
+        !self.history.redo.is_empty()
     }
 
     /// 执行一个任意事务（R47 的“全部替换”、R62 的跨文件批量编辑）：永远是一个撤销单元，
@@ -485,14 +435,10 @@ impl EditSession {
     /// 撤销一个单元：文本逐字节回到编辑之前，选区回到**编辑前**的位置。没有可撤销的内容时
     /// 返回空列表。返回的每个 [`AppliedEdit`] 都要像普通编辑一样交给语法与视图。
     pub fn undo(&mut self) -> Result<Vec<AppliedEdit>> {
+        self.history.close();
         if !self.buffer.read_only().is_empty() {
-            self.history.close();
             return Err(Error::Unsupported);
         }
-        if self.cancel_preparation() {
-            return Ok(Vec::new());
-        }
-        self.history.close();
         let Some(group) = self.history.undo.pop() else {
             return Ok(Vec::new());
         };
@@ -511,14 +457,10 @@ impl EditSession {
 
     /// 重做一个单元，选区回到该单元编辑之后的位置。
     pub fn redo(&mut self) -> Result<Vec<AppliedEdit>> {
+        self.history.close();
         if !self.buffer.read_only().is_empty() {
-            self.history.close();
             return Err(Error::Unsupported);
         }
-        if self.preparation_pending() {
-            return Ok(Vec::new());
-        }
-        self.history.close();
         let Some(group) = self.history.redo.pop() else {
             return Ok(Vec::new());
         };

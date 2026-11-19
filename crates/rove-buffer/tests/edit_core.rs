@@ -406,31 +406,6 @@ fn line_changes_merge_ranges_on_the_same_line() {
 }
 
 #[test]
-fn undo_cancels_a_pending_preparation_without_consuming_earlier_history() {
-    for has_history in [false, true] {
-        let mut session = lf_session("abc");
-        if has_history {
-            session
-                .edit(Transaction::single(span(0, 1), "x"), Instant::now())
-                .unwrap();
-        }
-        let contents = session.contents();
-        let cancel = rove_base::Cancellation::default();
-        session
-            .begin_preparation(session.buffer().version(), cancel.clone())
-            .unwrap();
-        assert!(session.can_undo());
-        assert_eq!(session.clone().can_undo(), has_history);
-        assert!(session.undo().unwrap().is_empty());
-        assert!(matches!(cancel.check(), Err(Error::Cancelled)));
-        assert_eq!(session.contents(), contents);
-        assert_eq!(session.can_undo(), has_history);
-        session.undo().unwrap();
-        assert_eq!(session.contents(), "abc");
-    }
-}
-
-#[test]
 fn prepared_edits_check_the_live_version_and_form_one_undo_unit() {
     let mut session = lf_session("abc");
     let source = session.buffer().clone();

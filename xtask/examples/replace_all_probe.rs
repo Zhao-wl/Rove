@@ -1,4 +1,5 @@
 //! #155 真实窗口中的全部替换探针。执行 cargo run --release -p xtask --example replace_all_probe。
+//! 默认验证预备事务命中。设置 ROVE_REPLACE_PREPARATION=cold 可验证模板刚变化时的同步路径。
 //! 输出代码视图 paint 及帧回调时间。需要判定实际显示间隔时，按输出的 PID 另采集 Windows GPU/显示事件。
 #[path = "../src/replace_fixture.rs"]
 mod replace_fixture;
@@ -15,6 +16,7 @@ use rove_config::{SettingsOptions, SettingsService};
 use rove_ui::{
     code_view::{CodeView, FrameStats},
     documents::OpenOptions,
+    find::host::FindHost,
     shell::{layout::LayoutStore, Shell},
     skeleton::Workbench,
 };
@@ -30,6 +32,7 @@ use std::{
 const FILE: &str = "replace.txt";
 const SEARCH: &str = "TargetComponent";
 const REPLACEMENT: &str = "RenamedComponent";
+const ALTERNATE: &str = "UpdatedComponent";
 const WARMUP: usize = 3;
 const SAMPLES: usize = 24;
 const CALIBRATION_FRAMES: usize = 80;
@@ -132,18 +135,22 @@ struct Injection {
     wall_at: SystemTime,
     returned_at: Instant,
     phase: Duration,
+    prepared: bool,
 }
 
 async fn inject(
     window: AnyWindowHandle,
     code: &Entity<CodeView>,
+    find: &Entity<FindHost>,
     interval: Duration,
     sample: usize,
+    cold_template: Option<&'static str>,
     cx: &mut AsyncApp,
 ) -> ProbeResult<Injection> {
     let injection: Rc<Cell<Option<Injection>>> = Rc::default();
     let capture = injection.clone();
     let code = code.clone();
+    let find = find.clone();
     let phase = typing_plan::injection_delay(sample, interval, typing_plan::PHASE_CEILING);
     window.update(cx, |_, window, _| {
         window.on_next_frame(move |window, cx| {
@@ -158,6 +165,13 @@ async fn inject(
                         .timer(deadline.saturating_duration_since(Instant::now()))
                         .await;
                     let _ = cx.update(|window, cx| {
+                        if let Some(template) = cold_template {
+                            let focus = find.read(cx).replace_input_focus(cx);
+                            window.focus(&focus);
+                            press("ctrl-a", window, cx);
+                            type_word(template, window, cx);
+                        }
+                        let prepared = find.read(cx).replacement_ready(cx);
                         let before = code.read(cx).text().expect("loaded text").version().0;
                         let wall_at = SystemTime::now();
                         let at = Instant::now();
@@ -168,6 +182,7 @@ async fn inject(
                             wall_at,
                             returned_at: Instant::now(),
                             phase: at.saturating_duration_since(frame_start),
+                            prepared,
                         }));
                     });
                 })
@@ -181,7 +196,7 @@ async fn inject(
 async fn run(
     window: WindowHandle<Workbench>,
     source: &str,
-    expected: &str,
+    cold: bool,
     started: Instant,
     cx: &mut AsyncApp,
 ) -> ProbeResult<Vec<Value>> {
@@ -210,7 +225,11 @@ async fn run(
             .unwrap_or(false)
     })
     .await?;
-    let code = window.update(cx, |workbench, _, _| workbench.code_view().clone())?;
+    let (code, find) = window.update(cx, |workbench, _, _| {
+        (workbench.code_view().clone(), workbench.find_host().clone())
+    })?;
+    let expected = source.replace(SEARCH, REPLACEMENT);
+    let alternate = source.replace(SEARCH, ALTERNATE);
     let marks: Frames = Rc::default();
     // Input dispatch may draw the root immediately. Do not lease the Workbench while dispatching.
     input_window.update(cx, |_, w, cx| {
@@ -251,6 +270,7 @@ async fn run(
             "phase": "baseline",
             "pid": std::process::id(),
             "fixture_bytes": source.len(),
+            "preparation_mode": if cold { "cold" } else { "warm" },
             "callback_period_ms": ms(interval),
             "two_periods_ms": ms(interval * 2),
             "max_callback_gap_ms": ms(callbacks.into_iter().max().unwrap_or_default()),
@@ -260,7 +280,28 @@ async fn run(
     };
 
     for sample in 0..(WARMUP + SAMPLES) {
-        let injection = inject(input_window, &code, interval, sample, cx).await?;
+        let changed_template = if sample % 2 == 0 {
+            ALTERNATE
+        } else {
+            REPLACEMENT
+        };
+        let injection = inject(
+            input_window,
+            &code,
+            &find,
+            interval,
+            sample,
+            cold.then_some(changed_template),
+            cx,
+        )
+        .await?;
+        if injection.prepared == cold {
+            return Err(format!(
+                "sample {sample}: unexpected prepared state {}",
+                injection.prepared
+            )
+            .into());
+        }
         let acceptance = |frames: &[FrameMark]| {
             frames.iter().position(|frame| {
                 frame.drawn.text_version > injection.before
@@ -311,6 +352,7 @@ async fn run(
                 "inject_at_ms": ms(injection.at - started),
                 "inject_unix_ms": ms(injection.wall_at.duration_since(UNIX_EPOCH)?),
                 "inject_phase_ms": ms(injection.phase),
+                "prepared_at_dispatch": injection.prepared,
                 // Workbench can defer execution until after the key dispatch returns.
             "keystroke_dispatch_ms": ms(injection.returned_at - injection.at),
                 "first_new_paint_ms": ms(end - injection.at),
@@ -321,7 +363,12 @@ async fn run(
             }));
         }
 
-        if state(window, cx)? != expected {
+        let expected_text = if cold && changed_template == ALTERNATE {
+            &alternate
+        } else {
+            &expected
+        };
+        if state(window, cx)? != *expected_text {
             return Err(format!(
                 "sample {sample}: result differed from exactly 5,000 replacements"
             )
@@ -365,7 +412,11 @@ fn main() -> ProbeResult<()> {
     let source = replace_fixture::replace_source();
     assert_eq!(source.lines().count(), 100_000);
     assert_eq!(source.matches(SEARCH).count(), 5_000);
-    let expected = source.replace(SEARCH, REPLACEMENT);
+    let cold = match std::env::var("ROVE_REPLACE_PREPARATION").as_deref() {
+        Ok("cold") => true,
+        Ok("warm") | Err(std::env::VarError::NotPresent) => false,
+        _ => return Err("ROVE_REPLACE_PREPARATION must be warm or cold".into()),
+    };
     let project = tempfile::tempdir()?;
     let user = tempfile::tempdir()?;
     std::fs::write(project.path().join(FILE), &source)?;
@@ -422,7 +473,7 @@ fn main() -> ProbeResult<()> {
             .expect("visible native window required");
         cx.activate(true);
         cx.spawn(async move |cx| {
-            let output = run(window, &source, &expected, started, cx).await;
+            let output = run(window, &source, cold, started, cx).await;
             *completed.borrow_mut() = Some(output);
             let _ = cx.update(|cx| cx.quit());
         })
