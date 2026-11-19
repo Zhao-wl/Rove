@@ -29,7 +29,7 @@
 //! 文档一个都不需要（基线哈希就是那一刻的磁盘哈希），所以这条路上没有额外开销。
 use super::mapping::{EditMap, LineEdit};
 use crate::lifecycle::hash::xxh64;
-use rove_base::{ByteOffset, ByteRange, Error, Result, TextEdit, Version, WorkspacePath};
+use rove_base::{ByteOffset, ByteRange, Error, Position, Result, TextEdit, Version, WorkspacePath};
 use rove_buffer::TextSource;
 use std::{
     collections::HashMap,
@@ -151,11 +151,10 @@ impl BufferStates {
             return Err(Error::Stale);
         }
         // 插入文本可能很大。计算换行范围时让并发导航查询继续访问已登记快照。
-        let line_edit = LineEdit::new(
-            before.position(edit.range.start())?,
-            before.position(edit.range.end())?,
-            &edit.inserted,
-        );
+        let start = before.position(edit.range.start())?;
+        let end = before.position(edit.range.end())?;
+        let line_edit = indexed_line_edit(start, end, edit, &*after)
+            .unwrap_or_else(|| LineEdit::new(start, end, &edit.inserted));
         let mut docs = lock(&self.docs);
         let entry = docs.get_mut(key).ok_or(Error::NotFound)?;
         if entry.state.version != registered_version {
@@ -280,6 +279,34 @@ fn common_affixes(old: &[u8], new: &[u8]) -> (usize, usize, usize) {
     (start, old.len() - suffix, new.len() - suffix)
 }
 
+/// 大段插入通过新快照的行索引求换行数和尾行长度。
+/// 跨编辑边界拼成 CRLF 时，边界位置无效，调用者沿用插入文本本身的统计。
+fn indexed_line_edit(
+    start: Position,
+    end: Position,
+    edit: &TextEdit,
+    after: &dyn TextSource,
+) -> Option<LineEdit> {
+    let inserted_len = edit.inserted.len() as u64;
+    let offset = edit.range.start();
+    if inserted_len < 8 * 1024 || after.position(offset).ok()? != start {
+        return None;
+    }
+    let inserted_end = ByteOffset(offset.0.checked_add(inserted_len)?);
+    let inserted_end = after.position(inserted_end).ok()?;
+    let inserted_breaks = inserted_end.line.0.checked_sub(start.line.0)?;
+    Some(LineEdit {
+        start,
+        end,
+        inserted_breaks,
+        inserted_tail: if inserted_breaks == 0 {
+            inserted_len
+        } else {
+            inserted_end.column.0
+        },
+    })
+}
+
 fn is_continuation(bytes: &[u8], at: usize) -> bool {
     bytes.get(at).is_some_and(|b| b & 0xc0 == 0x80)
 }
@@ -312,6 +339,44 @@ mod tests {
             .edited(path, &**before, &edit, after.clone())
             .unwrap();
         after
+    }
+
+    #[test]
+    fn large_edit_uses_snapshot_coordinates_with_precise_crlf_boundaries() {
+        let mixed = "界\r\nα\nβ\r中😀".repeat(1300);
+        let same_line = "字😀".repeat(1500);
+        for (text, offset, inserted, indexed) in [
+            ("ab", 1, mixed.clone(), true),
+            ("ab", 1, same_line, true),
+            ("a\rb", 2, format!("\n{mixed}"), false),
+            ("a\nb", 1, format!("{mixed}\r"), false),
+        ] {
+            let before = RopeText::from_text(text);
+            let mut changed = text.to_owned();
+            changed.insert_str(offset, &inserted);
+            let after = Arc::new(RopeText::new(changed));
+            let byte = ByteOffset(offset as u64);
+            let start = before.position(byte).unwrap();
+            let expected = LineEdit::new(start, start, &inserted);
+            let edit = TextEdit {
+                version: before.version(),
+                range: ByteRange::new(byte, byte).unwrap(),
+                inserted: inserted.into(),
+            };
+            assert_eq!(
+                indexed_line_edit(start, start, &edit, &*after),
+                indexed.then_some(expected)
+            );
+
+            let path = WorkspacePath::new("Assets/A.cs").unwrap();
+            let before = Arc::new(before);
+            let buffers = BufferStates::new();
+            buffers.opened(&path, before.clone(), 0);
+            buffers.edited(&path, &*before, &edit, after).unwrap();
+            let mut reference = EditMap::new();
+            reference.push(expected);
+            assert_eq!(*buffers.get(path.as_str()).unwrap().edits, reference);
+        }
     }
 
     #[test]
