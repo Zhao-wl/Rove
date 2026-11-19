@@ -142,14 +142,23 @@ impl BufferStates {
         edit: &TextEdit,
         after: Arc<dyn TextSource>,
     ) -> Result<()> {
+        let key = path.as_str();
+        let registered_version = {
+            let docs = lock(&self.docs);
+            docs.get(key).ok_or(Error::NotFound)?.state.version
+        };
+        if registered_version != edit.version || before.version() != edit.version {
+            return Err(Error::Stale);
+        }
+        // 插入文本可能很大。计算换行范围时让并发导航查询继续访问已登记快照。
         let line_edit = LineEdit::new(
             before.position(edit.range.start())?,
             before.position(edit.range.end())?,
             &edit.inserted,
         );
         let mut docs = lock(&self.docs);
-        let entry = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
-        if entry.state.version != edit.version || before.version() != edit.version {
+        let entry = docs.get_mut(key).ok_or(Error::NotFound)?;
+        if entry.state.version != registered_version {
             return Err(Error::Stale);
         }
         entry.push_edit(line_edit);
@@ -303,6 +312,28 @@ mod tests {
             .edited(path, &**before, &edit, after.clone())
             .unwrap();
         after
+    }
+
+    #[test]
+    fn unregistered_buffer_edit_is_rejected_before_resolving_the_range() {
+        let states = BufferStates::new();
+        let path = WorkspacePath::new("Notes.txt").unwrap();
+        let before = Arc::new(RopeText::from_text("text"));
+        let edit = TextEdit {
+            version: before.version(),
+            range: ByteRange::new(ByteOffset(100), ByteOffset(100)).unwrap(),
+            inserted: "replacement".into(),
+        };
+        assert!(matches!(
+            states.edited(&path, &*before, &edit, before.clone()),
+            Err(Error::NotFound)
+        ));
+
+        states.opened(&path, before.clone(), 0);
+        assert!(matches!(
+            states.edited(&path, &*before, &edit, before.clone()),
+            Err(Error::OutOfBounds)
+        ));
     }
 
     /// #216：检查点按保存登记、超出上限丢最旧的；`rebase` 推进基线并交回那一版之后的编辑。
