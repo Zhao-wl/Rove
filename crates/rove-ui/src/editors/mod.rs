@@ -92,6 +92,12 @@ pub(crate) struct Tab {
 }
 
 impl Tab {
+    pub(crate) fn search_range(&self) -> Option<rove_base::TextRange> {
+        (self.options.source == crate::documents::OpenSource::Search)
+            .then(|| self.options.selection.clone())
+            .flatten()
+    }
+
     pub(crate) fn opened(&self) -> Option<&Opened> {
         match &self.content {
             Content::Ready(opened) => Some(opened),

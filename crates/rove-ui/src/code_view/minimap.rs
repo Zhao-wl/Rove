@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
 /// 一行像素对应一个采样后的视觉行。绘制时按布局缩放，同一行无需存储多份像素。
 pub const TILE_ROWS: u32 = 256;
+pub const TOGGLE: &str = "editor.action.toggleMinimap";
 pub const ENABLED: Key<bool> = Key::new("editor.minimap.enabled");
 pub const DEFAULT_SECTION_PATTERN: &str = r"\bMARK:\s*(?<separator>-?)\s*(?<label>.*)$";
 
@@ -246,7 +247,10 @@ impl Options {
                 .filter(|n| n.is_finite())
                 .unwrap_or(default)
         };
-        let text = |key| Key::<Arc<str>>::new(key).read(settings, scope).ok();
+        let text = |key| match settings.read(key, scope).ok() {
+            Some(rove_base::Value::String(value)) => Some(value),
+            _ => None,
+        };
         options.enabled = ENABLED.read(settings, scope).unwrap_or(options.enabled);
         options.left = text("editor.minimap.side").as_deref() == Some("left");
         options.size = match text("editor.minimap.size").as_deref() {
@@ -517,6 +521,10 @@ pub struct TileCache {
 
 impl TileCache {
     const BYTE_LIMIT: usize = 4 * 1024 * 1024;
+
+    pub(super) fn contains(&self, index: u64) -> bool {
+        self.tiles.contains_key(&index)
+    }
 
     pub fn get(&mut self, index: u64) -> Option<&Arc<RenderImage>> {
         let tile = self.tiles.get_mut(&index)?;

@@ -131,6 +131,7 @@ impl Element for CodeElement {
                 v.last_caret = caret;
                 window.invalidate_character_coordinates();
             }
+            v.paint_minimap(window);
             register_mouse(&view, frame, window, v.link_cursor);
             v.finish_frame(window, cx);
         });
@@ -218,7 +219,11 @@ impl CodeView {
         let hs = o.horizontal_scrollbar_size as f32;
         let beyond = o.scroll_beyond_last_column * self.font.cell_width as f64;
         // 先按“不显示垂直滚动条”估算水平条，再确定垂直条（两者相互影响，取保守值）。
-        let text_w_guess = (width - gutter_w - vs).max(0.0) as f64;
+        let minimap_w = self.minimap_width(width);
+        let minimap_left = self.options.minimap.left;
+        let left_w = if minimap_left { minimap_w } else { 0.0 };
+        let overview_w = if self.text.is_some() { 8.0 } else { 0.0 };
+        let text_w_guess = (width - gutter_w - vs.max(overview_w) - minimap_w).max(0.0) as f64;
         // #58：软换行开着时不需要横向滚动（照搬 VS Code 隐藏水平滚动条），
         // 并且固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
         let wrapping = self.word_wrap_enabled();
@@ -255,18 +260,23 @@ impl CodeView {
             ScrollbarVisibility::Hidden => false,
             ScrollbarVisibility::Auto => metrics.max_top(&self.zones) > 0.0,
         };
-        let vbar_w = if show_v { vs } else { 0.0 };
+        let vbar_w = if show_v {
+            vs.max(overview_w)
+        } else {
+            overview_w
+        };
         // 软换行时文本区宽度与 `sync_wrap` 用的估算值一致（恒定留出垂直滚动条）。
         let text_w = if wrapping {
             text_w_guess as f32
         } else {
-            (width - gutter_w - vbar_w).max(0.0)
+            (width - gutter_w - vbar_w - minimap_w).max(0.0)
         };
         metrics.viewport_width = text_w as f64;
 
-        let gutter = Bounds::new(bounds.origin, size(px(gutter_w), bounds.size.height));
+        let gutter_origin = point(bounds.origin.x + px(left_w), bounds.origin.y);
+        let gutter = Bounds::new(gutter_origin, size(px(gutter_w), bounds.size.height));
         let text = Bounds::new(
-            point(bounds.origin.x + px(gutter_w), bounds.origin.y),
+            point(gutter_origin.x + px(gutter_w), bounds.origin.y),
             size(px(text_w), px(viewport_h)),
         );
         let vbar = show_v.then(|| {
@@ -465,6 +475,25 @@ impl CodeView {
             fold_column,
             sticky: sticky_bounds,
         };
+        let minimap = (minimap_w > 0.0 && viewport_h > 0.0).then(|| {
+            let x = if minimap_left {
+                bounds.origin.x
+            } else {
+                text.origin.x + text.size.width
+            };
+            Bounds::new(
+                point(x, bounds.origin.y),
+                size(px(minimap_w), px(viewport_h)),
+            )
+        });
+        self.update_minimap(minimap, cx);
+        let overview = (overview_w > 0.0 && viewport_h > 0.0).then(|| {
+            Bounds::new(
+                point(bounds.origin.x + px(width - overview_w), bounds.origin.y),
+                size(px(overview_w), px(viewport_h)),
+            )
+        });
+        self.update_overview(overview, window.scale_factor());
         if let Some(start) = self.frame_started {
             self.last_frame.layout = start.elapsed();
         }
@@ -907,6 +936,7 @@ impl CodeView {
 
         self.paint_gutter(frame, window);
         self.paint_scrollbars(frame, window);
+        self.paint_overview(window);
         // #55：粘性区盖在最上面（它遮住正文顶部的若干行，滚动条与滑块不在它的范围里）。
         self.paint_sticky(frame, window);
         caret_bounds
@@ -1579,7 +1609,9 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
             window.focus(&v.focus);
             let p = e.position;
             // #55：粘性区盖在正文之上，先判定它（点击跳转到该行，`Ctrl+点击` 与正文一致）。
-            if v.mouse_down_sticky(p, e.modifiers.control, e.modifiers.alt, cx) {
+            if v.minimap_down(p, cx)
+                || v.mouse_down_sticky(p, e.modifiers.control, e.modifiers.alt, cx)
+            {
             } else if lay.vbar.is_some_and(|b| b.contains(&p)) {
                 v.scrollbar_down(p, true, cx);
             } else if lay.hbar.is_some_and(|b| b.contains(&p)) {
@@ -1643,6 +1675,7 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
                 let link = v
                     .multi_cursor_modifier()
                     .goes_to_definition(e.modifiers.control, e.modifiers.alt);
+                v.minimap_hover(e.position, cx);
                 v.sticky_hover(inside.filter(|_| sticky), cx);
                 v.pointer_moved(inside.filter(|_| !sticky), link, cx)
             });
@@ -1654,6 +1687,9 @@ fn register_mouse(view: &Entity<CodeView>, frame: &Frame, window: &mut Window, l
                 if e.pressed_button == Some(MouseButton::Left) =>
             {
                 v.mouse_drag_text(e.position, cx)
+            }
+            Some(Drag::MinimapThumb { .. }) if e.pressed_button == Some(MouseButton::Left) => {
+                v.minimap_drag(e.position, cx);
             }
             Some(Drag::VThumb { .. } | Drag::HThumb { .. })
                 if e.pressed_button == Some(MouseButton::Left) =>

@@ -62,6 +62,7 @@ pub mod view;
 // #58：软换行（换行点计算与视觉行映射）。
 pub(crate) mod links;
 pub mod minimap;
+mod minimap_view;
 pub mod wrap;
 
 pub use decorations::{

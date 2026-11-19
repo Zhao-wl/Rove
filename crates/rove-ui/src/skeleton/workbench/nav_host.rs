@@ -1343,6 +1343,21 @@ impl Workbench {
         let Some(slot) = self.nav.slots.get(&(group, secondary)) else {
             return;
         };
+        let markers = highlights
+            .ranges
+            .iter()
+            .map(|(range, kind)| {
+                use crate::code_view::minimap::{Marker, MarkerKind};
+                Marker {
+                    lines: range.start().line.0..range.end().line.0.saturating_add(1),
+                    kind: match kind {
+                        HighlightKind::Read => MarkerKind::SymbolRead,
+                        HighlightKind::Write => MarkerKind::SymbolWrite,
+                        HighlightKind::Text => MarkerKind::Occurrence,
+                    },
+                }
+            })
+            .collect();
         let lines: Vec<u64> = {
             let mut s = slot.state.borrow_mut();
             if s.highlights == highlights && s.document == document {
@@ -1361,6 +1376,11 @@ impl Workbench {
             s.document = document;
             lines
         };
+        if let Some(code) = self.group_code(group, secondary) {
+            code.update(cx, |code, cx| {
+                code.set_minimap_markers("symbolHighlights", markers, cx)
+            });
+        }
         if !lines.is_empty() {
             self.invalidate_slot(group, secondary, Some(lines), cx);
         }

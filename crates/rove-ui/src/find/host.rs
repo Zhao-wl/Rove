@@ -1322,8 +1322,21 @@ impl FindHost {
 
     fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
         if let Some(layer) = self.layer.clone() {
-            self.code
-                .update(cx, |code, cx| code.invalidate_decorations(&layer, None, cx));
+            use crate::code_view::minimap::{Marker, MarkerKind};
+            let markers = self
+                .decor
+                .borrow()
+                .matches
+                .iter()
+                .map(|matched| Marker {
+                    lines: matched.start.line.0..matched.end.line.0.saturating_add(1),
+                    kind: MarkerKind::Find,
+                })
+                .collect();
+            self.code.update(cx, |code, cx| {
+                code.invalidate_decorations(&layer, None, cx);
+                code.set_minimap_markers("find", markers, cx);
+            });
         }
     }
 

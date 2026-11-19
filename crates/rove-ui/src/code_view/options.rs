@@ -324,6 +324,7 @@ pub struct EditorOptions {
     pub word_break_keep_all: bool,
     /// #58：软换行设置（`editor.wordWrap` 等）。
     pub wrap: super::wrap::WrapOptions,
+    pub minimap: super::minimap::Options,
     pub tab_size: u32,
     /// `None` 表示不限（设置为 -1）。
     pub stop_rendering_line_after: Option<usize>,
@@ -613,6 +614,7 @@ impl EditorOptions {
                 language: language.map(Arc::from),
             },
         };
+        let minimap = super::minimap::Options::read(settings, &r.scope);
         let (font_family, font_fallbacks) = parse_font_family(&r.str("editor.fontFamily"));
         let ligatures = match r.raw("editor.fontLigatures") {
             Value::Bool(true) => Ligatures::On,
@@ -640,6 +642,7 @@ impl EditorOptions {
         Self {
             font_family: font_family.into(),
             font_fallbacks,
+            minimap,
             font_size: r.num("editor.fontSize", 6.0, 100.0),
             font_weight: weight,
             ligatures,
