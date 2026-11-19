@@ -77,6 +77,14 @@ fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 
+fn relative_ms(at: Instant, origin: Instant) -> f64 {
+    if let Some(elapsed) = at.checked_duration_since(origin) {
+        ms(elapsed)
+    } else {
+        -ms(origin - at)
+    }
+}
+
 fn callback_gaps(marks: &[FrameMark]) -> Vec<Duration> {
     marks
         .windows(2)
@@ -283,6 +291,18 @@ async fn run(
                 .into_iter()
                 .max()
                 .unwrap_or_default();
+            let timeline: Vec<_> = window_frames
+                .iter()
+                .map(|frame| {
+                    json!({
+                        "callback_from_key_ms": relative_ms(frame.callback_at, injection.at),
+                        "paint_from_key_ms": frame.drawn.end.map(|at| relative_ms(at, injection.at)),
+                        "code_view_cpu_ms": ms(frame.drawn.cpu),
+                        "code_view_layout_ms": ms(frame.drawn.layout),
+                        "text_version": frame.drawn.text_version,
+                    })
+                })
+                .collect();
             output.push(json!({
                 "phase": "replace",
                 "sample": sample - WARMUP + 1,
@@ -295,6 +315,7 @@ async fn run(
                 "max_callback_gap_ms": ms(max_callback),
                 "max_paint_gap_ms": ms(max_paint),
                 "text_version": frames[first_index].drawn.text_version,
+                "timeline": timeline,
             }));
         }
 
