@@ -512,7 +512,10 @@ fn settings_override_file_associations_and_highlighting_limits() {
                     .collect(),
                 ))),
                 "editor.maxTokenizationLineLength"
-                    if scope.language.as_deref() == Some("csharp") =>
+                    if matches!(
+                        scope.language.as_deref(),
+                        Some("csharp" | "hlsl" | "shaderlab" | "lua" | "proto")
+                    ) =>
                 {
                     Ok(Value::Number(10.0))
                 }
@@ -549,6 +552,30 @@ fn settings_override_file_associations_and_highlighting_limits() {
     assert!(!result.snapshot.tokens(Line(1)).unwrap().is_empty());
     let result = parse(&syntax, "json", &format!("true\n{}", " ".repeat(59)), 2);
     assert!(result.snapshot.tokens(Line(0)).unwrap().is_empty());
+
+    for (language, comment, source) in [
+        ("hlsl", "//", "float f;\n"),
+        ("shaderlab", "//", "Shader \"A\"\n{\n}\n"),
+        ("lua", "--", "return 1\n"),
+        ("proto", "//", "message A\n{\n}\n"),
+    ] {
+        let with_long_line = format!("{comment} {}\n{source}", "x".repeat(16));
+        let ordinary = parse(&syntax, language, &with_long_line, 3);
+        assert!(
+            ordinary.snapshot.tokens(Line(0)).unwrap().is_empty(),
+            "{language}"
+        );
+        assert!(
+            !ordinary.snapshot.tokens(Line(1)).unwrap().is_empty(),
+            "{language}"
+        );
+        let above_size_limit = format!("{source}{comment}{}\n", "x".repeat(96));
+        let huge = parse(&syntax, language, &above_size_limit, 4);
+        assert!(
+            huge.snapshot.tokens(Line(0)).unwrap().is_empty(),
+            "{language}"
+        );
+    }
     // 语言未知时不注入任何语法：只剩围栏代码块本身的 scope（VS Code 在没有对应语法时也是这样）。
     let line = result.snapshot.tokens(Line(1)).unwrap();
     assert!(line

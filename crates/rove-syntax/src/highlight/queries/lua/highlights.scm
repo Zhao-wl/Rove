@@ -38,5 +38,8 @@
  (#any-of? @support.function.lua "assert" "collectgarbage" "dofile" "error" "getmetatable"
    "ipairs" "load" "loadfile" "next" "pairs" "pcall" "print" "rawequal" "rawget" "rawlen"
    "rawset" "require" "select" "setmetatable" "tonumber" "tostring" "type" "xpcall"))
-((function_call name: (dot_index_expression table: (identifier)) @support.function.library.lua)
- (#match? @support.function.library.lua "^(coroutine|debug|io|math|os|package|string|table|utf8)[.]"))
+((function_call name: (dot_index_expression
+   table: (identifier) @_library @support.function.library.lua
+   "." @support.function.library.lua
+   field: (identifier) @support.function.library.lua))
+ (#any-of? @_library "coroutine" "debug" "io" "math" "os" "package" "string" "table" "utf8"))

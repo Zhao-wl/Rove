@@ -115,7 +115,14 @@ impl HighlightQuery {
         let scopes = query
             .capture_names()
             .iter()
-            .map(|&name| Arc::from([Arc::from(name)]))
+            .map(|&name| -> Arc<[Arc<str>]> {
+                if name.starts_with('_') {
+                    // Private query captures supply predicate inputs only.
+                    Arc::from([])
+                } else {
+                    Arc::from([Arc::from(name)])
+                }
+            })
             .collect();
         Self {
             query,
@@ -137,7 +144,8 @@ impl HighlightQuery {
             }
             _ => (pattern, capture),
         };
-        Some((pattern, &self.scopes[capture as usize]))
+        let scopes = &self.scopes[capture as usize];
+        (!scopes.is_empty()).then_some((pattern, scopes))
     }
 }
 
