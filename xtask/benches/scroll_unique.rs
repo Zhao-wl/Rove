@@ -60,6 +60,7 @@ struct Samples {
     cpu: Vec<Duration>,
     layout: Vec<Duration>,
     links_cpu: Vec<Duration>,
+    minimap_hits: Vec<Duration>,
     glyphs: u64,
     interval: Vec<Duration>,
     placeholders: u64,
@@ -239,6 +240,9 @@ fn frame(run: Rc<RefCell<Run>>, window: &mut Window, cx: &mut App) {
             samples.cpu.push(f.cpu);
             samples.layout.push(f.layout);
             samples.links_cpu.push(f.links_cpu);
+            if f.minimap_cache_hit {
+                samples.minimap_hits.push(f.minimap_cpu);
+            }
             samples.glyphs += f.glyphs as u64;
             samples.placeholders += (f.placeholders + f.missing) as u64;
             if f.placeholders + f.missing > 0 {
@@ -475,6 +479,21 @@ fn main() {
         ));
         names.push("hl_hit");
     }
+    if let Some((text, syntax, theme)) = highlighted(false, 5_000) {
+        scenarios.push((
+            Scenario {
+                file: "minimap C# 5000",
+                frames: 300,
+                step: 3.0,
+                wrap: Some(300.0),
+                highlight: Some((syntax, theme)),
+                find: None,
+                word_wrap: false,
+            },
+            text,
+        ));
+        names.push("minimap_hit");
+    }
     if let Some((text, syntax, theme)) = highlighted(true, 20_000) {
         scenarios.push((
             Scenario {
@@ -542,6 +561,14 @@ fn main() {
             "hl_hit" => {
                 record("highlighted_frame_cpu_cache_hit", &s.cpu);
                 record("highlighted_frame_interval_cache_hit", &s.interval);
+            }
+            "minimap_hit" => {
+                println!("  缩略图命中帧 {} / {}", s.minimap_hits.len(), s.cpu.len());
+                if !s.cpu.is_empty() && s.minimap_hits.len() == s.cpu.len() {
+                    stats("  缩略图与标尺 CPU", &s.minimap_hits);
+                    record("minimap_frame_cpu_cache_hit", &s.minimap_hits);
+                    record("minimap_total_frame_cpu_cache_hit", &s.cpu);
+                }
             }
             "hl_miss" => {
                 record("highlighted_frame_cpu_cache_miss", &s.cpu);

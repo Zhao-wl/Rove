@@ -584,3 +584,34 @@ owner = "#73"
 status = "enforced"
 bench = "language_detect/full_prefix_jsonc"
 reason = "issue #73 验收：完整 JSONC 路径包含有界快照读取和解析，执行在后台。"
+
+# ---------------------------------------------------------------- 缩略图和概览标尺（#56）
+
+[[budget]]
+id = "minimap_frame_cpu_cache_hit"
+metric = "5,000 行 C# 连续滚动时缩略图与标尺在缓存命中帧的 CPU"
+value = 200
+unit = "us"
+owner = "#56"
+status = "enforced"
+bench = "scroll/minimap_frame_cpu_cache_hit"
+aggregate = "p99"
+
+[[budget]]
+id = "minimap_total_frame_cpu_cache_hit"
+metric = "同一缩略图滚动场景中整帧代码视图 CPU"
+value = 1
+unit = "ms"
+owner = "#56"
+status = "enforced"
+bench = "scroll/minimap_total_frame_cpu_cache_hit"
+aggregate = "p99"
+
+[[budget]]
+id = "minimap_rasterize_300000_rows"
+metric = "30 万行离线生成全部缩略图色块"
+value = 0
+unit = "ms"
+owner = "#56"
+status = "recorded"
+bench = "minimap/rasterize_300000_rows"

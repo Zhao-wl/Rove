@@ -17,6 +17,7 @@ use super::state::{
 };
 use crate::code_view::{
     decorations::{priority, DecorationProvider, InlineDecoration, LineDecorations, TextStyle},
+    minimap::{Marker, MarkerKind},
     view::hsla,
     CodeView, CodeViewEvent, LayerId, Reveal, Selection,
 };
@@ -334,6 +335,8 @@ pub struct FindHost {
     cfg: FindSettings,
     model: FindModel,
     decor: Rc<RefCell<Decor>>,
+    minimap_matches: Option<Arc<Vec<Match>>>,
+    minimap_match_task: Option<gpui::Task<()>>,
     layer: Option<LayerId>,
     visible: bool,
     /// 搜索时文本的版本；版本变了匹配列表就过期。
@@ -433,6 +436,8 @@ impl FindHost {
             model: FindModel::new(cfg.word_separators.clone()),
             cfg,
             decor,
+            minimap_matches: None,
+            minimap_match_task: None,
             layer,
             visible: false,
             searched_version: None,
@@ -1321,23 +1326,68 @@ impl FindHost {
     }
 
     fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
-        if let Some(layer) = self.layer.clone() {
-            use crate::code_view::minimap::{Marker, MarkerKind};
-            let markers = self
-                .decor
-                .borrow()
-                .matches
-                .iter()
-                .map(|matched| Marker {
-                    lines: matched.start.line.0..matched.end.line.0.saturating_add(1),
-                    kind: MarkerKind::Find,
-                })
-                .collect();
+        if let Some(layer) = &self.layer {
             self.code.update(cx, |code, cx| {
-                code.invalidate_decorations(&layer, None, cx);
-                code.set_minimap_markers("find", markers, cx);
+                code.invalidate_decorations(layer, None, cx);
             });
         }
+        let matches = self.decor.borrow().matches.clone();
+        if self
+            .minimap_matches
+            .as_ref()
+            .is_some_and(|published| Arc::ptr_eq(published, &matches))
+        {
+            return;
+        }
+
+        self.minimap_matches = Some(matches.clone());
+        self.minimap_match_task = None;
+        if matches.is_empty() {
+            self.code.update(cx, |code, cx| {
+                code.set_minimap_markers("find", Vec::new(), cx);
+            });
+            return;
+        }
+        let Some(text) = self.code.read(cx).text().cloned() else {
+            return;
+        };
+        let snapshot = matches.clone();
+        // Search results are sorted by position. Multiple matches on a line only need one mark.
+        let task = cx.background_executor().spawn(async move {
+            let mut markers: Vec<Marker> = Vec::new();
+            for matched in snapshot.iter() {
+                let start = matched.start.line.0;
+                let end = matched.end.line.0.saturating_add(1);
+                if let Some(last) = markers.last_mut().filter(|last| last.lines.end >= start) {
+                    last.lines.end = last.lines.end.max(end);
+                } else {
+                    markers.push(Marker {
+                        lines: start..end,
+                        kind: MarkerKind::Find,
+                    });
+                }
+            }
+            markers
+        });
+        self.minimap_match_task = Some(cx.spawn(async move |this, cx| {
+            let markers = task.await;
+            let _ = this.update(cx, |host, cx| {
+                if host
+                    .code
+                    .read(cx)
+                    .text()
+                    .is_some_and(|current| Arc::ptr_eq(current, &text))
+                    && host
+                        .minimap_matches
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &matches))
+                {
+                    host.code.update(cx, |code, cx| {
+                        code.set_minimap_markers("find", markers, cx);
+                    });
+                }
+            });
+        }));
     }
 
     // ------------------------------------------------------------------ 绘制

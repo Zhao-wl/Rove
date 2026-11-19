@@ -131,7 +131,12 @@ impl Element for CodeElement {
                 v.last_caret = caret;
                 window.invalidate_character_coordinates();
             }
+            let measure = v.recording.is_some().then(Instant::now);
             v.paint_minimap(window);
+            v.paint_overview(window);
+            if let Some(start) = measure {
+                v.last_frame.minimap_cpu += start.elapsed();
+            }
             register_mouse(&view, frame, window, v.link_cursor);
             v.finish_frame(window, cx);
         });
@@ -486,6 +491,7 @@ impl CodeView {
                 size(px(minimap_w), px(viewport_h)),
             )
         });
+        let measure = self.recording.is_some().then(Instant::now);
         self.update_minimap(minimap, cx);
         let overview = (overview_w > 0.0 && viewport_h > 0.0).then(|| {
             Bounds::new(
@@ -494,6 +500,9 @@ impl CodeView {
             )
         });
         self.update_overview(overview, window.scale_factor());
+        if let Some(start) = measure {
+            self.last_frame.minimap_cpu = start.elapsed();
+        }
         if let Some(start) = self.frame_started {
             self.last_frame.layout = start.elapsed();
         }
@@ -936,7 +945,6 @@ impl CodeView {
 
         self.paint_gutter(frame, window);
         self.paint_scrollbars(frame, window);
-        self.paint_overview(window);
         // #55：粘性区盖在最上面（它遮住正文顶部的若干行，滚动条与滑块不在它的范围里）。
         self.paint_sticky(frame, window);
         caret_bounds

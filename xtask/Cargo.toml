@@ -158,3 +158,8 @@ harness = false
 [[bench]]
 name = "language_detect"
 harness = false
+
+# #56：30 万行的全部缩略图分块，离线色块生成。
+[[bench]]
+name = "minimap"
+harness = false

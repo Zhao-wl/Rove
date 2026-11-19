@@ -144,6 +144,11 @@ const TARGETS: &[BenchTarget] = &[
         name: "language_detect",
         requires: "",
     },
+    BenchTarget {
+        // #56：离线生成 30 万行的全部缩略图色块。
+        name: "minimap",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

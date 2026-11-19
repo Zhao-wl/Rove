@@ -13,7 +13,7 @@ use super::{
     },
     scroll::{self, Metrics, ScrollPosition, Thumb, ViewZones},
     view::{hsla, Drag},
-    wrap::{self, WrapOptions},
+    wrap::{self, LineWrap, WrapOptions},
     CodeView, Reveal,
 };
 use gpui::{
@@ -104,13 +104,22 @@ pub(crate) struct MinimapView {
     fade: Option<Task<()>>,
 }
 
+fn release_images(cx: &mut App, images: Vec<Arc<gpui::RenderImage>>) {
+    if !images.is_empty() {
+        // 布局过程中当前窗口暂时不在 App 的窗口表中。
+        cx.defer(move |app| {
+            for image in images {
+                app.drop_image(image, None);
+            }
+        });
+    }
+}
+
 impl MinimapView {
     pub(crate) fn clear(&mut self, cx: &mut App) {
         self.task = None;
         self.headers.clear();
-        for image in self.cache.clear() {
-            cx.drop_image(image, None);
-        }
+        release_images(cx, self.cache.clear().collect());
     }
 
     fn invalidate(&mut self, rows: Range<u64>, cx: &mut App) {
@@ -123,17 +132,22 @@ impl MinimapView {
             self.task = None;
         }
         self.headers.retain(|index, _| !tiles.contains(index));
-        for image in self.cache.invalidate(rows) {
-            cx.drop_image(image, None);
-        }
+        release_images(cx, self.cache.invalidate(rows));
     }
+}
+
+struct RasterRow {
+    line: u64,
+    segment: u32,
+    region: bool,
+    wrap: Option<LineWrap>,
 }
 
 struct TileJob {
     text: Arc<dyn TextSource>,
     syntax: SyntaxLayer,
     columns: u32,
-    row_info: Vec<(u64, u32, bool)>,
+    row_info: Vec<RasterRow>,
     marker_pattern: Option<Arc<str>>,
     region_start: Option<rove_syntax::language_config::CompiledRegex>,
     wrap: Option<(u32, WrapOptions)>,
@@ -150,7 +164,13 @@ impl TileJob {
         let mut comments = Vec::new();
         let mut headers = Vec::new();
         let matcher = self.marker_pattern.and_then(MarkHeaders::compile);
-        for (index, (line, segment, region)) in self.row_info.into_iter().enumerate() {
+        for (index, row) in self.row_info.into_iter().enumerate() {
+            let RasterRow {
+                line,
+                segment,
+                region,
+                wrap,
+            } = row;
             let Some(source) = columns::read_line(&*self.text, line) else {
                 continue;
             };
@@ -173,12 +193,14 @@ impl TileJob {
             let mut indent = 0;
             if let Some((limit, options)) = &self.wrap {
                 let display = DisplayLine::build(&source, self.tab_size, self.render_limit);
-                let wraps = wrap::wrap_line(
-                    &source,
-                    &display,
-                    wrap::Metric::Columns { limit: *limit },
-                    options,
-                );
+                let wraps = wrap.unwrap_or_else(|| {
+                    wrap::wrap_line(
+                        &source,
+                        &display,
+                        wrap::Metric::Columns { limit: *limit },
+                        options,
+                    )
+                });
                 let Some(actual_segment) = (segment < wraps.count()).then_some(segment) else {
                     continue;
                 };
@@ -501,6 +523,7 @@ impl CodeView {
         bounds: Option<Bounds<Pixels>>,
         cx: &mut Context<Self>,
     ) {
+        self.last_frame.minimap_cache_hit = false;
         let panel = bounds.zip(self.metrics()).map(|(bounds, metrics)| {
             let height = bounds.size.height.to_f64();
             let o = &self.options.minimap;
@@ -554,6 +577,7 @@ impl CodeView {
                 missing = Some(index);
             }
         }
+        self.last_frame.minimap_cache_hit = missing.is_none();
         if self
             .minimap
             .task
@@ -577,11 +601,12 @@ impl CodeView {
                     .iter()
                     .take_while(|f| f.start == logical)
                     .any(|f| f.source == super::folding::FoldSource::Region);
-                (
-                    logical,
-                    visual.saturating_sub(self.view_line(logical)) as u32,
+                RasterRow {
+                    line: logical,
+                    segment: visual.saturating_sub(self.view_line(logical)) as u32,
                     region,
-                )
+                    wrap: self.cached_minimap_wrap(logical),
+                }
             })
             .collect();
         let job = TileJob {
@@ -614,9 +639,7 @@ impl CodeView {
                 let (image, headers) = background.await;
                 let _ = view.update(cx, |view, cx| {
                     view.minimap.task = None;
-                    for old in view.minimap.cache.insert(index, image) {
-                        cx.drop_image(old, None);
-                    }
+                    release_images(cx, view.minimap.cache.insert(index, image));
                     view.minimap.headers.insert(
                         index,
                         headers

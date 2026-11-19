@@ -660,6 +660,84 @@ mod tests {
     }
 
     #[test]
+    fn minimap_reads_registered_settings_for_each_layout_and_visibility_mode() {
+        use rove_base::Value;
+        use rove_config::{DefaultSettings, Setting, SettingRegistry};
+
+        for (i, (size, size_id, mode, autohide_id, always)) in [
+            (
+                Size::Proportional,
+                "proportional",
+                Autohide::None,
+                "none",
+                false,
+            ),
+            (Size::Fill, "fill", Autohide::Mouseover, "mouseover", true),
+            (Size::Fit, "fit", Autohide::Scroll, "scroll", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let scale = i as u8 + 1;
+            let columns = 30 + i as u32 * 40;
+            let left = i == 1;
+            let mut registry = SettingRegistry::default();
+            for (key, default) in [
+                (ENABLED.id, Value::Bool(i != 1)),
+                (
+                    "editor.minimap.side",
+                    Value::String(if left { "left" } else { "right" }.into()),
+                ),
+                ("editor.minimap.size", Value::String(size_id.into())),
+                ("editor.minimap.scale", Value::Number(f64::from(scale))),
+                (
+                    "editor.minimap.maxColumn",
+                    Value::Number(f64::from(columns)),
+                ),
+                ("editor.minimap.autohide", Value::String(autohide_id.into())),
+                (
+                    "editor.minimap.showSlider",
+                    Value::String(if always { "always" } else { "mouseover" }.into()),
+                ),
+                ("editor.minimap.showMarkSectionHeaders", Value::Bool(i != 2)),
+                (
+                    "editor.minimap.showRegionSectionHeaders",
+                    Value::Bool(i != 2),
+                ),
+                ("editor.overviewRulerBorder", Value::Bool(i != 1)),
+                ("editor.hideCursorInOverviewRuler", Value::Bool(i == 1)),
+            ] {
+                registry
+                    .register(
+                        key,
+                        Setting {
+                            default,
+                            rove_default: None,
+                            language_overridable: true,
+                        },
+                    )
+                    .unwrap();
+            }
+            let options = Options::read(&DefaultSettings(registry), &Scope::default());
+            assert_eq!(options.enabled, i != 1);
+            assert_eq!(options.left, left);
+            assert_eq!(options.size, size);
+            assert_eq!(options.scale, scale);
+            assert_eq!(options.columns, columns);
+            assert_eq!(options.autohide, mode);
+            assert_eq!(options.slider_always, always);
+            assert_eq!(
+                (options.mark_headers, options.region_headers),
+                (i != 2, i != 2)
+            );
+            assert_eq!(
+                (options.ruler_border, options.ruler_hide_cursor),
+                (i != 1, i == 1)
+            );
+        }
+    }
+
+    #[test]
     fn tile_cache_releases_old_images_and_invalidates_only_intersecting_tiles() {
         let mut cache = TileCache::default();
         for index in 0..4 {

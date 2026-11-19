@@ -229,6 +229,9 @@ pub struct FrameStats {
     pub layout: Duration,
     /// Cache lookup and dispatch time for viewport link detection.
     pub links_cpu: Duration,
+    /// 缩略图与概览标尺在本帧 UI 线程上的布局和绘制耗时。
+    pub minimap_cpu: Duration,
+    pub minimap_cache_hit: bool,
     /// 本帧绘制的字形数（已按水平可见范围裁剪）。
     pub glyphs: u32,
     pub visible_lines: u32,
@@ -1134,6 +1137,19 @@ impl CodeView {
         }
     }
 
+    pub(super) fn cached_minimap_wrap(&self, line: u64) -> Option<LineWrap> {
+        if self.wrap.columns == 0 {
+            return None;
+        }
+        let entry = self.lines.peek(&line)?;
+        let shaped = self.shapes.peek(&self.shape_key(entry)).is_some();
+        let saved = entry.wrap.borrow();
+        saved
+            .as_ref()
+            .filter(|(key, _)| *key == self.wrap_key(shaped))
+            .map(|(_, wrap)| wrap.as_ref().clone())
+    }
+
     /// 算（或取缓存的）某行换行点，并把视觉行数写回映射。
     pub(crate) fn wrap_of(&mut self, line: u64, entry: &Rc<LineEntry>) -> Rc<LineWrap> {
         if self.wrap.columns == 0 {
@@ -1170,6 +1186,14 @@ impl CodeView {
                 &o,
             ),
         });
+        let changed_boundaries = entry
+            .wrap
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, previous)| **previous != *w);
+        if changed_boundaries {
+            self.invalidate_minimap_mapping();
+        }
         *entry.wrap.borrow_mut() = Some((key, w.clone()));
         if self.wrap.map.set_count(line, w.count()) {
             self.wrap.note_changed(line);
