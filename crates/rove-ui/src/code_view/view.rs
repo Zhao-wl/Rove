@@ -844,6 +844,12 @@ impl CodeView {
         keep_view_state: bool,
         cx: &mut Context<Self>,
     ) {
+        let changed = self.text.as_ref().map(|text| text.version())
+            != text.as_ref().map(|text| text.version());
+        let discard_semantics = changed && !self.semantic.borrow().is_empty();
+        if discard_semantics {
+            self.semantic.borrow_mut().discard();
+        }
         self.text = text;
         self.links.reset();
         self.lines.clear();
@@ -855,7 +861,12 @@ impl CodeView {
         self.sticky.invalidate();
         if keep_view_state {
             // 同一文档的新快照：装饰重算前沿用旧结果，折叠保留（区间在后台按新文本重算）。
-            self.decorations.mark_all_stale();
+            if discard_semantics {
+                // A full replacement has no mapping for the old decorations.
+                self.decorations.reset();
+            } else {
+                self.decorations.mark_all_stale();
+            }
             let s = self.clamp_selection(self.cursor.selection);
             self.cursor.set(s);
             let secondary: Vec<Selection> = self

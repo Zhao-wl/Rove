@@ -306,6 +306,27 @@ fn switching_csharp_documents_clears_old_semantics_when_the_index_is_unavailable
 }
 
 #[gpui::test]
+fn losing_the_index_clears_semantic_decorations_in_the_open_document(cx: &mut TestAppContext) {
+    use rove_lang_cs::router::SemanticStatus;
+
+    let project = Project::new();
+    let source = Arc::new(ManualSemantic::ready(project.index.clone()));
+    let (view, cx) = project.open(cx);
+    view.update(cx, |view, cx| {
+        view.attach_semantic(Some(source.clone()), cx);
+        view.set_semantic_setting(semantic_host::SemanticHighlighting::On, cx);
+    });
+    open_file(&view, PATH, cx);
+    let line = u64::from(inactive_lines().0);
+    assert!(line_opacity(&view, cx, line).is_some());
+
+    source.set(None, SemanticStatus::Building { percent: None });
+    view.update(cx, |view, cx| view.semantic_index_changed(cx));
+    refresh(cx);
+    assert_eq!(line_opacity(&view, cx, line), None);
+}
+
+#[gpui::test]
 fn inactive_preprocessor_lines_are_dimmed(cx: &mut TestAppContext) {
     let project = Project::new();
     let (view, cx) = project.open(cx);

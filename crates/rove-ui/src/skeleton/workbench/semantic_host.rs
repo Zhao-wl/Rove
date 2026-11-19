@@ -288,9 +288,11 @@ impl Workbench {
                     cx.notify();
                     return;
                 }
-                // 查询本身失败（过期、索引换掉、组件不可用）：**沿用旧样式，不清空、不闪烁**。
-                // 新的请求会在文档版本或索引代次变化时自动发出。
-                if tokens.is_err() && inactive.is_err() {
+                // A stale query can race a mapped edit. A missing or disabled
+                // index must instead fall back to syntax highlighting.
+                if matches!(tokens, Err(rove_base::Error::Stale))
+                    && matches!(inactive, Err(rove_base::Error::Stale))
+                {
                     return;
                 }
                 let tokens: Arc<[SemanticToken]> = match tokens {

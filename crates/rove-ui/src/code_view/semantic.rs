@@ -223,6 +223,11 @@ impl SemanticLayer {
         out
     }
 
+    pub(super) fn discard(&mut self) {
+        self.styles = SemanticStyles::default();
+        self.inactive.clear();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.styles.is_empty() && self.inactive.is_empty()
     }
