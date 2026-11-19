@@ -7,7 +7,9 @@
 //! - `editor.maxTokenizationLineLength`：超过的行不着色（与 VS Code 一样按纯文本显示）。
 //! - 粗体/斜体进入整形缓存键（见 `view.rs` 的 `font_runs`），颜色不进入。
 
-use super::decorations::{DecorationProvider, InlineDecoration, LineDecorations, TextStyle};
+use super::decorations::{
+    DecorationProvider, InlineDecoration, LineDecorations, TextDecoration, TextStyle,
+};
 use rove_base::Line;
 use rove_buffer::TextSource;
 use rove_syntax::SyntaxSnapshot;
@@ -108,8 +110,16 @@ impl SyntaxLayer {
                 background: s.background,
                 bold: s.bold.then_some(true),
                 italic: s.italic.then_some(true),
-                underline: if s.underline { fg } else { None },
-                strikethrough: if s.strikethrough { fg } else { None },
+                underline: if s.underline {
+                    fg.map(TextDecoration::Color)
+                } else {
+                    None
+                },
+                strikethrough: if s.strikethrough {
+                    fg.map(TextDecoration::Color)
+                } else {
+                    None
+                },
                 border: None,
             };
             if style == TextStyle::default() {

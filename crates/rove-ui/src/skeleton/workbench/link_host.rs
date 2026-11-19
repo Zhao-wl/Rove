@@ -507,7 +507,10 @@ mod tests {
         settle(cx);
         view.read_with(cx, |v, cx| {
             let code = v.code_view().read(cx);
-            let expected = v.nav.colors_link();
+            let expected = v
+                .nav
+                .colors_link()
+                .map(crate::code_view::TextDecoration::Color);
             let decor = code.merged_decorations(0).unwrap();
             assert!(decor
                 .runs

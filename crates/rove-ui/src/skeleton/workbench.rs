@@ -81,8 +81,12 @@ mod replace_tests;
 #[cfg(test)]
 mod nav_cases_tests;
 mod nav_host;
+// #59：C# 语义着色与不生效预处理置灰的装配。
 #[cfg(test)]
 mod nav_tests;
+mod semantic_host;
+#[cfg(test)]
+mod semantic_tests;
 // #42：元数据视图（外部符号的只读视图）的装配与入口测试。
 mod metadata_host;
 #[cfg(test)]
@@ -267,6 +271,8 @@ pub struct Workbench {
     quick: quick_access_host::QuickAccess,
     /// #40：C# 导航（查询路由、悬停、同名高亮、符号导航模式，见 `nav_host.rs`）。
     nav: nav_host::Nav,
+    /// #59：C# 语义着色与不生效预处理置灰（见 `semantic_host.rs`）。
+    semantic: semantic_host::SemanticState,
     /// #25：全局搜索视图（见 `search_host.rs`）。
     search: Entity<crate::search::view::SearchView>,
     /// #41：各代码视图上的速览窗口、查询服务与外部符号片段登记点（见 `peek_host.rs`）。
@@ -445,10 +451,13 @@ impl Workbench {
             cx,
         );
         // #10 的主题服务同时供给骨架与代码视图（#19）；登记表补上代码视图用到的 P1 颜色键（#20）。
-        let theme_service = rove_theme::ThemeService::with_catalog(
+        let theme_service = rove_theme::ThemeService::with_catalog_in_semantic_scope(
             services.clone(),
             rove_theme::ThemeCatalog::builtin(),
             Arc::new(code_view::colors::theme_registry()),
+            Scope {
+                language: Some(code_view::semantic::LANGUAGE.into()),
+            },
         );
         let theme: Arc<dyn Theme> = theme_service.clone();
         let size = settings.size;
@@ -513,7 +522,7 @@ impl Workbench {
             workspace_events: None,
             started,
             first_frame: false,
-            settings: services,
+            settings: services.clone(),
             theme_service,
             settings_events: None,
             theme_events: None,
@@ -526,6 +535,7 @@ impl Workbench {
             find_strings: Arc::new(appearance::strings().unwrap()),
             quick: Default::default(),
             nav,
+            semantic: semantic_host::SemanticState::new(&*services),
             search,
             peek: Default::default(),
             metadata,
@@ -652,6 +662,8 @@ impl Workbench {
         self.outline_settings_changed(keys, cx);
         // #40：editor.gotoLocation.* / editor.hover.* / editor.occurrencesHighlight* 变化。
         self.nav_settings_changed(keys, cx);
+        // #59：editor.semanticHighlighting.enabled / semanticTokenColorCustomizations 变化。
+        self.semantic_settings_changed(keys, cx);
         // #25：search.* 变化。
         self.search_settings_changed(keys, cx);
         // #42：rove.metadataView.showDocs 变化：打开着的元数据视图立即重新渲染。
@@ -732,6 +744,8 @@ impl Workbench {
         }
         // #40：悬停卡片、链接与语义同名高亮的颜色。
         self.nav_theme_changed(cx);
+        // #59：语义着色的颜色立即更新（不重新查询）。
+        self.semantic_theme_changed(cx);
         self.search_theme_changed(cx);
         // #41：速览窗口的配色。
         self.peek_theme_changed(cx);
@@ -1327,6 +1341,8 @@ impl Workbench {
         if revealed {
             self.apply_pending_cursors(cx);
         }
+        // #59：换了文档 / 换了版本 / 索引换代都要重新判定语义着色（关闭时不发查询）。
+        self.refresh_semantic(cx);
     }
 
     /// 把活动标签载入代码视图；返回是否应用了“打开时的定位”（#52 的多光标跟在它后面）。

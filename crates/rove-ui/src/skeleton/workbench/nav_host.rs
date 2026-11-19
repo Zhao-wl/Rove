@@ -14,7 +14,9 @@
 use super::link_host::{LinkMenu, LinkOrigin};
 use super::*;
 use crate::code_view::links::Link;
-use crate::code_view::{priority, InlineDecoration, LayerId, LineDecorations, TextStyle};
+use crate::code_view::{
+    priority, InlineDecoration, LayerId, LineDecorations, TextDecoration, TextStyle,
+};
 use crate::documents::OpenTarget;
 use crate::nav::{
     hover::{parse_xml_doc, HoverContent, HoverMove, HoverScroll, PREVIEW_LINES},
@@ -276,7 +278,7 @@ fn styles(theme: &dyn Theme, kind: rove_theme::ThemeKind) -> ([TextStyle; 3], Te
         ],
         TextStyle {
             foreground: link,
-            underline: link,
+            underline: link.map(TextDecoration::Color),
             ..Default::default()
         },
     )
@@ -460,6 +462,8 @@ impl Workbench {
         for (group, secondary) in slots {
             self.refresh_highlights(group, secondary, true, false, cx);
         }
+        // #59：精确度变化（索引建好、保存后重建完成）时静默刷新语义着色。
+        self.semantic_index_changed(cx);
     }
 
     pub(super) fn nav_settings_changed(
@@ -558,6 +562,8 @@ impl Workbench {
                 if !reloaded {
                     states.opened(&buffer.path, buffer.text.clone(), hash);
                 }
+                // A semantic request waiting for this buffer version can now run.
+                view.refresh_semantic(cx);
                 // 登记前的高亮可能来自“未打开文件”的路径：刷新一次。
                 let slots: Vec<_> = view.nav.slots.keys().copied().collect();
                 for (group, secondary) in slots {

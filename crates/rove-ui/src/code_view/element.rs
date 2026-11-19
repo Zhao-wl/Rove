@@ -736,7 +736,9 @@ impl CodeView {
                                 &xs,
                                 entry.display.stop_index_for_display(range.end),
                             );
-                            if let Some(u) = style.underline {
+                            let foreground = style.foreground.unwrap_or(self.palette.foreground);
+                            if let Some(u) = style.underline.and_then(|mark| mark.color(foreground))
+                            {
                                 let r = dpi::hline(
                                     f32::from(left) + a,
                                     f32::from(y) + lh - 2.0,
@@ -746,7 +748,9 @@ impl CodeView {
                                 );
                                 window.paint_quad(fill(r, hsla(u)));
                             }
-                            if let Some(s) = style.strikethrough {
+                            if let Some(s) =
+                                style.strikethrough.and_then(|mark| mark.color(foreground))
+                            {
                                 let r = dpi::hline(
                                     f32::from(left) + a,
                                     f32::from(y) + lh / 2.0,
@@ -1291,6 +1295,16 @@ impl CodeView {
         let size = self.font.size;
         let runs = &entry.paint_runs;
         let bytes = entry.display.text.as_bytes();
+        // #59（D9）：不生效的 `#if` 区域整行变淡（`editorUnnecessaryCode.opacity` 的 alpha）。
+        let dim = entry
+            .merged
+            .as_ref()
+            .and_then(|m| m.line.opacity)
+            .filter(|a| *a < u8::MAX);
+        let fade = |c: Color| match dim {
+            Some(a) => Color(c.0, c.1, c.2, ((c.3 as u16 * a as u16) / 255) as u8),
+            None => c,
+        };
         // 相邻字形几乎总是同色：记住上一次的颜色换算结果。
         let mut memo = (p.foreground, hsla(p.foreground));
         for run in &s.layout.runs {
@@ -1320,6 +1334,7 @@ impl CodeView {
                         color = p.selection_foreground.unwrap_or(color);
                     }
                 }
+                color = fade(color);
                 let dx = if spacing != 0.0 {
                     spacing * entry.display.stop_index_for_display(idx) as f32
                 } else {

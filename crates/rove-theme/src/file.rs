@@ -353,7 +353,7 @@ pub(crate) fn parse_settings(
     }
 }
 
-fn parse_semantic_rule(
+pub(crate) fn parse_semantic_rule(
     selector: &str,
     v: &Value,
     field: &str,

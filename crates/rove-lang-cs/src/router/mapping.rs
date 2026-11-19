@@ -15,6 +15,7 @@
 //! 代价：其他行的修改（例如新增一个遮蔽字段的局部变量）可能改变本行的绑定而不被发现——这是
 //! `LANGUAGE_INTELLIGENCE` §4 代价第 2 条接受的范围，保存并重建后恢复精确。
 use rove_base::{Line, Position, Utf8Column};
+use std::ops::Range;
 
 /// 旧文本与新文本中对应的一段修改，两侧都是半开区间。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,6 +284,33 @@ impl EditMap {
             .any(|(start, end)| start <= line && line < end)
     }
 
+    /// Map the unchanged portions of an old line interval. A whole-line
+    /// insertion splits the result even when it changes no old lines.
+    pub(super) fn map_clean_old_lines(&self, range: Range<u64>) -> Vec<Range<u64>> {
+        let mut mapped = Vec::new();
+        let mut append = |start, end| {
+            if start < end {
+                if let Mapped::At(first) = self.old_to_new_clean(pos(start, 0)) {
+                    mapped.push(first.line.0..first.line.0 + (end - start));
+                }
+            }
+        };
+        let first = self
+            .hunks
+            .partition_point(|h| h.old_lines().1 <= range.start);
+        let mut start = range.start;
+        for hunk in &self.hunks[first..] {
+            let (dirty_start, dirty_end) = hunk.old_lines();
+            if dirty_start >= range.end {
+                break;
+            }
+            append(start, dirty_start);
+            start = start.max(dirty_end);
+        }
+        append(start, range.end);
+        mapped
+    }
+
     /// 映射一个旧位置，并且要求它所在的行未被修改。
     pub fn old_to_new_clean(&self, p: Position) -> Mapped {
         if self.line_modified_old(p.line.0) {
@@ -306,6 +334,18 @@ mod tests {
 
     fn p(line: u64, col: u64) -> Position {
         pos(line, col)
+    }
+
+    #[test]
+    fn clean_old_line_ranges_exclude_insertions_and_edits() {
+        let mut map = EditMap::new();
+        map.push(LineEdit::new(p(3, 0), p(3, 0), "inserted\n"));
+        map.push(LineEdit::new(p(5, 1), p(5, 2), "x"));
+        assert_eq!(map.map_clean_old_lines(1..7), [1..3, 4..5, 6..8]);
+        assert_eq!(
+            map.map_clean_old_lines(3..4).as_slice(),
+            std::slice::from_ref(&(4..5))
+        );
     }
 
     /// 测试用文本模型：按 `\n` 分行。

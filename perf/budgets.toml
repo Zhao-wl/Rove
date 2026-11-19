@@ -540,3 +540,35 @@ owner = "#57"
 status = "recorded"
 bench = "brackets/minified_json_edit_worst_case"
 reason = "只记录、不设门槛：增量更新的失效粒度目前是行，所以整篇只有一行时退化成全量重解析。这是已知的最坏情况，由括号数上限兜底；要进一步优化得把失效粒度细到字节（VS Code 的 TextEditInfo），留给 #57 的后续部分"
+
+# ---------------------------------------------------------------- C# 语义高亮（#59）
+
+[[budget]]
+id = "semantic_highlight_catch_up"
+metric = "5,000 行 C# 文件的语义 token 转换成视图样式区间的耗时"
+value = 100
+unit = "ms"
+owner = "#59"
+status = "enforced"
+bench = "semantic/styles_5000_lines_csharp"
+reason = "issue #59 的样式构建微基准，覆盖主题选择器、回退表及样式缓存。索引、调度与绘制耗时通过真实 Workbench 的首屏到语义补齐测量，仍使用 100 ms 的 issue 验收门槛。"
+
+[[budget]]
+id = "semantic_highlight_frame_extra"
+metric = "连续滚动时语义着色带来的每帧额外 CPU"
+value = 100
+unit = "us"
+owner = "#59"
+status = "enforced"
+bench = "semantic/scroll_5000_lines_csharp"
+reason = "issue #59 验收：CHARTER §6 的 1 ms 每帧预算里语义着色只能占很小一块（< 100 µs）。口径取最坏情况——整屏 40 行全部重新生成装饰（含不生效预处理区域的置灰判定）；真实滚动时只有新进视口的一两行会重算，其余命中 #19 的按行装饰缓存"
+
+[[budget]]
+id = "semantic_declaration_facts"
+metric = "5,000 行 C# 的声明细节提取（索引里没有的类型种类与修饰符）"
+value = 0
+unit = "ms"
+owner = "#59"
+status = "recorded"
+bench = "semantic/declaration_facts_5000_lines_csharp"
+reason = "只记录、不设门槛：索引格式（#32）里每个符号只有 Roslyn SymbolKind，没有 TypeKind 与修饰符，所以这两项由本文件的语法树补。打开文件与索引换代时各做一次，结果按（路径, 版本）缓存。索引补上这两项之后这一步可以整个去掉"

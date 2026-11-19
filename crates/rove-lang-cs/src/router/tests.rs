@@ -982,7 +982,7 @@ fn reload_after_external_edit_is_mapped() {
 }
 
 #[test]
-fn file_symbols_inactive_regions_and_unsupported_tokens() {
+fn file_symbols_and_inactive_regions() {
     let f = fixture();
     let c = Cancellation::default();
     let res = Resource::Workspace(wp(PLAYER_PATH));
@@ -992,10 +992,6 @@ fn file_symbols_inactive_regions_and_unsupported_tokens() {
     let regions = f.router.inactive_regions(&res, Version(0), &c).unwrap();
     assert!(regions.value.is_empty());
     assert_eq!(regions.precision, Precision::Exact);
-    assert!(matches!(
-        f.router.semantic_tokens(&res, Version(0), &c),
-        Err(Error::Unsupported)
-    ));
     // 没有 L1：工作区符号未就绪。
     assert!(matches!(
         f.router.workspace_symbols("Pla", &c),
@@ -1155,4 +1151,238 @@ fn reindex_to_unknown_content_stays_diverged() {
         hash_bytes(PLAYER_CS.as_bytes()),
         "对不上任何检查点时不能推进基线"
     );
+}
+
+// ------------------------------------------------------------------ #59 语义 token
+
+/// 一次语义 token 查询（未打开的文件用版本 0）。
+fn semantic(f: &Fixture, path: &str, version: Version) -> QueryResult<Arc<[SemanticToken]>> {
+    f.router
+        .semantic_tokens(
+            &Resource::Workspace(wp(path)),
+            version,
+            &Cancellation::default(),
+        )
+        .unwrap()
+}
+
+/// `(类型, 修饰符)`，便于逐条断言。
+fn token_at(
+    r: &QueryResult<Arc<[SemanticToken]>>,
+    (line, col): (u32, u32),
+) -> (String, Vec<String>) {
+    let t = r
+        .value
+        .iter()
+        .find(|t| t.line.0 == u64::from(line) && t.column.0 == u64::from(col))
+        .unwrap_or_else(|| panic!("({line},{col}) 应有语义 token：{:?}", r.value));
+    (
+        t.token_type.to_string(),
+        t.modifiers.iter().map(|m| m.to_string()).collect(),
+    )
+}
+
+#[test]
+fn semantic_tokens_classify_the_sample_project() {
+    let f = fixture();
+    let r = semantic(&f, PLAYER_PATH, Version(0));
+    assert_eq!(r.precision, Precision::Exact);
+    // 类型声明：索引只知道「具名类型」，class 由本文件的语法树补上。
+    assert_eq!(
+        token_at(&r, find_word(PLAYER_CS, "Player", 0)),
+        ("class".to_owned(), vec!["declaration".to_owned()])
+    );
+    // 字段的声明处与引用处是同一个类型，引用处没有 declaration。
+    assert_eq!(
+        token_at(&r, find_word(PLAYER_CS, "Health", 0)),
+        ("field".to_owned(), vec!["declaration".to_owned()])
+    );
+    assert_eq!(
+        token_at(&r, find_word(PLAYER_CS, "Health", 1)),
+        ("field".to_owned(), Vec::<String>::new())
+    );
+    assert_eq!(
+        token_at(&r, find_word(PLAYER_CS, "Move", 0)),
+        ("method".to_owned(), vec!["declaration".to_owned()])
+    );
+    assert_eq!(
+        token_at(&r, find_word(PLAYER_CS, "speed", 0)),
+        ("parameter".to_owned(), vec!["declaration".to_owned()])
+    );
+    assert_eq!(
+        token_at(&r, find_word(PLAYER_CS, "step", 0)),
+        ("variable".to_owned(), vec!["declaration".to_owned()])
+    );
+    // 另一个文件里引用 Player：声明不在本文件，没有 L1 时退回笼统的 `type`。
+    let hero = semantic(&f, HERO_PATH, Version(0));
+    let (ty, mods) = token_at(&hero, find_word(HERO_CS, "Player", 0));
+    assert_eq!(ty, "type");
+    assert!(mods.is_empty(), "{mods:?}");
+}
+
+#[test]
+fn symbols_from_the_base_class_library_carry_default_library() {
+    const SRC: &str = "class A { void M() { var s = string.Empty; } }\n";
+    const EXTRA: &str = "Assets/zz.cs";
+    let f = fixture_files(&[(EXTRA, SRC)], |index, _| {
+        let sym = index.symbol("mscorlib|T:System.String", "String", KIND_TYPE, None);
+        let (line, col) = find_word(SRC, "string", 0);
+        index.reference(sym, 2, line, col);
+    });
+    let r = semantic(&f, EXTRA, Version(0));
+    assert_eq!(
+        token_at(&r, find_word(SRC, "string", 0)),
+        ("type".to_owned(), vec!["defaultLibrary".to_owned()])
+    );
+}
+
+#[test]
+fn an_edited_region_falls_back_to_syntax_only() {
+    let f = fixture();
+    let v0 = open(&f, PLAYER_PATH, PLAYER_CS);
+    let before = semantic(&f, PLAYER_PATH, v0.version());
+    assert_eq!(before.precision, Precision::Exact);
+    assert_eq!(
+        before
+            .value
+            .iter()
+            .filter(|t| &*t.token_type == "field")
+            .count(),
+        2
+    );
+    // 改 `Health -= step;` 那一行。
+    let at = PLAYER_CS.find("step;").unwrap() + "step".len();
+    let v1 = edit(&f, PLAYER_PATH, &v0, at, at, " + 1");
+    let after = semantic(&f, PLAYER_PATH, v1.version());
+    assert_eq!(after.precision, Precision::Approximate);
+    assert!(matches!(
+        after.reason,
+        Some(ApproximationReason::ModifiedRegion)
+    ));
+    // 改过的那一行上的 token 全部消失，其余保留（不是整份文件退化）。
+    let modified_line = PLAYER_CS[..at].matches('\n').count() as u64;
+    assert!(after.value.iter().all(|t| t.line.0 != modified_line));
+    assert_eq!(
+        token_at(&after, find_word(PLAYER_CS, "Health", 0)),
+        ("field".to_owned(), vec!["declaration".to_owned()]),
+        "没改过的行仍然有语义 token"
+    );
+}
+
+#[test]
+fn mapped_semantic_declarations_keep_modifiers_after_whole_line_insertion() {
+    const FILE: &str = "Assets/ZZ.cs";
+    const SOURCE: &str = "class Example { static readonly int Count = 1; }\n";
+    let f = fixture_files(&[(FILE, SOURCE)], |index, _| {
+        let field = index.symbol("Game|F:Example.Count", "Count", KIND_FIELD, None);
+        let (line, column) = find_word(SOURCE, "Count", 0);
+        index.def(field, 2, line, column);
+    });
+    let before = open(&f, FILE, SOURCE);
+    let after = edit(&f, FILE, &before, 0, 0, "// header\n");
+    let result = semantic(&f, FILE, after.version());
+    assert_eq!(result.precision, Precision::Approximate);
+    let (_, column) = find_word(SOURCE, "Count", 0);
+    let (kind, modifiers) = token_at(&result, (1, column));
+    assert_eq!(kind, "field");
+    assert!(modifiers.iter().any(|modifier| modifier == "readonly"));
+    assert!(modifiers.iter().any(|modifier| modifier == "static"));
+}
+
+#[test]
+fn dirty_buffer_does_not_make_an_untrusted_index_drawable() {
+    let f = fixture_with(|index| index.inactive.push((1, 2, 8)));
+    let before = open(&f, PLAYER_PATH, PLAYER_CS);
+    let after = edit(&f, PLAYER_PATH, &before, 0, 0, "// header\n");
+    let mut snapshot = f.semantic.snapshot().unwrap();
+    snapshot.trusted = false;
+    f.semantic
+        .set(Some(snapshot), SemanticStatus::Building { percent: None });
+
+    let tokens = semantic(&f, PLAYER_PATH, after.version());
+    assert!(tokens.value.is_empty());
+    assert!(matches!(
+        tokens.reason,
+        Some(ApproximationReason::IndexNotReady)
+    ));
+    let inactive = f
+        .router
+        .inactive_regions(
+            &Resource::Workspace(wp(PLAYER_PATH)),
+            after.version(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert!(inactive.value.is_empty());
+    assert!(matches!(
+        inactive.reason,
+        Some(ApproximationReason::IndexNotReady)
+    ));
+}
+
+#[test]
+fn an_unindexed_file_and_a_missing_index_produce_no_tokens() {
+    let f = fixture();
+    let missing = semantic(&f, "Assets/Nope.cs", Version(0));
+    assert!(missing.value.is_empty());
+    assert_eq!(missing.precision, Precision::Approximate);
+    // 索引还没好：整条查询不可用（界面据此不画语义装饰）。
+    f.semantic
+        .set(None, SemanticStatus::Building { percent: Some(10) });
+    assert!(matches!(
+        f.router.semantic_tokens(
+            &Resource::Workspace(wp(PLAYER_PATH)),
+            Version(0),
+            &Cancellation::default(),
+        ),
+        Err(Error::NotReady)
+    ));
+}
+
+#[test]
+fn only_csharp_files_have_semantic_tokens() {
+    let f = fixture_files(&[("Assets/data.json", "{}")], |_, _| {});
+    assert!(matches!(
+        f.router.semantic_tokens(
+            &Resource::Workspace(wp("Assets/data.json")),
+            Version(0),
+            &Cancellation::default(),
+        ),
+        Err(Error::Unsupported)
+    ));
+}
+
+#[test]
+fn a_stale_version_is_rejected_instead_of_answered() {
+    let f = fixture();
+    let v0 = open(&f, PLAYER_PATH, PLAYER_CS);
+    assert!(matches!(
+        f.router.semantic_tokens(
+            &Resource::Workspace(wp(PLAYER_PATH)),
+            Version(v0.version().0 + 7),
+            &Cancellation::default(),
+        ),
+        Err(Error::Stale)
+    ));
+}
+
+#[test]
+fn an_untrusted_index_does_not_produce_semantic_tokens() {
+    let f = fixture();
+    assert!(!semantic(&f, PLAYER_PATH, Version(0)).value.is_empty());
+    let snapshot = f.semantic.snapshot().unwrap();
+    f.semantic.set(
+        Some(L2Snapshot {
+            trusted: false,
+            ..snapshot
+        }),
+        SemanticStatus::Building { percent: Some(90) },
+    );
+    let after = semantic(&f, PLAYER_PATH, Version(0));
+    assert!(after.value.is_empty());
+    assert_eq!(after.precision, Precision::Approximate);
+    assert!(matches!(
+        after.reason,
+        Some(ApproximationReason::IndexNotReady)
+    ));
 }

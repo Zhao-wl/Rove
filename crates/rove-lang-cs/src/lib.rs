@@ -27,3 +27,6 @@ pub mod overlay;
 
 // #42 元数据视图：文档标识、内容、showDocs 与行号换算。
 pub mod metadata_view;
+
+// #59 C# 语义高亮：符号种类 + 修饰符 → VS Code 标准语义 token。
+pub mod semantic;

@@ -33,6 +33,24 @@ pub mod priority {
     pub const FIND_MATCH: i32 = 40;
 }
 
+/// 字符装饰可以指定颜色、使用合并后的文字前景色，或关闭下层样式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextDecoration {
+    Color(Color),
+    Foreground,
+    Off,
+}
+
+impl TextDecoration {
+    pub fn color(self, foreground: Color) -> Option<Color> {
+        match self {
+            Self::Color(color) => Some(color),
+            Self::Foreground => Some(foreground),
+            Self::Off => None,
+        }
+    }
+}
+
 /// 一段文字的样式；`None` 表示不覆盖下层。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextStyle {
@@ -40,8 +58,8 @@ pub struct TextStyle {
     pub background: Option<Color>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
-    pub underline: Option<Color>,
-    pub strikethrough: Option<Color>,
+    pub underline: Option<TextDecoration>,
+    pub strikethrough: Option<TextDecoration>,
     /// 区间外框（查找匹配等）。
     pub border: Option<Color>,
 }
@@ -84,6 +102,10 @@ pub struct LineStyle {
     pub background: Option<Color>,
     pub border: Option<Color>,
     pub glyph: Option<GlyphIcon>,
+    /// #59（D9）：整行文字的不透明度（0–255，`None` 为不透明）。
+    /// 不生效的 `#if` 区域按 `editorUnnecessaryCode.opacity` 的 alpha 通道变淡，
+    /// 只影响绘制时的前景色 alpha，不影响整形，也不改下层的颜色本身。
+    pub opacity: Option<u8>,
 }
 
 /// 行内覆盖物：在 `column` 处叠画一段文字（不参与本行整形与列换算），
@@ -194,6 +216,9 @@ pub fn merge(layers: &[&LineDecorations], line_len: u32) -> MergedLine {
         }
         if l.line.glyph.is_some() {
             line.glyph = l.line.glyph.clone();
+        }
+        if l.line.opacity.is_some() {
+            line.opacity = l.line.opacity;
         }
         overlays.extend(l.overlays.iter().cloned());
     }

@@ -148,3 +148,8 @@ harness = false
 [[bench]]
 name = "brackets"
 harness = false
+
+# #59：C# 语义着色的样式解析与每帧额外开销（纯 CPU）。
+[[bench]]
+name = "semantic"
+harness = false

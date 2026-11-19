@@ -56,6 +56,11 @@ impl L0File {
         })
     }
 
+    /// 已解析的语法树（#59 的声明细节提取复用它，不再解析第二遍）。
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
     /// 行列 → 字节偏移；越界返回 `None`。
     pub fn offset(&self, position: Position) -> Option<usize> {
         let start = *self

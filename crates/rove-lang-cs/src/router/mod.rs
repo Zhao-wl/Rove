@@ -27,6 +27,7 @@ pub mod buffers;
 pub mod l0;
 pub mod mapping;
 mod metadata;
+mod semantic_tokens;
 #[doc(hidden)]
 pub mod testing;
 #[cfg(test)]
@@ -334,6 +335,8 @@ pub struct CsRouter {
     views: Option<Arc<crate::metadata_view::MetadataViews>>,
     /// 最近一次 L0 解析（按路径与版本）。
     l0_cache: Mutex<Option<(String, Version, Arc<L0File>)>>,
+    /// #59：最近一次声明细节提取（按路径与版本），与 `l0_cache` 共用同一次解析。
+    facts_cache: Mutex<Option<(String, Version, Arc<crate::semantic::syntax::FileFacts>)>>,
     /// 已经请求过重建的（文件, 当前内容哈希），避免每次查询都请求。
     requested: Mutex<HashSet<(String, u64)>>,
 }
@@ -347,6 +350,7 @@ impl CsRouter {
             root: None,
             views: None,
             l0_cache: Mutex::default(),
+            facts_cache: Mutex::default(),
             requested: Mutex::default(),
         }
     }
@@ -1379,15 +1383,14 @@ impl CsQueries for CsRouter {
         })
     }
 
-    /// 语义高亮属于 R58，路由不提供。
+    /// #59：按文件取语义 token。只有 C# 有（D2），实现见 `router::semantic_tokens`。
     fn semantic_tokens(
         &self,
-        _: &Resource,
-        _: Version,
+        file: &Resource,
+        version: Version,
         cancel: &Cancellation,
     ) -> Result<QueryResult<Arc<[SemanticToken]>>> {
-        cancel.check()?;
-        Err(Error::Unsupported)
+        self.semantic_tokens_impl(file, version, cancel)
     }
 
     /// 不生效的预处理区域（L2 的行区间，整行），映射到当前坐标；文件改过时标为近似。
@@ -1413,6 +1416,9 @@ impl CsQueries for CsRouter {
             version: Some(version),
             index_generation: snap.generation,
         };
+        if cap.precision != Precision::Exact {
+            return Ok(result(Vec::new(), cap.precision, cap.reason));
+        }
         let Some(id) = index.file_id(&rel) else {
             return Ok(result(
                 Vec::new(),
@@ -1423,12 +1429,17 @@ impl CsQueries for CsRouter {
         let has_stale = doc.is_none() && self.semantic.has_stale();
         let state = self.file_state(index, id, &rel, doc.as_ref(), has_stale);
         let lines = index.inactive_lines(id);
-        let line_start = |l: u32| position(l, 0);
+        let line_start = |line| Position {
+            line: Line(line),
+            column: Utf8Column(0),
+        };
         let (ranges, precision, reason) = match &state {
             FileState::Clean => (
                 lines
                     .iter()
-                    .filter_map(|r| Span::new(line_start(r.start), line_start(r.end)).ok())
+                    .filter_map(|r| {
+                        Span::new(line_start(u64::from(r.start)), line_start(u64::from(r.end))).ok()
+                    })
                     .collect(),
                 cap.precision,
                 cap.reason,
@@ -1436,22 +1447,16 @@ impl CsQueries for CsRouter {
             FileState::Mapped(map) => (
                 lines
                     .iter()
-                    .filter_map(|r| {
-                        Span::new(
-                            map.old_to_new_nearest(line_start(r.start)),
-                            map.old_to_new_nearest(line_start(r.end)),
-                        )
-                        .ok()
+                    .flat_map(|r| map.map_clean_old_lines(u64::from(r.start)..u64::from(r.end)))
+                    .filter_map(|range| {
+                        Span::new(line_start(range.start), line_start(range.end)).ok()
                     })
                     .collect(),
                 Precision::Approximate,
                 Some(ApproximationReason::ModifiedRegion),
             ),
             FileState::Diverged => (
-                lines
-                    .iter()
-                    .filter_map(|r| Span::new(line_start(r.start), line_start(r.end)).ok())
-                    .collect(),
+                Vec::new(),
                 Precision::Approximate,
                 Some(ApproximationReason::ModifiedRegion),
             ),
