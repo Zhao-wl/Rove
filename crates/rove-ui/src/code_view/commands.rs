@@ -150,6 +150,36 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "切换缩略图",
     ),
     // #20：折叠（KEYBINDINGS.md 阅读一节）与“在此会话中切换只读”。
+    (
+        super::smart_selection::EXPAND,
+        "codeView.command.smartSelect.expand",
+        "扩大选区",
+    ),
+    (
+        super::smart_selection::GROW,
+        "codeView.command.smartSelect.grow",
+        "扩大选区",
+    ),
+    (
+        super::smart_selection::SHRINK,
+        "codeView.command.smartSelect.shrink",
+        "缩小选区",
+    ),
+    (
+        super::smart_selection::JUMP_TO_BRACKET,
+        "codeView.command.jumpToBracket",
+        "转到匹配括号",
+    ),
+    (
+        super::smart_selection::SELECT_TO_BRACKET,
+        "codeView.command.selectToBracket",
+        "选择括号范围",
+    ),
+    (
+        super::smart_selection::REMOVE_BRACKETS,
+        "codeView.command.removeBrackets",
+        "删除括号对",
+    ),
     ("editor.fold", "codeView.command.fold", "折叠"),
     ("editor.unfold", "codeView.command.unfold", "展开"),
     (
@@ -717,6 +747,12 @@ command_actions! {
     FontZoomReset => "editor.action.fontZoomReset",
     ToggleWordWrap => "editor.action.toggleWordWrap",
     ToggleMinimap => "editor.action.toggleMinimap",
+    SmartSelectExpand => "editor.action.smartSelect.expand",
+    SmartSelectShrink => "editor.action.smartSelect.shrink",
+    SmartSelectGrow => "editor.action.smartSelect.grow",
+    JumpToBracket => "editor.action.jumpToBracket",
+    SelectToBracket => "editor.action.selectToBracket",
+    RemoveBrackets => "editor.action.removeBrackets",
     Fold => "editor.fold",
     Unfold => "editor.unfold",
     ToggleFold => "editor.toggleFold",

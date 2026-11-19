@@ -121,6 +121,8 @@ mod references_host;
 mod references_tests;
 pub use markdown_host::MarkdownSnapshot;
 #[cfg(test)]
+mod smart_selection_tests;
+#[cfg(test)]
 mod syntax_tests;
 // #76：「关于」对话框（版本 / 提交号 / 构建日期 / gpui / 索引组件，可复制）的装配。
 mod about_host;
@@ -967,6 +969,13 @@ impl Workbench {
             return;
         }
         // #47：带参数的编辑命令，以及关闭有未保存修改的标签（先确认）。
+        if id == code_view::smart_selection::SELECT_TO_BRACKET {
+            let include = !matches!(invocation.args, Value::Bool(false))
+                && !matches!(&invocation.args, Value::Object(args) if args.get("selectBrackets") == Some(&Value::Bool(false)));
+            self.code_view()
+                .update(cx, |code, cx| code.select_to_bracket(include, cx));
+            return;
+        }
         if code_view::commands::TYPE_COMMANDS.contains(&id) {
             self.type_command(&invocation.args, cx);
             return;
@@ -1353,6 +1362,7 @@ impl Workbench {
             readonly_overrides,
             ..
         } = self;
+        let selection_syntax = editor.selection_syntax();
         let pane = editor.groups.get_mut(&group).unwrap();
         let views = views.get_mut(&group).unwrap();
         let slot = if secondary {
@@ -1405,6 +1415,7 @@ impl Workbench {
                 code.set_text(Some(text), same, cx);
                 code.set_language(Some(language), cx);
                 code.set_syntax(syntax, None, cx);
+                code.set_selection_syntax(document.id, selection_syntax);
                 code.set_read_only(read_only, cx);
                 if !same {
                     // Folds first: the saved scroll position is in screen lines.

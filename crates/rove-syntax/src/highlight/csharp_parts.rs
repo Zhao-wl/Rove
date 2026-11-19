@@ -125,6 +125,21 @@ impl Parts {
             .map(|part| &part.tree)
     }
 
+    /// The shared header/footer are included in every tree. Use the closest
+    /// part when the selection is in one of those shared document regions.
+    pub(super) fn selection_tree(&self, offset: usize) -> Option<&Tree> {
+        self.at(offset).or_else(|| {
+            let part = if offset < self.header_end {
+                self.parts.first()
+            } else if offset >= self.footer_start {
+                self.parts.last()
+            } else {
+                None
+            };
+            part.map(|part| &part.tree)
+        })
+    }
+
     /// Reparse the single part that contains an edit of member text, reusing its old tree.
     /// Returns the new parts and the old and new tree of the edited part, or `None` when the
     /// edit touches the header, footer or a part boundary, or the result does not validate.

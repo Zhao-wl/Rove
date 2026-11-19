@@ -10,6 +10,14 @@ use std::sync::Arc;
 pub const SETTINGS: &[(&str, DefaultValue)] = &[
     ("editor.links", DefaultValue::Bool(true)),
     (
+        "editor.smartSelect.selectSubwords",
+        DefaultValue::Bool(true),
+    ),
+    (
+        "editor.smartSelect.selectLeadingAndTrailingWhitespace",
+        DefaultValue::Bool(true),
+    ),
+    (
         "editor.fontFamily",
         DefaultValue::Str("Consolas, 'Courier New', monospace"),
     ),
@@ -326,6 +334,8 @@ pub struct EditorOptions {
     pub wrap: super::wrap::WrapOptions,
     pub minimap: super::minimap::Options,
     pub tab_size: u32,
+    pub smart_select_subwords: bool,
+    pub smart_select_whitespace: bool,
     /// `None` 表示不限（设置为 -1）。
     pub stop_rendering_line_after: Option<usize>,
     pub smooth_scrolling: bool,
@@ -677,6 +687,9 @@ impl EditorOptions {
                 tab_size: r.num("editor.tabSize", 1.0, 100.0) as u32,
             },
             tab_size: r.num("editor.tabSize", 1.0, 100.0) as u32,
+            smart_select_subwords: r.bool("editor.smartSelect.selectSubwords"),
+            smart_select_whitespace: r
+                .bool("editor.smartSelect.selectLeadingAndTrailingWhitespace"),
             stop_rendering_line_after: if stop < 0.0 {
                 None
             } else {

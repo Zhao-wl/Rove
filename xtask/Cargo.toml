@@ -163,3 +163,8 @@ harness = false
 [[bench]]
 name = "minimap"
 harness = false
+
+# #54：智能扩选的实窗快捷键响应。
+[[bench]]
+name = "smart_select"
+harness = false

@@ -6,6 +6,7 @@ mod documents;
 mod folds;
 mod grammar;
 mod rows;
+mod selection;
 mod settings;
 mod source;
 

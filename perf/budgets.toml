@@ -618,3 +618,26 @@ owner = "#56"
 status = "recorded"
 bench = "minimap/rasterize_300000_rows"
 reason = "R55 验收要求记录 30 万行生成耗时与内存占用。离线基准计时全部色块生成，并单列全量纹理与缓存峰值。"
+
+# ---------------------------------------------------------------- 智能扩选（#54）
+
+[[budget]]
+id = "smart_select_keystroke"
+metric = "2,000 行 C# 的首次智能扩选快捷键处理与包含新选区的绘制"
+value = 8
+unit = "ms"
+owner = "#54"
+status = "enforced"
+bench = "smart_select/key_active"
+aggregate = "p99"
+reason = "真窗口按键分发和含新选区的 CodeView 帧时间，空等下一次帧同步的墙钟单列记录。"
+
+[[budget]]
+id = "smart_select_keystroke_wall"
+metric = "同一快捷键到实际绘制完成的墙钟"
+value = 0
+unit = "ms"
+owner = "#54"
+status = "recorded"
+bench = "smart_select/key_to_paint"
+aggregate = "p99"

@@ -7,7 +7,7 @@
 
 use super::{DocumentSyntax, TreeSitterSyntax};
 use crate::{SyntaxService, SyntaxUpdate};
-use rove_base::{Cancellation, DocumentId, Error, LineRange, Task, TextEdit};
+use rove_base::{ByteRange, Cancellation, DocumentId, Error, LineRange, Task, TextEdit, Version};
 use rove_buffer::TextSource;
 use std::{
     collections::HashMap,
@@ -31,6 +31,17 @@ pub trait DocumentHighlighter: Send + Sync {
         visible: Option<LineRange>,
         cancel: Cancellation,
     ) -> Task<SyntaxUpdate>;
+
+    /// Ancestors of the selection in the already parsed version, innermost first.
+    fn selection_ranges(
+        &self,
+        _: DocumentId,
+        _: Version,
+        _: &str,
+        _: &ByteRange,
+    ) -> Vec<ByteRange> {
+        Vec::new()
+    }
 
     /// Forget the document's baseline. Analyses still running for it return `Cancelled`.
     fn close(&self, document: DocumentId);
@@ -142,6 +153,24 @@ impl DocumentHighlighter for SyntaxDocuments {
                 return Err(Error::Cancelled);
             }
             Ok(update)
+        })
+    }
+
+    fn selection_ranges(
+        &self,
+        document: DocumentId,
+        version: Version,
+        language: &str,
+        selection: &ByteRange,
+    ) -> Vec<ByteRange> {
+        let entry = self
+            .0
+            .open
+            .try_lock()
+            .ok()
+            .and_then(|open| open.get(&document).cloned());
+        entry.map_or_else(Vec::new, |entry| {
+            entry.syntax.selection_ranges(version, language, selection)
         })
     }
 

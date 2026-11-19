@@ -63,6 +63,7 @@ pub mod view;
 pub(crate) mod links;
 pub mod minimap;
 mod minimap_view;
+pub(crate) mod smart_selection;
 pub mod wrap;
 
 pub use decorations::{

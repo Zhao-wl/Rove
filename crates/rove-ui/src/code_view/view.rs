@@ -468,6 +468,11 @@ pub struct CodeView {
     pub(crate) services: CodeViewServices,
     pub(crate) language: Option<Arc<str>>,
     pub(crate) options: EditorOptions,
+    pub(crate) smart_selection: Option<super::smart_selection::SmartSelection>,
+    pub(crate) selection_syntax: Option<(
+        rove_base::DocumentId,
+        Arc<dyn rove_syntax::highlight::DocumentHighlighter>,
+    )>,
     pub(crate) suppress_line_numbers: bool,
     pub(crate) palette: Palette,
     pub(crate) minimap: super::minimap_view::MinimapView,
@@ -763,6 +768,8 @@ impl CodeView {
             services,
             language: None,
             options,
+            smart_selection: None,
+            selection_syntax: None,
             suppress_line_numbers: false,
             palette,
             minimap: Default::default(),
@@ -860,6 +867,10 @@ impl CodeView {
         let discard_semantics = changed && !self.semantic.borrow().is_empty();
         if discard_semantics {
             self.semantic.borrow_mut().discard();
+        }
+        self.smart_selection = None;
+        if !keep_view_state {
+            self.selection_syntax = None;
         }
         self.text = text;
         self.minimap.clear(cx);
@@ -1375,6 +1386,11 @@ impl CodeView {
             self.minimap.clear(cx);
             self.invalidate_minimap_marks();
         }
+        if self.options.smart_select_subwords != options.smart_select_subwords
+            || self.options.smart_select_whitespace != options.smart_select_whitespace
+        {
+            self.smart_selection = None;
+        }
         let layout_changed = options.tab_size != self.options.tab_size
             || options.stop_rendering_line_after != self.options.stop_rendering_line_after;
         let folds_changed = options.tab_size != self.options.tab_size
@@ -1806,6 +1822,7 @@ impl CodeView {
     }
 
     pub(crate) fn selection_changed(&mut self, source: SelectionSource, cx: &mut Context<Self>) {
+        self.smart_selection = None;
         // #47：光标撤销栈与撤销分组以会话为准。
         self.push_selection_to_session();
         // #53：光标离开后，自动补上的闭合符不再参与越过与成对删除。
@@ -2056,6 +2073,9 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.execute_smart_selection(id, window, cx) {
+            return true;
+        }
         // #52：多光标、列选择与行操作。
         if let Some(handled) = self.execute_multicursor(id, window, cx) {
             return handled;
@@ -4164,13 +4184,20 @@ impl CodeView {
         if !self.options.highlight_active_bracket_pair {
             return None;
         }
-        let a = self.cursor.selection.active;
+        self.find_brackets_at(self.cursor.selection.active, self.options.match_brackets)
+    }
+
+    pub(super) fn find_brackets_at(
+        &self,
+        a: Position,
+        mode: super::brackets::MatchBrackets,
+    ) -> Option<BracketMatch> {
         {
             // 括号对树可用时一律以它为准：嵌套与未配对的情况比就近扫描准，
             // 而 `editor.matchBrackets`（always / near / never）的语义不变。
             let pairs = self.bracket_pairs.borrow();
             if pairs.has_tree() {
-                return pairs.active_pair(a.line.0, a.column.0 as u32, self.options.match_brackets);
+                return pairs.active_pair(a.line.0, a.column.0 as u32, mode);
             }
         }
         let text = self.text.as_ref()?;
@@ -4188,7 +4215,7 @@ impl CodeView {
             &config.data().brackets,
             a.line.0,
             a.column.0 as u32,
-            self.options.match_brackets,
+            mode,
             &read,
             &skip,
         )
@@ -4256,7 +4283,7 @@ impl CodeView {
         }
     }
 
-    fn word_rule(&self) -> WordRule {
+    pub(super) fn word_rule(&self) -> WordRule {
         self.language_config()
             .map(WordRule::Language)
             .unwrap_or_else(|| WordRule::Separators(self.options.word_separators.clone()))
