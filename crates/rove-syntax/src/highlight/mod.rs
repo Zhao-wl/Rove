@@ -514,8 +514,8 @@ fn build(request: Request<'_>, work: &Work<'_>) -> Result<BuildResult> {
         _ => all.clone(),
     };
     let scan = match &trees {
-        ParseTrees::Whole(tree) if grammar == Grammar::Markdown && scan != all => {
-            markdown_rows(tree, &source, &ranges, scan)
+        ParseTrees::Whole(tree) if grammar.has_injections() && scan != all => {
+            injection_rows(grammar, tree, &source, &ranges, scan)
         }
         _ => scan,
     };
@@ -708,9 +708,9 @@ fn visible_bytes(text: &dyn TextSource, lines: u64, visible: LineRange) -> Optio
     Some(first.start().0 as usize..end.end().0 as usize)
 }
 
-/// Widen Markdown rows to whole inline regions and code fences, so an injected region is
-/// either highlighted again in full or reused in full.
-fn markdown_rows(
+/// Rescan complete injected regions when highlighting visible rows or applying an edit.
+fn injection_rows(
+    grammar: Grammar,
     tree: &Tree,
     source: &Source,
     ranges: &RowRanges,
@@ -721,7 +721,7 @@ fn markdown_rows(
     }
     let mut bytes = ranges.bytes(rows.clone());
     loop {
-        let expanded = widen(tree.root_node(), bytes.clone());
+        let expanded = widen(grammar, tree.root_node(), bytes.clone());
         if expanded == bytes {
             break;
         }
@@ -733,21 +733,18 @@ fn markdown_rows(
     start.min(rows.start)..end.max(rows.end)
 }
 
-fn widen(node: Node<'_>, range: Range<usize>) -> Range<usize> {
+fn widen(grammar: Grammar, node: Node<'_>, range: Range<usize>) -> Range<usize> {
     let mut out = range.clone();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.end_byte() < range.start || child.start_byte() > range.end {
             continue;
         }
-        if matches!(
-            child.kind(),
-            "inline" | "pipe_table_cell" | "fenced_code_block" | "setext_heading"
-        ) {
+        if grammar.is_injection_region(child.kind()) {
             out.start = out.start.min(child.start_byte());
             out.end = out.end.max(child.end_byte());
         } else {
-            let inner = widen(child, range.clone());
+            let inner = widen(grammar, child, range.clone());
             out.start = out.start.min(inner.start);
             out.end = out.end.max(inner.end);
         }

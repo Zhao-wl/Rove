@@ -88,7 +88,7 @@ Apache-2.0 代码**，故在此保留来源与许可声明；删减项与理由�
 
 ## VS Code 语言配置（`language-configuration.json`）
 
-`crates/rove-syntax/data/vscode-extensions/` 下的五个语言配置文件原样取自 Microsoft VS Code
+`crates/rove-syntax/data/vscode-extensions/` 下的八个语言配置文件原样取自 Microsoft VS Code
 **1.145.2**（提交 `c4453f8ea430795f941c1b2ff6c9321135a74a02`，MIT 许可），用于括号、注释、
 自动闭合、缩进规则、单词边界与折叠标记。文件清单、哈希与升级步骤见该目录的 `README.md`：
 
@@ -97,6 +97,9 @@ Apache-2.0 代码**，故在此保留来源与许可声明；删减项与理由�
 - `extensions/markdown-basics/language-configuration.json`
 - `extensions/xml/xml.language-configuration.json`
 - `extensions/yaml/language-configuration.json`
+- `extensions/hlsl/language-configuration.json`
+- `extensions/shaderlab/language-configuration.json`
+- `extensions/lua/language-configuration.json`
 
 来源：<https://github.com/microsoft/vscode/tree/1.145.2/extensions>
 原始许可证：<https://github.com/microsoft/vscode/blob/1.145.2/LICENSE.txt>
@@ -136,10 +139,15 @@ SOFTWARE.
 | YAML | `tree-sitter-yaml 0.7.2` | [tree-sitter-grammars/tree-sitter-yaml](https://github.com/tree-sitter-grammars/tree-sitter-yaml/tree/v0.7.2) |
 | XML | `tree-sitter-xml 0.7.0` | [tree-sitter-grammars/tree-sitter-xml](https://github.com/tree-sitter-grammars/tree-sitter-xml/tree/v0.7.0) |
 | Markdown（块级和行内） | `tree-sitter-md 0.5.4` | [tree-sitter-grammars/tree-sitter-markdown](https://github.com/tree-sitter-grammars/tree-sitter-markdown/tree/v0.5.4) |
+| HLSL | `tree-sitter-hlsl 0.2.0` | [tree-sitter-grammars/tree-sitter-hlsl](https://github.com/tree-sitter-grammars/tree-sitter-hlsl) |
+| Lua | `tree-sitter-lua 0.5.0` | [tree-sitter-grammars/tree-sitter-lua](https://github.com/tree-sitter-grammars/tree-sitter-lua) |
+| Protobuf | `tree-sitter-proto 0.6.1` | [coder3101/tree-sitter-proto](https://github.com/coder3101/tree-sitter-proto) |
+
+`grammars/tree-sitter-shaderlab/` 是 Rove 编写的 ShaderLab 语法（MIT），构建使用 Tree-sitter 0.25.10 生成的解析表与头文件。
 
 `crates/rove-syntax/src/highlight/queries/` 的高亮查询为 Rove 编写。
 捕获名参考 [VS Code 内置 TextMate 语法](https://github.com/microsoft/vscode/tree/ffe08d127413e67baa2d3cf31a62bdfdcf218f71/extensions)
-（`csharp`、`json`、`yaml`、`xml`、`markdown-basics`，Microsoft，MIT，许可见上文）。
+（`csharp`、`json`、`yaml`、`xml`、`markdown-basics`，Microsoft，MIT，许可见上文）。HLSL、ShaderLab 和 Lua 的捕获名参考同一上游的 [VS Code 1.145.2 内置语法](https://github.com/microsoft/vscode/tree/1.145.2/extensions)。
 
 Markdown 围栏注入查询的节点关系参考 [tree-sitter-md 0.5.4 的块级注入查询](https://github.com/tree-sitter-grammars/tree-sitter-markdown/blob/v0.5.4/tree-sitter-markdown/queries/injections.scm)（MIT）。
 

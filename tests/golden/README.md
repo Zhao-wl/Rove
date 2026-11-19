@@ -23,9 +23,7 @@
 整体替换即可：
 
 - M1 的五种语言：C#、JSON、YAML、XML、Markdown，以及 issue #11 点名的问题用例；
-- `test.lua` / `test_lua.json`：R64 的占位语言，用来演示「加一种语言只需加一行配置」。
-
-R64 接入 HLSL / ShaderLab / Lua 时，按同样的方式补 `test.hlsl`、`test.shader` 与对应的结果文件。
+- #65 加入 HLSL、ShaderLab 与 Lua 的着色比较。
 
 ## 文件与哈希
 
@@ -42,9 +40,11 @@ R64 接入 HLSL / ShaderLab / Lua 时，按同样的方式补 `test.hlsl`、`tes
 | `test-33886.md` | `26defce7cb29ec6dfe3735fdb3ce8de886e7784532bd14b550b1f58dfee9f209` |
 | `test-7115.xml` | `3dc8c0e0f3d83146bf135ea938ae4ca88264a472a9613b1f56a1e66f8087b97f` |
 | `test.cs` | `8a212bd53825066db646eb50f58ec3f0856ee758dcbdeb94ded65f46d70a43b6` |
+| `test.hlsl` | `b2f85413f5c67531004a4fe3ce741d1b41b9b17c37c784125886611189897b94` |
 | `test.json` | `b2d531295f4856719d5eb1bf2f5fa42bc0ea8436b5687cde0ed19e504866c360` |
 | `test.lua` | `b185a4bbde3dc97e26208afc6cfdbe48494674eedc5b034d666a19e4c53f579d` |
 | `test.md` | `ebe849c7b7147933eb203b4828ecef50d6e1780d343801949acff5900fc569e8` |
+| `test.shader` | `19509a262f83ee1d4b1969686f1a631905ce4df3b5c1bd82f3414da6db3e77aa` |
 | `test.xml` | `8f9f0fa2bf19a850f479df0402982096884fccd9e161f7bfb5b4823116ef3113` |
 | `test.yaml` | `1d02d6f3f20d03bc05e5382c67aad087319a6cf0846422c99a987f8f3e083fcc` |
 | `tsconfig_off.json` | `8de2606d58ba6b5e408878317e191f2e2ddbaa23ca572b241d03b1351967788b` |
@@ -62,9 +62,11 @@ R64 接入 HLSL / ShaderLab / Lua 时，按同样的方式补 `test.hlsl`、`tes
 | `test-33886_md.json` | `418305e7bade43ef682b5bcb6cd8e3d00ddb38bef8b6e6c277de0a09cb61d9dd` |
 | `test-7115_xml.json` | `29e15a5c372f273199a9b8d360f445df3d7844a1f0148bc88edab278e5b4aea1` |
 | `test_cs.json` | `36ce4b7aade5329e7a99fe4f0431c0e4c82e6f6c7605e5db62d823af2fa6f27c` |
+| `test_hlsl.json` | `00760eee8111913eae03a6db1f9720445aee69f16f9176054709cc8e33181dac` |
 | `test_json.json` | `b5b7401ddbb3d72346defbbc46f518bb9f5ae9e3a623dcb0c49c06445117fc8d` |
 | `test_lua.json` | `4a030787c512db1d0c812a13c6e220f9fd5cd2ffdcdcf2b65e771923a5bc58a8` |
 | `test_md.json` | `c1ff84b39b6eb4c1c9b1e5f0ca6bf5a411f044b15fb14a5ef9328d125d323009` |
+| `test_shader.json` | `35edc039a9c3b3cef0ea79e3b198265235e64f146463a03af574603e508b7bac` |
 | `test_xml.json` | `7560dbbe6955ad50a24ce2ba621d5717cf9e3c7e0297b87cfeb43b0a3a85b726` |
 | `test_yaml.json` | `beb0e5608959ff8bf7bd0a70ec1a0eb482256ea02e2c5c32acf2b6c10cbd1237` |
 | `tsconfig_off_json.json` | `8bd582d96ba30731f5cca2a343fcbb368f1b88c6d6851f5c07b4d72d87992dc2` |

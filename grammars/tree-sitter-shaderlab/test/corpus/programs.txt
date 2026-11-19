@@ -1,0 +1,58 @@
+==================
+CG and HLSL include and program blocks
+==================
+
+Shader "Example/Program Blocks" {
+    CGINCLUDE
+    float cgSupport() { return 1.0; }
+    ENDCG
+    HLSLINCLUDE
+    float hlslSupport() { return 2.0; }
+    ENDHLSL
+    SubShader {
+        Pass {
+            CGPROGRAM
+            #pragma vertex vert
+            float4 vert(float4 position : POSITION) : SV_POSITION { return position; }
+            ENDCG
+        }
+        Pass {
+            HLSLPROGRAM
+            #pragma fragment frag
+            float4 frag() : SV_Target { return 1; }
+            ENDHLSL // Closing comments are outside the injected fragment.
+        }
+    }
+}
+
+---
+
+(source_file
+  (shader name: (string)
+    (program_block body: (program_body))
+    (program_block body: (program_body))
+    (subshader
+      (pass
+        (program_block body: (program_body)))
+      (pass
+        (program_block body: (program_body))
+        (comment)))))
+
+==================
+Terminator prefixes are ordinary code
+==================
+
+Shader "Example/Terminators" {
+    HLSLINCLUDE
+    ENDHLSL_value = 2;
+    float guard = 0; // ENDHLSL
+    ENDHLSL
+    SubShader { Pass {} }
+}
+
+---
+
+(source_file
+  (shader name: (string)
+    (program_block body: (program_body))
+    (subshader (pass))))

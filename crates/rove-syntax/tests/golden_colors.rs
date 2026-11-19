@@ -111,27 +111,9 @@ fn a_lowered_threshold_needs_a_reason() {
     }
 }
 
-/// 加一种语言只需要加一行配置：占位语言（还没有语法）也能统计，只是不设阈值。
+/// 省略阈值的语言仍有逐字符结果，且不参与阈值判定。
 #[test]
-fn placeholder_language_is_counted_without_a_threshold() {
-    let (config, runs) = matrix();
-    let placeholder = config
-        .languages
-        .iter()
-        .find(|l| l.threshold.is_none())
-        .expect("阈值文件里有一个占位语言");
-    let counted: usize = runs
-        .iter()
-        .filter(|r| r.language == placeholder.id)
-        .map(|r| r.chars)
-        .sum();
-    assert!(counted > 0, "占位语言 {} 没有统计到字符", placeholder.id);
-    assert!(
-        check::failures(config, runs)
-            .iter()
-            .all(|(language, ..)| language != &placeholder.id),
-        "没有阈值的语言不应参与判定"
-    );
+fn a_language_is_counted_without_a_threshold() {
     // 只加一行配置（语言 ID + fixture）就能接入，不需要改运行器。
     let added = Config::parse(
         "enforced_themes = [\"dark_modern\"]\n\
@@ -144,6 +126,8 @@ fn placeholder_language_is_counted_without_a_threshold() {
         .expect("新加的语言可以直接跑");
     assert_eq!(runs.len(), 1);
     assert!(runs[0].chars > 0);
+    assert!(runs[0].rate() < 1.0);
+    assert!(check::failures(&added, &runs).is_empty());
 }
 
 /// 比对器的最小闭环：给定 fixture 与主题，逐字符给出期望颜色与 Rove 实际算出的颜色。
@@ -180,8 +164,8 @@ fn comparator_reports_every_character() {
 fn unsupported_language_falls_back_to_the_default_foreground() {
     let root = config::repo_root();
     let fixture = data::load(&root, "lua", "test.lua").expect("fixture 可读");
-    let scopes = check::highlight(&fixture.text, "lua").expect("不支持的语言不应报错");
-    assert!(scopes.is_empty(), "Lua 还没有语法，不应产生 token");
+    let scopes = check::highlight(&fixture.text, "unsupported-test").expect("不支持的语言不应报错");
+    assert!(scopes.is_empty(), "未接入的语言不应产生 token");
     let theme = check::load("dark_plus").expect("主题可加载");
     let run = check::compare(&fixture, &scopes, "dark_plus", &theme, true);
     assert!(run.chars > 0);

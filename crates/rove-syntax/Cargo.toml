@@ -17,8 +17,15 @@ tree-sitter-json.workspace = true
 tree-sitter-yaml.workspace = true
 tree-sitter-xml.workspace = true
 tree-sitter-md.workspace = true
+tree-sitter-language = "0.1"
+tree-sitter-hlsl = "0.2"
+tree-sitter-lua = "0.5"
+tree-sitter-proto = "0.6"
 globset = "0.4"
 memchr.workspace = true
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 futures-lite = "2"

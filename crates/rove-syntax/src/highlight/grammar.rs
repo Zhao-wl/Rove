@@ -38,7 +38,19 @@ pub(super) enum Grammar {
     Xml,
     Markdown,
     MarkdownInline,
+    Hlsl,
+    ShaderLab,
+    Lua,
+    Proto,
 }
+
+unsafe extern "C" {
+    fn tree_sitter_shaderlab() -> *const ();
+}
+
+// The bundled generated parser exports the tree-sitter LanguageFn ABI.
+const SHADERLAB: tree_sitter_language::LanguageFn =
+    unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_shaderlab) };
 
 pub(super) struct Capture {
     pub start: usize,
@@ -170,6 +182,10 @@ impl Grammar {
             "yaml" => Self::Yaml,
             "xml" => Self::Xml,
             "markdown" => Self::Markdown,
+            "hlsl" => Self::Hlsl,
+            "shaderlab" => Self::ShaderLab,
+            "lua" => Self::Lua,
+            "proto" | "protobuf" => Self::Proto,
             _ => return None,
         })
     }
@@ -187,7 +203,7 @@ impl Grammar {
     /// `meta.embedded` 规则靠它生效：代码块里没有被更内层规则命中的字符用的是这条规则的颜色，
     /// 而不是编辑器前景色。围栏标记与语言名不在其内。
     fn embedded_block_scope(self) -> &'static Arc<[Arc<str>]> {
-        static SCOPES: LazyLock<[Arc<[Arc<str>]>; 6]> = LazyLock::new(|| {
+        static SCOPES: LazyLock<[Arc<[Arc<str>]>; 10]> = LazyLock::new(|| {
             [
                 "meta.embedded.block.csharp",
                 "meta.embedded.block.json",
@@ -195,6 +211,10 @@ impl Grammar {
                 "meta.embedded.block.xml",
                 "meta.embedded.block.markdown",
                 "meta.embedded.block.markdown",
+                "meta.embedded.block.hlsl",
+                "meta.embedded.block.shaderlab",
+                "meta.embedded.block.lua",
+                "meta.embedded.block.proto",
             ]
             .map(|scope| Arc::from([Arc::from(scope)]))
         });
@@ -209,6 +229,10 @@ impl Grammar {
             Self::Xml => tree_sitter_xml::LANGUAGE_XML,
             Self::Markdown => tree_sitter_md::LANGUAGE,
             Self::MarkdownInline => tree_sitter_md::INLINE_LANGUAGE,
+            Self::Hlsl => tree_sitter_hlsl::LANGUAGE_HLSL,
+            Self::ShaderLab => SHADERLAB,
+            Self::Lua => tree_sitter_lua::LANGUAGE,
+            Self::Proto => tree_sitter_proto::LANGUAGE,
         }
         .into()
     }
@@ -220,6 +244,10 @@ impl Grammar {
         Xml => "queries/xml/highlights.scm",
         Markdown => "queries/markdown/highlights.scm",
         MarkdownInline => "queries/markdown/inline.scm",
+        Hlsl => "queries/hlsl/highlights.scm",
+        ShaderLab => "queries/shaderlab/highlights.scm",
+        Lua => "queries/lua/highlights.scm",
+        Proto => "queries/proto/highlights.scm",
     }
 
     fold_queries! {
@@ -227,6 +255,47 @@ impl Grammar {
         Json => "queries/json/folds.scm",
         Markdown => "queries/markdown/folds.scm",
         Xml => "queries/xml/folds.scm",
+        Hlsl => "queries/hlsl/folds.scm",
+        ShaderLab => "queries/shaderlab/folds.scm",
+        Lua => "queries/lua/folds.scm",
+        Proto => "queries/proto/folds.scm",
+    }
+
+    fn injection_query(self) -> Option<&'static Query> {
+        static MARKDOWN: LazyLock<Query> = LazyLock::new(|| {
+            Query::new(
+                &Grammar::Markdown.language(),
+                include_str!("queries/markdown/injections.scm"),
+            )
+            .expect("valid bundled Markdown injection query")
+        });
+        static SHADERLAB: LazyLock<Query> = LazyLock::new(|| {
+            Query::new(
+                &Grammar::ShaderLab.language(),
+                include_str!("queries/shaderlab/injections.scm"),
+            )
+            .expect("valid bundled ShaderLab injection query")
+        });
+        match self {
+            Self::Markdown => Some(&MARKDOWN),
+            Self::ShaderLab => Some(&SHADERLAB),
+            _ => None,
+        }
+    }
+
+    pub fn has_injections(self) -> bool {
+        matches!(self, Self::Markdown | Self::ShaderLab)
+    }
+
+    pub fn is_injection_region(self, kind: &str) -> bool {
+        match self {
+            Self::Markdown => matches!(
+                kind,
+                "inline" | "pipe_table_cell" | "fenced_code_block" | "setext_heading"
+            ),
+            Self::ShaderLab => kind == "program_block",
+            _ => false,
+        }
     }
 
     fn parser(self) -> Parser {
@@ -386,7 +455,7 @@ fn parse(
     result.ok_or(Error::NotReady)
 }
 
-/// 独占一行的注释，起点补齐到行首的空白处。
+/// 对需要包含行首空白的 scope，把独占一行的 token 起点向左补齐。
 ///
 /// VS Code 的 C# 语法用 `(^\s+)?(?=//)` 把注释行的前导空白也算进注释
 /// （`punctuation.whitespace.comment.leading.cs`），而 tree-sitter 的 `comment` 节点从 `//`
@@ -442,11 +511,12 @@ impl Highlighter<'_, '_> {
                 else {
                     continue;
                 };
-                let span = if grammar == Grammar::Csharp
-                    && scopes
-                        .first()
-                        .is_some_and(|s| s.starts_with("comment.line"))
-                {
+                let include_indent = scopes.first().is_some_and(|scope| match grammar {
+                    Grammar::Csharp => scope.starts_with("comment.line"),
+                    Grammar::Hlsl => scope.as_ref() == "keyword.preprocessor.hlsl",
+                    _ => false,
+                });
+                let span = if include_indent {
                     leading_whitespace(self.source, span.start)..span.end
                 } else {
                     span
@@ -476,36 +546,34 @@ impl Highlighter<'_, '_> {
         }
         drop(matches);
         self.work.check()?;
-        if grammar == Grammar::Markdown && depth < 16 {
-            self.markdown_children(root, scan, included, depth + 1, output)?;
+        if depth < 16 {
+            self.highlight_injections(grammar, root, scan, included, depth + 1, output)?;
         }
         Ok(())
     }
 
-    fn markdown_children(
+    fn highlight_injections(
         &mut self,
+        outer: Grammar,
         root: Node<'_>,
         scan: Range<usize>,
         parent: &[TreeRange],
         depth: usize,
         output: &mut Vec<Capture>,
     ) -> Result<()> {
-        static INJECTIONS: LazyLock<Query> = LazyLock::new(|| {
-            Query::new(
-                &Grammar::Markdown.language(),
-                include_str!("queries/markdown/injections.scm"),
-            )
-            .expect("valid bundled injection query")
-        });
+        let Some(injections) = outer.injection_query() else {
+            return Ok(());
+        };
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(scan.clone());
         let mut stop = |_: &_| self.work.cancelled();
         let options = QueryCursorOptions::new().progress_callback(&mut stop);
-        let mut matches = cursor.matches_with_options(&INJECTIONS, root, self.source, options);
+        let mut matches = cursor.matches_with_options(injections, root, self.source, options);
         let mut parsers: Vec<(Grammar, Parser)> = Vec::new();
         while let Some(m) = matches.next() {
             self.work.check()?;
             let (grammar, node, embedded) = match m.captures {
+                [body] if outer == Grammar::ShaderLab => (Grammar::Hlsl, body.node, false),
                 [inline] => (Grammar::MarkdownInline, inline.node, false),
                 [language, body] => {
                     let id = self.source.text(language.node.byte_range());
@@ -514,7 +582,7 @@ impl Highlighter<'_, '_> {
                     };
                     (grammar, body.node, true)
                 }
-                _ => unreachable!("unexpected Markdown injection pattern"),
+                _ => unreachable!("unexpected bundled injection pattern"),
             };
             let ranges = content_ranges(node, parent);
             if ranges.is_empty() {
@@ -656,6 +724,73 @@ mod tests {
                 &work
             )
             .unwrap());
+    }
+
+    #[test]
+    #[ignore = "本地统计真实 Unity 项目的全部 ShaderLab 文件"]
+    fn shaderlab_real_project_error_statistics() {
+        use rove_test_support::UnityProject;
+        use std::cmp::Reverse;
+
+        for (label, project) in [
+            ("medium", UnityProject::Medium),
+            ("large", UnityProject::Large),
+        ] {
+            let Some(root) = project.path() else {
+                continue;
+            };
+            let mut parser = Grammar::ShaderLab.parser();
+            let mut stack = vec![root];
+            let mut files = 0;
+            let mut affected = 0;
+            let mut errors = 0;
+            let mut missing = 0;
+            let mut contexts = BTreeMap::new();
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let entry = entry.unwrap();
+                    let kind = entry.file_type().unwrap();
+                    if kind.is_dir() {
+                        stack.push(entry.path());
+                    } else if kind.is_file()
+                        && entry
+                            .path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("shader"))
+                    {
+                        let source = std::fs::read(entry.path()).unwrap();
+                        let source = source.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&source);
+                        let tree = parser.parse(source, None).expect("解析器返回结果");
+                        files += 1;
+                        affected += usize::from(tree.root_node().has_error());
+                        let mut pending = vec![tree.root_node()];
+                        while let Some(node) = pending.pop() {
+                            if node.is_error() || node.is_missing() {
+                                errors += usize::from(node.is_error());
+                                missing += usize::from(node.is_missing());
+                                let context =
+                                    node.parent().map_or("source_file", |parent| parent.kind());
+                                *contexts.entry((context, node.kind())).or_insert(0usize) += 1;
+                            }
+                            if node.has_error() {
+                                pending.extend(
+                                    node.children(&mut node.walk())
+                                        .filter(|child| child.has_error()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(files > 0, "{label} 没有找到 .shader 文件");
+            let mut ranked: Vec<_> = contexts.into_iter().collect();
+            ranked.sort_by_key(|&(kind, count)| (Reverse(count), kind));
+            eprintln!("{label}: {files} 个文件，{affected} 个含错误，{errors} 个 ERROR，{missing} 个 MISSING");
+            for ((context, kind), count) in ranked.into_iter().take(12) {
+                eprintln!("  {context} / {kind}: {count}");
+            }
+        }
     }
 
     #[test]

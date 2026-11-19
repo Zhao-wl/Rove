@@ -7,7 +7,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 清单覆盖全部 feature 的依赖图，因此包含只在构建、基准与测试时使用、**不进 `rove.exe`** 的包。
 移植代码与随包资产的逐项声明在 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。
 
-依赖总数 705，许可种类 32。
+依赖总数 708，许可种类 32。
 
 ## 按许可汇总
 
@@ -31,7 +31,7 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | `CC0-1.0` | 3 |
 | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
 | `ISC` | 3 |
-| `MIT` | 145 |
+| `MIT` | 148 |
 | `MIT / Apache-2.0` | 4 |
 | `MIT OR Apache-2.0` | 317 |
 | `MIT OR Apache-2.0 OR BSD-1-Clause` | 1 |
@@ -594,9 +594,12 @@ CI 用 `cargo xtask licenses --check` 校验：许可不在 `packaging/licenses/
 | tracing-core | 0.1.36 | `MIT` | crates.io |
 | tree-sitter | 0.25.10 | `MIT` | crates.io |
 | tree-sitter-c-sharp | 0.23.5 | `MIT` | crates.io |
+| tree-sitter-hlsl | 0.2.0 | `MIT` | crates.io |
 | tree-sitter-json | 0.24.8 | `MIT` | crates.io |
 | tree-sitter-language | 0.1.9 | `MIT` | crates.io |
+| tree-sitter-lua | 0.5.0 | `MIT` | crates.io |
 | tree-sitter-md | 0.5.4 | `MIT` | crates.io |
+| tree-sitter-proto | 0.6.1 | `MIT` | crates.io |
 | tree-sitter-xml | 0.7.0 | `MIT` | crates.io |
 | tree-sitter-yaml | 0.7.2 | `MIT` | crates.io |
 | ttf-parser | 0.20.0 | `MIT OR Apache-2.0` | crates.io |

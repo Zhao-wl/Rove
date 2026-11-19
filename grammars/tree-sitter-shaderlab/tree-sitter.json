@@ -1,0 +1,29 @@
+{
+  "grammars": [
+    {
+      "name": "shaderlab",
+      "camelcase": "ShaderLab",
+      "scope": "source.shaderlab",
+      "path": ".",
+      "file-types": [
+        "shader"
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "ShaderLab outer syntax with embedded CG and HLSL",
+    "authors": [
+      {
+        "name": "Rove contributors"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/Zhao-wl/Rove"
+    }
+  },
+  "bindings": {
+    "c": true
+  }
+}

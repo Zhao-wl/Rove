@@ -736,13 +736,15 @@ fn detect_indentation(text: &dyn TextSource, configured: Indentation) -> Indenta
     model::guess_indentation(lines.iter().map(String::as_str), DETECT_LINES, configured)
 }
 
-/// 选择器里列出的语言：#12 已登记的语言配置 + `plaintext`（没有语言配置但是合法的模式）。
+/// 选择器列出已登记语言配置的模式，以及使用默认配置的 Protobuf 和纯文本。
 fn language_ids() -> Vec<Arc<str>> {
     let mut ids: Vec<Arc<str>> = rove_syntax::language_config::builtin_languages()
         .map(|(id, _)| Arc::from(id))
         .collect();
-    if !ids.iter().any(|id| &**id == "plaintext") {
-        ids.push(Arc::from("plaintext"));
+    for id in ["proto", "plaintext"] {
+        if !ids.iter().any(|known| &**known == id) {
+            ids.push(Arc::from(id));
+        }
     }
     ids
 }
