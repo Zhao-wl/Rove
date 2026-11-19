@@ -337,6 +337,37 @@ impl Sampling {
         (numerator / u128::from(self.raster_rows - 1)) as u64
     }
 
+    /// 视觉行边界在实际采样桶中的连续位置，供缩略图的视口滑块使用。
+    pub(super) fn raster_at_visual(&self, visual: f64) -> f64 {
+        if visual >= self.visual_rows as f64 {
+            return self.raster_rows as f64;
+        }
+        let row = self
+            .sampled_rows(0..visual.floor() as u64 + 1)
+            .end
+            .saturating_sub(1);
+        let (start, end) = self.visual_bounds(row);
+        row as f64 + (visual - start) / (end - start)
+    }
+
+    pub(super) fn visual_at_raster(&self, raster: f64) -> f64 {
+        if raster >= self.raster_rows as f64 {
+            return self.visual_rows as f64;
+        }
+        let (start, end) = self.visual_bounds(raster.floor() as u64);
+        start + (end - start) * raster.fract()
+    }
+
+    fn visual_bounds(&self, row: u64) -> (f64, f64) {
+        let start = self.visual_row(row);
+        let end = if row + 1 < self.raster_rows {
+            self.visual_row(row + 1)
+        } else {
+            self.visual_rows
+        };
+        (start as f64, end as f64)
+    }
+
     /// 所有真正采样到该半开区间内的行。未采样到的修改不作废图像。
     pub fn sampled_rows(&self, visible: Range<u64>) -> Range<u64> {
         let lower_bound = |visual_row| {
@@ -531,6 +562,11 @@ pub struct TileCache {
 
 impl TileCache {
     const BYTE_LIMIT: usize = 4 * 1024 * 1024;
+
+    pub(super) fn fit_columns(requested: u32, resident_rows: u64) -> u32 {
+        let pixels = (Self::BYTE_LIMIT / 4) as u64;
+        requested.min((pixels / resident_rows.max(1)) as u32)
+    }
 
     pub(super) fn contains(&self, index: u64) -> bool {
         self.tiles.contains_key(&index)

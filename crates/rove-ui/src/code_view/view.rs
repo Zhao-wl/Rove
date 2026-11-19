@@ -1911,10 +1911,13 @@ impl CodeView {
 
     /// 跳转到任意行（`workbench.action.gotoLine` 的落点接口）。行号超出已知范围时钳制到最后一个已知行。
     pub fn reveal_line(&mut self, line: u64, reveal: Reveal, cx: &mut Context<Self>) {
-        self.prepare_on_layout = true;
         let line = line.min(self.doc_line_count().saturating_sub(1));
         self.unfold_to_reveal(line, cx);
-        let line = self.view_line(line);
+        self.reveal_visual_line(self.view_line(line), reveal, cx);
+    }
+
+    pub(super) fn reveal_visual_line(&mut self, line: u64, reveal: Reveal, cx: &mut Context<Self>) {
+        self.prepare_on_layout = true;
         match self.metrics() {
             Some(m) => {
                 let p = self.scroll.reveal_line(line, reveal, 0, &m, &self.zones);

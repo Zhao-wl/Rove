@@ -176,8 +176,9 @@ fn minimap_workbench_builds_themed_tiles_and_drags_through_code_view(cx: &mut Te
         let second = code.minimap.cache.get(1).unwrap().id;
         let x = panel.bounds.origin.x + panel.bounds.size.width / 2.0;
         let y = panel.bounds.origin.y;
+        let thumb = panel.track.slider.unwrap();
         (
-            point(x, y + px(3.0)),
+            point(x, y + px((thumb.start + thumb.len / 2.0) as f32)),
             point(x, y + panel.bounds.size.height - px(1.0)),
             first,
             second,
@@ -484,12 +485,21 @@ fn minimap_region_headers_follow_live_folding_settings(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn minimap_click_centers_the_painted_row_with_scroll_beyond_enabled(cx: &mut TestAppContext) {
+    assert_minimap_click_centers_the_painted_row(cx, &"line of text\n".repeat(1000), false);
+}
+
+#[gpui::test]
+fn minimap_click_centers_the_exact_continuation_of_a_wrapped_line(cx: &mut TestAppContext) {
+    assert_minimap_click_centers_the_painted_row(cx, &"x".repeat(9000), true);
+}
+
+fn assert_minimap_click_centers_the_painted_row(
+    cx: &mut TestAppContext,
+    text: &str,
+    wrapped: bool,
+) {
     let folder = tempfile::tempdir().unwrap();
-    std::fs::write(
-        folder.path().join("rows.txt"),
-        "line of text\n".repeat(1000),
-    )
-    .unwrap();
+    std::fs::write(folder.path().join("rows.txt"), text).unwrap();
     let (view, cx) = cx.add_window_view(|_, cx| {
         Workbench::with_store(
             folder.path().into(),
@@ -510,6 +520,15 @@ fn minimap_click_centers_the_painted_row_with_scroll_beyond_enabled(cx: &mut Tes
     });
     settle(cx);
     let code = view.read_with(cx, |view, _| view.code_view().clone());
+    if wrapped {
+        code.update(cx, |code, cx| {
+            let mut options = code.options().clone();
+            options.wrap.mode = wrap::WordWrap::Column;
+            options.wrap.column = 16;
+            code.set_options(options, cx);
+        });
+        settle(cx);
+    }
     let (click, expected) = code.read_with(cx, |code, _| {
         let panel = code.minimap.panel.unwrap();
         let metrics = code.metrics().unwrap();
@@ -521,8 +540,13 @@ fn minimap_click_centers_the_painted_row_with_scroll_beyond_enabled(cx: &mut Tes
         assert_eq!(panel.track.offset, 0.0);
         assert_eq!(panel.track.sampling.visual_row(target), target);
         assert!(y < panel.track.height);
-        let thumb = panel.track.thumb(&metrics, &code.zones, 0.0).unwrap();
+        let thumb = panel.track.slider.unwrap();
         assert!(y > thumb.start + thumb.len);
+        if wrapped {
+            let (line, segment) = code.visual_map().to_doc(target);
+            assert_eq!(line, 0);
+            assert!(segment > 0);
+        }
         assert!(metrics.total_lines(&code.zones) > panel.track.sampling.visual_rows as f64);
         let expected = ScrollPosition::default()
             .reveal_line(target, Reveal::Center, 0, &metrics, &code.zones)
@@ -636,6 +660,28 @@ fn minimap_marks_follow_editor_inputs_and_registered_theme_colors(cx: &mut TestA
                 .iter()
                 .any(|(column, _, color)| *column == lane && *color == ruler_color));
         }
+    });
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.vertical_scrollbar = super::super::options::ScrollbarVisibility::Hidden;
+        code.set_options(options, cx);
+        code.set_minimap_markers(
+            "diagnostics",
+            vec![Marker {
+                lines: 5..6,
+                kind: MarkerKind::Warning,
+            }],
+            cx,
+        );
+    });
+    settle(cx);
+    code.read_with(cx, |code, _| {
+        assert!(code.minimap.panel.is_some());
+        assert!(code.minimap.overview.is_none());
+        assert_eq!(
+            code.minimap.visual_marks[&MarkerKind::Warning].as_slice(),
+            std::slice::from_ref(&(5..6))
+        );
     });
 }
 
@@ -756,34 +802,102 @@ fn minimap_toggle_writes_the_registered_setting(cx: &mut TestAppContext) {
     });
 }
 
-#[test]
-fn minimap_slider_uses_f64_even_at_fourteen_million_lines() {
-    let metrics = Metrics {
+fn minimap_metrics(line_count: u64, viewport_height: f64) -> Metrics {
+    Metrics {
         line_height: 20.0,
-        viewport_height: 800.0,
+        viewport_height,
         viewport_width: 800.0,
-        line_count: 14_290_000,
+        line_count,
         padding_top: 0.0,
         padding_bottom: 0.0,
         scroll_beyond_last_line: true,
         content_width: 800.0,
         beyond_last_column: 0.0,
         sticky_height: 0.0,
-    };
+    }
+}
+
+#[test]
+fn minimap_slider_tracks_texture_and_round_trips_across_layouts() {
+    let compressed = Sampling::new(minimap::Size::Fit, 1, 80.0, 1000);
+    assert_eq!(compressed.raster_at_visual(999.0), 79.0);
+    assert_eq!(compressed.visual_at_raster(79.0), 999.0);
+    assert_eq!(compressed.raster_at_visual(1000.0), 80.0);
+
+    let mut metrics = minimap_metrics(5000, 800.0);
+    metrics.padding_top = 8.0;
+    let mut zones = ViewZones::default();
+    zones.set(10, 100.0);
+
+    for size in [
+        minimap::Size::Proportional,
+        minimap::Size::Fit,
+        minimap::Size::Fill,
+    ] {
+        let sampling = Sampling::new(size, 1, 800.0, metrics.line_count);
+        let initial = Track::new(sampling, 800.0, &metrics, &zones, 0.0);
+        assert_eq!(initial.slider.unwrap().start, 0.0);
+        assert_eq!(initial.top_for_thumb(0.0, &metrics, &zones), 0.0);
+        let positions = [
+            metrics.line_top(10, &zones) + 3.0,
+            metrics.line_top(1000, &zones) + 0.25,
+        ];
+        for top in positions {
+            let track = Track::new(sampling, 800.0, &metrics, &zones, top);
+            let slider = track.slider.unwrap();
+            let restored = track.top_for_thumb(slider.start, &metrics, &zones);
+            assert!(
+                (restored - top).abs() < 0.000001,
+                "{size:?} {restored} != {top}"
+            );
+        }
+        let far_end = initial.top_for_thumb(800.0, &metrics, &zones);
+        assert_eq!(far_end, metrics.max_top(&zones));
+    }
+
+    let metrics = minimap_metrics(5000, 800.0);
+    let zones = ViewZones::default();
+    let sampling = Sampling::new(minimap::Size::Proportional, 1, 800.0, metrics.line_count);
+    let track = Track::new(sampling, 800.0, &metrics, &zones, 0.0);
+    assert_eq!(
+        track.slider.unwrap(),
+        Thumb {
+            start: 0.0,
+            len: 40.0
+        }
+    );
+}
+
+#[test]
+fn minimap_widest_setting_leaves_every_visible_tile_in_cache() {
+    for height in [1200.0, 4320.0] {
+        let metrics = minimap_metrics(50_000, height);
+        let zones = ViewZones::default();
+        let sampling = Sampling::new(minimap::Size::Proportional, 1, height, metrics.line_count);
+        let track = Track::new(sampling, height, &metrics, &zones, 70.0);
+        let columns = track.raster_columns(1000);
+        assert!((1..1000).contains(&columns));
+        let mut cache = TileCache::default();
+        let tiles = track.tiles();
+        assert!(tiles.end - tiles.start >= 5);
+        for index in tiles.clone() {
+            assert!(cache
+                .insert(index, Tile::new(columns, TILE_ROWS).into_image())
+                .is_empty());
+        }
+        assert!(tiles.into_iter().all(|index| cache.contains(index)));
+    }
+}
+
+#[test]
+fn minimap_slider_uses_f64_even_at_fourteen_million_lines() {
+    let metrics = minimap_metrics(14_290_000, 800.0);
     let zones = ViewZones::default();
     let last = metrics.max_top(&zones);
     let sampling = Sampling::new(minimap::Size::Fit, 1, 800.0, metrics.line_count);
-    let track = Track::new(sampling, 800.0, last, last);
-    let thumb = track.thumb(&metrics, &zones, last).unwrap();
-    assert_eq!(
-        scroll::pos_for_thumb(
-            track.height,
-            metrics.viewport_lines(),
-            metrics.total_lines(&zones),
-            thumb.start
-        ),
-        last
-    );
+    let track = Track::new(sampling, 800.0, &metrics, &zones, last);
+    let thumb = track.slider.unwrap();
+    assert_eq!(track.top_for_thumb(thumb.start, &metrics, &zones), last);
     assert_eq!(
         ScrollPosition { top: last, x: 0.0 }
             .first_visible(&metrics, &zones)

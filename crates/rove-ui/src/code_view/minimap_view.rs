@@ -30,21 +30,64 @@ struct Track {
     sampling: Sampling,
     height: f64,
     offset: f64,
+    slider: Option<Thumb>,
+    max_texture_top: f64,
+    slider_travel: f64,
 }
 
 impl Track {
-    fn new(sampling: Sampling, height: f64, top: f64, max_top: f64) -> Self {
+    fn new(
+        sampling: Sampling,
+        height: f64,
+        metrics: &Metrics,
+        zones: &ViewZones,
+        top: f64,
+    ) -> Self {
+        let max_top = metrics.max_top(zones);
         let capacity = sampling.raster_rows as f64 * sampling.row_height;
-        let progress = if max_top > 0.0 {
-            (top / max_top).clamp(0.0, 1.0)
+        let project = |top| {
+            sampling.raster_at_visual(visual_at_scroll(top, metrics, zones)) * sampling.row_height
+        };
+        let texture_top = project(top);
+        let max_texture_top = project(max_top);
+        let max_offset = (capacity - height).max(0.0);
+        let progress = if max_texture_top > 0.0 {
+            (texture_top / max_texture_top).clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let offset = max_offset * progress;
+        let slider_travel = (max_texture_top - max_offset).max(0.0);
+        let slider = (max_top > 0.0 && capacity > 0.0).then(|| {
+            let texture_end = project(top + metrics.viewport_lines());
+            let min_height = height.min(1.0);
+            let start = (texture_top - offset).clamp(0.0, height - min_height);
+            let len = (texture_end - texture_top).clamp(min_height, height - start);
+            Thumb { start, len }
+        });
         Self {
             sampling,
             height,
-            offset: (capacity - height).max(0.0) * progress,
+            offset,
+            slider,
+            max_texture_top,
+            slider_travel,
         }
+    }
+
+    fn top_for_thumb(self, slider_y: f64, metrics: &Metrics, zones: &ViewZones) -> f64 {
+        if slider_y <= 0.0 || self.slider_travel <= 0.0 {
+            return 0.0;
+        }
+        // 只有尾部不足一个像素的滑块需要钳制。拖到可达的最后一行时保留编辑器的留白语义。
+        if slider_y >= self.slider_travel.min((self.height - 1.0).max(0.0)) {
+            return metrics.max_top(zones);
+        }
+        let raster =
+            self.max_texture_top * slider_y / self.slider_travel / self.sampling.row_height;
+        let visual = self.sampling.visual_at_raster(raster);
+        let row = visual.floor() as u64;
+        metrics.line_top(row, zones) + visual.fract() * (1.0 + zones.get(row) / metrics.line_height)
     }
 
     fn tiles(self) -> Range<u64> {
@@ -55,16 +98,31 @@ impl Track {
         minimap::tile_range(start..end)
     }
 
-    fn thumb(self, metrics: &Metrics, zones: &ViewZones, top: f64) -> Option<Thumb> {
-        let total = metrics.total_lines(zones);
-        scroll::thumb(self.height, metrics.viewport_lines(), total, top)
+    fn raster_columns(self, requested: u32) -> u32 {
+        let tile_rows = u64::from(TILE_ROWS);
+        // 任意滚动偏移最多跨过一个额外的分块边界。计入整块纹理，防止可见块相互淘汰。
+        let visible = ((self.height / self.sampling.row_height).ceil() as u64).saturating_add(1);
+        let resident_rows = visible
+            .saturating_add(tile_rows - 1)
+            .div_ceil(tile_rows)
+            .saturating_mul(tile_rows)
+            .min(self.sampling.raster_rows);
+        TileCache::fit_columns(requested, resident_rows)
     }
+}
+
+fn visual_at_scroll(top: f64, metrics: &Metrics, zones: &ViewZones) -> f64 {
+    let (line, y) = ScrollPosition { top, x: 0.0 }.first_visible(metrics, zones);
+    // 嵌入区域随其上一行一起插值，保证到下一行前没有逆向跳动。
+    let interval = metrics.line_height + zones.get(line);
+    line as f64 + (-y / interval).clamp(0.0, 1.0)
 }
 
 #[derive(Clone, Copy)]
 struct Panel {
     bounds: Bounds<Pixels>,
     track: Track,
+    columns: u32,
 }
 
 struct Overview {
@@ -420,6 +478,10 @@ impl CodeView {
     }
 
     pub(crate) fn update_overview(&mut self, bounds: Option<Bounds<Pixels>>, scale: f32) {
+        let marks_changed = self.minimap.marks_dirty;
+        if marks_changed && (bounds.is_some() || self.minimap.panel.is_some()) {
+            self.update_minimap_marks();
+        }
         let Some((bounds, metrics)) = bounds.zip(self.metrics()) else {
             self.minimap.overview = None;
             return;
@@ -431,13 +493,11 @@ impl CodeView {
             scale.to_bits(),
             metrics.total_lines(&self.zones).to_bits(),
         );
-        if !self.minimap.marks_dirty {
+        if !marks_changed {
             if let Some(overview) = self.minimap.overview.as_mut().filter(|o| o.key == key) {
                 overview.bounds = bounds;
                 return;
             }
-        } else {
-            self.update_minimap_marks();
         }
         let mut raster = minimap::RulerRaster::new(height);
         for (&kind, ranges) in &self.minimap.visual_marks {
@@ -609,24 +669,25 @@ impl CodeView {
         cx: &mut Context<Self>,
     ) {
         self.last_frame.minimap_cache_hit = false;
-        let panel = bounds.zip(self.metrics()).map(|(bounds, metrics)| {
+        let panel = bounds.zip(self.metrics()).and_then(|(bounds, metrics)| {
             let height = bounds.size.height.to_f64();
             let o = &self.options.minimap;
             let sampling = Sampling::new(o.size, o.scale, height, self.visual_map().visual_count());
-            let track = Track::new(
-                sampling,
-                height,
-                self.current_top(),
-                metrics.max_top(&self.zones),
-            );
-            Panel { bounds, track }
+            let track = Track::new(sampling, height, &metrics, &self.zones, self.current_top());
+            let columns = track.raster_columns(o.columns);
+            (columns > 0).then_some(Panel {
+                bounds,
+                track,
+                columns,
+            })
         });
         if std::mem::take(&mut self.minimap.mapping_dirty)
             || (panel.is_none() && self.minimap.panel.is_some())
             || self.minimap.panel.zip(panel).is_some_and(|(old, new)| {
                 let a = old.track.sampling;
                 let b = new.track.sampling;
-                (a.visual_rows, a.raster_rows) != (b.visual_rows, b.raster_rows)
+                (a.visual_rows, a.raster_rows, old.columns)
+                    != (b.visual_rows, b.raster_rows, new.columns)
             })
         {
             self.minimap.clear(cx);
@@ -737,7 +798,7 @@ impl CodeView {
                 .semantic
                 .borrow()
                 .snapshot_for_rows(row_info.iter().map(|row| row.line)),
-            columns: self.options.minimap.columns,
+            columns: panel.columns,
             row_info,
             header_end,
             hidden_rows,
@@ -894,9 +955,6 @@ impl CodeView {
         let Some(panel) = self.minimap.panel else {
             return;
         };
-        let Some(metrics) = self.metrics() else {
-            return;
-        };
         let dragging = matches!(self.drag, Some(Drag::MinimapThumb { .. }));
         let o = &self.options.minimap;
         let show = match o.autohide {
@@ -942,7 +1000,7 @@ impl CodeView {
                 );
             }
             if slider_visible {
-                if let Some(thumb) = panel.track.thumb(&metrics, &self.zones, self.current_top()) {
+                if let Some(thumb) = panel.track.slider {
                     let color = if dragging {
                         "minimapSlider.activeBackground"
                     } else if self.minimap.hovered {
@@ -981,11 +1039,8 @@ impl CodeView {
         else {
             return false;
         };
-        let Some(metrics) = self.metrics() else {
-            return false;
-        };
         let y = (position.y - panel.bounds.origin.y).to_f64();
-        if let Some(thumb) = panel.track.thumb(&metrics, &self.zones, self.current_top()) {
+        if let Some(thumb) = panel.track.slider {
             if (thumb.start..thumb.start + thumb.len).contains(&y) {
                 self.drag = Some(Drag::MinimapThumb {
                     grab: y - thumb.start,
@@ -997,7 +1052,7 @@ impl CodeView {
         let sampling = panel.track.sampling;
         let row = ((y + panel.track.offset) / sampling.row_height).floor() as u64;
         let visual = sampling.visual_row(row);
-        self.reveal_line(self.doc_line(visual), Reveal::Center, cx);
+        self.reveal_visual_line(visual, Reveal::Center, cx);
         true
     }
 
@@ -1012,12 +1067,14 @@ impl CodeView {
             return;
         };
         let y = (position.y - panel.bounds.origin.y).to_f64();
-        let top = scroll::pos_for_thumb(
-            panel.track.height,
-            metrics.viewport_lines(),
-            metrics.total_lines(&self.zones),
-            y - grab,
-        );
+        let start = if y >= panel.track.height - 1.0 {
+            panel.track.height
+        } else if y <= 0.0 {
+            0.0
+        } else {
+            y - grab
+        };
+        let top = panel.track.top_for_thumb(start, &metrics, &self.zones);
         self.set_scroll_position(
             ScrollPosition {
                 top,
