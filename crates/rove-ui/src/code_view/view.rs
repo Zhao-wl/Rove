@@ -3385,6 +3385,14 @@ impl CodeView {
             .map(|(s, _)| s.clone())
     }
 
+    /// 当前显示文本所用的解析版本。编辑会话接管文件时内容相同，文本与解析的版本号可以不同。
+    pub fn current_syntax_version(&self) -> Option<Version> {
+        let text = self.text.as_ref()?;
+        let layer = self.syntax.borrow();
+        let (snapshot, analyzed) = layer.current.as_ref()?;
+        (layer.pending.is_empty() && Arc::ptr_eq(text, analyzed)).then(|| snapshot.version())
+    }
+
     /// 上一次 [`CodeView::set_syntax`] 让哪些行失效（`Some(None)` 为整层；测试用）。
     pub fn take_syntax_invalidation(&mut self) -> Option<Option<Vec<Range<u64>>>> {
         self.last_syntax_invalidation.take()

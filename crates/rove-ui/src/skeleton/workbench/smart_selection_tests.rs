@@ -182,10 +182,14 @@ fn smart_selection_fallback_uses_subwords_line_whitespace_and_utf8_boundaries(
     }
 
     let at = caret(&view, cx, source.find("Bar").unwrap() + 1);
-    execute(&view, cx, "cursorWordPartRight", Value::Null);
-    execute(&view, cx, "cursorWordPartLeftSelect", Value::Null);
-    assert_eq!(selected(&view, cx).0, "Bar");
     let code = view.read_with(cx, |view, _| view.code_view().clone());
+    cx.update(|window, app| {
+        code.update(app, |code, cx| {
+            assert!(code.execute("cursorWordPartRight", window, cx));
+            assert!(code.execute("cursorWordPartLeftSelect", window, cx));
+        });
+    });
+    assert_eq!(selected(&view, cx).0, "Bar");
     let hit = code.update(cx, |code, _| {
         let mut hit = code.point_for_position(at).unwrap();
         hit.y += gpui::px(code.line_height() / 2.0);

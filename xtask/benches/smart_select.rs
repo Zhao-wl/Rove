@@ -69,9 +69,7 @@ async fn measure(
     wait_for(cx, |cx| {
         any.update(cx, |_, _, app| {
             let code = code.read(app);
-            code.syntax_snapshot()
-                .is_some_and(|snapshot| snapshot.version() == code.version())
-                && code.last_frame().shaped > 0
+            code.current_syntax_version().is_some() && code.last_frame().glyphs > 0
         })
         .unwrap_or(false)
     })

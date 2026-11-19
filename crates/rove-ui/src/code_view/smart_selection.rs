@@ -149,8 +149,9 @@ impl CodeView {
             .selection_syntax
             .as_ref()
             .zip(self.language.as_deref())
-            .map_or_else(Vec::new, |((document, syntax), language)| {
-                syntax.selection_ranges(*document, text.version(), language, &original)
+            .zip(self.current_syntax_version())
+            .map_or_else(Vec::new, |(((document, syntax), language), version)| {
+                syntax.selection_ranges(*document, version, language, &original)
             });
         if syntax_ranges.is_empty() {
             if let Some(range) = line_content(
