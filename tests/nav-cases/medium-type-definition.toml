@@ -1,0 +1,71 @@
+project = "medium"
+
+[[case]]
+id = "m-type-definition-var"
+category = "type_definition"
+file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationSampler.cs"
+line = 14
+col = 17
+token = "cache"
+anchor = "var cache = AnimationIntegerSampleCache.For(track);"
+why = "从 cache 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：For 的返回类型是 AnimationIntegerSampleCache，返回类型声明在目标文件。"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationIntegerSampleCache.cs", line = 7, anchor = "internal sealed class AnimationIntegerSampleCache" }]
+precision = "exact"
+
+[[case]]
+id = "m-type-definition-field"
+category = "type_definition"
+file = "Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Adapters/GoalkeeperElizaSource.cs"
+line = 9
+col = 36
+token = "m_Source"
+anchor = "readonly IGoalkeeperSource m_Source;"
+why = "从 m_Source 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：字段的显式声明类型为 IGoalkeeperSource。"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/PlayerAI/Goalkeeping/Adapters/IGoalkeeperSource.cs", line = 4, anchor = "internal interface IGoalkeeperSource : IElizaSource" }]
+precision = "exact"
+
+[[case]]
+id = "m-type-definition-property"
+category = "type_definition"
+file = "Assets/Football/Runtime/Core/MatchComposition/MatchSession.cs"
+line = 8
+col = 29
+token = "World"
+anchor = "internal MatchWorld World { get; }"
+why = "从 World 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：World 属性的显式声明类型为 MatchWorld。"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/MatchComposition/MatchWorld.cs", line = 7, anchor = "internal sealed class MatchWorld : IPerceptionSource, IExactPerceptionBallSource, IPerceptionTrajectorySource" }]
+precision = "exact"
+
+[[case]]
+id = "m-type-definition-parameter"
+category = "type_definition"
+file = "Assets/Football/Runtime/Core/AnimationSampling/AnimationSampler.cs"
+line = 6
+col = 60
+token = "track"
+anchor = "public static void SampleFractional(AnimationTrack track, int frameCount, float sourceFrame,"
+why = "从 track 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：SampleFractional 的 track 参数类型为 AnimationTrack。"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Core/AnimationResources/AnimationTrack.cs", line = 6, anchor = "public sealed class AnimationTrack" }]
+precision = "exact"
+
+[[case]]
+id = "m-type-definition-generic"
+category = "type_definition"
+file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs"
+line = 26
+col = 17
+token = "view"
+anchor = "var view = root.AddComponent<GrfPitchTextureView>();"
+why = "从 view 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：AddComponent<T> 返回构造调用的 T，在此处是 GrfPitchTextureView。"
+[case.expect]
+defs = [{ file = "Assets/Football/Runtime/Presentation/ProceduralPitch/GrfPitchTextureView.cs", line = 7, anchor = "public sealed class GrfPitchTextureView : MonoBehaviour, IDisposable" }]
+precision = "exact"

@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn manifest_requires_component_name_and_fields() {
-        let ok = Manifest::parse(&manifest("1.2.0.0", 1, 1, 2)).unwrap();
+        let ok = Manifest::parse(&manifest("1.2.0.0", 1, 1, EXPECTED_FORMAT)).unwrap();
         assert_eq!(ok.version, [1, 2, 0, 0]);
         assert_eq!(Manifest::parse("{}"), None);
         assert_eq!(Manifest::parse("not json"), None);
@@ -381,16 +381,40 @@ mod tests {
     fn highest_compatible_version_wins_across_roots() {
         let user = tempfile::tempdir().unwrap();
         let portable = tempfile::tempdir().unwrap();
-        install(user.path(), "1.2.0", &manifest("1.2.0", 1, 1, 2));
-        install(user.path(), "1.2.5", &manifest("1.2.5", 1, 1, 2));
-        install(portable.path(), "1.3.0", &manifest("1.3.0", 1, 1, 2));
+        install(
+            user.path(),
+            "1.2.0",
+            &manifest("1.2.0", 1, 1, EXPECTED_FORMAT),
+        );
+        install(
+            user.path(),
+            "1.2.5",
+            &manifest("1.2.5", 1, 1, EXPECTED_FORMAT),
+        );
+        install(
+            portable.path(),
+            "1.3.0",
+            &manifest("1.3.0", 1, 1, EXPECTED_FORMAT),
+        );
         // 版本更高但格式不兼容的候选不会被选中
-        install(portable.path(), "2.0.0", &manifest("2.0.0", 1, 1, 3));
+        install(
+            portable.path(),
+            "2.0.0",
+            &manifest("2.0.0", 1, 1, EXPECTED_FORMAT + 1),
+        );
         let d = discover(&roots(&[user.path(), portable.path()]));
         assert_eq!(found_version(&d), Some([1, 3, 0, 0]));
         // 同版本：靠前的根目录优先
-        install(portable.path(), "1.3.0", &manifest("1.3.0", 1, 1, 2));
-        install(user.path(), "1.3.0", &manifest("1.3.0", 1, 1, 2));
+        install(
+            portable.path(),
+            "1.3.0",
+            &manifest("1.3.0", 1, 1, EXPECTED_FORMAT),
+        );
+        install(
+            user.path(),
+            "1.3.0",
+            &manifest("1.3.0", 1, 1, EXPECTED_FORMAT),
+        );
         let Discovery::Found(c) = discover(&roots(&[user.path(), portable.path()])) else {
             panic!("expected a component");
         };
@@ -400,8 +424,16 @@ mod tests {
     #[test]
     fn only_incompatible_candidates_report_the_newest() {
         let dir = tempfile::tempdir().unwrap();
-        install(dir.path(), "0.5.0", &manifest("0.5.0", 1, 1, 1));
-        install(dir.path(), "9.0.0", &manifest("9.0.0", 7, 7, 2));
+        install(
+            dir.path(),
+            "0.5.0",
+            &manifest("0.5.0", 1, 1, EXPECTED_FORMAT - 1),
+        );
+        install(
+            dir.path(),
+            "9.0.0",
+            &manifest("9.0.0", 7, 7, EXPECTED_FORMAT),
+        );
         let Discovery::Incompatible(why) = discover(&roots(&[dir.path()])) else {
             panic!("expected incompatible");
         };

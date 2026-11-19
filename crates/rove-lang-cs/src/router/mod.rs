@@ -35,7 +35,9 @@ mod tests;
 pub use buffers::{hash_bytes, BufferState, BufferStates};
 pub use mapping::{EditMap, LineEdit, Mapped};
 
-use crate::index::{CsIndex, Occurrence, Role, REL_BASE_TYPE};
+use crate::index::{
+    CsIndex, Occurrence, Role, REL_BASE_TYPE, REL_DECLARED_TYPE, REL_IMPLEMENTS, REL_OVERRIDES,
+};
 use crate::l1::L1Index;
 use crate::lifecycle::{IndexLifecycle, IndexSnapshot, IndexState, SourceChange};
 use crate::overlay::L2View;
@@ -545,7 +547,7 @@ impl CsRouter {
         kind: NavigationKind,
         snap: &L2Snapshot,
         at: Occurrence,
-        cap: Cap,
+        mut cap: Cap,
         version: Version,
         cancel: &Cancellation,
     ) -> Result<QueryResult<Arc<[RoutedTarget]>>> {
@@ -554,15 +556,14 @@ impl CsRouter {
         let symbols: Vec<u32> = match kind {
             NavigationKind::Definition => vec![symbol],
             NavigationKind::TypeDefinition => {
-                // 类型本身的类型定义就是它的定义；其余符号（变量、字段、属性、参数、方法）
-                // 索引里不记录声明类型，去声明处把写出来的类型名读回来（[`Self::declared_types`]）。
+                // 类型名导航到自身。其他符号从索引读取声明类型或返回类型。
                 if matches!(
                     index.kind(symbol),
                     Some(KIND_NAMED_TYPE | KIND_TYPE_PARAMETER)
                 ) {
                     vec![symbol]
                 } else {
-                    self.declared_types(index, symbol, cancel)?
+                    self.declared_types(index, symbol, &mut cap, cancel)?
                 }
             }
             NavigationKind::References => Vec::new(),
@@ -572,7 +573,13 @@ impl CsRouter {
                     index
                         .implementations(s)
                         .into_iter()
-                        .filter(|r| (r.kind == REL_BASE_TYPE) == is_type)
+                        .filter(|r| {
+                            if is_type {
+                                r.kind == REL_BASE_TYPE
+                            } else {
+                                matches!(r.kind, REL_IMPLEMENTS | REL_OVERRIDES)
+                            }
+                        })
                         .map(|r| r.from)
                         .collect()
                 })?
@@ -597,7 +604,7 @@ impl CsRouter {
                 index
                     .bases(s)
                     .into_iter()
-                    .filter(|r| r.kind != REL_BASE_TYPE)
+                    .filter(|r| matches!(r.kind, REL_IMPLEMENTS | REL_OVERRIDES))
                     .map(|r| r.to)
                     .collect()
             })?,
@@ -651,20 +658,40 @@ impl CsRouter {
 
     /// #60 转到类型定义：一个非类型符号（变量、字段、属性、参数、方法……）的声明类型。
     ///
-    /// 索引不记录符号的类型（#38 的格式里没有这一项），但声明处的源码里写着它：到符号的定义处
-    /// 把写出来的类型名读出来（L0 语法树，`var` 从初始化器推断），再用索引里那个位置上的出现
-    /// 位置换回类型符号 —— 名字到符号这一步仍然是 L2 的精确答案，不猜同名。
-    ///
-    /// 读不出来（预定义类型 `int`、元组、推断不出的 `var`、声明处的文本与索引不一致）就返回空，
-    /// 由上层按 UX_SPEC §6.3 给空状态提示。
+    /// 声明与索引一致时使用 Roslyn 关系，支持通过调用等表达式推断出的 `var`。
+    /// 声明文件有待索引的编辑时，从当前声明读类型名并映射回已绑定的出现位置。
     fn declared_types(
         &self,
         index: L2View<'_>,
         symbol: u32,
+        cap: &mut Cap,
         cancel: &Cancellation,
     ) -> Result<Vec<u32>> {
+        cancel.check()?;
+        let definitions = index.definitions(symbol);
+        let related: Vec<_> = index
+            .bases(symbol)
+            .into_iter()
+            .filter(|rel| rel.kind == REL_DECLARED_TYPE)
+            .map(|rel| rel.to)
+            .collect();
+        if !definitions.is_empty() {
+            let has_stale = self.semantic.has_stale();
+            if definitions
+                .iter()
+                .all(|definition| self.declared_type_is_current(index, definition, has_stale))
+            {
+                if !related.is_empty() {
+                    return Ok(related);
+                }
+            } else if cap.precision == Precision::Exact {
+                cap.precision = Precision::Approximate;
+                cap.reason = Some(ApproximationReason::ModifiedRegion);
+            }
+        }
+
         let mut out = Vec::new();
-        for decl in index.definitions(symbol) {
+        for decl in definitions {
             cancel.check()?;
             let Some((file, state)) = self.indexed_file(index, decl.file) else {
                 continue;
@@ -690,11 +717,61 @@ impl CsRouter {
                 continue;
             };
             match index.occurrence_at(decl.file, line, name.column) {
-                Some(o) if o.symbol != symbol && !out.contains(&o.symbol) => out.push(o.symbol),
+                Some(o)
+                    if o.symbol != symbol
+                        && matches!(
+                            index.kind(o.symbol),
+                            Some(KIND_NAMED_TYPE | KIND_TYPE_PARAMETER)
+                        )
+                        && !out.contains(&o.symbol) =>
+                {
+                    out.push(o.symbol);
+                }
                 _ => {}
             }
         }
         Ok(out)
+    }
+
+    fn declared_type_is_current(
+        &self,
+        index: L2View<'_>,
+        definition: &Occurrence,
+        has_stale: bool,
+    ) -> bool {
+        let Some(rel) = index.file_path(definition.file) else {
+            return false;
+        };
+        let doc = self.buffers.get(rel);
+        let state = self.file_state(index, definition.file, rel, doc.as_ref(), has_stale);
+        let FileState::Mapped(map) = state else {
+            return matches!(state, FileState::Clean);
+        };
+        let at = Position {
+            line: Line(u64::from(definition.line)),
+            column: definition.col,
+        };
+        let Mapped::At(name) = map.old_to_new_clean(at) else {
+            return false;
+        };
+        let Some(doc) = doc.as_ref() else {
+            return false;
+        };
+        let extent = self.l0_file(rel, Some(doc), doc.version).and_then(|file| {
+            file.offset(name)
+                .and_then(|offset| file.declared_type_extent(offset))
+        });
+        let Some((start, end)) = extent else {
+            return false;
+        };
+        let (Mapped::At(old_start), Mapped::At(old_end)) =
+            (map.new_to_old_clean(start), map.new_to_old_clean(end))
+        else {
+            return false;
+        };
+        // Both sides matter: a deletion may leave no changed lines in the current buffer.
+        !(start.line.0..=end.line.0).any(|line| map.line_modified_new(line))
+            && !(old_start.line.0..=old_end.line.0).any(|line| map.line_modified_old(line))
     }
 
     /// 某个索引内文件的当前文本，以及它相对索引版本的状态（位置要按它映射）。内容与索引

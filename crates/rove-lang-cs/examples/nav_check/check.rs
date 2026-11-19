@@ -3,7 +3,7 @@
 //! 只通过 [`NavSource`] 查询，不感知索引格式。
 
 use crate::adapter::{NavSource, QueryPos, SourceError, SrcLine};
-use crate::cases::{Case, LineAnchor};
+use crate::cases::{Case, Category, LineAnchor};
 use crate::locate::{locate_line, locate_token, SourceText};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -180,7 +180,12 @@ pub fn run_case(
     };
     let mut unsupported = Vec::new();
     let mut answered = 0;
-    match source.definition(&at) {
+    let definition = if case.category == Category::TypeDefinition {
+        source.type_definition(&at)
+    } else {
+        source.definition(&at)
+    };
+    match definition {
         Ok(ans) => {
             answered += 1;
             let got: BTreeSet<SrcLine> = ans.defs.iter().cloned().collect();

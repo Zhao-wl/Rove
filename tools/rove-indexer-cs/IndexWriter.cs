@@ -1,4 +1,4 @@
-// RVCSIDX v2. See docs/CS_INDEX_FORMAT.md.
+// RVCSIDX v3. See docs/CS_INDEX_FORMAT.md.
 //
 // 输入是绑定阶段留下的紧凑结果（每文件的出现位置数组 + 符号表），不再需要语法树。
 // 符号按键排序编号、文件内出现位置按 (line, col, symbol, role, len) 排序，同样的输入产出逐字节相同的索引。
@@ -11,7 +11,7 @@ namespace Rove.Indexer;
 
 static class IndexWriter
 {
-    public const uint Version = 2;
+    public const uint Version = 3;
     const uint None = uint.MaxValue;
     const uint LocalBit = 1u << 31;
     const int TableOffset = 96;

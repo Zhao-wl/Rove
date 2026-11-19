@@ -17,12 +17,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const EXPECTED_FORMAT: u32 = 2;
+pub const EXPECTED_FORMAT: u32 = crate::index::VERSION;
 /// 本 Rove 构建时对应的索引进程版本，与 `tools/rove-indexer-cs/RoveIndexer.csproj` 的 `<Version>` 一致
 /// （测试对照该文件，改版本时会提醒同步这里）。找到已安装的组件时以组件清单里的版本为准
 /// （`IndexBuilder::component_version`）：缓存索引的头部版本必须等于当前组件版本，组件更新后重建；
 /// 本常量只在版本未知（环境变量覆盖、测试替身）时作为期望值。
-pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 3, 0, 0];
+pub const EXPECTED_INDEXER_VERSION: [u16; 4] = [1, 4, 0, 0];
 const GENERATED_PREFIX: &str = "rove-generated://";
 
 /// 失效原因（写进日志；界面只显示“正在重建”）。

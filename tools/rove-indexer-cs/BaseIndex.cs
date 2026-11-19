@@ -1,4 +1,4 @@
-// #35 常驻模式读取基础索引（RVCSIDX v2，格式见 docs/CS_INDEX_FORMAT.md）：影响分析的反查只需要
+// #35 常驻模式读取基础索引（RVCSIDX v3，格式见 docs/CS_INDEX_FORMAT.md）：影响分析的反查只需要
 // 文件表、符号表（按键二分）、按符号的出现位置与“按 to 排序的关系”。整个文件只读映射，不拷贝。
 
 using System.IO.MemoryMappedFiles;
@@ -34,8 +34,8 @@ sealed unsafe class BaseIndex : IDisposable
         _view.SafeMemoryMappedViewHandle.AcquirePointer(ref p);
         _base = p + _view.PointerOffset;
         if (_length < TableOffset + 16 * (int)S.Count || !new ReadOnlySpan<byte>(_base, 8).SequenceEqual("RVCSIDX\0"u8)
-            || U32(8) != 2 || U32(12) != (uint)S.Count || (long)U64(16) != _length)
-            throw new InvalidDataException($"not a RVCSIDX v2 index: {path}");
+            || U32(8) != IndexWriter.Version || U32(12) != (uint)S.Count || (long)U64(16) != _length)
+            throw new InvalidDataException($"not a RVCSIDX v{IndexWriter.Version} index: {path}");
         for (int i = 0; i < (int)S.Count; i++)
             _sections[i] = ((long)U64(TableOffset + i * 16), (long)U64(TableOffset + i * 16 + 8));
         _refWidth = OccurrenceCount <= 1 << 24 ? 3 : 4;

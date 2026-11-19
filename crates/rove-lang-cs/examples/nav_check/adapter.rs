@@ -67,6 +67,11 @@ pub trait NavSource {
         self.name().to_owned()
     }
     fn definition(&self, at: &QueryPos<'_>) -> Result<DefAnswer, SourceError>;
+    fn type_definition(&self, _: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
+        Err(SourceError::Unsupported(
+            "该查询来源不提供类型定义".to_owned(),
+        ))
+    }
     fn references(&self, at: &QueryPos<'_>) -> Result<RefsAnswer, SourceError>;
     /// 索引写出时刻，用于提示“源码比索引新”。没有就返回 None。
     fn built_at(&self) -> Option<std::time::SystemTime> {
@@ -160,6 +165,60 @@ impl NavSource for L2Index {
             defs,
             external,
             symbol: self.symbol_desc(sym),
+            precision: Some("exact"),
+        })
+    }
+
+    fn type_definition(&self, at: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
+        use rove_lang_cs::index::{Role, SymbolKey, REL_DECLARED_TYPE};
+        let col = Utf8Column(u64::from(at.utf8_col0));
+        let Some(symbol) = self.idx.symbol_at(at.file, at.line0, col) else {
+            return Ok(DefAnswer {
+                precision: Some("exact"),
+                ..DefAnswer::default()
+            });
+        };
+        let mut targets: Vec<_> = self
+            .idx
+            .bases(symbol)
+            .filter(|relation| relation.kind == REL_DECLARED_TYPE)
+            .map(|relation| relation.to)
+            .collect();
+        // Roslyn encodes NamedType as 11 and TypeParameter as 17.
+        if matches!(self.idx.symbols()[symbol as usize].kind, 11 | 17) {
+            targets.push(symbol);
+        }
+        let defs: Vec<_> = targets
+            .iter()
+            .flat_map(|symbol| {
+                self.idx
+                    .symbol_occurrences(*symbol)
+                    .take_while(|o| Role(o.role).is_def())
+            })
+            .filter_map(|o| self.idx.location(&o))
+            .map(|location| SrcLine {
+                file: location.path.to_owned(),
+                line0: location.line,
+            })
+            .collect();
+        let external = defs
+            .is_empty()
+            .then(|| {
+                targets.iter().find_map(|&symbol| {
+                    if self.idx.metadata_definitions(symbol).is_empty() {
+                        return None;
+                    }
+                    match self.idx.symbol_key(symbol) {
+                        Ok(SymbolKey::Global(key)) => Some(doc_comment_id(key).to_owned()),
+                        _ => None,
+                    }
+                })
+            })
+            .flatten();
+        Ok(DefAnswer {
+            defs,
+            external,
+            symbol: self.symbol_desc(symbol),
             precision: Some("exact"),
         })
     }
@@ -420,6 +479,35 @@ impl RouterSource {
         })
     }
 
+    fn definition_answer(
+        &self,
+        kind: rove_lang_cs::query::NavigationKind,
+        at: &QueryPos<'_>,
+    ) -> Result<DefAnswer, SourceError> {
+        use rove_lang_cs::router::{metadata_symbol_key, TargetRole};
+        let r = self.query(kind, at)?;
+        let defs = r.value.iter().filter_map(src_line).collect();
+        // 与 `L2Index` 同一口径：索引带元数据视图时才算外部符号有落点。
+        let external = r
+            .value
+            .iter()
+            .filter(|t| t.role == TargetRole::Metadata)
+            .find_map(|t| metadata_symbol_key(&t.target.resource))
+            .filter(|_| !self.index.metadata_views().is_empty())
+            .map(|k| doc_comment_id(k).to_owned());
+        let col = Utf8Column(u64::from(at.utf8_col0));
+        let symbol = match self.index.symbol_at(at.file, at.line0, col) {
+            Some(sym) => self.direct.symbol_desc(sym),
+            None => Some("<该位置没有出现位置记录>".to_owned()),
+        };
+        Ok(DefAnswer {
+            defs,
+            external,
+            symbol,
+            precision: Some(precision_name(r.precision)),
+        })
+    }
+
     fn query(
         &self,
         kind: rove_lang_cs::query::NavigationKind,
@@ -491,28 +579,11 @@ impl NavSource for RouterSource {
     }
 
     fn definition(&self, at: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
-        use rove_lang_cs::router::{metadata_symbol_key, TargetRole};
-        let r = self.query(rove_lang_cs::query::NavigationKind::Definition, at)?;
-        let defs = r.value.iter().filter_map(src_line).collect();
-        // 与 `L2Index` 同一口径：索引带元数据视图时才算外部符号有落点。
-        let external = r
-            .value
-            .iter()
-            .filter(|t| t.role == TargetRole::Metadata)
-            .find_map(|t| metadata_symbol_key(&t.target.resource))
-            .filter(|_| !self.index.metadata_views().is_empty())
-            .map(|k| doc_comment_id(k).to_owned());
-        let col = Utf8Column(u64::from(at.utf8_col0));
-        let symbol = match self.index.symbol_at(at.file, at.line0, col) {
-            Some(sym) => self.direct.symbol_desc(sym),
-            None => Some("<该位置没有出现位置记录>".to_owned()),
-        };
-        Ok(DefAnswer {
-            defs,
-            external,
-            symbol,
-            precision: Some(precision_name(r.precision)),
-        })
+        self.definition_answer(rove_lang_cs::query::NavigationKind::Definition, at)
+    }
+
+    fn type_definition(&self, at: &QueryPos<'_>) -> Result<DefAnswer, SourceError> {
+        self.definition_answer(rove_lang_cs::query::NavigationKind::TypeDefinition, at)
     }
 
     fn references(&self, at: &QueryPos<'_>) -> Result<RefsAnswer, SourceError> {

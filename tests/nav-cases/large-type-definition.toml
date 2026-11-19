@@ -1,0 +1,71 @@
+project = "large"
+
+[[case]]
+id = "l-type-definition-var"
+category = "type_definition"
+file = "Assets/X1/ScriptCore/Act/Act/ActSet/ActSet.cs"
+line = 185
+col = 17
+token = "action"
+anchor = "var action = ActMgr.CreateAct(this, actData, m_OnLodChange);"
+why = "从 action 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：ActMgr.CreateAct 的返回类型为 Act。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Act/Act/Act.cs", line = 15, anchor = "public abstract class Act" }]
+precision = "exact"
+
+[[case]]
+id = "l-type-definition-field"
+category = "type_definition"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 17
+col = 33
+token = "m_AIFactory"
+anchor = "private WorkerAIFactory m_AIFactory;"
+why = "从 m_AIFactory 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：m_AIFactory 字段的显式声明类型为 WorkerAIFactory。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WorkerAI/WorkerAIFactory.cs", line = 6, anchor = "public class WorkerAIFactory: Singleton<WorkerAIFactory>" }]
+precision = "exact"
+
+[[case]]
+id = "l-type-definition-property"
+category = "type_definition"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 15
+col = 31
+token = "JobState"
+anchor = "public WorkerJobState JobState => m_JobStateMachine.CurrentState;"
+why = "从 JobState 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：JobState 的显式属性类型为同文件的 WorkerJobState 枚举。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs", line = 152, anchor = "public enum WorkerJobState" }]
+precision = "exact"
+
+[[case]]
+id = "l-type-definition-parameter"
+category = "type_definition"
+file = "Assets/X1/ScriptGame/Common/UI/RewardPreview/UIRewardPreviewItem.cs"
+line = 31
+col = 73
+token = "filter"
+anchor = "public void RefreshAssetAdd(AssetAdd assetAdd, ScrollRectFilter filter)"
+why = "从 filter 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：RefreshAssetAdd 的 filter 参数类型为 ScrollRectFilter。"
+[case.expect]
+defs = [{ file = "Assets/TFWCore/Script/Common/ScrollRectFilter.cs", line = 24, anchor = "public class ScrollRectFilter : MonoBehaviour" }]
+precision = "exact"
+
+[[case]]
+id = "l-type-definition-generic"
+category = "type_definition"
+file = "Assets/X1/ScriptGame/Worker/WokerJob/WorkerJobModel.cs"
+line = 16
+col = 46
+token = "m_JobStateMachine"
+anchor = "private StateMachine<WorkerJobState> m_JobStateMachine;"
+why = "从 m_JobStateMachine 的名字跳到声明类型。"
+source = "人工核对查询和类型源码：m_JobStateMachine 声明为 StateMachine<WorkerJobState>，跳到原始泛型 StateMachine<T>。"
+[case.expect]
+defs = [{ file = "Assets/X1/ScriptCore/Common/StateMachine/StateMachine.cs", line = 9, anchor = "public class StateMachine<T> where T : struct, Enum" }]
+precision = "exact"
