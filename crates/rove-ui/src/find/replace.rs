@@ -16,7 +16,7 @@
 //!   产生空区间（纯插入），首尾相接与同一位置的多次插入都是合法的。
 
 use super::engine::{multiline_context, Haystack, Match, Searcher};
-use rove_base::{ByteOffset, Result, Span, TextRange};
+use rove_base::{ByteOffset, ByteRange, Result, Span, TextRange};
 use rove_buffer::edit::Replacement;
 use rove_buffer::TextSource;
 use std::sync::Arc;
@@ -252,13 +252,14 @@ pub fn plan_replacements(
     pattern: &ReplacePattern,
     preserve_case: bool,
 ) -> Result<Vec<Replacement>> {
-    plan_replacements_in_scope(text, searcher, matches, None, pattern, preserve_case)
+    plan_replacements_in_scope(text, searcher, matches, None, None, pattern, preserve_case)
 }
 
 pub(super) fn plan_replacements_in_scope(
     text: &dyn TextSource,
     searcher: &Searcher,
     matches: &[Match],
+    byte_ranges: Option<&[ByteRange]>,
     scope: Option<&TextRange>,
     pattern: &ReplacePattern,
     preserve_case: bool,
@@ -271,8 +272,12 @@ pub(super) fn plan_replacements_in_scope(
     let known = text.lines().known.max(1);
     let mut block: Option<Haystack> = None;
     let mut out = Vec::with_capacity(matches.len());
-    for m in matches {
-        let range = Span::new(text.offset(m.start)?, text.offset(m.end)?)?;
+    let byte_ranges = byte_ranges.filter(|ranges| ranges.len() == matches.len());
+    for (index, m) in matches.iter().enumerate() {
+        let range = match byte_ranges {
+            Some(ranges) => ranges[index].clone(),
+            None => Span::new(text.offset(m.start)?, text.offset(m.end)?)?,
+        };
         let replacement: Arc<str> = match &plain {
             Some(t) => t.clone(),
             None => {

@@ -28,7 +28,9 @@ use gpui::{
     div, prelude::*, px, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
     IntoElement, KeyContext, MouseButton, Render, SharedString, Task, Window,
 };
-use rove_base::{ByteOffset, Cancellation, Position, Span, TextEdit, TextRange, Version};
+use rove_base::{
+    ByteOffset, ByteRange, Cancellation, Position, Span, TextEdit, TextRange, Version,
+};
 use rove_buffer::edit::{EditBuffer, PreparedEdit, Transaction};
 use rove_buffer::{Eol, RopeText, TextSource};
 use rove_config::{Key, Scope, Settings};
@@ -67,6 +69,7 @@ impl ReplacementQuery {
         &self,
         text: &RopeText,
         matches: &[Match],
+        byte_ranges: Option<&[ByteRange]>,
     ) -> rove_base::Result<Option<ReplacementPlan>> {
         if matches.is_empty() {
             return Ok(None);
@@ -75,6 +78,7 @@ impl ReplacementQuery {
             text,
             &self.searcher,
             matches,
+            byte_ranges,
             self.scope.as_ref(),
             &self.pattern,
             self.preserve_case,
@@ -95,12 +99,17 @@ impl ReplacementQuery {
     }
 }
 
-#[derive(PartialEq, Eq)]
-struct PreparationKey {
+#[derive(Clone, PartialEq, Eq)]
+struct ReplacementMatchesKey {
     version: Version,
-    eol: Eol,
     generation: u64,
     scope: Option<TextRange>,
+}
+
+#[derive(PartialEq, Eq)]
+struct PreparationKey {
+    matches: ReplacementMatchesKey,
+    eol: Eol,
     template: String,
     preserve_case: bool,
 }
@@ -436,6 +445,7 @@ pub struct FindHost {
     /// #48：这一次文本变化是本查找条的替换引起的，范围已经自己算好了，不要清掉。
     keep_scope: bool,
     replacement_preparation: Option<ReplacementPreparation>,
+    replacement_byte_ranges: Option<(ReplacementMatchesKey, Arc<[ByteRange]>)>,
     /// 文档的大小级别（#8 分级）：超大文件只读，不提供替换（#22）。
     size: rove_buffer::SizeClass,
     /// 查找文本改了但还没搜索（`editor.find.findOnType` 关闭时等回车）。
@@ -537,6 +547,7 @@ impl FindHost {
             pending_after: After::Nothing,
             keep_scope: false,
             replacement_preparation: None,
+            replacement_byte_ranges: None,
             size: rove_buffer::SizeClass::Normal,
             dirty: false,
             _subs: subs,
@@ -817,6 +828,7 @@ impl FindHost {
             return;
         }
         self.replacement_preparation = None;
+        self.replacement_byte_ranges = None;
         self.record_history(cx);
         let input_focused = self.input.read(cx).focus_handle(cx).is_focused(window)
             || self
@@ -869,6 +881,7 @@ impl FindHost {
 
     fn input_changed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.replacement_preparation = None;
+        self.replacement_byte_ranges = None;
         self.model.set_search(text);
         self.shared.borrow_mut().search = text.to_string();
         if !self.cfg.find_on_type {
@@ -896,6 +909,7 @@ impl FindHost {
 
     fn text_changed(&mut self, cx: &mut Context<Self>) {
         self.replacement_preparation = None;
+        self.replacement_byte_ranges = None;
         let own_replacement = std::mem::take(&mut self.keep_scope);
         if !self.visible {
             return;
@@ -912,6 +926,7 @@ impl FindHost {
     /// 取消上一次搜索，按当前条件在后台重新搜索；结果回来后做 `after`。
     fn research(&mut self, after: After, cx: &mut Context<Self>) {
         self.replacement_preparation = None;
+        self.replacement_byte_ranges = None;
         self.searched_successfully = false;
         self.after = after;
         self.dirty = false;
@@ -1201,6 +1216,7 @@ impl FindHost {
     fn change_search_scope(&mut self, scope: Option<TextRange>) {
         if self.model.scope() != scope.as_ref() {
             self.replacement_preparation = None;
+            self.replacement_byte_ranges = None;
             self.model.set_in_selection(scope);
         }
     }
@@ -1299,6 +1315,21 @@ impl FindHost {
         })
     }
 
+    fn replacement_matches_key(&self, version: Version) -> ReplacementMatchesKey {
+        ReplacementMatchesKey {
+            version,
+            generation: self.model.generation(),
+            scope: self.model.scope().cloned(),
+        }
+    }
+
+    fn cached_byte_ranges(&self, key: &ReplacementMatchesKey) -> Option<Arc<[ByteRange]>> {
+        self.replacement_byte_ranges
+            .as_ref()
+            .filter(|(cached, _)| cached == key)
+            .map(|(_, ranges)| ranges.clone())
+    }
+
     fn preparation_candidate(
         &self,
         template: &str,
@@ -1324,10 +1355,8 @@ impl FindHost {
             return None;
         }
         let key = PreparationKey {
-            version,
+            matches: self.replacement_matches_key(version),
             eol: buffer.eol(),
-            generation: self.model.generation(),
-            scope: self.model.scope().cloned(),
             template: template.to_string(),
             preserve_case: self.preserve_case(),
         };
@@ -1356,6 +1385,8 @@ impl FindHost {
         };
         self.replacement_preparation = None;
         let matches = self.model.matches().clone();
+        let matches_key = key.matches.clone();
+        let cached_ranges = self.cached_byte_ranges(&matches_key);
         let cancel = Cancellation::default();
         let worker_cancel = cancel.clone();
         let executor = cx.background_executor().clone();
@@ -1363,25 +1394,43 @@ impl FindHost {
         let work = executor.spawn(async move {
             timer.await;
             worker_cancel.check()?;
-            let Some(plan) = query.plan(buffer.text(), &matches)? else {
+            let byte_ranges = match cached_ranges {
+                Some(ranges) => ranges,
+                None => matches
+                    .iter()
+                    .map(|matched| {
+                        worker_cancel.check()?;
+                        Span::new(
+                            buffer.text().offset(matched.start)?,
+                            buffer.text().offset(matched.end)?,
+                        )
+                    })
+                    .collect::<rove_base::Result<Arc<[ByteRange]>>>()?,
+            };
+            let Some(plan) = query.plan(buffer.text(), &matches, Some(&byte_ranges))? else {
                 return Ok(None);
             };
             worker_cancel.check()?;
             let edit = buffer.prepare(&plan.transaction)?;
             worker_cancel.check()?;
-            Ok::<_, rove_base::Error>(Some(PreparedReplacement {
+            let prepared = PreparedReplacement {
                 scope: updated_scope(plan.scope, edit.text()),
                 combined: edit.coalesced()?,
                 edit,
-            }))
+            };
+            Ok::<_, rove_base::Error>(Some((prepared, byte_ranges)))
         });
         let publish = cancel.clone();
         let task = cx.spawn(async move |this, cx| {
-            let Ok(Some(ready)) = work.await else { return };
+            let Ok(Some((ready, byte_ranges))) = work.await else {
+                return;
+            };
             if publish.check().is_ok() {
                 let _ = this.update(cx, |view, _| {
                     if let Some(preparation) = view.replacement_preparation.as_mut() {
                         preparation.ready = Some(ready);
+                        // 新模板只使预备事务过期。当前查询的完整字节范围仍可用于同步替换。
+                        view.replacement_byte_ranges = Some((matches_key, byte_ranges));
                     }
                 });
             }
@@ -1437,6 +1486,8 @@ impl FindHost {
             && !self.model.limit_exceeded()
             && matches!(self.model.state(), SearchState::Idle);
         let cached = self.model.matches().clone();
+        let byte_ranges = searched_version
+            .and_then(|version| self.cached_byte_ranges(&self.replacement_matches_key(version)));
 
         let mut moved_scope = None;
         self.keep_scope = true;
@@ -1444,10 +1495,10 @@ impl FindHost {
             code.run_edit(Some(window), cx, |session, snap, now| {
                 let fresh = searched_version == Some(snap.version());
                 let scanned;
-                let matches = match &single {
-                    Some(m) if fresh => std::slice::from_ref(m),
+                let (matches, byte_ranges) = match &single {
+                    Some(m) if fresh => (std::slice::from_ref(m), None),
                     Some(_) => return Err(rove_base::Error::Stale),
-                    None if fresh && usable => cached.as_slice(),
+                    None if fresh && usable => (cached.as_slice(), byte_ranges.as_deref()),
                     None => {
                         scanned = engine::search_all(
                             snap.as_ref(),
@@ -1458,10 +1509,10 @@ impl FindHost {
                             &mut |_, _| {},
                         )?
                         .matches;
-                        &scanned
+                        (scanned.as_slice(), None)
                     }
                 };
-                let Some(plan) = query.plan(snap, matches)? else {
+                let Some(plan) = query.plan(snap, matches, byte_ranges)? else {
                     return Ok(Default::default());
                 };
                 let applied = session.edit(plan.transaction, now)?;
