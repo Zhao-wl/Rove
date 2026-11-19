@@ -2646,8 +2646,8 @@ interface / enum / delegate 分不开）、**也没有修饰符**（`static` / `
 没有 `delegate`（VS Code 的 C# 扩展用的是它自己登记的类型名），按「不发明类型名」归到 `class`；
 `const` 字段取 `variable` + `static` + `readonly`，这样回退表里的
 `variable.readonly → variable.other.constant` 正好是 VS Code C# 扩展给常量用的 scope；
-构造函数的名字就是类型名，按**所在类型的种类**着色（与 VS Code 一致），判定靠符号键里的 `#ctor`
-与容器符号。`modification` 与 `documentation` 两个修饰符需要写访问与文档注释的判定，本实现不产出
+构造函数按**所在类型的种类**着色，判定靠符号键里的 `#ctor` 与容器符号。实机对照中，C# Dev Kit
+在部分构造函数声明处使用了方法色。`modification` 与 `documentation` 两个修饰符需要写访问与文档注释的判定，本实现不产出
 （留空比标错好）。
 
 **回退表是移植来的数据，不是设计**（`rove_theme::semantic::FALLBACK_RULES`，35 条）。逐条抄自
@@ -2675,8 +2675,8 @@ VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
 （索引建好、保存后重建完成）由 `refresh_semantic` 静默重查。首开和重载中，工作区文档等待路由登记当前缓冲区版本，登记完成立即发起查询，回包也校验代码视图版本。
 
 **只让被覆盖的行失效**。`SemanticLayer::update` 返回新旧结果覆盖行的并集并把连续行并成区间，
-宿主只对这些区间调 `DecorationStore::invalidate`，不整文件重画。主题换了只重新解析样式、
-**不重新查询**（token 没变，只是颜色映射换了）。
+宿主只对这些区间调 `DecorationStore::invalidate`。主题、文档级别或长行限制改变时，视图清除原语义装饰
+的缓存行。主题切换重新解析已有 token 的颜色及置灰透明度，查询次数保持不变。
 
 **fontStyle 进整形缓存键**：语义层只改前景色与粗体 / 斜体 / 下划线 / 删除线，走的是 #19 装饰层
 同一条路径，`LineEntry::font_runs` 已经把粗体与斜体编进整形键（`view.rs::decorate_entry`），
