@@ -9,7 +9,7 @@ record ProjectInfo(
     string[] ProjectRefs, string[] Analyzers, string[] Defines, LanguageVersion LangVersion, bool Unsafe);
 
 enum Role : ushort { Ref = 1, Def = 2, Candidate = 4 }
-enum RelKind : uint { BaseType = 1, Implements = 2, Overrides = 3 }
+enum RelKind : uint { BaseType = 1, Implements = 2, Overrides = 3, DeclaredType = 4 }
 
 struct Occ { public uint Line, Col, Len; public int Sym; public ushort Role; }
 

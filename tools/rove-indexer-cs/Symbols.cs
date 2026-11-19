@@ -77,6 +77,42 @@ static class Symbols
         _ => false,
     };
 
+    /// The source-level type to which Go to Type Definition should navigate.
+    public static ITypeSymbol? DeclaredType(ISymbol symbol)
+    {
+        ITypeSymbol? type = symbol switch
+        {
+            ILocalSymbol local => local.Type,
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            IParameterSymbol parameter => parameter.Type,
+            IEventSymbol evt => evt.Type,
+            IMethodSymbol { ReturnsVoid: false } method => method.ReturnType,
+            _ => null,
+        };
+        // These forms do not have declarations of their own.
+        while (true)
+        {
+            if (type is IArrayTypeSymbol array) type = array.ElementType;
+            else if (type is IPointerTypeSymbol pointer) type = pointer.PointedAtType;
+            else if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+                type = nullable.TypeArguments[0];
+            else break;
+        }
+        return type switch
+        {
+            INamedTypeSymbol
+            {
+                TypeKind: not TypeKind.Error,
+                SpecialType: SpecialType.None,
+                IsAnonymousType: false,
+                IsTupleType: false,
+            } named => named.OriginalDefinition,
+            ITypeParameterSymbol parameter => parameter.OriginalDefinition,
+            _ => null,
+        };
+    }
+
     public static void CollectRelations(ISymbol s, ConcurrentBag<(SymbolKey, SymbolKey, RelKind)> rels, Func<ISymbol, SymbolKey> key)
     {
         switch (s)

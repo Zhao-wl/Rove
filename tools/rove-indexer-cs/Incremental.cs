@@ -719,7 +719,14 @@ sealed class Engine : IDisposable
         var seen = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         foreach (var (symbol, rec) in declared)
         {
-            if (!seen.Add(symbol) || !Fingerprints.IsSurface(symbol) || rec.Key.Text is not { } text || text.StartsWith('?')) continue;
+            if (!seen.Add(symbol)) continue;
+            if (Symbols.DeclaredType(symbol) is { } declaredType)
+            {
+                int owner = Sym(rec);
+                segment.Owners.Add((owner, OwnerPart.Self));
+                segment.Relations.Add((owner, Sym(binder.Record(declaredType)), RelKind.DeclaredType));
+            }
+            if (!Fingerprints.IsSurface(symbol) || rec.Key.Text is not { } text || text.StartsWith('?')) continue;
             ulong fp = Fingerprints.Of(symbol);
             int index = Sym(rec);
             decls.Add((index, fp));

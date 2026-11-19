@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 compile_error!("RVCSIDX requires a little-endian target");
 
 const MAGIC: &[u8; 8] = b"RVCSIDX\0";
-const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 const TABLE_OFFSET: usize = 96;
 const NONE: u32 = u32::MAX;
 const LOCAL_BIT: u32 = 1 << 31;
@@ -168,6 +168,7 @@ impl Role {
 pub const REL_BASE_TYPE: u32 = 1;
 pub const REL_IMPLEMENTS: u32 = 2;
 pub const REL_OVERRIDES: u32 = 3;
+pub const REL_DECLARED_TYPE: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location<'a> {

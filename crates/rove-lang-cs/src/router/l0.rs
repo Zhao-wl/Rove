@@ -100,6 +100,20 @@ impl L0File {
         Some(declared_type(ident)?.byte_range())
     }
 
+    /// The source interval read to decide the declared type. For an inferred variable,
+    /// it includes the initializer even when its syntax does not identify a type.
+    pub fn declared_type_extent(&self, offset: usize) -> Option<(Position, Position)> {
+        let ident = self.identifier_at(offset)?;
+        let (ty, initializer) = declared_type_parts(ident)?;
+        let end = if ty.kind() == "implicit_type" {
+            initializer?;
+            declaration_separator(ident.parent()?)?.end_byte()
+        } else {
+            ident.end_byte()
+        };
+        Some((self.position(ty.start_byte()), self.position(end)))
+    }
+
     /// 某个局部声明的全部出现位置（含声明本身），按位置排序。
     pub fn references(&self, decl: &LocalDecl) -> Vec<Range<usize>> {
         let root = self.tree.root_node();
@@ -172,8 +186,17 @@ fn is_member_position(ident: Node<'_>) -> bool {
 
 /// 声明名字 → 它写出的类型里那个可跳转的名字节点（[`L0File::declared_type_name`]）。
 fn declared_type<'t>(ident: Node<'t>) -> Option<Node<'t>> {
+    let (ty, value) = declared_type_parts(ident)?;
+    if ty.kind() == "implicit_type" {
+        value.and_then(inferred_type)
+    } else {
+        type_name(ty)
+    }
+}
+
+fn declared_type_parts<'t>(ident: Node<'t>) -> Option<(Node<'t>, Option<Node<'t>>)> {
     let parent = ident.parent()?;
-    let (ty, value) = match parent.kind() {
+    Some(match parent.kind() {
         // 局部变量、字段、事件（`field_declaration` 内部也是 `variable_declaration`）。
         "variable_declarator" if field_is(parent, "name", ident) => (
             parent.parent()?.child_by_field_name("type")?,
@@ -198,11 +221,21 @@ fn declared_type<'t>(ident: Node<'t>) -> Option<Node<'t>> {
             (parent.child_by_field_name("type")?, None)
         }
         _ => return None,
-    };
-    if ty.kind() == "implicit_type" {
-        value.and_then(inferred_type)
-    } else {
-        type_name(ty)
+    })
+}
+
+/// Include the separator following a variable declaration. An edit can remove
+/// the final lines of the initializer while leaving the separator unchanged.
+fn declaration_separator(mut node: Node<'_>) -> Option<Node<'_>> {
+    loop {
+        if let Some(next) = node.next_sibling() {
+            if next.kind() == "comment" {
+                node = next;
+                continue;
+            }
+            return matches!(next.kind(), "," | ";" | ")").then_some(next);
+        }
+        node = node.parent()?;
     }
 }
 

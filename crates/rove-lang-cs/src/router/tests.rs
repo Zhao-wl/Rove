@@ -674,6 +674,113 @@ fn type_definition_follows_the_declared_type() {
 
 /// 声明处的那一行被改过时位置映射不回去：不猜，给近似的空结果（声明在别处的符号不受影响）。
 #[test]
+fn type_definition_downgrades_when_the_declaration_changes_in_another_buffer() {
+    const USE_PATH: &str = "Assets/Z.cs";
+    const USE_CS: &str =
+        "class Z { void Use(Writes writes) { Take(writes.field, writes.count); } }";
+    let f = fixture_files(&[(WRITES_PATH, WRITES_CS), (USE_PATH, USE_CS)], |t, s| {
+        let field = t.symbol("Game|F:Game.Writes.field", "field", KIND_FIELD, None);
+        let (line, col) = find_word(WRITES_CS, "field", 0);
+        t.def(field, 2, line, col);
+        let (line, col) = find_word(USE_CS, "field", 0);
+        t.reference(field, 3, line, col);
+        t.relations
+            .push((field, s.player, crate::index::REL_DECLARED_TYPE));
+        let count = t.symbol("Game|F:Game.Writes.count", "count", KIND_FIELD, None);
+        let (line, col) = find_word(WRITES_CS, "count", 1);
+        t.def(count, 2, line, col);
+        let (line, col) = find_word(USE_CS, "count", 0);
+        t.reference(count, 3, line, col);
+    });
+    let at = point(USE_PATH, find_word(USE_CS, "field", 0));
+    assert_eq!(
+        nav(&f, NavigationKind::TypeDefinition, &at).precision,
+        Precision::Exact
+    );
+
+    let count = point(USE_PATH, find_word(USE_CS, "count", 0));
+    let indexed = nav(&f, NavigationKind::TypeDefinition, &count);
+    assert_eq!(indexed.precision, Precision::Exact);
+    assert!(indexed.value.is_empty());
+
+    let original = open(&f, WRITES_PATH, WRITES_CS);
+    let type_offset = WRITES_CS.find("Player field").unwrap();
+    let changed_doc = edit(
+        &f,
+        WRITES_PATH,
+        &original,
+        type_offset,
+        type_offset + "Player".len(),
+        "Hero",
+    );
+    let changed = nav(&f, NavigationKind::TypeDefinition, &at);
+    assert_eq!(changed.precision, Precision::Approximate);
+    assert!(matches!(
+        changed.reason,
+        Some(ApproximationReason::ModifiedRegion)
+    ));
+    assert!(changed.value.is_empty());
+
+    let current = buffers::read_all(&*changed_doc).unwrap();
+    let offset = current.find("int count").unwrap();
+    edit(
+        &f,
+        WRITES_PATH,
+        &changed_doc,
+        offset,
+        offset + "int".len(),
+        "Player",
+    );
+    let changed = nav(&f, NavigationKind::TypeDefinition, &count);
+    assert_eq!(changed.precision, Precision::Approximate);
+    assert!(matches!(
+        changed.reason,
+        Some(ApproximationReason::ModifiedRegion)
+    ));
+    assert!(changed.value.is_empty());
+}
+
+#[test]
+fn type_definition_rejects_a_deleted_initializer_suffix() {
+    const FILE: &str = "Assets/ZZ.cs";
+    const SOURCE: &str = "class Z {
+    void Run() {
+        var value = Factory.Create()
+            .ConvertToPlayer()
+            ;
+        Consume(value);
+    }
+}";
+    let f = fixture_files(&[(FILE, SOURCE)], |t, s| {
+        let decl = t.local("value", KIND_LOCAL, 2, SOURCE.find("value").unwrap() as u32);
+        let (line, col) = find_word(SOURCE, "value", 0);
+        t.def(decl, 2, line, col);
+        let (line, col) = find_word(SOURCE, "value", 1);
+        t.reference(decl, 2, line, col);
+        t.relations
+            .push((decl, s.player, crate::index::REL_DECLARED_TYPE));
+    });
+    let at = find_word(SOURCE, "value", 1);
+    let indexed = nav(&f, NavigationKind::TypeDefinition, &point(FILE, at));
+    assert_eq!(indexed.precision, Precision::Exact);
+    assert_eq!(indexed.value.len(), 1);
+
+    let old = open(&f, FILE, SOURCE);
+    let removed = "            .ConvertToPlayer()\n";
+    let start = SOURCE.find(removed).unwrap();
+    let new = edit(&f, FILE, &old, start, start + removed.len(), "");
+    let text = buffers::read_all(&*new).unwrap();
+    let at = point_in(FILE, &*new, find_word(&text, "value", 1));
+    let result = nav(&f, NavigationKind::TypeDefinition, &at);
+    assert_eq!(result.precision, Precision::Approximate);
+    assert!(matches!(
+        result.reason,
+        Some(ApproximationReason::ModifiedRegion)
+    ));
+    assert!(result.value.is_empty());
+}
+
+#[test]
 fn type_definition_maps_the_declaration_through_unsaved_edits() {
     let f = fixture_files(&[(WRITES_PATH, WRITES_CS)], |t, s| {
         for nth in 0..4 {

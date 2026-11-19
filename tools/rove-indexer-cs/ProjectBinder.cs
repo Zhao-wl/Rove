@@ -99,6 +99,12 @@ sealed class ProjectBinder(IndexContext ctx, CSharpCompilation comp,
                     ctx.Symbols.RegisterSourceParameter(_assembly + "|" + owner, p.Ordinal, local);
                 t = Stats.Now();
                 Symbols.CollectRelations(ds, ctx.Relations, s => ctx.Symbols.Canonical(Key(s)));
+                // Resident mode emits this relation with the declaration's overlay segment.
+                if (Declared is null && Symbols.DeclaredType(ds) is { } type)
+                {
+                    var target = Record(type);
+                    ctx.Relations.Add((_cache[ds].Key, target.Key, RelKind.DeclaredType));
+                }
                 Stats.Add(ref Stats.Relations, t);
             }
             else if (Symbols.UseToken(node) is { } use)

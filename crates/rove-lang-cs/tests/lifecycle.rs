@@ -275,6 +275,9 @@ fn rewrite_cached(p: &Project, f: impl FnOnce(&mut FixtureIndex)) {
     let refs: Vec<&str> = files.iter().map(String::as_str).collect();
     let mut fixture = FixtureIndex::for_project(&p.root, &refs, [9; 32]);
     f(&mut fixture);
+    // The previous session can still hold the generation mapped on Windows.
+    // Replace its directory entry without truncating that mapping.
+    fs::rename(&path, path.with_extension("fixture-old")).unwrap();
     fs::write(path, fixture.bytes()).unwrap();
 }
 
@@ -294,9 +297,15 @@ fn expect_rebuild(p: &Project, builder: &Arc<FakeIndexer>, reason: &str) {
 fn format_version_change_rebuilds() {
     let p = project(2);
     let builder = Arc::new(FakeIndexer::default());
-    built(&p, &builder);
-    rewrite_cached(&p, |f| f.format_version = 3);
-    expect_rebuild(&p, &builder, "format version 3");
+    let first = p.start(&builder);
+    assert!(ready(&first.wait_until(WAIT, ready)));
+    let held = first.snapshot().unwrap();
+    drop(first);
+    // A v2 cache has no declared-type relations and requires a rebuild.
+    rewrite_cached(&p, |f| f.format_version = 2);
+    assert_ne!(held.index().header().format_version, 2);
+    drop(held);
+    expect_rebuild(&p, &builder, "format version 2");
 }
 
 #[test]

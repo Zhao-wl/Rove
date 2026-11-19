@@ -1,6 +1,6 @@
 # C# 导航准确率测试集（#39）
 
-200 个人工整理的导航用例：中型、大型两个本地 Unity 项目各 100 个，由
+210 个人工整理的导航用例：中型、大型两个本地 Unity 项目各 105 个，由
 `cargo run -p rove-lang-cs --example nav_check` 运行。用法、环境变量和过期用例的重新整理步骤见
 [AGENTS.md](../../AGENTS.md) §8；运行器结构见 `crates/rove-lang-cs/examples/nav_check/main.rs`。
 
@@ -8,7 +8,8 @@
 |---|---|---|
 | `medium-a.toml` / `large-a.toml` | 中型 / 大型 | var、chain、overload、extension、generic、inheritance、interface、partial |
 | `medium-b.toml` / `large-b.toml` | 中型 / 大型 | lambda、conditional、external、local、event、operator、indexer、type_ref |
-| `baseline-l2.md` | 两者 | 用当前完整语义索引跑出的基线报告（含失败原因） |
+| `medium-type-definition.toml` / `large-type-definition.toml` | 中型 / 大型 | 字段、属性、参数、`var` 与泛型变量的类型定义 |
+| `baseline-l2.md` | 两者 | 加入类型定义分类前的 200 个用例报告（含失败原因） |
 
 ## 用例格式
 
@@ -33,7 +34,7 @@ refs_include = [{ file = "Assets/Scripts/Game.cs", line = 15, anchor = "p.Move()
 
 - `expect.defs` 与 `expect.external` 二选一。partial 类型等有多处定义时，`defs` 列出全部。
 - `expect.external` 是外部符号（DLL 中的符号）的文档注释 ID，例如 `M:UnityEngine.GameObject.GetComponent``1`。
-- `expect.refs` 与 `expect.refs_include` 至少填一个；引用 ≥ 20 的符号只能用 `refs_include`。
+- 除 `type_definition` 外，`expect.refs` 与 `expect.refs_include` 至少填一个；引用 ≥ 20 的符号只能用 `refs_include`。
 - `branch = "active" | "inactive"` 只用于 `conditional`，标明查询点在 `#if` 的生效一侧还是不生效一侧。
 - `expect.precision`（可选，`exact` / `approximate` / `syntax`）：查询来源报告精确度时一起断言（#38 之后）。
 
@@ -61,6 +62,8 @@ refs_include = [{ file = "Assets/Scripts/Game.cs", line = 15, anchor = "p.Move()
 | `operator` | 运算符重载 | 光标在运算符上，期望跳到 `operator` 声明 |
 | `indexer` | 索引器 | 光标在 `[` 上，期望跳到 `this[...]` 声明 |
 | `type_ref` | 类型引用 | #37（L1）的验收口径：类型名在声明、`new`、泛型实参、`typeof`、继承列表等处的引用 |
+
+| `type_definition` | 转到声明类型 | 光标在变量、字段、属性或参数名上，断言类型声明的位置。完整语义索引与查询路由支持此分类。 |
 
 ## 期望值来源
 

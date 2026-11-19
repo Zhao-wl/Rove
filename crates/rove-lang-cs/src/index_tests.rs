@@ -173,7 +173,9 @@ fn checks_structure_even_if_header_checksum_matches() {
     let mut higher_version = original.clone();
     higher_version[8..12].copy_from_slice(&(VERSION + 1).to_le_bytes());
     let error = fixture.open_bytes(&higher_version).err().unwrap();
-    assert!(error.to_string().contains("unsupported C# index version 3"));
+    assert!(error
+        .to_string()
+        .contains(&format!("unsupported C# index version {}", VERSION + 1)));
 }
 
 fn indexer_dll() -> PathBuf {
@@ -221,7 +223,10 @@ fn roslyn_writer_uses_utf8_coordinates_and_binary_local_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     let index = CsIndex::open(&index_path).unwrap();
-    assert_eq!(index.header().indexer_version, [1, 3, 0, 0]);
+    assert_eq!(
+        index.header().indexer_version,
+        crate::lifecycle::validity::EXPECTED_INDEXER_VERSION
+    );
     let rel_path = "Assets/Unicode.cs";
     let file = index.file_id(rel_path).unwrap();
     let line = source_text.lines().nth(1).unwrap();
@@ -1035,7 +1040,10 @@ namespace Rove.Fixture
     );
 
     let index = CsIndex::open(&first).unwrap();
-    assert_eq!(index.header().indexer_version, [1, 3, 0, 0]);
+    assert_eq!(
+        index.header().indexer_version,
+        crate::lifecycle::validity::EXPECTED_INDEXER_VERSION
+    );
     let at = |file: &str, source: &str, token: &str| {
         let col = source.lines().nth(2).unwrap().find(token).unwrap();
         index

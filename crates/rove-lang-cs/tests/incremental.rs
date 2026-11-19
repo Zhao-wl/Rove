@@ -9,7 +9,11 @@
 //!
 //! 需要先 `dotnet build tools/rove-indexer-cs -c Release`；没有构建产物时打印“已跳过”并通过。
 //! 运行：`cargo test -p rove-lang-cs --test incremental -- --nocapture`。
-use rove_base::{Cancellation, Line, Position, Resource, Utf8Column, Version, WorkspacePath};
+use rove_base::{
+    ByteOffset, ByteRange, Cancellation, Line, Position, Resource, TextEdit, Utf8Column, Version,
+    WorkspacePath,
+};
+use rove_buffer::{RopeText, TextSource};
 use rove_lang_cs::lifecycle::{
     process::IndexerComponent, IndexLifecycle, IndexState, LifecycleConfig, ProcessBuilder,
     SourceChange,
@@ -184,6 +188,180 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn type_definition_uses_roslyn_in_the_base_index_and_replaces_stale_overlay_types() {
+    let Some(dll) = indexer_dll() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Game");
+    write_project(&root);
+    let source = "namespace Game;
+public class Box<T> { }
+public class Ally { }
+public struct Slot { }
+public class Probe
+{
+    public Enemy Field;
+    public Enemy Property { get; }
+    public Slot? Optional() => default;
+    public Enemy Make(Enemy parameter) => parameter;
+    public void Run()
+    {
+        var inferred = Make(Field);
+        var remote = Factory.Create();
+        var nullable = Optional();
+        Box<Enemy> generic = new();
+    }
+}
+";
+    let file = "Assets/A.cs";
+    let factory_file = "Assets/B.cs";
+    let factory = format!(
+        "{B_CS}\nnamespace Game {{ public static class Factory {{ public static Enemy Create() => new(); }} }}\n"
+    );
+    fs::write(root.join(file), source).unwrap();
+    fs::write(root.join(factory_file), &factory).unwrap();
+    let component = IndexerComponent::from_path(&dll).unwrap();
+    let builder =
+        Arc::new(ProcessBuilder::new(move || Some(component.clone())).with_resident(true));
+    let lifecycle = Arc::new(IndexLifecycle::start(
+        root.clone(),
+        LifecycleConfig::new(true, Ok(dir.path().join("cache"))),
+        builder,
+    ));
+    let ready = lifecycle.wait_until(WAIT, |s| s.state == IndexState::Ready);
+    assert_eq!(ready.state, IndexState::Ready, "{ready:?}");
+    let router = CsRouter::new(lifecycle.clone(), Arc::new(BufferStates::new())).with_root(&root);
+    let target = |path: &str, text: &str, word: &str| {
+        let (line, col) = find(text, word);
+        vec![(path.to_owned(), u64::from(line), u64::from(col))]
+    };
+    let enemy = target("Assets/B.cs", B_CS, "Enemy");
+    for name in [
+        "Field",
+        "Property",
+        "parameter",
+        "Make",
+        "inferred",
+        "remote",
+    ] {
+        assert_eq!(
+            targets(
+                &router,
+                NavigationKind::TypeDefinition,
+                file,
+                find(source, name)
+            ),
+            enemy,
+            "type of {name}"
+        );
+    }
+    assert_eq!(
+        targets(
+            &router,
+            NavigationKind::TypeDefinition,
+            file,
+            find(source, "generic")
+        ),
+        target(file, source, "Box")
+    );
+    assert!(targets(
+        &router,
+        NavigationKind::Overrides,
+        file,
+        find(source, "Make")
+    )
+    .is_empty());
+
+    assert_eq!(
+        targets(
+            &router,
+            NavigationKind::TypeDefinition,
+            file,
+            find(source, "nullable")
+        ),
+        target(file, source, "Slot")
+    );
+
+    let inferred = find(source, "inferred");
+    let path = WorkspacePath::new(file).unwrap();
+    let original = Arc::new(RopeText::from_text(source));
+    router.buffers().opened(
+        &path,
+        original.clone(),
+        rove_lang_cs::router::hash_bytes(source.as_bytes()),
+    );
+    let note = "// unrelated edit\n";
+    let after = Arc::new(RopeText::new(format!("{source}{note}")));
+    let end = ByteOffset(source.len() as u64);
+    router
+        .buffers()
+        .edited(
+            &path,
+            &*original,
+            &TextEdit {
+                version: original.version(),
+                range: ByteRange::new(end, end).unwrap(),
+                inserted: note.into(),
+            },
+            after.clone(),
+        )
+        .unwrap();
+    let mut query_point = point(file, inferred.0, inferred.1);
+    query_point.version = after.version();
+    let resolved = router
+        .navigate_detailed(
+            NavigationKind::TypeDefinition,
+            &query_point,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(resolved.precision, Precision::Exact);
+    assert_eq!(resolved.value.len(), 1);
+    assert_eq!(
+        resolved.value[0].target.resource,
+        Resource::Workspace(WorkspacePath::new("Assets/B.cs").unwrap())
+    );
+    router.buffers().closed(&path);
+
+    let with_ally = source.replace(
+        "Enemy Make(Enemy parameter) => parameter",
+        "Ally Make(Enemy parameter) => new()",
+    );
+    fs::write(root.join(file), &with_ally).unwrap();
+    lifecycle.files_changed(&[SourceChange::Changed(file.into())]);
+    wait_for("changed inferred type in overlay", || {
+        query(&router, NavigationKind::TypeDefinition, file, inferred)
+            == Some(target(file, &with_ally, "Ally"))
+    });
+    assert_eq!(
+        lifecycle.snapshot().unwrap().generation,
+        ready.info.generation
+    );
+
+    let with_int = source.replace(
+        "Enemy Make(Enemy parameter) => parameter",
+        "int Make(Enemy parameter) => 0",
+    );
+    fs::write(root.join(file), with_int).unwrap();
+    lifecycle.files_changed(&[SourceChange::Changed(file.into())]);
+    wait_for("removed source type in overlay", || {
+        query(&router, NavigationKind::TypeDefinition, file, inferred)
+            .is_some_and(|targets| targets.is_empty())
+    });
+    let remote = find(source, "remote");
+    let factory = factory.replace("Enemy Create()", "Ally Create()");
+    fs::write(root.join(factory_file), factory).unwrap();
+    lifecycle.files_changed(&[SourceChange::Changed(factory_file.into())]);
+    wait_for("inferred type after changing another file", || {
+        query(&router, NavigationKind::TypeDefinition, file, remote)
+            == Some(target(file, source, "Ally"))
+    });
+    assert_eq!(
+        lifecycle.snapshot().unwrap().generation,
+        ready.info.generation
+    );
 }
 
 #[test]
@@ -493,7 +671,10 @@ fn protocol_version_negotiation_and_component_info() {
     assert_eq!(info["component"], "indexer-cs");
     assert_eq!(info["protocol"], 1);
     assert_eq!(info["protocol_min"], 1);
-    assert_eq!(info["index_format"], 2);
+    assert_eq!(
+        info["index_format"],
+        rove_lang_cs::lifecycle::validity::EXPECTED_FORMAT
+    );
     assert!(info["version"]
         .as_str()
         .unwrap()

@@ -15,6 +15,7 @@ use rove_lang_cs::lifecycle::{
     process::{BuildRequest, IndexerComponent},
     resident::{IncrementalIndexer, ResidentEvent, SessionRequest},
     testing::FixtureIndex,
+    validity::EXPECTED_FORMAT,
     BuildFailure, Direction, IndexBuilder, IndexLifecycle, IndexState, IndexStatus,
     LifecycleConfig, ProcessBuilder, ProcessResident, Progress, SourceChange,
 };
@@ -104,19 +105,19 @@ fn incompatible_component_degrades_without_retrying() {
         // 组件太新：索引格式比 Rove 读得懂的高
         (
             "9.0.0",
-            manifest("9.0.0", 1, 1, 3),
+            manifest("9.0.0", 1, 1, EXPECTED_FORMAT + 1),
             Direction::ComponentTooNew,
         ),
         // 组件太新：只会说更高的协议
         (
             "3.0.0",
-            manifest("3.0.0", 4, 3, 2),
+            manifest("3.0.0", 4, 3, EXPECTED_FORMAT),
             Direction::ComponentTooNew,
         ),
         // 组件太旧：索引格式更低
         (
             "0.9.0",
-            manifest("0.9.0", 1, 1, 1),
+            manifest("0.9.0", 1, 1, EXPECTED_FORMAT - 1),
             Direction::ComponentTooOld,
         ),
     ] {
@@ -147,8 +148,16 @@ fn incompatible_component_degrades_without_retrying() {
 #[test]
 fn a_compatible_version_is_preferred_over_an_incompatible_newer_one() {
     let components = tempfile::tempdir().unwrap();
-    install(components.path(), "1.2.0", &manifest("1.2.0", 1, 1, 2));
-    install(components.path(), "2.0.0", &manifest("2.0.0", 1, 1, 3));
+    install(
+        components.path(),
+        "1.2.0",
+        &manifest("1.2.0", 1, 1, EXPECTED_FORMAT),
+    );
+    install(
+        components.path(),
+        "2.0.0",
+        &manifest("2.0.0", 1, 1, EXPECTED_FORMAT + 1),
+    );
     let found = locate_in(&roots_in(components.path())).unwrap();
     assert_eq!(found.version, Some([1, 2, 0, 0]));
     assert!(found.program.ends_with(Path::new("1.2.0").join(EXE_FILE)));

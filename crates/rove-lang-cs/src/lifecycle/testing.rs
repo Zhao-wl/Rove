@@ -1,6 +1,9 @@
-//! 测试辅助：写一份只含文件表的最小 RVCSIDX v2 索引（没有符号与出现位置），供生命周期与界面的
+//! 测试辅助：写一份只含文件表的最小 RVCSIDX v3 索引（没有符号与出现位置），供生命周期与界面的
 //! 测试模拟索引进程的产物。不用于生产路径。
-use super::{hash::xxh64, validity::EXPECTED_INDEXER_VERSION};
+use super::{
+    hash::xxh64,
+    validity::{EXPECTED_FORMAT, EXPECTED_INDEXER_VERSION},
+};
 use std::{fs, io, path::Path};
 
 /// 最小索引的内容。
@@ -17,7 +20,7 @@ impl FixtureIndex {
     /// 按磁盘上的实际内容给出文件哈希。
     pub fn for_project(root: &Path, files: &[&str], config_hash: [u8; 32]) -> Self {
         Self {
-            format_version: 2,
+            format_version: EXPECTED_FORMAT,
             indexer_version: EXPECTED_INDEXER_VERSION,
             config_hash,
             files: files
@@ -103,7 +106,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.rvcsidx");
         FixtureIndex {
-            format_version: 2,
+            format_version: EXPECTED_FORMAT,
             indexer_version: EXPECTED_INDEXER_VERSION,
             config_hash: [7; 32],
             files: vec![("Assets/B.cs".into(), 2), ("Assets/A.cs".into(), 1)],

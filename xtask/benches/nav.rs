@@ -1,7 +1,7 @@
 //! `F12` → 目标行画面完成（issue #40 的端到端预算，目标文件已打开时 p99 < 50 ms）。
 //!
 //! 在真实 GPUI 窗口里打开工作台（`rove_ui::skeleton::workbench::Workbench`），装上固定的语义索引
-//! （#38 的测试写出器生成的 RVCSIDX v2，读取端是真实的 `CsIndex`），两个文件都已打开：
+//! （#38 的测试写出器生成的 RVCSIDX v3，读取端是真实的 `CsIndex`），两个文件都已打开：
 //! `Caller.cs` 有 200 处调用，`Target.cs` 有 2 万行、200 个方法均匀分布（每次跳到不同的区域，整形缓存
 //! 不命中）。每一轮：插入符放到第 i 处调用 → 经键位服务的命令派发 `editor.action.revealDefinition`
 //! → 等目标位置画到屏幕上（`on_next_frame`）→ `workbench.action.navigateBack` 回到调用处。

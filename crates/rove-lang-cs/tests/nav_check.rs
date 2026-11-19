@@ -239,14 +239,14 @@ fn repo_cases() -> Vec<cases::CaseFile> {
     cases::load_dir(&dir).expect("读取 tests/nav-cases")
 }
 
-/// CI 上也跑：200 个用例、两个项目各 100 个、每类至少 5 个、条件编译两侧都有、无绝对路径。
+/// CI 上也跑：210 个用例、两个项目各 105 个、每类至少 5 个、条件编译两侧都有、无绝对路径。
 #[test]
 fn repository_case_files_are_complete_and_valid() {
     let files = repo_cases();
     let errs = cases::lint_all(&files, true);
     assert!(errs.is_empty(), "用例文件不合格：\n{}", errs.join("\n"));
     let total: usize = files.iter().map(|f| f.cases.len()).sum();
-    assert_eq!(total, 200);
+    assert_eq!(total, cases::CASES_PER_PROJECT * Project::ALL.len());
     let type_refs = files
         .iter()
         .flat_map(|f| &f.cases)

@@ -1,8 +1,8 @@
-//! 测试与基准辅助：写出带符号、出现位置、关系与文档的 RVCSIDX v2 索引（格式见
+//! 测试与基准辅助：写出带符号、出现位置、关系与文档的 RVCSIDX v3 索引（格式见
 //! `docs/CS_INDEX_FORMAT.md`），用真实读取端打开。不用于生产路径。
 //!
 //! 文件按给定顺序编号，写出时要求路径已按 UTF-8 字节序排好（与索引进程一致）。
-use crate::lifecycle::validity::EXPECTED_INDEXER_VERSION;
+use crate::lifecycle::validity::{EXPECTED_FORMAT, EXPECTED_INDEXER_VERSION};
 use std::{fs, io, path::Path};
 
 /// 一个符号。`local = Some((file, byte_offset))` 时写成局部符号键。
@@ -336,7 +336,7 @@ fn encode(sections: [(&[u8], usize); 15], config_hash: [u8; 32]) -> Vec<u8> {
     }
     let total = out.len() as u64;
     out[..8].copy_from_slice(b"RVCSIDX\0");
-    out[8..12].copy_from_slice(&2u32.to_le_bytes());
+    out[8..12].copy_from_slice(&EXPECTED_FORMAT.to_le_bytes());
     out[12..16].copy_from_slice(&15u32.to_le_bytes());
     out[16..24].copy_from_slice(&total.to_le_bytes());
     for (i, v) in EXPECTED_INDEXER_VERSION.iter().enumerate() {

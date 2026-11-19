@@ -28,10 +28,11 @@ pub enum Category {
     Operator,
     Indexer,
     TypeRef,
+    TypeDefinition,
 }
 
 impl Category {
-    pub const ALL: [Category; 16] = [
+    pub const ALL: [Category; 17] = [
         Category::Var,
         Category::Chain,
         Category::Overload,
@@ -48,6 +49,7 @@ impl Category {
         Category::Operator,
         Category::Indexer,
         Category::TypeRef,
+        Category::TypeDefinition,
     ];
 
     pub fn key(self) -> &'static str {
@@ -68,6 +70,7 @@ impl Category {
             Category::Operator => "operator",
             Category::Indexer => "indexer",
             Category::TypeRef => "type_ref",
+            Category::TypeDefinition => "type_definition",
         }
     }
 
@@ -89,6 +92,7 @@ impl Category {
             Category::Operator => "运算符重载",
             Category::Indexer => "索引器",
             Category::TypeRef => "类型引用（#37 验收）",
+            Category::TypeDefinition => "转到声明类型（#177）",
         }
     }
 }
@@ -283,7 +287,7 @@ pub fn lint_case(c: &Case) -> Vec<String> {
         (false, true) => errs.push(format!("{who}: expect.defs 与 expect.external 只能填一个")),
         _ => {}
     }
-    if e.refs.is_none() && e.refs_include.is_empty() {
+    if c.category != Category::TypeDefinition && e.refs.is_none() && e.refs_include.is_empty() {
         errs.push(format!(
             "{who}: expect.refs 与 expect.refs_include 至少填一个"
         ));
@@ -316,9 +320,10 @@ pub fn lint_case(c: &Case) -> Vec<String> {
 
 /// 每个项目每类至少多少个（issue #39：每类至少 5 个）。
 pub const MIN_PER_CATEGORY: usize = 5;
+pub const CASES_PER_PROJECT: usize = 105;
 
 /// 整套用例的静态校验：id 唯一、单个用例合法、分类覆盖。
-/// `require_full` 为真时还检查“每个项目 100 个、每类至少 5 个、条件编译两侧都有”。
+/// `require_full` 为真时还检查“每个项目 105 个、每类至少 5 个、条件编译两侧都有”。
 pub fn lint_all(files: &[CaseFile], require_full: bool) -> Vec<String> {
     let mut errs = Vec::new();
     let mut ids = HashSet::new();
@@ -344,8 +349,11 @@ pub fn lint_all(files: &[CaseFile], require_full: bool) -> Vec<String> {
     if require_full {
         for p in Project::ALL {
             let n = per_project.get(&p).copied().unwrap_or(0);
-            if n != 100 {
-                errs.push(format!("{} 项目应有 100 个用例，实际 {n}", p.key()));
+            if n != CASES_PER_PROJECT {
+                errs.push(format!(
+                    "{} 项目应有 {CASES_PER_PROJECT} 个用例，实际 {n}",
+                    p.key()
+                ));
             }
             for cat in Category::ALL {
                 let n = per.get(&(p, cat)).copied().unwrap_or(0);
