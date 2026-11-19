@@ -252,6 +252,130 @@ fn smart_selection_bracket_commands_select_jump_and_undo_once(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn smart_selection_brackets_follow_the_active_cursor_with_highlighting_off(
+    cx: &mut TestAppContext,
+) {
+    let source = "class C { void M() { F(a)(b); G(c); } }";
+    let (_folder, view, cx) = open(cx, "Program.cs", source);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.bracket_pair_colorization = true;
+        options.highlight_active_bracket_pair = false;
+        options.match_brackets = crate::code_view::brackets::MatchBrackets::Never;
+        code.set_options(options, cx);
+    });
+    settle(cx);
+    code.read_with(cx, |code, _| {
+        assert!(!code.bracket_depths(0).is_empty());
+        assert!(code.bracket_match().is_none());
+    });
+
+    let second = source.find("(b)").unwrap();
+    let close = caret(&view, cx, second + 2);
+    cx.simulate_keystrokes("ctrl-shift-\\");
+    assert_eq!(selected(&view, cx).1.active.column.0, second as u64);
+    cx.simulate_keystrokes("ctrl-shift-\\");
+    assert_eq!(selected(&view, cx).1.active, close);
+    execute(&view, cx, ids::SELECT_TO_BRACKET, Value::Null);
+    assert_eq!(selected(&view, cx).0, "(b)");
+
+    let anchor = caret(&view, cx, source.find("(a)").unwrap() + 1);
+    let active = caret(&view, cx, source.find("(c)").unwrap() + 1);
+    code.update(cx, |code, cx| {
+        code.set_selection(crate::code_view::Selection::new(anchor, active), None, cx);
+    });
+    cx.simulate_keystrokes("ctrl-alt-backspace");
+    settle(cx);
+    assert_eq!(shown_text(&view, cx), source.replace("(c)", "c"));
+    cx.simulate_keystrokes("ctrl-z");
+    settle(cx);
+    assert_eq!(shown_text(&view, cx), source);
+}
+
+#[gpui::test]
+fn smart_selection_bracket_delete_leaves_strings_intact_without_current_syntax(
+    cx: &mut TestAppContext,
+) {
+    let source = r#"class C { string s = "()"; }"#;
+    let (_folder, view, cx) = open(cx, "Program.cs", source);
+    caret(&view, cx, source.find("()").unwrap() + 1);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    cx.update(|window, app| {
+        code.update(app, |code, cx| {
+            assert!(code.current_syntax_version().is_some());
+            assert!(code.execute(ids::REMOVE_BRACKETS, window, cx));
+            assert!(code.current_syntax_version().is_some());
+            code.set_syntax(None, None, cx);
+            assert!(code.current_syntax_version().is_none());
+            assert!(code.execute(ids::REMOVE_BRACKETS, window, cx));
+        });
+    });
+    assert_eq!(shown_text(&view, cx), source);
+}
+
+#[gpui::test]
+fn smart_selection_bracket_delete_rejects_a_gap_in_tokenization(cx: &mut TestAppContext) {
+    let source = format!(
+        "class C {{ int M() => F(G(\n/* {} ) */\n1), 2); }}",
+        "x".repeat(2_501)
+    );
+    let (_folder, view, cx) = open(cx, "Program.cs", &source);
+    caret(&view, cx, source.find("F(").unwrap() + 1);
+    cx.simulate_keystrokes("ctrl-alt-backspace");
+    settle(cx);
+    assert_eq!(shown_text(&view, cx), source);
+}
+
+#[gpui::test]
+fn smart_selection_language_change_discards_the_cached_ancestors(cx: &mut TestAppContext) {
+    let source = "class C {\n    int M() { return value + 1; }\n}\n";
+    let (_folder, view, cx) = open(cx, "Program.cs", source);
+    caret(&view, cx, source.find("value").unwrap() + 1);
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, "value");
+
+    view.update(cx, |workbench, cx| {
+        let document = workbench.active_large_file_document().unwrap();
+        workbench.set_language_mode(&document, "plaintext".into(), cx);
+    });
+    settle(cx);
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, "    int M() { return value + 1; }");
+}
+
+#[gpui::test]
+fn smart_selection_long_line_uses_bounded_coordinate_fallback(cx: &mut TestAppContext) {
+    let line = format!("  {}  ", "界".repeat(6_000));
+    let source = format!("{line}\nlast");
+    let (_folder, view, cx) = open(cx, "notes.txt", &source);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let text = code.text().unwrap();
+        let from = text.position(ByteOffset(2)).unwrap();
+        let to = text.position(ByteOffset(5)).unwrap();
+        code.set_selection(crate::code_view::Selection::new(from, to), None, cx);
+        assert_eq!(code.occurrence_text().as_deref(), Some("界"));
+    });
+    let start = caret(&view, cx, 5);
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, line);
+    cx.simulate_keystrokes("shift-alt-left");
+    assert_eq!(
+        selected(&view, cx).1,
+        crate::code_view::Selection::caret(start)
+    );
+
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.smart_select_whitespace = false;
+        code.set_options(options, cx);
+    });
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, source);
+}
+
+#[gpui::test]
 fn smart_selection_readonly_keeps_selection_and_rejects_edits(cx: &mut TestAppContext) {
     let source = "class C { int M() { return (3); } }";
     let (_folder, view, cx) = open(cx, "Program.cs", source);

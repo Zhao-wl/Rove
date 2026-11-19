@@ -476,19 +476,13 @@ impl BracketPairs {
         }
     }
 
-    /// 光标所在的活动括号对（`editor.guides.highlightActiveBracketPair`）。
-    ///
-    /// 返回 `None` 有两种情况：关闭了这个设置，或者树还没建好——后者由调用方回落到 #20 的
-    /// 就近扫描（[`BracketPairs::has_tree`] 区分）。
+    /// 光标所在的括号对。绘制方根据设置决定是否查询，显式命令可共用括号树。
     pub fn active_pair(
         &self,
         line: u64,
         column: u32,
         mode: query::MatchBrackets,
     ) -> Option<query::BracketMatch> {
-        if !self.highlight_active {
-            return None;
-        }
         let tree = self.tree.as_ref()?;
         query::active_pair(tree, line, column, mode, self.matchable)
     }

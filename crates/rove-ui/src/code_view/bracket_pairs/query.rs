@@ -344,8 +344,9 @@ pub fn active_pair(
     let located = locate(root, position);
     let allowed = |kind: u8| matchable & (1u64 << kind) != 0;
 
-    // 紧挨着光标的括号：先左后右，同一侧取最内层。
-    for want_left in [true, false] {
+    // 同一侧取最内层。显式命令先找光标所在的括号，高亮保持左侧优先。
+    let prefer_left = mode != MatchBrackets::AlwaysAtCursor;
+    for want_left in [prefer_left, !prefer_left] {
         for pair in located.pairs.iter().rev() {
             if !allowed(pair.kind) {
                 continue;

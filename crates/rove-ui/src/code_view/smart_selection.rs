@@ -1,8 +1,13 @@
 //! 智能扩选与括号命令。
 
-use super::{brackets::MatchBrackets, columns, edit::EditOutcome, CodeView, Reveal, Selection};
+use super::{
+    brackets::{self, BracketMatch, MatchBrackets},
+    columns,
+    edit::EditOutcome,
+    CodeView, Reveal, Selection,
+};
 use gpui::{Context, Window};
-use rove_base::{ByteOffset, ByteRange, DocumentId, Position, Span, Utf8Column};
+use rove_base::{ByteOffset, ByteRange, DocumentId, Line, Position, Span, Utf8Column};
 use rove_buffer::{
     edit::{
         word::{self, MoveWord, WordClassifier},
@@ -10,7 +15,7 @@ use rove_buffer::{
     },
     TextSource,
 };
-use rove_syntax::highlight::DocumentHighlighter;
+use rove_syntax::{highlight::DocumentHighlighter, SyntaxSnapshot};
 use std::{ops::Range, sync::Arc};
 
 pub(crate) const EXPAND: &str = "editor.action.smartSelect.expand";
@@ -90,10 +95,29 @@ impl CodeView {
                 .iter()
                 .map(|chain| chain[next.min(chain.len() - 1)])
                 .collect();
-            self.set_selections(selections, Some(Reveal::CenterIfOutside), cx);
+            self.apply_smart_selections(selections, cx);
             state.step = next;
         }
         self.smart_selection = Some(state);
+    }
+
+    fn apply_smart_selections(&mut self, selections: Vec<Selection>, cx: &mut Context<Self>) {
+        self.set_selections(selections, None, cx);
+        let active = self.selection().active;
+        let can_measure_column = self
+            .text
+            .as_ref()
+            .and_then(|text| text.line_range(active.line).ok())
+            .is_some_and(|range| {
+                range.end().0 - range.start().0 <= columns::MAX_SELECTION_LINE_BYTES
+            });
+        if can_measure_column {
+            self.reveal_position(active, Reveal::CenterIfOutside, cx);
+        } else {
+            self.reveal_line(active.line.0, Reveal::CenterIfOutside, cx);
+            // 长行改由常规预取处理，避免首帧的同步跳转准备。
+            self.prepare_on_layout = false;
+        }
     }
 
     fn selection_chain(&self, input: Selection) -> Vec<Selection> {
@@ -116,18 +140,22 @@ impl CodeView {
             }
         };
         let active = input.active;
-        if let Some(line) = columns::read_line(text, active.line.0) {
+        if let Some(line) = read_selection_line(text, active.line.0) {
             let word = self.word_rule().word_at(&line, active.column.0 as usize);
             if let Some((start, end)) = word {
                 let from = position(active.line.0, start as u64);
                 let to = position(active.line.0, end as u64);
                 if self.options.smart_select_subwords {
                     let classifier = WordClassifier::new(&self.options.word_separators);
-                    let subword_right =
+                    // 行尾直接用词尾，避免移动命令读下一行来换算列。
+                    let subword_right = if active.column.0 == line.len() as u64 {
+                        Some(to)
+                    } else {
                         word::move_word(text, &classifier, active, MoveWord::PartRight, false)
                             .ok()
-                            .map(|pos| pos.min(to));
-                    if let Some(right) = subword_right {
+                            .map(|pos| pos.min(to))
+                    };
+                    if let Some(right) = subword_right.filter(|pos| pos.column.0 > 0) {
                         if let Ok(left) =
                             word::move_word(text, &classifier, right, MoveWord::PartLeft, false)
                         {
@@ -187,7 +215,7 @@ impl CodeView {
     }
 
     fn bracket_selections(&self, at: Position, include: bool) -> Option<(Position, Position)> {
-        let pair = self.find_brackets_at(at, MatchBrackets::Always)?;
+        let pair = self.find_brackets_at(at, MatchBrackets::AlwaysAtCursor)?;
         let open = if include {
             pair.open.1.start
         } else {
@@ -209,7 +237,7 @@ impl CodeView {
         let selections = old
             .iter()
             .map(|sel| {
-                self.bracket_selections(sel.start(), include)
+                self.bracket_selections(sel.active, include)
                     .map_or(*sel, |(open, close)| {
                         if sel.active < sel.anchor {
                             Selection::new(close, open)
@@ -220,7 +248,7 @@ impl CodeView {
             })
             .collect::<Vec<_>>();
         if selections != old {
-            self.set_selections(selections, Some(Reveal::CenterIfOutside), cx);
+            self.apply_smart_selections(selections, cx);
         }
     }
 
@@ -229,8 +257,8 @@ impl CodeView {
         let selections = old
             .iter()
             .map(|sel| {
-                let at = sel.start();
-                let Some(pair) = self.find_brackets_at(at, MatchBrackets::Always) else {
+                let at = sel.active;
+                let Some(pair) = self.find_brackets_at(at, MatchBrackets::AlwaysAtCursor) else {
                     return *sel;
                 };
                 let close = pair.close.0 == at.line.0
@@ -241,7 +269,7 @@ impl CodeView {
             })
             .collect::<Vec<_>>();
         if selections != old {
-            self.set_selections(selections, Some(Reveal::CenterIfOutside), cx);
+            self.apply_smart_selections(selections, cx);
         }
     }
 
@@ -253,11 +281,47 @@ impl CodeView {
         let Some(text) = self.text.as_deref() else {
             return;
         };
+        let syntax =
+            if self
+                .language
+                .as_deref()
+                .is_some_and(rove_syntax::highlight::has_grammar)
+            {
+                // 使用完整且已应用的同一份高亮快照保护注释和字符串。
+                if self.current_syntax_version().is_none() {
+                    return;
+                }
+                let Some(snapshot) = self.syntax_snapshot() else {
+                    return;
+                };
+                let Some(line_limit) = self.selection_syntax.as_ref().and_then(|(doc, service)| {
+                    service.complete_snapshot_line_limit(*doc, &snapshot)
+                }) else {
+                    return;
+                };
+                Some((snapshot, line_limit))
+            } else {
+                None
+            };
         let mut ranges = Vec::new();
         for selection in self.selections() {
-            let Some(pair) = self.find_brackets_at(selection.start(), MatchBrackets::Always) else {
+            let active = selection.active;
+            if syntax.is_some()
+                && self
+                    .syntax
+                    .borrow()
+                    .in_string_or_comment(active.line.0, active.column.0 as u32)
+            {
+                continue;
+            }
+            let Some(pair) = self.find_brackets_at(active, MatchBrackets::AlwaysAtCursor) else {
                 continue;
             };
+            if syntax.as_ref().is_some_and(|(snapshot, line_limit)| {
+                !has_tokenized_pair(text, &pair, &**snapshot, *line_limit)
+            }) {
+                continue;
+            }
             for (line, bytes) in [pair.open, pair.close] {
                 let marker = |col| position(line, u64::from(col));
                 if let Some(range) =
@@ -310,6 +374,39 @@ fn trim_line(line: &str) -> Range<usize> {
     start..end
 }
 
+fn read_selection_line(text: &dyn TextSource, line: u64) -> Option<String> {
+    columns::read_line_with_byte_limit(text, line, columns::MAX_SELECTION_LINE_BYTES)
+}
+
+fn has_tokenized_pair(
+    text: &dyn TextSource,
+    pair: &BracketMatch,
+    snapshot: &dyn SyntaxSnapshot,
+    line_limit: usize,
+) -> bool {
+    let [first, last] = pair.lines();
+    let (Ok(start), Ok(end)) = (text.line_range(Line(first)), text.line_range(Line(last))) else {
+        return false;
+    };
+    last - first <= brackets::SCAN_LINES
+        && end.end().0 - start.start().0 <= brackets::COMMAND_SCAN_BYTES
+        && (first..=last).all(|line| {
+            bounded_tokenization_line(text, line, line_limit) && snapshot.tokens(Line(line)).is_ok()
+        })
+}
+
+fn bounded_tokenization_line(text: &dyn TextSource, line: u64, limit: usize) -> bool {
+    let Ok(range) = text.line_range(Line(line)) else {
+        return false;
+    };
+    let len = range.end().0 - range.start().0;
+    len <= limit as u64
+        || (len <= columns::MAX_SELECTION_LINE_BYTES
+            && len <= limit.saturating_mul(3) as u64
+            && read_selection_line(text, line)
+                .is_some_and(|text| text.encode_utf16().take(limit + 1).count() <= limit))
+}
+
 fn line_content(
     text: &dyn TextSource,
     first: u64,
@@ -321,11 +418,11 @@ fn line_content(
     if whitespace {
         return Span::new(a.start(), b.end()).ok();
     }
-    let left = trim_line(&columns::read_line(text, first)?);
+    let left = trim_line(&read_selection_line(text, first)?);
     let right = if last == first {
         left.clone()
     } else {
-        trim_line(&columns::read_line(text, last)?)
+        trim_line(&read_selection_line(text, last)?)
     };
     Span::new(
         ByteOffset(a.start().0 + left.start as u64),
@@ -337,14 +434,17 @@ fn line_content(
 fn including_adjacent_whitespace(text: &dyn TextSource, range: &ByteRange) -> Option<ByteRange> {
     let start = text.position(range.start()).ok()?;
     let end = text.position(range.end()).ok()?;
-    let before = columns::read_line(text, start.line.0)?;
-    let after = if end.line == start.line {
-        before.clone()
+    let before = read_selection_line(text, start.line.0)?;
+    let next_line = if end.line != start.line {
+        Some(read_selection_line(text, end.line.0)?)
     } else {
-        columns::read_line(text, end.line.0)?
+        None
     };
     let left = before.get(..start.column.0 as usize)?;
-    let right = after.get(end.column.0 as usize..)?;
+    let right = next_line
+        .as_deref()
+        .unwrap_or(&before)
+        .get(end.column.0 as usize..)?;
     let first = if left.trim().is_empty() {
         range.start().0 - left.len() as u64
     } else {

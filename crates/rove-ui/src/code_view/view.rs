@@ -9,7 +9,10 @@ use super::bracket_pairs::{BracketKind, BracketPairs, BracketSource};
 use super::brackets::{self, BracketMatch};
 use super::cache::{CacheStats, Lru};
 use super::colors::Palette;
-use super::columns::{read_line, DisplayLine, LineSource, TextLines};
+use super::columns::{
+    read_line, read_line_with_byte_limit, DisplayLine, LineSource, TextLines,
+    MAX_SELECTION_LINE_BYTES,
+};
 use super::decorations::{
     priority, DecorationProvider, DecorationStore, InlineDecoration, LayerId, LineDecorations,
     MergedLine, TextStyle,
@@ -939,6 +942,7 @@ impl CodeView {
     pub fn set_language(&mut self, language: Option<Arc<str>>, cx: &mut Context<Self>) {
         if self.language != language {
             self.language = language;
+            self.smart_selection = None;
             self.links.reset();
             self.reload_options(cx);
             self.recompute_folds(cx);
@@ -1744,15 +1748,20 @@ impl CodeView {
         let Some(text) = self.text.as_deref() else {
             return Position::default();
         };
-        let text = TextLines(text);
-        let last = text.line_count().saturating_sub(1);
+        let last = text.lines().known.saturating_sub(1);
         let line = p.line.0.min(last);
-        let t = text.line_text(line).unwrap_or_default();
-        let mut col = (p.column.0 as usize).min(t.len());
-        while !t.is_char_boundary(col) {
-            col -= 1;
+        let Ok(range) = text.line_range(Line(line)) else {
+            return pos(line, 0);
+        };
+        let col = p.column.0.min(range.end().0 - range.start().0);
+        // UTF-8 字符最多四字节。通过文本源检查边界，无须复制行。
+        for back in 0..4 {
+            let candidate = pos(line, col.saturating_sub(back));
+            if text.offset(candidate).is_ok() {
+                return candidate;
+            }
         }
-        pos(line, col as u64)
+        pos(line, 0)
     }
 
     /// 选区文本（保持原始换行符，含 CRLF）。
@@ -4210,12 +4219,23 @@ impl CodeView {
         }
         let text = self.text.as_ref()?;
         let config = self.language_config()?;
-        let lines = TextLines(&**text);
+        // 树尚未就绪时限制显式命令的同步扫描量。绘制沿用原有的行数上限。
+        let remaining = Cell::new(if mode == brackets::MatchBrackets::AlwaysAtCursor {
+            brackets::COMMAND_SCAN_BYTES
+        } else {
+            u64::MAX
+        });
         let read = |l: u64| -> Option<Arc<str>> {
-            self.lines
+            let source = self
+                .lines
                 .peek(&l)
+                .filter(|entry| entry.source.len() as u64 <= remaining.get())
                 .map(|e| e.source.clone())
-                .or_else(|| lines.line_text(l).map(Arc::from))
+                .or_else(|| {
+                    read_line_with_byte_limit(&**text, l, remaining.get()).map(Arc::from)
+                })?;
+            remaining.set(remaining.get() - source.len() as u64);
+            Some(source)
         };
         let syntax = self.syntax.borrow();
         let skip = |l: u64, c: u32| syntax.in_string_or_comment(l, c);
@@ -4275,8 +4295,16 @@ impl CodeView {
 
     /// #40：`p` 所在的单词（与同名高亮同一套分词规则）：（起始列, 结束列, 文本），UTF-8 字节列。
     pub fn word_range_at(&self, p: Position) -> Option<(u64, u64, String)> {
+        self.word_range_at_with_limit(p, u64::MAX)
+    }
+
+    pub(crate) fn word_range_at_with_limit(
+        &self,
+        p: Position,
+        max_bytes: u64,
+    ) -> Option<(u64, u64, String)> {
         let text = self.text.as_ref()?;
-        let line = TextLines(&**text).line_text(p.line.0)?;
+        let line = read_line_with_byte_limit(&**text, p.line.0, max_bytes)?;
         let (a, b) = self.word_rule().word_at(&line, p.column.0 as usize)?;
         Some((a as u64, b as u64, line[a..b].to_string()))
     }
@@ -4300,15 +4328,22 @@ impl CodeView {
     fn occurrence_target(&self) -> Option<Target> {
         let text = self.text.as_ref()?;
         let s = self.cursor.selection;
-        let lines = TextLines(&**text);
         if !s.is_empty() {
             // 跨行选区的相似匹配需要跨行查找，本视图按行匹配，暂不支持（selectionHighlightMultiline）。
             if !self.options.selection_highlight || s.start().line != s.end().line {
                 return None;
             }
-            let line = lines.line_text(s.start().line.0)?;
-            let (a, b) = (s.start().column.0 as usize, s.end().column.0 as usize);
-            let t = line.get(a..b)?;
+            let first = s.start().column.0;
+            let byte_len = s.end().column.0 - first;
+            let max_bytes = MAX_SELECTION_LINE_BYTES.min(
+                self.options
+                    .selection_highlight_max_length
+                    .saturating_mul(4) as u64,
+            );
+            if byte_len > max_bytes {
+                return None;
+            }
+            let t = self.selected_text()?;
             if t.trim().is_empty()
                 || t.chars().count() > self.options.selection_highlight_max_length
             {
@@ -4317,7 +4352,7 @@ impl CodeView {
             return Some(Target::Selection {
                 text: t.into(),
                 case_sensitive: self.options.selected_text_case_sensitive,
-                exclude: (s.start().line.0, a),
+                exclude: (s.start().line.0, first as usize),
             });
         }
         if !self.options.occurrences_highlight
@@ -4326,7 +4361,7 @@ impl CodeView {
         {
             return None;
         }
-        let line = lines.line_text(s.active.line.0)?;
+        let line = read_line_with_byte_limit(&**text, s.active.line.0, MAX_SELECTION_LINE_BYTES)?;
         let rule = self.word_rule();
         let (a, b) = rule.word_at(&line, s.active.column.0 as usize)?;
         Some(Target::Word {
