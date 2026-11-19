@@ -144,11 +144,18 @@ pub enum QuickPickEvent {
     },
 }
 
-/// Per-row presentation for callers that score and sort themselves (`QuickPickConfig::filter =
-/// None`, #24): match highlights (UTF-8 byte ranges) in the label and detail, and an optional
-/// right-aligned text such as a key binding. Indexed like the model; missing entries mean "none".
+/// A leading codicon and its registered theme color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowIcon {
+    pub name: &'static str,
+    pub color_key: &'static str,
+}
+
+/// Presentation supplied by the caller, indexed like the model.
+/// Missing entries leave the row without caller-provided decoration.
 #[derive(Clone, Debug, Default)]
 pub struct RowDecor {
+    pub icon: Option<RowIcon>,
     pub label_highlights: Vec<std::ops::Range<usize>>,
     pub detail_highlights: Vec<std::ops::Range<usize>>,
     pub trailing: Option<Arc<str>>,

@@ -11,12 +11,15 @@
 //! - 列表项的渲染、键盘导航与浮层来自 #18 的快速输入组件；选中后经 #17 的打开文档服务打开并定位
 //!   （`.md` 也打开源码，`UX_SPEC` §4.3）。
 //!
-//! #178 的 `WorkspaceSymbol` 契约提供种类字段，供工作区符号列表绘制 `symbolIcon.*`。
+//! 列表按查询返回的种类复用大纲的图标和 `symbolIcon.*` 主题颜色。
 //!
 //! 本模块不依赖 GPUI（只有命令的 action 是 GPUI 类型）。
 
 use crate::{
-    list_widget::{matcher::Matcher, quick_input::RowDecor},
+    list_widget::{
+        matcher::Matcher,
+        quick_input::{RowDecor, RowIcon},
+    },
     lists::{ItemId, Row},
     quick_access::Picks,
 };
@@ -129,6 +132,7 @@ pub fn picks(
             .score(query, &symbol.name)
             .map(|m| m.ranges)
             .unwrap_or_default();
+        let (name, color_key) = crate::outline::model::icon(&symbol.kind);
         picks.push(
             Row {
                 id: ItemId(i.to_string().into()),
@@ -140,6 +144,7 @@ pub fn picks(
                 disabled: false,
             },
             RowDecor {
+                icon: Some(RowIcon { name, color_key }),
                 label_highlights: highlights,
                 detail_highlights: Vec::new(),
                 trailing: None,
