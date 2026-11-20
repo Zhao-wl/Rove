@@ -192,6 +192,12 @@ impl CodeView {
         if std::mem::take(&mut self.prepare_on_layout) {
             self.prepare_jump(window);
         }
+        if let Some((version, line)) = self.selection_line_to_prepare.take() {
+            if version == self.version() && line == self.selection().active.line {
+                self.ensure_entry(line.0);
+                self.ensure_shaped(line.0, window);
+            }
+        }
         let o = &self.options;
 
         // 行号栏：字形边距 | 行号 | 行装饰区（含折叠控件）。
@@ -574,6 +580,7 @@ impl CodeView {
         let comp_line = self.composition.as_ref().map(|c| c.start.line.0);
         let caret_line = comp_line.unwrap_or(sel.active.line.0);
         let mut caret_bounds = None;
+        let mut selection_painted = false;
         // #57：参考线按可见区间整帧算一次（跨过视口的括号对每对最多多读两行文本）。
         let visible = match (frame.lines.first(), frame.lines.last()) {
             (Some(a), Some(b)) => a.line..b.line + 1,
@@ -644,7 +651,7 @@ impl CodeView {
                     // 每一段都用同一份整形结果与同一张 x 表绘制，不另算一套几何。
                     let left = left + px(l.shift);
                     let row = self.row_mask(l, text, y);
-                    let draw = |window: &mut Window| {
+                    let mut draw = |window: &mut Window| {
                         // 整行装饰。
                         if let Some(m) = &entry.merged {
                             let b =
@@ -722,8 +729,11 @@ impl CodeView {
                                     p.inactive_selection
                                 };
                                 let r = if o.rounded_selection { px(3.) } else { px(0.) };
+                                let bounds =
+                                    Bounds::new(point(left + px(a), y), size(px(b - a), px(lh)));
+                                selection_painted |= bounds.intersects(&text);
                                 window.paint_quad(quad(
-                                    Bounds::new(point(left + px(a), y), size(px(b - a), px(lh))),
+                                    bounds,
                                     r,
                                     hsla(color),
                                     px(0.),
@@ -952,6 +962,7 @@ impl CodeView {
             }
         });
 
+        self.last_frame.selection_painted = selection_painted;
         self.paint_gutter(frame, window);
         // 标尺在滑块下绘制，不透明的自定义背景也不会遮住滑块。
         let measure = self.recording.is_some().then(Instant::now);

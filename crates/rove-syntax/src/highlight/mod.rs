@@ -6,6 +6,7 @@ mod documents;
 mod folds;
 mod grammar;
 mod rows;
+mod selection;
 mod settings;
 mod source;
 
@@ -28,6 +29,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tree_sitter::{InputEdit, Node, Point, Tree};
+
+/// Whether the language has a tree-sitter grammar.
+pub fn has_grammar(language: &str) -> bool {
+    Grammar::for_id(language).is_some()
+}
 
 /// Executor-neutral highlighter. Poll the returned task on a background executor.
 #[derive(Clone)]

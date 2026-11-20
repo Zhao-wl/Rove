@@ -149,6 +149,10 @@ const TARGETS: &[BenchTarget] = &[
         name: "minimap",
         requires: "",
     },
+    BenchTarget {
+        name: "smart_select",
+        requires: "",
+    },
 ];
 
 pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {

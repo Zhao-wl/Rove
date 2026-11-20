@@ -6,8 +6,8 @@
 //! document drops its baseline: a result that finishes after the close is discarded.
 
 use super::{DocumentSyntax, TreeSitterSyntax};
-use crate::{SyntaxService, SyntaxUpdate};
-use rove_base::{Cancellation, DocumentId, Error, LineRange, Task, TextEdit};
+use crate::{SyntaxService, SyntaxSnapshot, SyntaxUpdate};
+use rove_base::{ByteRange, Cancellation, DocumentId, Error, LineRange, Task, TextEdit, Version};
 use rove_buffer::TextSource;
 use std::{
     collections::HashMap,
@@ -31,6 +31,26 @@ pub trait DocumentHighlighter: Send + Sync {
         visible: Option<LineRange>,
         cancel: Cancellation,
     ) -> Task<SyntaxUpdate>;
+
+    /// Ancestors of the selection in the already parsed version, innermost first.
+    fn selection_ranges(
+        &self,
+        _: DocumentId,
+        _: Version,
+        _: &str,
+        _: &ByteRange,
+    ) -> Vec<ByteRange> {
+        Vec::new()
+    }
+
+    /// The tokenization line limit from this exact, fully analyzed snapshot.
+    fn complete_snapshot_line_limit(
+        &self,
+        _: DocumentId,
+        _: &Arc<dyn SyntaxSnapshot>,
+    ) -> Option<usize> {
+        None
+    }
 
     /// Forget the document's baseline. Analyses still running for it return `Cancelled`.
     fn close(&self, document: DocumentId);
@@ -143,6 +163,38 @@ impl DocumentHighlighter for SyntaxDocuments {
             }
             Ok(update)
         })
+    }
+
+    fn selection_ranges(
+        &self,
+        document: DocumentId,
+        version: Version,
+        language: &str,
+        selection: &ByteRange,
+    ) -> Vec<ByteRange> {
+        let entry = self
+            .0
+            .open
+            .try_lock()
+            .ok()
+            .and_then(|open| open.get(&document).cloned());
+        entry.map_or_else(Vec::new, |entry| {
+            entry.syntax.selection_ranges(version, language, selection)
+        })
+    }
+
+    fn complete_snapshot_line_limit(
+        &self,
+        document: DocumentId,
+        snapshot: &Arc<dyn SyntaxSnapshot>,
+    ) -> Option<usize> {
+        let entry = self.0.open.try_lock().ok()?.get(&document)?.clone();
+        let baseline = entry.syntax.baseline.try_lock().ok()?;
+        let current = baseline
+            .as_ref()
+            .filter(|s| !s.partial && s.parsed.is_some())?;
+        let erased: Arc<dyn SyntaxSnapshot> = current.clone();
+        Arc::ptr_eq(&erased, snapshot).then_some(current.line_limit)
     }
 
     fn close(&self, document: DocumentId) {

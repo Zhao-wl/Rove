@@ -443,6 +443,7 @@ impl CodeView {
         edits: &[AppliedEdit],
         cx: &mut Context<Self>,
     ) {
+        self.smart_selection = None;
         self.text = Some(after);
         // #53：任何编辑都让“这对括号是编辑器补的”失效（自动闭合自己在编辑之后重新记）。
         self.auto_closed.clear();

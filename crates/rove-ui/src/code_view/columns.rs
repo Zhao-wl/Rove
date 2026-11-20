@@ -262,10 +262,25 @@ impl LineSource for TextLines<'_> {
     }
 }
 
+/// 前台选区命令扫描一行时的上限。更长的行仍可按偏移定位和选择。
+pub(crate) const MAX_SELECTION_LINE_BYTES: u64 = 16 * 1024;
+
 /// 从 `TextSource` 读一行（不含终止符）。
 pub fn read_line(text: &dyn rove_buffer::TextSource, line: u64) -> Option<String> {
+    read_line_with_byte_limit(text, line, u64::MAX)
+}
+
+pub(super) fn read_line_with_byte_limit(
+    text: &dyn rove_buffer::TextSource,
+    line: u64,
+    max_bytes: u64,
+) -> Option<String> {
     let range = text.line_range(rove_base::Line(line)).ok()?;
-    let mut out = String::with_capacity((range.end().0 - range.start().0) as usize);
+    let len = range.end().0 - range.start().0;
+    if len > max_bytes {
+        return None;
+    }
+    let mut out = String::with_capacity(usize::try_from(len).ok()?);
     text.visit_chunks(range, &mut |s| out.push_str(s)).ok()?;
     Some(out)
 }

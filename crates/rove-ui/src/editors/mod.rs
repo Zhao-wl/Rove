@@ -830,6 +830,10 @@ impl EditorService {
         self.highlights = syntax::Highlights::new(syntax);
     }
 
+    pub(crate) fn selection_syntax(&self) -> Arc<dyn DocumentHighlighter> {
+        self.highlights.service.clone()
+    }
+
     /// Replace snapshots in place, keeping scroll and selection. Metadata views use this when
     /// their content changes. Language mode changes can reuse the same text and version.
     /// Returns whether any tab changed.

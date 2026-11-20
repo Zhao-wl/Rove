@@ -1426,7 +1426,12 @@ impl Workbench {
         let selection = code.read(cx).selection();
         let off = self.nav.settings.occurrences == Occurrences::Off && !trigger;
         let word = (!off && selection.is_empty())
-            .then(|| code.read(cx).word_range_at(selection.active))
+            .then(|| {
+                code.read(cx).word_range_at_with_limit(
+                    selection.active,
+                    crate::code_view::columns::MAX_SELECTION_LINE_BYTES,
+                )
+            })
             .flatten();
         let Some(_) = word else {
             // 没有单词（或有选区、或关闭了同名高亮）：清空；文本层同样不高亮单词。

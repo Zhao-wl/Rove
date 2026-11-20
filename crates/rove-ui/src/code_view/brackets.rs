@@ -3,11 +3,14 @@
 //! （由调用方根据语法 token 判断）。扫描范围有上限，不会在超大文件上卡住 UI 线程。
 
 use rove_syntax::Pair;
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
 
 /// 每个方向最多扫描的行数。
 pub const SCAN_LINES: u64 = 5_000;
+/// 单次括号回退扫描与删除校验最多涉及 64 KiB 的原文。
+pub(super) const SCAN_BYTES: u64 = 64 * 1024;
 
 /// `editor.matchBrackets`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +18,8 @@ pub enum MatchBrackets {
     Always,
     Near,
     Never,
+    /// 显式命令先匹配光标所在的括号，其次匹配左侧。
+    AlwaysAtCursor,
 }
 
 /// 一对匹配的括号：(行, 该行内 UTF-8 字节区间)。
@@ -92,14 +97,18 @@ pub fn find(
         )
     };
     let here = occs(line)?;
-    // 先看光标左边紧挨着的括号，再看右边。
-    let adjacent = here
-        .iter()
-        .find(|o| o.col + o.len == column)
-        .or_else(|| here.iter().find(|o| o.col == column))
-        .copied();
+    let prefer_left = mode != MatchBrackets::AlwaysAtCursor;
+    let adjacent = [prefer_left, !prefer_left].into_iter().find_map(|left| {
+        here.iter().copied().find(|o| {
+            if left {
+                o.col + o.len == column
+            } else {
+                o.col == column
+            }
+        })
+    });
     if let Some(o) = adjacent {
-        return matching(line, o, &occs);
+        return matching(line, o, &here, &occs);
     }
     if mode == MatchBrackets::Near {
         return None;
@@ -107,12 +116,24 @@ pub fn find(
     enclosing(line, column, &here, &occs)
 }
 
-fn matching(line: u64, o: Occ, occs: &dyn Fn(u64) -> Option<Vec<Occ>>) -> Option<BracketMatch> {
+fn matching(
+    line: u64,
+    o: Occ,
+    here: &[Occ],
+    occs: &dyn Fn(u64) -> Option<Vec<Occ>>,
+) -> Option<BracketMatch> {
     let me = (line, o.col..o.col + o.len);
+    let read = |row| {
+        if row == line {
+            Some(Cow::Borrowed(here))
+        } else {
+            occs(row).map(Cow::Owned)
+        }
+    };
     let mut depth = 1u32;
     if o.open {
         for l in line..line.saturating_add(SCAN_LINES) {
-            let list = occs(l)?;
+            let list = read(l)?;
             for c in list.iter().filter(|c| c.pair == o.pair) {
                 if l == line && c.col <= o.col {
                     continue;
@@ -133,7 +154,7 @@ fn matching(line: u64, o: Occ, occs: &dyn Fn(u64) -> Option<Vec<Occ>>) -> Option
     } else {
         let lo = line.saturating_sub(SCAN_LINES);
         for l in (lo..=line).rev() {
-            let list = occs(l)?;
+            let list = read(l)?;
             for c in list.iter().rev().filter(|c| c.pair == o.pair) {
                 if l == line && c.col >= o.col {
                     continue;
@@ -179,7 +200,7 @@ fn enclosing(
                 depth[c.pair] -= 1;
             } else {
                 // 未配对的开括号：它的配对若在光标之后，就是包围光标的一对。
-                let m = matching(l, *c, occs)?;
+                let m = matching(l, *c, &list, occs)?;
                 let (cl, cr) = (&m.close.0, &m.close.1);
                 return (*cl > line || (*cl == line && cr.start >= column)).then_some(m);
             }
@@ -191,6 +212,7 @@ fn enclosing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     fn pairs(list: &[(&str, &str)]) -> Vec<Pair> {
         list.iter()
@@ -218,6 +240,28 @@ mod tests {
             &|l| lines.get(l as usize).cloned(),
             &|_, _| false,
         )
+    }
+
+    #[test]
+    fn matching_on_a_long_line_reads_it_only_once() {
+        let source: Arc<str> = format!("({})", "a".repeat(40 * 1024)).into();
+        let reads = Cell::new(0);
+        let matched = find(
+            &pairs(&[("(", ")")]),
+            0,
+            0,
+            MatchBrackets::AlwaysAtCursor,
+            &|line| {
+                if line != 0 || reads.replace(reads.get() + 1) != 0 {
+                    return None;
+                }
+                Some(source.clone())
+            },
+            &|_, _| false,
+        )
+        .expect("括号在同一行内");
+        assert_eq!(matched.close.1.end as usize, source.len());
+        assert_eq!(reads.get(), 1);
     }
 
     #[test]

@@ -9,7 +9,10 @@ use super::bracket_pairs::{BracketKind, BracketPairs, BracketSource};
 use super::brackets::{self, BracketMatch};
 use super::cache::{CacheStats, Lru};
 use super::colors::Palette;
-use super::columns::{read_line, DisplayLine, LineSource, TextLines};
+use super::columns::{
+    read_line, read_line_with_byte_limit, DisplayLine, LineSource, TextLines,
+    MAX_SELECTION_LINE_BYTES,
+};
 use super::decorations::{
     priority, DecorationProvider, DecorationStore, InlineDecoration, LayerId, LineDecorations,
     MergedLine, TextStyle,
@@ -244,6 +247,8 @@ pub struct FrameStats {
     /// 首个可见行相对文本区顶边的 y（像素）。占位与正式结果替换前后必须相同。
     pub first_line_y: f32,
     pub first_line: u64,
+    /// 本帧是否绘制了与正文相交的选区背景，用于扩选按键的帧吸收测量。
+    pub selection_painted: bool,
     /// #215：本帧**实际绘制所用**文本快照的版本（`TextSource::version()`，prepaint 时取）。
     /// 用来判定「这一帧有没有包含刚才那次按键」，不必靠字形数之类的间接信号。
     pub text_version: u64,
@@ -468,6 +473,11 @@ pub struct CodeView {
     pub(crate) services: CodeViewServices,
     pub(crate) language: Option<Arc<str>>,
     pub(crate) options: EditorOptions,
+    pub(crate) smart_selection: Option<super::smart_selection::SmartSelection>,
+    pub(crate) selection_syntax: Option<(
+        rove_base::DocumentId,
+        Arc<dyn rove_syntax::highlight::DocumentHighlighter>,
+    )>,
     pub(crate) suppress_line_numbers: bool,
     pub(crate) palette: Palette,
     pub(crate) minimap: super::minimap_view::MinimapView,
@@ -527,6 +537,7 @@ pub struct CodeView {
     prepare_scheduled: bool,
     /// #132：视口刚跳到新位置，下一次布局要在绘制前同步准备目标区域（一次性）。
     pub(crate) prepare_on_layout: bool,
+    pub(crate) selection_line_to_prepare: Option<(Version, Line)>,
     pub(crate) last_viewport: Option<Viewport>,
     pub(crate) caret_visible: bool,
     blink_epoch: Rc<Cell<u64>>,
@@ -763,6 +774,8 @@ impl CodeView {
             services,
             language: None,
             options,
+            smart_selection: None,
+            selection_syntax: None,
             suppress_line_numbers: false,
             palette,
             minimap: Default::default(),
@@ -810,6 +823,7 @@ impl CodeView {
             direction: 1,
             prepare_scheduled: false,
             prepare_on_layout: false,
+            selection_line_to_prepare: None,
             last_viewport: None,
             caret_visible: true,
             blink_epoch: Rc::new(Cell::new(0)),
@@ -860,6 +874,10 @@ impl CodeView {
         let discard_semantics = changed && !self.semantic.borrow().is_empty();
         if discard_semantics {
             self.semantic.borrow_mut().discard();
+        }
+        self.smart_selection = None;
+        if !keep_view_state {
+            self.selection_syntax = None;
         }
         self.text = text;
         self.minimap.clear(cx);
@@ -928,6 +946,7 @@ impl CodeView {
     pub fn set_language(&mut self, language: Option<Arc<str>>, cx: &mut Context<Self>) {
         if self.language != language {
             self.language = language;
+            self.smart_selection = None;
             self.links.reset();
             self.reload_options(cx);
             self.recompute_folds(cx);
@@ -1375,6 +1394,13 @@ impl CodeView {
             self.minimap.clear(cx);
             self.invalidate_minimap_marks();
         }
+        if self.options.smart_select_subwords != options.smart_select_subwords
+            || self.options.smart_select_whitespace != options.smart_select_whitespace
+            || self.options.word_separators != options.word_separators
+            || self.options.language_brackets != options.language_brackets
+        {
+            self.smart_selection = None;
+        }
         let layout_changed = options.tab_size != self.options.tab_size
             || options.stop_rendering_line_after != self.options.stop_rendering_line_after;
         let folds_changed = options.tab_size != self.options.tab_size
@@ -1728,15 +1754,20 @@ impl CodeView {
         let Some(text) = self.text.as_deref() else {
             return Position::default();
         };
-        let text = TextLines(text);
-        let last = text.line_count().saturating_sub(1);
+        let last = text.lines().known.saturating_sub(1);
         let line = p.line.0.min(last);
-        let t = text.line_text(line).unwrap_or_default();
-        let mut col = (p.column.0 as usize).min(t.len());
-        while !t.is_char_boundary(col) {
-            col -= 1;
+        let Ok(range) = text.line_range(Line(line)) else {
+            return pos(line, 0);
+        };
+        let col = p.column.0.min(range.end().0 - range.start().0);
+        // UTF-8 字符最多四字节。通过文本源检查边界，无须复制行。
+        for back in 0..4 {
+            let candidate = pos(line, col.saturating_sub(back));
+            if text.offset(candidate).is_ok() {
+                return candidate;
+            }
         }
-        pos(line, col as u64)
+        pos(line, 0)
     }
 
     /// 选区文本（保持原始换行符，含 CRLF）。
@@ -1806,6 +1837,7 @@ impl CodeView {
     }
 
     pub(crate) fn selection_changed(&mut self, source: SelectionSource, cx: &mut Context<Self>) {
+        self.smart_selection = None;
         // #47：光标撤销栈与撤销分组以会话为准。
         self.push_selection_to_session();
         // #53：光标离开后，自动补上的闭合符不再参与越过与成对删除。
@@ -2056,6 +2088,9 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.execute_smart_selection(id, window, cx) {
+            return true;
+        }
         // #52：多光标、列选择与行操作。
         if let Some(handled) = self.execute_multicursor(id, window, cx) {
             return handled;
@@ -3365,6 +3400,14 @@ impl CodeView {
             .map(|(s, _)| s.clone())
     }
 
+    /// 当前显示文本所用的解析版本。编辑会话接管文件时内容相同，文本与解析的版本号可以不同。
+    pub fn current_syntax_version(&self) -> Option<Version> {
+        let text = self.text.as_ref()?;
+        let layer = self.syntax.borrow();
+        let (snapshot, analyzed) = layer.current.as_ref()?;
+        (layer.pending.is_empty() && Arc::ptr_eq(text, analyzed)).then(|| snapshot.version())
+    }
+
     /// 上一次 [`CodeView::set_syntax`] 让哪些行失效（`Some(None)` 为整层；测试用）。
     pub fn take_syntax_invalidation(&mut self) -> Option<Option<Vec<Range<u64>>>> {
         self.last_syntax_invalidation.take()
@@ -4164,34 +4207,53 @@ impl CodeView {
         if !self.options.highlight_active_bracket_pair {
             return None;
         }
-        let a = self.cursor.selection.active;
+        self.find_brackets_at(self.cursor.selection.active, self.options.match_brackets)
+    }
+
+    pub(super) fn find_brackets_at(
+        &self,
+        a: Position,
+        mode: super::brackets::MatchBrackets,
+    ) -> Option<BracketMatch> {
         {
             // 括号对树可用时一律以它为准：嵌套与未配对的情况比就近扫描准，
             // 而 `editor.matchBrackets`（always / near / never）的语义不变。
             let pairs = self.bracket_pairs.borrow();
             if pairs.has_tree() {
-                return pairs.active_pair(a.line.0, a.column.0 as u32, self.options.match_brackets);
+                return pairs.active_pair(a.line.0, a.column.0 as u32, mode);
             }
         }
         let text = self.text.as_ref()?;
-        let config = self.language_config()?;
-        let lines = TextLines(&**text);
+        let overrides = self.options.language_brackets.as_ref().map(|pairs| {
+            pairs
+                .iter()
+                .map(|(open, close)| rove_syntax::Pair {
+                    open: open.clone(),
+                    close: close.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
+        let pairs = overrides.as_deref().or_else(|| {
+            self.language_config()
+                .map(|config| config.data().brackets.as_ref())
+        })?;
+        // 选区变化也会同步刷新高亮。未建树时，绘制和显式命令共用扫描预算。
+        let remaining = Cell::new(brackets::SCAN_BYTES);
         let read = |l: u64| -> Option<Arc<str>> {
-            self.lines
+            let source = self
+                .lines
                 .peek(&l)
+                .filter(|entry| entry.source.len() as u64 <= remaining.get())
                 .map(|e| e.source.clone())
-                .or_else(|| lines.line_text(l).map(Arc::from))
+                .or_else(|| {
+                    read_line_with_byte_limit(&**text, l, remaining.get()).map(Arc::from)
+                })?;
+            remaining.set(remaining.get() - source.len() as u64);
+            Some(source)
         };
         let syntax = self.syntax.borrow();
         let skip = |l: u64, c: u32| syntax.in_string_or_comment(l, c);
-        brackets::find(
-            &config.data().brackets,
-            a.line.0,
-            a.column.0 as u32,
-            self.options.match_brackets,
-            &read,
-            &skip,
-        )
+        brackets::find(pairs, a.line.0, a.column.0 as u32, mode, &read, &skip)
     }
 
     /// `hasWordHighlights` 上下文键的取值。
@@ -4240,8 +4302,16 @@ impl CodeView {
 
     /// #40：`p` 所在的单词（与同名高亮同一套分词规则）：（起始列, 结束列, 文本），UTF-8 字节列。
     pub fn word_range_at(&self, p: Position) -> Option<(u64, u64, String)> {
+        self.word_range_at_with_limit(p, u64::MAX)
+    }
+
+    pub(crate) fn word_range_at_with_limit(
+        &self,
+        p: Position,
+        max_bytes: u64,
+    ) -> Option<(u64, u64, String)> {
         let text = self.text.as_ref()?;
-        let line = TextLines(&**text).line_text(p.line.0)?;
+        let line = read_line_with_byte_limit(&**text, p.line.0, max_bytes)?;
         let (a, b) = self.word_rule().word_at(&line, p.column.0 as usize)?;
         Some((a as u64, b as u64, line[a..b].to_string()))
     }
@@ -4256,7 +4326,7 @@ impl CodeView {
         }
     }
 
-    fn word_rule(&self) -> WordRule {
+    pub(super) fn word_rule(&self) -> WordRule {
         self.language_config()
             .map(WordRule::Language)
             .unwrap_or_else(|| WordRule::Separators(self.options.word_separators.clone()))
@@ -4265,15 +4335,22 @@ impl CodeView {
     fn occurrence_target(&self) -> Option<Target> {
         let text = self.text.as_ref()?;
         let s = self.cursor.selection;
-        let lines = TextLines(&**text);
         if !s.is_empty() {
             // 跨行选区的相似匹配需要跨行查找，本视图按行匹配，暂不支持（selectionHighlightMultiline）。
             if !self.options.selection_highlight || s.start().line != s.end().line {
                 return None;
             }
-            let line = lines.line_text(s.start().line.0)?;
-            let (a, b) = (s.start().column.0 as usize, s.end().column.0 as usize);
-            let t = line.get(a..b)?;
+            let first = s.start().column.0;
+            let byte_len = s.end().column.0 - first;
+            let max_bytes = MAX_SELECTION_LINE_BYTES.min(
+                self.options
+                    .selection_highlight_max_length
+                    .saturating_mul(4) as u64,
+            );
+            if byte_len > max_bytes {
+                return None;
+            }
+            let t = self.selected_text()?;
             if t.trim().is_empty()
                 || t.chars().count() > self.options.selection_highlight_max_length
             {
@@ -4282,7 +4359,7 @@ impl CodeView {
             return Some(Target::Selection {
                 text: t.into(),
                 case_sensitive: self.options.selected_text_case_sensitive,
-                exclude: (s.start().line.0, a),
+                exclude: (s.start().line.0, first as usize),
             });
         }
         if !self.options.occurrences_highlight
@@ -4291,7 +4368,7 @@ impl CodeView {
         {
             return None;
         }
-        let line = lines.line_text(s.active.line.0)?;
+        let line = read_line_with_byte_limit(&**text, s.active.line.0, MAX_SELECTION_LINE_BYTES)?;
         let rule = self.word_rule();
         let (a, b) = rule.word_at(&line, s.active.column.0 as usize)?;
         Some(Target::Word {
