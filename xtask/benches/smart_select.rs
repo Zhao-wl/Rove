@@ -21,6 +21,7 @@ use std::{
 
 const SAMPLES: usize = 60;
 const WARMUP: usize = 12;
+const RESET_INTERVAL: Duration = Duration::from_millis(24);
 const NAME: &str = "SelectionFixture.cs";
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -95,6 +96,7 @@ async fn measure(
     let key = Keystroke::parse("shift-alt-right").unwrap();
     let action = rove_ui::keys::action_for("editor.action.smartSelect.expand")
         .ok_or("找不到智能扩选命令")?;
+    let timer = cx.background_executor().clone();
     let mut active = Vec::with_capacity(SAMPLES);
     let mut wall = Vec::with_capacity(SAMPLES);
     let mut slow_samples = Vec::new();
@@ -109,6 +111,8 @@ async fn measure(
                 (Instant::now(), caret, version)
             })
         })?;
+        // 延续独立按键样本的复位间隔，给光标复位触发的装饰和视图更新留下处理时间。
+        timer.timer(RESET_INTERVAL).await;
         // 本轮计时前，编辑器必须完成复位，并已在当前渲染树接收扩选快捷键。
         wait_for(cx, "编辑器焦点和光标复位", |cx| {
             any.update(cx, |_, window, app| {
