@@ -426,6 +426,20 @@ impl Grammar {
         output: &mut Vec<Range<usize>>,
         work: &Work<'_>,
     ) -> Result<()> {
+        if self == Self::Csharp && super::folds::csharp_nodes(tree, &scan, output, work)? {
+            return Ok(());
+        }
+        self.query_fold_nodes(tree, source, scan, output, work)
+    }
+
+    fn query_fold_nodes(
+        self,
+        tree: &Tree,
+        source: &Source,
+        scan: Range<usize>,
+        output: &mut Vec<Range<usize>>,
+        work: &Work<'_>,
+    ) -> Result<()> {
         let Some(query) = self.fold_query() else {
             return Ok(());
         };
@@ -691,6 +705,67 @@ fn content_ranges(node: Node<'_>, parent: &[TreeRange]) -> Vec<TreeRange> {
 mod tests {
     use super::*;
     use tree_sitter::{InputEdit, Point};
+
+    #[test]
+    fn csharp_fold_walk_matches_the_query_and_leaves_clipped_or_broken_trees_to_it() {
+        let text = r#"namespace N
+{
+    enum Enum { A, B }
+    class C
+    {
+        /* outer
+           comment */
+        int P { get { return 1; } }
+        int M(int value)
+        {
+            var items = new[] { 1, 2 };
+            switch (value)
+            {
+                case 1: return items[0];
+                default: return value;
+            }
+        }
+    }
+}
+"#;
+        let grammar = Grammar::Csharp;
+        let cancel = Cancellation::default();
+        let work = Work {
+            cancel: &cancel,
+            deadline: None,
+        };
+        let source = Source::from_str(text);
+        let tree = grammar.parse(&source, None, &work).unwrap();
+        let mut expected = Vec::new();
+        grammar
+            .query_fold_nodes(&tree, &source, 0..text.len(), &mut expected, &work)
+            .unwrap();
+        let mut actual = Vec::new();
+        assert!(
+            super::super::folds::csharp_nodes(&tree, &(0..text.len()), &mut actual, &work).unwrap()
+        );
+        actual.sort_unstable_by_key(|node| (node.start, node.end));
+        expected.sort_unstable_by_key(|node| (node.start, node.end));
+        assert_eq!(actual, expected);
+
+        let mut rejected = Vec::new();
+        assert!(
+            !super::super::folds::csharp_nodes(&tree, &(20..110), &mut rejected, &work).unwrap()
+        );
+        let broken = "class C { void Broken( { }";
+        let broken_tree = grammar
+            .parse(&Source::from_str(broken), None, &work)
+            .unwrap();
+        assert!(broken_tree.root_node().has_error());
+        assert!(!super::super::folds::csharp_nodes(
+            &broken_tree,
+            &(0..broken.len()),
+            &mut rejected,
+            &work
+        )
+        .unwrap());
+        assert!(rejected.is_empty());
+    }
 
     #[test]
     fn decimal_substitution_reparses_a_leaf_without_editing_the_full_tree() {

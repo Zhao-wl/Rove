@@ -8,13 +8,88 @@
 //! 匹配（包含把编辑整个括起来的类 / 命名空间），所以只有与 `scan` 完全无关的旧区间才复用：
 //! 编辑之前的原样保留，编辑之后的整体平移。两类都不会与新算出的区间重复。
 
-use super::{rows::RowRanges, source::Source};
+use super::{grammar::Work, rows::RowRanges, source::Source};
 use crate::{Fold, FoldKind};
-use rove_base::{Line, LineRange};
-use std::{ops::Range, sync::Arc};
+use rove_base::{Line, LineRange, Result};
+use std::{
+    ops::Range,
+    sync::{Arc, LazyLock},
+};
+use tree_sitter::{Language, Tree};
 
 /// 行区间：首行与不含的末行，和 [`Fold::lines`] 同义。
 pub(super) type Rows = (u64, u64);
+
+static CSHARP_FOLD_KINDS: LazyLock<Option<Vec<bool>>> =
+    LazyLock::new(|| single_node_fold_kinds(include_str!("queries/csharp/folds.scm")));
+
+/// The C# query lists one named node per line. Only dispatch directly when the
+/// entire source is in that simple form. More complex queries use tree-sitter.
+fn single_node_fold_kinds(query: &str) -> Option<Vec<bool>> {
+    let mut lines = query
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or_default().trim())
+        .filter(|line| !line.is_empty());
+    if lines.next()? != "[" {
+        return None;
+    }
+    let language: Language = tree_sitter_c_sharp::LANGUAGE.into();
+    let mut kinds = vec![false; language.node_kind_count()];
+    loop {
+        let pattern = lines.next()?;
+        if pattern == "] @fold" {
+            return (lines.next().is_none() && kinds.contains(&true)).then_some(kinds);
+        }
+        let name = pattern.strip_prefix('(')?.strip_suffix(')')?;
+        let id = language.id_for_node_kind(name, true);
+        if id == 0 {
+            return None;
+        }
+        kinds[id as usize] = true;
+    }
+}
+
+pub(super) fn csharp_nodes(
+    tree: &Tree,
+    scan: &Range<usize>,
+    output: &mut Vec<Range<usize>>,
+    work: &Work<'_>,
+) -> Result<bool> {
+    let root = tree.root_node();
+    if scan.is_empty()
+        || scan.start > root.start_byte()
+        || scan.end < root.end_byte()
+        || root.has_error()
+    {
+        return Ok(false);
+    }
+    let Some(kinds) = &*CSHARP_FOLD_KINDS else {
+        return Ok(false);
+    };
+
+    work.check()?;
+    let mut cursor = root.walk();
+    let mut steps = 0u32;
+    loop {
+        steps = steps.wrapping_add(1);
+        if steps.is_multiple_of(512) {
+            work.check()?;
+        }
+        let node = cursor.node();
+        if kinds.get(node.kind_id() as usize).copied().unwrap_or(false) {
+            output.push(node.byte_range());
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                work.check()?;
+                return Ok(true);
+            }
+        }
+    }
+}
 
 /// `scan` 这些行的完整字节范围（含行尾），空范围返回 `0..0`。
 pub(super) fn row_bytes(ranges: &RowRanges, rows: &Range<usize>, len: usize) -> Range<usize> {
@@ -89,6 +164,13 @@ pub(super) fn finish(mut rows: Vec<Rows>) -> Arc<[Fold]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_folding_declines_complex_queries() {
+        assert!(CSHARP_FOLD_KINDS.is_some());
+        assert!(single_node_fold_kinds("[\n(class_declaration (block))\n] @fold").is_none());
+        assert!(single_node_fold_kinds("[\n(block)\n] @fold\n(comment) @fold").is_none());
+    }
 
     fn fold(start: u64, end: u64) -> Fold {
         Fold {

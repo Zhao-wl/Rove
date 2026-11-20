@@ -235,13 +235,17 @@ fn replacement(version: u64, start: usize, old_len: usize, inserted: &str) -> Te
 
 #[test]
 fn incremental_character_edit_reports_only_the_method_body_line() {
-    let service = TreeSitterSyntax::default().document();
+    // Keep the token and changed-line assertions independent of runner scheduling.
+    let service = TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::from_secs(5))
+        .document();
     let old = "class A {\n  int M() {\n    return 1;\n  }\n}\n";
     let initial = parse(&service, "csharp", old, 1);
     let new = old.replace('1', "2");
     let service = service.with_edit(replacement(1, old.find('1').unwrap(), 1, "2"));
     let update = parse(&service, "csharp", &new, 2);
     assert_eq!(update.previous, Some(Version(1)));
+    assert_eq!(update.snapshot.version(), Version(2));
     assert_eq!(
         update.changed_lines.as_deref(),
         Some(&[Span::new(Line(2), Line(3)).unwrap()][..])
@@ -256,13 +260,16 @@ fn incremental_character_edit_reports_only_the_method_body_line() {
 
 #[test]
 fn incremental_matches_full_after_newline_insertion_and_multiline_comment() {
-    let service = TreeSitterSyntax::default().document();
+    let service = TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::from_secs(5))
+        .document();
     let old = "class C {\n int a;\n int b;\n int c;\n // */\n}\n";
     parse(&service, "csharp", old, 1);
     let start = old.find("int a").unwrap();
     let new = format!("{}/*\n{}", &old[..start], &old[start..]);
     let patched = service.with_edit(replacement(1, start, 0, "/*\n"));
     let update = parse(&patched, "csharp", &new, 2);
+    assert_eq!(update.snapshot.version(), Version(2));
     let full = parse(&TreeSitterSyntax::default(), "csharp", &new, 2);
     assert_eq!(
         snapshot(update.snapshot.as_ref(), 8),

@@ -329,12 +329,24 @@ fn partitioned_csharp_folds_match_a_whole_file_parse() {
     assert_eq!(folds_with(&partitioned, "csharp", &source), expected);
     check_shape(&expected, source.split('\n').count() as u64);
 
-    // 增量：改一个成员体，只重解析它所在的分区。
     let document = partitioned.document();
     let mut current = source;
     let mut version = 1;
     let text: Arc<dyn TextSource> = Arc::new(Text::new(current.clone(), version));
-    block_on(document.analyze(text, "csharp".into(), Cancellation::default())).unwrap();
+    let first = block_on(
+        document
+            .with_visible(Span::new(Line(0), Line(20)).unwrap())
+            .analyze(text.clone(), "csharp".into(), Cancellation::default()),
+    )
+    .unwrap();
+    assert!(document.is_partial());
+    assert_eq!(pairs(first.snapshot.as_ref()), expected);
+    let completed =
+        block_on(document.analyze(text, "csharp".into(), Cancellation::default())).unwrap();
+    assert!(!document.is_partial());
+    assert_eq!(pairs(completed.snapshot.as_ref()), expected);
+
+    // 增量：改一个成员体，只重解析它所在的分区。
     let at = current
         .find("speed * Time.deltaTime; // move 1200")
         .unwrap();
