@@ -64,6 +64,7 @@ fn read_first_frame(window: &mut Window, code: Entity<CodeView>, readback: Frame
 async fn measure(
     window: WindowHandle<Workbench>,
     offset: ByteOffset,
+    force_redraw: bool,
     cx: &mut AsyncApp,
 ) -> Result<Measurements> {
     let code: Entity<CodeView> = window.update(cx, |workbench, _, cx| {
@@ -133,40 +134,50 @@ async fn measure(
         })
         .await?;
         let readback: FrameReadback = Rc::default();
-        let (sent, handled) = any.update(cx, |_, window, app| {
+        let (sent, handled, before_action) = any.update(cx, |_, window, app| {
             let key = key.clone();
+            if force_redraw {
+                window.refresh();
+            }
+            // GPUI 可能在匹配快捷键前同步刷新派发树。这次绘制没有呈现，
+            // 第一个实际窗口帧由平台的下一次帧请求绘制。
             read_first_frame(window, code.clone(), readback.clone());
             let sent = Instant::now();
             let handled = window.dispatch_keystroke(key, app);
-            (sent, handled)
+            let before_action = force_redraw.then(|| {
+                let view = code.read(app);
+                (view.last_frame(), view.selection())
+            });
+            (sent, handled, before_action)
         })?;
         // GPUI 的快捷键处理器把命令放到 update 的末尾执行。到这里才完成命令及其通知。
         let returned = Instant::now();
-        let (immediate, selected) = any.update(cx, |_, window, app| {
-            let view = code.read(app);
-            let frame = view.last_frame();
-            let selected = view.selection();
-            let immediate = frame.end.is_some_and(|end| end >= sent);
-            let selected = if handled && !selected.is_empty() {
+        let selected = any.update(cx, |_, window, app| {
+            let selected = code.read(app).selection();
+            if handled && !selected.is_empty() {
                 Ok(selected)
             } else {
                 Err(format!(
                     "样本 {i} 未完成快捷键扩选，已处理 {handled}，选区 {selected:?}，焦点上下文 {:?}",
                     window.context_stack()
                 ))
-            };
-            (immediate.then_some(frame), selected)
-        })?;
-        let selected = selected?;
-        let (frame_started, frame) = if let Some(frame) = immediate {
-            (returned, frame)
-        } else {
-            wait_for(cx, "按键后的第一帧", |_| readback.get().is_some()).await?;
-            readback.get().unwrap()
-        };
+            }
+        })??;
+        if let Some((sync_frame, pending_selection)) = before_action {
+            let confirmed = sync_frame
+                .end
+                .is_some_and(|end| (sent..=returned).contains(&end))
+                && pending_selection == caret
+                && !sync_frame.selection_painted;
+            if !confirmed {
+                return Err(format!("样本 {i} 未复现快捷键匹配前的同步绘制").into());
+            }
+        }
+        wait_for(cx, "按键后的第一帧", |_| readback.get().is_some()).await?;
+        let (frame_started, frame) = readback.get().unwrap();
         let end = frame
             .end
-            .filter(|end| *end >= sent && (immediate.is_some() || *end >= frame_started))
+            .filter(|end| *end >= frame_started && *end >= returned)
             .ok_or("按键后第一个帧请求没有绘制代码视图")?;
         if !frame.selection_painted {
             return Err(format!(
@@ -216,6 +227,7 @@ fn record(parent: &Path, id: &str, samples: &[f64]) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let force_redraw = std::env::var_os("ROVE_SMART_SELECT_FORCE_REDRAW").is_some();
     let dir = tempfile::tempdir()?;
     let mut source = "class SelectionFixture {\n".to_owned();
     for i in 0..1998 {
@@ -252,7 +264,7 @@ fn main() -> Result<()> {
         };
         cx.activate(true);
         cx.spawn(async move |cx| {
-            *out_for_run.borrow_mut() = Some(measure(window, offset, cx).await);
+            *out_for_run.borrow_mut() = Some(measure(window, offset, force_redraw, cx).await);
             let _ = cx.update(|cx| cx.quit());
         })
         .detach();
@@ -272,6 +284,10 @@ fn main() -> Result<()> {
                 frame.cpu.as_secs_f64() * 1000.0,
                 frame.layout.as_secs_f64() * 1000.0,
             );
+        }
+        if force_redraw {
+            println!("全部样本验证了快捷键匹配前的未呈现绘制");
+            return Ok(());
         }
         let exe = std::env::current_exe()?;
         let target = exe.ancestors().nth(3).ok_or("找不到性能目标目录")?;
