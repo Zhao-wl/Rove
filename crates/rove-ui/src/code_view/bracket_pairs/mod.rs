@@ -51,8 +51,12 @@ use ast::{KindSet, Node};
 use length::Length;
 use parser::{LineEdit, ParseStats};
 use query::BracketHit;
+use rove_buffer::TextSource;
+use rove_syntax::SyntaxSnapshot;
 use rove_theme::Color;
+use std::collections::VecDeque;
 use std::ops::Range;
+use std::sync::{Arc, Weak};
 
 pub use query::{active_pair, brackets_in_line};
 pub use tokenizer::{BracketKind, BracketSource, TextDocument};
@@ -240,12 +244,26 @@ impl BracketColors {
     }
 }
 
+// 两个最近的标签各保留有、无语法快照的树。额外保留的节点有独立于用户设置的上限。
+const CACHED_TREES: usize = 4;
+const CACHED_NODES: usize = 3 * DEFAULT_MAX_BRACKETS;
+
+struct CachedTree {
+    text: Weak<dyn TextSource>,
+    syntax: Option<Weak<dyn SyntaxSnapshot>>,
+    limit: usize,
+    tree: Option<Node>,
+    length: Length,
+    nodes: usize,
+}
+
 /// 视图持有的括号对状态（提供方只读）。
 pub struct BracketPairs {
     kinds: Vec<BracketKind>,
     symbols: tokenizer::Symbols,
     matchable: KindSet,
     tree: Option<Node>,
+    recent: VecDeque<CachedTree>,
     /// 上一次解析对应的文档长度（供调试与测试）。
     length: Length,
     pending: Option<Vec<LineEdit>>,
@@ -279,6 +297,7 @@ impl Default for BracketPairs {
             symbols: Vec::new(),
             matchable: 0,
             tree: None,
+            recent: VecDeque::new(),
             length: Length::ZERO,
             pending: None,
             dirty: true,
@@ -306,6 +325,7 @@ impl BracketPairs {
         self.symbols = tokenizer::symbols(&kinds);
         self.matchable = parser::matchable_set(&kinds);
         self.kinds = kinds;
+        self.recent.clear();
         self.reset();
     }
 
@@ -313,7 +333,7 @@ impl BracketPairs {
         &self.kinds
     }
 
-    /// 换文档：丢弃旧树，并重新判定括号数上限。
+    /// 换文档：重置活动树，并重新判定括号数上限。
     pub fn reset(&mut self) {
         self.tree = None;
         self.pending = None;
@@ -373,6 +393,68 @@ impl BracketPairs {
             && (self.enabled || self.highlight_active || self.guides)
             && !self.symbols.is_empty()
             && !self.over_limit
+    }
+
+    /// 完整的、未经编辑映射的快照可在切回标签时复用。键只持有弱引用，
+    /// 因此不会为了保留括号树而延长已关闭文档的生命周期。
+    pub(super) fn update_snapshot(
+        &mut self,
+        source: &dyn BracketSource,
+        text: &Arc<dyn TextSource>,
+        syntax: Option<&Arc<dyn SyntaxSnapshot>>,
+    ) -> bool {
+        if !(self.dirty && self.needs_full && self.wanted() && text.lines().complete) {
+            return self.update(source);
+        }
+
+        let text = Arc::downgrade(text);
+        let syntax = syntax.map(Arc::downgrade);
+        self.recent.retain(|entry| {
+            entry.text.strong_count() > 0
+                && entry
+                    .syntax
+                    .as_ref()
+                    .is_none_or(|key| key.strong_count() > 0)
+        });
+        if let Some(index) = self.recent.iter().position(|entry| {
+            entry.text.ptr_eq(&text)
+                && match (&entry.syntax, &syntax) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.ptr_eq(b),
+                    _ => false,
+                }
+                && entry.limit == self.limit
+        }) {
+            let entry = self.recent.remove(index).expect("找到的缓存项仍在队列中");
+            self.tree = entry.tree.clone();
+            self.length = entry.length;
+            self.pending = None;
+            self.dirty = false;
+            self.needs_full = false;
+            self.parsed = true;
+            self.stats = ParseStats::default();
+            self.recent.push_back(entry);
+            return true;
+        }
+
+        let changed = self.update(source);
+        let nodes = self.stats.constructed;
+        if self.parsed && nodes <= CACHED_NODES {
+            self.recent.push_back(CachedTree {
+                text,
+                syntax,
+                limit: self.limit,
+                tree: self.tree.clone(),
+                length: self.length,
+                nodes,
+            });
+            let mut total: usize = self.recent.iter().map(|entry| entry.nodes).sum();
+            while self.recent.len() > CACHED_TREES || total > CACHED_NODES {
+                let oldest = self.recent.pop_front().expect("缓存超出容量");
+                total -= oldest.nodes;
+            }
+        }
+        changed
     }
 
     /// 重新解析（必要时）。返回树是否发生了变化。
