@@ -13,8 +13,7 @@
 //! 主换行符；不在编辑区间内的行尾一个字节都不动，所以混合换行符的文档不会因为一次编辑被统一
 //! （`UX_SPEC.md` §3.6）。反向事务与“统一换行符”用 [`NewlineMode::Verbatim`] 原样写入。
 
-use std::borrow::Cow;
-use std::sync::Arc;
+use std::{borrow::Cow, ops::Range, sync::Arc, thread};
 
 use ropey::Rope;
 use rove_base::*;
@@ -572,14 +571,131 @@ fn rewrite_dense_lines(
         return None;
     }
     let source = old.to_string();
+    const CHUNK_BYTES: usize = 2 << 20;
+    let wanted = source.len().div_ceil(CHUNK_BYTES).clamp(1, 4);
+    let workers = if wanted > 1 {
+        wanted.min(thread::available_parallelism().map_or(1, |cpus| cpus.get()))
+    } else {
+        1
+    };
+    rewrite_dense_sections(old, &source, spans, texts, workers).map(DenseRewrite::finish)
+}
+
+struct DenseRewrite {
+    rope: Rope,
+    removed: Vec<Arc<str>>,
+    input_edits: Vec<InputEdit>,
+    lines: Vec<LineChange>,
+}
+
+impl DenseRewrite {
+    fn append(&mut self, next: Self) {
+        self.rope.append(next.rope);
+        self.removed.extend(next.removed);
+        self.input_edits.extend(next.input_edits);
+        // A section can start midway through a logical line already reported
+        // by its preceding section.
+        let shared_line = self.lines.last().is_some() && self.lines.last() == next.lines.first();
+        self.lines
+            .extend(next.lines.into_iter().skip(usize::from(shared_line)));
+    }
+
+    fn finish(mut self) -> Rewrite {
+        self.input_edits.reverse();
+        Rewrite {
+            rope: self.rope,
+            removed: self.removed,
+            input_edits: self.input_edits,
+            line_changes: Some(LineChanges {
+                ranges: self.lines,
+                line_delta: 0,
+            }),
+        }
+    }
+}
+
+fn rewrite_dense_sections(
+    old: &Rope,
+    source: &str,
+    spans: &[(usize, usize)],
+    texts: &[Arc<str>],
+    workers: usize,
+) -> Option<DenseRewrite> {
+    let build = |edits: Range<usize>| {
+        let start = if edits.start == 0 {
+            0
+        } else {
+            spans[edits.start].0
+        };
+        let end = spans.get(edits.end).map_or(source.len(), |span| span.0);
+        if !source.is_char_boundary(start) || !source.is_char_boundary(end) {
+            return None;
+        }
+        let position = position_in(old, start);
+        rewrite_dense_chunk(
+            source,
+            &spans[edits.clone()],
+            &texts[edits],
+            start..end,
+            position,
+        )
+    };
+    if workers == 1 {
+        return build(0..spans.len());
+    }
+
+    // Approximating equal byte counts avoids leaving a large unchanged suffix
+    // behind several tiny sections. Snap each boundary to the next edit.
+    let mut cuts = vec![0];
+    for part in 1..workers {
+        let byte = source.len() * part / workers;
+        let edit = spans.partition_point(|&(start, _)| start < byte);
+        if edit < spans.len() && cuts.last() != Some(&edit) {
+            cuts.push(edit);
+        }
+    }
+    cuts.push(spans.len());
+    if cuts.len() == 2 {
+        return build(0..spans.len());
+    }
+
+    thread::scope(|scope| {
+        let mut sections = cuts.windows(2).map(|edges| edges[0]..edges[1]);
+        let first = sections
+            .next()
+            .expect("boundaries include the whole edit list");
+        let mut tasks = Vec::with_capacity(cuts.len() - 2);
+        for section in sections {
+            let build = &build;
+            tasks.push(
+                thread::Builder::new()
+                    .spawn_scoped(scope, move || build(section))
+                    .ok()?,
+            );
+        }
+        let mut result = build(first)?;
+        for task in tasks {
+            result.append(task.join().expect("dense rewrite worker did not panic")?);
+        }
+        Some(result)
+    })
+}
+
+fn rewrite_dense_chunk(
+    source: &str,
+    spans: &[(usize, usize)],
+    texts: &[Arc<str>],
+    part: Range<usize>,
+    position: Position,
+) -> Option<DenseRewrite> {
     let bytes = source.as_bytes();
     let mut builder = ropey::RopeBuilder::new();
     let mut removed = Vec::with_capacity(spans.len());
     let mut input_edits = Vec::with_capacity(spans.len());
-    let mut changes = LineChanges::default();
-    let mut copied = 0;
-    let mut line = Line(0);
-    let mut line_start = 0;
+    let mut lines: Vec<LineChange> = Vec::new();
+    let mut copied = part.start;
+    let mut line = position.line;
+    let mut line_start = part.start - position.column.0 as usize;
     for (&(start, end), inserted) in spans.iter().zip(texts) {
         // 切片同时校验两个 UTF-8 边界。跨换行符、拆分 CRLF 或可能把 CR/LF
         // 接合时沿用通用路径，确保原有的中间坐标与换行失效规则。
@@ -609,13 +725,9 @@ fn rewrite_dense_lines(
             line,
             column: Utf8Column((start - line_start) as u64),
         };
-        if changes
-            .ranges
-            .last()
-            .is_none_or(|change| change.old.start() != line)
-        {
+        if lines.last().is_none_or(|change| change.old.start() != line) {
             let range = Span::new(line, Line(line.0 + 1)).expect("单行区间有效");
-            changes.ranges.push(LineChange {
+            lines.push(LineChange {
                 old: range.clone(),
                 new: range,
             });
@@ -633,13 +745,12 @@ fn rewrite_dense_lines(
             new_end_position: position_after(inserted.len()),
         });
     }
-    builder.append(&source[copied..]);
-    input_edits.reverse();
-    Some(Rewrite {
+    builder.append(&source[copied..part.end]);
+    Some(DenseRewrite {
         rope: builder.finish(),
         removed,
         input_edits,
-        line_changes: Some(changes),
+        lines,
     })
 }
 
@@ -759,5 +870,48 @@ fn position_in(rope: &Rope, byte: usize) -> Position {
     Position {
         line: Line(line as u64),
         column: Utf8Column((byte - rope.line_to_byte(line)) as u64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dense_sections_stitch_edits_that_share_a_line_across_boundaries() {
+        let source = format!(
+            "开头 target\r\n{}\rtarget middle\nshort target",
+            "λ target ".repeat(130)
+        );
+        let old = Rope::from_str(&source);
+        let spans: Vec<_> = source
+            .match_indices("target")
+            .map(|(start, text)| (start, start + text.len()))
+            .collect();
+        let texts: Vec<Arc<str>> = spans
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                if index % 3 == 0 {
+                    "".into()
+                } else {
+                    "树".into()
+                }
+            })
+            .collect();
+
+        let split = rewrite_dense_sections(&old, &source, &spans, &texts, 4)
+            .unwrap()
+            .finish();
+        let single = rewrite_dense_sections(&old, &source, &spans, &texts, 1)
+            .unwrap()
+            .finish();
+        let reverse = rewrite_backwards(&old, &spans, &texts);
+
+        assert_eq!(split.rope, reverse.rope);
+        assert_eq!(split.removed, reverse.removed);
+        assert_eq!(split.input_edits, reverse.input_edits);
+        assert_eq!(split.line_changes, single.line_changes);
+        assert_eq!(split.line_changes.unwrap().ranges.len(), 4);
     }
 }
