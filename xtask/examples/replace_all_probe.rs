@@ -1,5 +1,6 @@
 //! #155 真实窗口中的全部替换探针。执行 cargo run --release -p xtask --example replace_all_probe。
-//! 默认验证预备事务命中。设置 ROVE_REPLACE_PREPARATION=cold 可验证模板刚变化时的同步路径。
+//! 默认验证预备事务命中。ROVE_REPLACE_PREPARATION=cold 模拟整段模板临时输入，
+//! cold-last-key 只在替换之前输入最后一键。两种冷路径都必须同步完成。
 //! 输出代码视图 paint 及帧回调时间。需要判定实际显示间隔时，按输出的 PID 另采集 Windows GPU/显示事件。
 #[path = "../src/replace_fixture.rs"]
 mod replace_fixture;
@@ -41,6 +42,27 @@ const SEARCH_SETTLE: Duration = Duration::from_millis(500);
 const STEP_TIMEOUT: Duration = Duration::from_secs(12);
 
 type ProbeResult<T> = Result<T, Box<dyn Error>>;
+
+#[derive(Clone, Copy)]
+enum Preparation {
+    Warm,
+    Cold,
+    ColdLastKey,
+}
+
+impl Preparation {
+    fn is_cold(self) -> bool {
+        !matches!(self, Self::Warm)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Warm => "warm",
+            Self::Cold => "cold",
+            Self::ColdLastKey => "cold-last-key",
+        }
+    }
+}
 
 struct FrameMark {
     callback_at: Instant,
@@ -144,7 +166,7 @@ async fn inject(
     find: &Entity<FindHost>,
     interval: Duration,
     sample: usize,
-    cold_template: Option<&'static str>,
+    cold_input: Option<(&'static str, &'static str)>,
     cx: &mut AsyncApp,
 ) -> ProbeResult<Injection> {
     let injection: Rc<Cell<Option<Injection>>> = Rc::default();
@@ -165,8 +187,8 @@ async fn inject(
                         .timer(deadline.saturating_duration_since(Instant::now()))
                         .await;
                     let _ = cx.update(|window, cx| {
-                        if let Some(template) = cold_template {
-                            type_word(template, window, cx);
+                        if let Some((keystrokes, template)) = cold_input {
+                            type_word(keystrokes, window, cx);
                             let actual = find.read(cx).replace_text(cx);
                             if actual != template {
                                 eprintln!("sample {sample}: expected replacement input {template:?}, got {actual:?}");
@@ -197,11 +219,12 @@ async fn inject(
 async fn run(
     window: WindowHandle<Workbench>,
     source: &str,
-    cold: bool,
+    preparation: Preparation,
     started: Instant,
     cx: &mut AsyncApp,
 ) -> ProbeResult<Vec<Value>> {
     let timer = cx.background_executor().clone();
+    let cold = preparation.is_cold();
     window.update(cx, |workbench, _, cx| {
         workbench.open_documents().open(
             Resource::Workspace(WorkspacePath::new(FILE).expect("fixture filename")),
@@ -271,7 +294,7 @@ async fn run(
             "phase": "baseline",
             "pid": std::process::id(),
             "fixture_bytes": source.len(),
-            "preparation_mode": if cold { "cold" } else { "warm" },
+            "preparation_mode": preparation.name(),
             "callback_period_ms": ms(interval),
             "two_periods_ms": ms(interval * 2),
             "max_callback_gap_ms": ms(callbacks.into_iter().max().unwrap_or_default()),
@@ -281,6 +304,11 @@ async fn run(
     };
 
     for sample in 0..(WARMUP + SAMPLES) {
+        let changed_template = if sample % 2 == 0 {
+            ALTERNATE
+        } else {
+            REPLACEMENT
+        };
         if cold {
             // Let focus and Select All reach the replacement field before the
             // timed event. The template changes immediately before Replace All.
@@ -291,21 +319,19 @@ async fn run(
             input_window.update(cx, |_, w, cx| press("ctrl-a", w, cx))?;
             timer.timer(Duration::from_millis(24)).await;
         }
-        let changed_template = if sample % 2 == 0 {
-            ALTERNATE
-        } else {
-            REPLACEMENT
+        let cold_input = match preparation {
+            Preparation::Warm => None,
+            Preparation::Cold => Some((changed_template, changed_template)),
+            Preparation::ColdLastKey => {
+                // Both fixtures end in the single ASCII keystroke 't'.
+                let prefix = changed_template.strip_suffix('t').expect("fixture suffix");
+                input_window.update(cx, |_, w, cx| type_word(prefix, w, cx))?;
+                timer.timer(Duration::from_millis(48)).await;
+                Some(("t", changed_template))
+            }
         };
-        let injection = inject(
-            input_window,
-            &code,
-            &find,
-            interval,
-            sample,
-            cold.then_some(changed_template),
-            cx,
-        )
-        .await?;
+        let injection =
+            inject(input_window, &code, &find, interval, sample, cold_input, cx).await?;
         if injection.prepared == cold {
             return Err(format!(
                 "sample {sample}: unexpected prepared state {}",
@@ -423,10 +449,11 @@ fn main() -> ProbeResult<()> {
     let source = replace_fixture::replace_source();
     assert_eq!(source.lines().count(), 100_000);
     assert_eq!(source.matches(SEARCH).count(), 5_000);
-    let cold = match std::env::var("ROVE_REPLACE_PREPARATION").as_deref() {
-        Ok("cold") => true,
-        Ok("warm") | Err(std::env::VarError::NotPresent) => false,
-        _ => return Err("ROVE_REPLACE_PREPARATION must be warm or cold".into()),
+    let preparation = match std::env::var("ROVE_REPLACE_PREPARATION").as_deref() {
+        Ok("cold") => Preparation::Cold,
+        Ok("cold-last-key") => Preparation::ColdLastKey,
+        Ok("warm") | Err(std::env::VarError::NotPresent) => Preparation::Warm,
+        _ => return Err("ROVE_REPLACE_PREPARATION must be warm, cold, or cold-last-key".into()),
     };
     let project = tempfile::tempdir()?;
     let user = tempfile::tempdir()?;
@@ -484,7 +511,7 @@ fn main() -> ProbeResult<()> {
             .expect("visible native window required");
         cx.activate(true);
         cx.spawn(async move |cx| {
-            let output = run(window, &source, cold, started, cx).await;
+            let output = run(window, &source, preparation, started, cx).await;
             *completed.borrow_mut() = Some(output);
             let _ = cx.update(|cx| cx.quit());
         })
