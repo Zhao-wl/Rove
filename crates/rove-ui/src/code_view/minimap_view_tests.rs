@@ -112,6 +112,63 @@ fn settle(cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn minimap_rerasterizes_an_edited_plain_text_row_with_wrap_off(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("notes.txt"), "AB\nother line\n").unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Workbench::with_store(
+            folder.path().into(),
+            std::time::Instant::now(),
+            LayoutStore::disabled(),
+            cx,
+        )
+    });
+    view.update(cx, |view, cx| {
+        view.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new("notes.txt").unwrap()),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    settle(cx);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.wrap.mode = super::super::wrap::WordWrap::Off;
+        options.minimap.enabled = true;
+        code.set_options(options, cx);
+        let start = Position {
+            line: Line(0),
+            column: Utf8Column(0),
+        };
+        code.set_selection(super::super::Selection::new(start, start), None, cx);
+    });
+    settle(cx);
+    let original = code.update(cx, |code, _| {
+        assert_eq!(code.wrap.columns, 0);
+        let tile = code.minimap.cache.get(0).unwrap();
+        assert_eq!(tile.as_bytes(0).unwrap()[11], 0);
+        tile.id
+    });
+
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input("Z");
+    settle(cx);
+    code.update(cx, |code, _| {
+        assert_eq!(
+            columns::read_line(code.text().unwrap().as_ref(), 0).as_deref(),
+            Some("ZAB")
+        );
+        let tile = code.minimap.cache.get(0).unwrap();
+        assert_ne!(tile.id, original);
+        assert!(tile.as_bytes(0).unwrap()[11] > 0);
+    });
+}
+
+#[gpui::test]
 fn minimap_workbench_builds_themed_tiles_and_drags_through_code_view(cx: &mut TestAppContext) {
     let folder = tempfile::tempdir().unwrap();
     let mut source = "class Program {\n    // MARK: - Startup\n    #region Helpers\n".to_owned();

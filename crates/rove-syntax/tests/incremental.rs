@@ -500,6 +500,20 @@ fn baselines_are_kept_per_document() {
 }
 
 #[test]
+fn cancelled_analysis_cannot_register_a_closed_document_again() {
+    let documents = SyntaxDocuments::new(TreeSitterSyntax::default());
+    let text: Arc<dyn TextSource> = Arc::new(Text::new("class C {}", 1));
+    assert!(analyze(&documents, 1, text.clone(), None).is_ok());
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    documents.close(DocumentId(1));
+
+    let queued = documents.analyze(DocumentId(1), text, "csharp".into(), None, None, cancel);
+    assert_eq!(block_on(queued).err(), Some(Error::Cancelled));
+    assert!(documents.is_empty());
+}
+
+#[test]
 fn csharp_line_limit_follows_settings_layers() {
     use rove_config::{register_builtin, SettingRegistry, SettingsOptions, SettingsService};
 

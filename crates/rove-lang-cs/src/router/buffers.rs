@@ -29,7 +29,7 @@
 //! 文档一个都不需要（基线哈希就是那一刻的磁盘哈希），所以这条路上没有额外开销。
 use super::mapping::{EditMap, LineEdit};
 use crate::lifecycle::hash::xxh64;
-use rove_base::{ByteOffset, ByteRange, Error, Result, TextEdit, Version, WorkspacePath};
+use rove_base::{ByteOffset, ByteRange, Error, Position, Result, TextEdit, Version, WorkspacePath};
 use rove_buffer::TextSource;
 use std::{
     collections::HashMap,
@@ -142,14 +142,77 @@ impl BufferStates {
         edit: &TextEdit,
         after: Arc<dyn TextSource>,
     ) -> Result<()> {
-        let line_edit = LineEdit::new(
-            before.position(edit.range.start())?,
-            before.position(edit.range.end())?,
-            &edit.inserted,
-        );
+        let inserted_end = edit.range.start().0.checked_add(edit.inserted.len() as u64);
+        self.record_edit(path, edit.version, after, |after| {
+            if before.version() != edit.version {
+                return Err(Error::Stale);
+            }
+            let start = before.position(edit.range.start())?;
+            let end = before.position(edit.range.end())?;
+            Ok(inserted_end
+                .and_then(|inserted_end| {
+                    indexed_line_edit(
+                        start,
+                        end,
+                        edit.range.start(),
+                        ByteOffset(inserted_end),
+                        after,
+                    )
+                })
+                .unwrap_or_else(|| LineEdit::new(start, end, &edit.inserted)))
+        })
+    }
+
+    /// Record an edit whose inserted bytes are still in the next immutable snapshot.
+    pub fn edited_from_snapshot(
+        &self,
+        path: &WorkspacePath,
+        before: &dyn TextSource,
+        version: Version,
+        old: &ByteRange,
+        inserted: &ByteRange,
+        after: Arc<dyn TextSource>,
+    ) -> Result<()> {
+        self.record_edit(path, version, after, |after| {
+            if before.version() != version {
+                return Err(Error::Stale);
+            }
+            if old.start() != inserted.start() {
+                return Err(Error::OutOfBounds);
+            }
+            let start = before.position(old.start())?;
+            let end = before.position(old.end())?;
+            if let Some(edit) =
+                indexed_line_edit(start, end, inserted.start(), inserted.end(), after)
+            {
+                return Ok(edit);
+            }
+            let mut text = String::new();
+            after.visit_chunks(inserted.clone(), &mut |chunk| text.push_str(chunk))?;
+            Ok(LineEdit::new(start, end, &text))
+        })
+    }
+
+    fn record_edit(
+        &self,
+        path: &WorkspacePath,
+        version: Version,
+        after: Arc<dyn TextSource>,
+        line_edit: impl FnOnce(&dyn TextSource) -> Result<LineEdit>,
+    ) -> Result<()> {
+        let key = path.as_str();
+        let registered_version = {
+            let docs = lock(&self.docs);
+            docs.get(key).ok_or(Error::NotFound)?.state.version
+        };
+        if registered_version != version {
+            return Err(Error::Stale);
+        }
+        // Keep concurrent navigation queries unblocked during a snapshot read.
+        let line_edit = line_edit(after.as_ref())?;
         let mut docs = lock(&self.docs);
-        let entry = docs.get_mut(path.as_str()).ok_or(Error::NotFound)?;
-        if entry.state.version != edit.version || before.version() != edit.version {
+        let entry = docs.get_mut(key).ok_or(Error::NotFound)?;
+        if entry.state.version != registered_version {
             return Err(Error::Stale);
         }
         entry.push_edit(line_edit);
@@ -271,6 +334,33 @@ fn common_affixes(old: &[u8], new: &[u8]) -> (usize, usize, usize) {
     (start, old.len() - suffix, new.len() - suffix)
 }
 
+/// 大段插入通过新快照的行索引求换行数和尾行长度。
+/// 跨编辑边界拼成 CRLF 时，边界位置无效，调用者沿用插入文本本身的统计。
+fn indexed_line_edit(
+    start: Position,
+    end: Position,
+    offset: ByteOffset,
+    inserted_end: ByteOffset,
+    after: &dyn TextSource,
+) -> Option<LineEdit> {
+    let inserted_len = inserted_end.0.checked_sub(offset.0)?;
+    if inserted_len < 8 * 1024 || after.position(offset).ok()? != start {
+        return None;
+    }
+    let inserted_end = after.position(inserted_end).ok()?;
+    let inserted_breaks = inserted_end.line.0.checked_sub(start.line.0)?;
+    Some(LineEdit {
+        start,
+        end,
+        inserted_breaks,
+        inserted_tail: if inserted_breaks == 0 {
+            inserted_len
+        } else {
+            inserted_end.column.0
+        },
+    })
+}
+
 fn is_continuation(bytes: &[u8], at: usize) -> bool {
     bytes.get(at).is_some_and(|b| b & 0xc0 == 0x80)
 }
@@ -303,6 +393,93 @@ mod tests {
             .edited(path, &**before, &edit, after.clone())
             .unwrap();
         after
+    }
+
+    #[test]
+    fn large_edit_uses_snapshot_coordinates_with_precise_crlf_boundaries() {
+        let mixed = "界\r\nα\nβ\r中😀".repeat(1300);
+        let same_line = "字😀".repeat(1500);
+        for (text, offset, inserted, indexed) in [
+            ("ab", 1, mixed.clone(), true),
+            ("ab", 1, same_line, true),
+            ("a\rb", 2, format!("\n{mixed}"), false),
+            ("a\nb", 1, format!("{mixed}\r"), false),
+        ] {
+            let before = RopeText::from_text(text);
+            let mut changed = text.to_owned();
+            changed.insert_str(offset, &inserted);
+            let after = Arc::new(RopeText::new(changed));
+            let byte = ByteOffset(offset as u64);
+            let start = before.position(byte).unwrap();
+            let expected = LineEdit::new(start, start, &inserted);
+            let edit = TextEdit {
+                version: before.version(),
+                range: ByteRange::new(byte, byte).unwrap(),
+                inserted: inserted.into(),
+            };
+            let inserted_range =
+                ByteRange::new(byte, ByteOffset(byte.0 + edit.inserted.len() as u64)).unwrap();
+            assert_eq!(
+                indexed_line_edit(
+                    start,
+                    start,
+                    inserted_range.start(),
+                    inserted_range.end(),
+                    &*after
+                ),
+                indexed.then_some(expected)
+            );
+
+            let path = WorkspacePath::new("Assets/A.cs").unwrap();
+            let before = Arc::new(before);
+            let buffers = BufferStates::new();
+            buffers.opened(&path, before.clone(), 0);
+            buffers
+                .edited(&path, &*before, &edit, after.clone())
+                .unwrap();
+            let mut reference = EditMap::new();
+            reference.push(expected);
+            assert_eq!(*buffers.get(path.as_str()).unwrap().edits, reference);
+
+            let snapshot_buffers = BufferStates::new();
+            snapshot_buffers.opened(&path, before.clone(), 0);
+            snapshot_buffers
+                .edited_from_snapshot(
+                    &path,
+                    &*before,
+                    edit.version,
+                    &edit.range,
+                    &inserted_range,
+                    after,
+                )
+                .unwrap();
+            assert_eq!(
+                *snapshot_buffers.get(path.as_str()).unwrap().edits,
+                reference
+            );
+        }
+    }
+
+    #[test]
+    fn unregistered_buffer_edit_is_rejected_before_resolving_the_range() {
+        let states = BufferStates::new();
+        let path = WorkspacePath::new("Notes.txt").unwrap();
+        let before = Arc::new(RopeText::from_text("text"));
+        let edit = TextEdit {
+            version: before.version(),
+            range: ByteRange::new(ByteOffset(100), ByteOffset(100)).unwrap(),
+            inserted: "replacement".into(),
+        };
+        assert!(matches!(
+            states.edited(&path, &*before, &edit, before.clone()),
+            Err(Error::NotFound)
+        ));
+
+        states.opened(&path, before.clone(), 0);
+        assert!(matches!(
+            states.edited(&path, &*before, &edit, before.clone()),
+            Err(Error::OutOfBounds)
+        ));
     }
 
     /// #216：检查点按保存登记、超出上限丢最旧的；`rebase` 推进基线并交回那一版之后的编辑。

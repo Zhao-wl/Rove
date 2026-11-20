@@ -111,12 +111,12 @@ impl SyntaxDocuments {
         self.len() == 0
     }
 
-    fn entry(&self, document: DocumentId) -> Entry {
+    fn entry(&self, document: DocumentId, cancel: &Cancellation) -> rove_base::Result<Entry> {
         let inner = &self.0;
-        inner
-            .open
-            .lock()
-            .unwrap()
+        let mut open = inner.open.lock().unwrap();
+        // 与 close 持同一把锁。已取消的排队编辑不能在文档关闭后重新登记基线。
+        cancel.check()?;
+        Ok(open
             .entry(document)
             .or_insert_with(|| Entry {
                 syntax: inner.syntax.document(),
@@ -124,7 +124,7 @@ impl SyntaxDocuments {
                     .generation
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             })
-            .clone()
+            .clone())
     }
 
     fn is_current(&self, document: DocumentId, generation: u64) -> bool {
@@ -147,7 +147,10 @@ impl DocumentHighlighter for SyntaxDocuments {
         visible: Option<LineRange>,
         cancel: Cancellation,
     ) -> Task<SyntaxUpdate> {
-        let Entry { syntax, generation } = self.entry(document);
+        let Entry { syntax, generation } = match self.entry(document, &cancel) {
+            Ok(entry) => entry,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let mut service = syntax;
         if let Some(edit) = edit {
             service = service.with_edit(edit);

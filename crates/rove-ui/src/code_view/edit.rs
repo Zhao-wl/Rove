@@ -23,7 +23,7 @@ use gpui::{
     point, px, size, Bounds, ClipboardItem, Context, EntityInputHandler, Pixels, UTF16Selection,
     Window,
 };
-use rove_base::{ByteOffset, Error, Position, Span, TextEdit};
+use rove_base::{ByteOffset, ByteRange, Error, Position, Span, TextEdit, Version};
 use rove_buffer::edit::{
     self as ed, AppliedEdit, ClipboardData, CursorEdit, DeleteWord, EditKind, EditSession,
     LineChanges, MoveWord, Replacement, Selections, Transaction, WordClassifier,
@@ -58,8 +58,36 @@ pub struct TextEdited {
     pub after: Arc<dyn TextSource>,
     /// 按应用顺序的事务结果（撤销一个单元可能有多步）。
     pub edits: Arc<[AppliedEdit]>,
-    /// 合成一个替换（相对 `before`）：交给 #94 的增量解析与 #38 的 `BufferStates::edited`。
-    pub combined: Option<TextEdit>,
+    /// 合并编辑的坐标，插入内容来自编辑后快照。
+    pub(crate) combined: Option<CoalescedEdit>,
+}
+
+impl TextEdited {
+    /// 将本次操作合并成相对编辑前快照的一次替换。
+    pub fn combined(&self) -> Option<TextEdit> {
+        self.combined.as_ref()?.materialize(self.after.as_ref())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CoalescedEdit {
+    pub(crate) before: Version,
+    pub(crate) old: ByteRange,
+    pub(crate) new: ByteRange,
+}
+
+impl CoalescedEdit {
+    pub(crate) fn materialize(&self, after: &dyn TextSource) -> Option<TextEdit> {
+        let mut inserted = String::with_capacity((self.new.end().0 - self.new.start().0) as usize);
+        after
+            .visit_chunks(self.new.clone(), &mut |chunk| inserted.push_str(chunk))
+            .ok()?;
+        Some(TextEdit {
+            version: self.before,
+            range: self.old.clone(),
+            inserted: inserted.into(),
+        })
+    }
 }
 
 /// [`CodeViewEvent::Edited`] 的载荷（按指针比较）。
@@ -114,38 +142,55 @@ impl From<Option<AppliedEdit>> for EditOutcome {
 
 /// 旧行号 → 新行号；落在被修改的行里时为 `None`。
 pub fn old_to_new(changes: &LineChanges, line: u64) -> Option<u64> {
-    let mut delta: i64 = 0;
-    for c in &changes.ranges {
-        if line < c.old.start().0 {
-            break;
-        }
-        if line < c.old.end().0 {
-            return None;
-        }
-        delta = c.new.end().0 as i64 - c.old.end().0 as i64;
+    let first = changes
+        .ranges
+        .partition_point(|change| change.old.end().0 <= line);
+    if changes
+        .ranges
+        .get(first)
+        .is_some_and(|change| change.old.start().0 <= line)
+    {
+        return None;
     }
+    let delta = first.checked_sub(1).map_or(0, |previous| {
+        let change = &changes.ranges[previous];
+        change.new.end().0 as i64 - change.old.end().0 as i64
+    });
     Some((line as i64 + delta).max(0) as u64)
 }
 
 /// 新行号 → 旧行号（被修改的行映射到旧区间里同一偏移处，越界取旧区间末行）。
 pub fn new_to_old(changes: &LineChanges, line: u64) -> u64 {
-    let mut delta: i64 = 0;
-    for c in &changes.ranges {
-        if line < c.new.start().0 {
-            break;
-        }
-        if line < c.new.end().0 {
-            let offset = line - c.new.start().0;
-            let last = c.old.end().0.saturating_sub(1).max(c.old.start().0);
-            return (c.old.start().0 + offset).min(last);
-        }
-        delta = c.old.end().0 as i64 - c.new.end().0 as i64;
+    let first = changes
+        .ranges
+        .partition_point(|change| change.new.end().0 <= line);
+    if let Some(change) = changes
+        .ranges
+        .get(first)
+        .filter(|change| change.new.start().0 <= line)
+    {
+        let offset = line - change.new.start().0;
+        let last = change
+            .old
+            .end()
+            .0
+            .saturating_sub(1)
+            .max(change.old.start().0);
+        return (change.old.start().0 + offset).min(last);
     }
+    let delta = first.checked_sub(1).map_or(0, |previous| {
+        let change = &changes.ranges[previous];
+        change.old.end().0 as i64 - change.new.end().0 as i64
+    });
     (line as i64 + delta).max(0) as u64
 }
 
 /// 把依次应用的若干事务合成一个相对第一个快照的替换（区间覆盖所有改动，中间未改的文本也算在内）。
 pub fn combine_edits(edits: &[AppliedEdit], after: &dyn TextSource) -> Option<TextEdit> {
+    coalesced_edit(edits)?.materialize(after)
+}
+
+fn coalesced_edit(edits: &[AppliedEdit]) -> Option<CoalescedEdit> {
     let spans = edits.iter().flat_map(|e| {
         e.input_edits.iter().map(|ie| {
             (
@@ -155,15 +200,22 @@ pub fn combine_edits(edits: &[AppliedEdit], after: &dyn TextSource) -> Option<Te
             )
         })
     });
-    combine_spans(spans, edits.first()?.before, after)
+    coalesce_spans(spans, edits.first()?.before)
 }
 
 /// 依次发生的替换（各自坐标系里的 `(起点, 旧终点, 新终点)`）合成一个相对 `version` 的替换。
 pub fn combine_spans(
     spans: impl IntoIterator<Item = (i64, i64, i64)>,
-    version: rove_base::Version,
+    version: Version,
     after: &dyn TextSource,
 ) -> Option<TextEdit> {
+    coalesce_spans(spans, version)?.materialize(after)
+}
+
+pub(crate) fn coalesce_spans(
+    spans: impl IntoIterator<Item = (i64, i64, i64)>,
+    version: Version,
+) -> Option<CoalescedEdit> {
     // (起点, 旧终点, 当前终点)：[起点, 当前终点) 在当前坐标里覆盖全部改动，[起点, 旧终点) 在最初坐标里。
     let mut acc: Option<(i64, i64, i64)> = None;
     for (a, b, l) in spans {
@@ -178,15 +230,11 @@ pub fn combine_spans(
         });
     }
     let (s, oe, ne) = acc?;
-    let span = Span::new(ByteOffset(s as u64), ByteOffset(ne as u64)).ok()?;
-    let mut inserted = String::with_capacity((ne - s).max(0) as usize);
-    after
-        .visit_chunks(span, &mut |c| inserted.push_str(c))
-        .ok()?;
-    Some(TextEdit {
-        version,
-        range: Span::new(ByteOffset(s as u64), ByteOffset(oe as u64)).ok()?,
-        inserted: inserted.into(),
+    let start = ByteOffset(u64::try_from(s).ok()?);
+    Some(CoalescedEdit {
+        before: version,
+        old: Span::new(start, ByteOffset(u64::try_from(oe).ok()?)).ok()?,
+        new: Span::new(start, ByteOffset(u64::try_from(ne).ok()?)).ok()?,
     })
 }
 
@@ -448,8 +496,9 @@ impl CodeView {
         // #53：任何编辑都让“这对括号是编辑器补的”失效（自动闭合自己在编辑之后重新记）。
         self.auto_closed.clear();
         let mut lines_moved = false;
-        // #58：被改写的行要重算换行点，其余行的视觉行数跟着行号平移。
-        let mut wrap_dirty: Vec<std::ops::Range<u64>> = Vec::new();
+        // 有软换行或缩略图时，保留同一份受编辑影响的行区间。
+        let track_rows = self.wrap.columns > 0 || self.options.minimap.enabled;
+        let mut changed_rows: Vec<std::ops::Range<u64>> = Vec::new();
         let first = self.doc_line(self.visible.start);
         let keep = first.saturating_sub(2048)..first + 4096;
         for e in edits {
@@ -469,26 +518,37 @@ impl CodeView {
             self.decorations.remap(|l| old_to_new(changes, l));
             self.links.remap(|l| old_to_new(changes, *l));
             self.remap_wrap(changes);
-            for c in &changes.ranges {
-                wrap_dirty.push(c.new.start().0..c.new.end().0 + 1);
+            if track_rows {
+                changed_rows.extend(
+                    changes
+                        .ranges
+                        .iter()
+                        .map(|c| c.new.start().0..c.new.end().0 + 1),
+                );
             }
-            self.syntax.borrow_mut().pending.push(changes.clone());
+            let mut syntax = self.syntax.borrow_mut();
+            if syntax.current.is_some() {
+                syntax.pending.push(changes.clone());
+            }
             // #57：括号对树按行级变化做增量更新（一批之外的子树原样复用）。
-            let line_edits: Vec<super::bracket_pairs::parser::LineEdit> = changes
-                .ranges
-                .iter()
-                .map(|c| super::bracket_pairs::parser::LineEdit {
-                    old: c.old.start().0..c.old.end().0,
-                    new: c.new.start().0..c.new.end().0,
-                })
-                .collect();
-            self.bracket_pairs.borrow_mut().note_lines(line_edits);
+            let mut pairs = self.bracket_pairs.borrow_mut();
+            if !pairs.kinds().is_empty() {
+                let line_edits = changes
+                    .ranges
+                    .iter()
+                    .map(|c| super::bracket_pairs::parser::LineEdit {
+                        old: c.old.start().0..c.old.end().0,
+                        new: c.new.start().0..c.new.end().0,
+                    })
+                    .collect();
+                pairs.note_lines(line_edits);
+            }
         }
-        self.mark_wrap_dirty(&wrap_dirty);
+        self.mark_wrap_dirty(&changed_rows);
         if lines_moved {
             self.invalidate_minimap_rows(None, cx);
         } else {
-            self.invalidate_minimap_rows(Some(&wrap_dirty), cx);
+            self.invalidate_minimap_rows(Some(&changed_rows), cx);
         }
         if lines_moved {
             self.sync_fold_map();
@@ -510,15 +570,15 @@ impl CodeView {
                 e.changes
                     .ranges
                     .iter()
-                    .flat_map(|c| c.new.start().0..c.new.end().0)
+                    .flat_map(|c| {
+                        c.new.start().0.max(visible.start)..c.new.end().0.min(visible.end)
+                    })
                     .collect()
             })
             .unwrap_or_default();
         lines.push(self.cursor.selection.active.line.0);
         for line in lines {
-            if visible.contains(&line) || line == self.cursor.selection.active.line.0 {
-                self.ensure_line_now(line, window);
-            }
+            self.ensure_line_now(line, window);
         }
     }
 
@@ -530,6 +590,24 @@ impl CodeView {
             position: self.cursor.selection.active,
             reasons: self.read_only.clone(),
         });
+    }
+
+    pub(crate) fn run_prepared_edit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        prepared: ed::PreparedEdit,
+    ) -> bool {
+        let version = self
+            .edit_host()
+            .and_then(|host| host.session().map(|session| session.buffer().version()));
+        let expected = Some(prepared.before_version());
+        if version != expected || self.text.as_ref().map(|text| text.version()) != expected {
+            return false;
+        }
+        self.run_edit(Some(window), cx, |session, _, now| {
+            Ok(Some(session.edit_prepared(prepared, now)?).into())
+        })
     }
 
     /// 执行一条编辑：把视图选区写进会话 → `f` → 增量更新视图并发出 [`CodeViewEvent::Edited`]。
@@ -620,7 +698,7 @@ impl CodeView {
             self.rebuild_lines_now(&outcome.edits, window);
             window.invalidate_character_coordinates();
         }
-        let combined = combine_edits(&outcome.edits, &*after);
+        let combined = coalesced_edit(&outcome.edits);
         let notice = EditNotice(Arc::new(TextEdited {
             before,
             after,
@@ -2032,6 +2110,21 @@ mod tests {
         assert_eq!(new_to_old(&c, 5), 5);
         assert_eq!(new_to_old(&c, 6), 5);
         assert_eq!(new_to_old(&c, 7), 6);
+    }
+
+    #[test]
+    fn line_maps_use_the_previous_change_at_separated_ranges() {
+        let mut changes = change((5, 6), (5, 7), 1);
+        changes.ranges.extend(change((20, 22), (21, 22), -1).ranges);
+        changes.line_delta = 0;
+
+        assert_eq!(old_to_new(&changes, 19), Some(20));
+        assert_eq!(old_to_new(&changes, 20), None);
+        assert_eq!(old_to_new(&changes, 21), None);
+        assert_eq!(old_to_new(&changes, 22), Some(22));
+        assert_eq!(new_to_old(&changes, 20), 19);
+        assert_eq!(new_to_old(&changes, 21), 20);
+        assert_eq!(new_to_old(&changes, 22), 22);
     }
 
     #[test]

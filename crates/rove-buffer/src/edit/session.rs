@@ -141,6 +141,26 @@ impl EditSession {
         })
     }
 
+    /// Commit a background-prepared transaction as one undo unit. Current
+    /// selections are mapped only after the source version check succeeds.
+    pub fn edit_prepared(
+        &mut self,
+        prepared: super::transaction::PreparedEdit,
+        now: Instant,
+    ) -> Result<AppliedEdit> {
+        let selections = self.selections.clone();
+        let line_endings = self.buffer.line_endings().clone();
+        let applied = self.buffer.install(prepared)?;
+        Ok(self.record_applied(
+            applied,
+            EditKind::Other,
+            now,
+            true,
+            line_endings,
+            |applied| selections.map(|selection| Ok(map_selection(applied, selection))),
+        ))
+    }
+
     /// 每个选区各自做一次替换（`None` 表示该选区不动），合成一个事务。区间重叠时
     /// [`Error::InvalidInput`]。没有任何替换时返回 `Ok(None)`。
     pub fn edit_each(
@@ -238,6 +258,25 @@ impl EditSession {
         if let Some(line_endings) = line_endings_after {
             self.buffer.set_line_endings(line_endings);
         }
+        Ok(self.record_applied(
+            applied,
+            kind,
+            now,
+            start_new,
+            line_endings_before,
+            selections_after,
+        ))
+    }
+
+    fn record_applied(
+        &mut self,
+        applied: AppliedEdit,
+        kind: EditKind,
+        now: Instant,
+        start_new: bool,
+        line_endings_before: LineEndings,
+        selections_after: impl FnOnce(&AppliedEdit) -> Result<Selections>,
+    ) -> AppliedEdit {
         // 选区映射只依赖已经算好的区间，不会失败；失败时保底放在原光标的映射位置。
         let after = selections_after(&applied).unwrap_or_else(|_| {
             Selections::single(Selection::cursor(
@@ -269,7 +308,7 @@ impl EditSession {
         self.previous_kind = kind;
         self.selections = after;
         self.cursors.clear();
-        Ok(applied)
+        applied
     }
 
     /// 输入文本：替换每个选区，光标停在输入之后。撤销分组按 VS Code 的输入规则。

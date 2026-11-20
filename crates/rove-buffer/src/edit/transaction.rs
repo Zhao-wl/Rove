@@ -1,7 +1,7 @@
 //! 编辑事务与可编辑缓冲（#46）。
 //!
 //! - [`Transaction`]：一组按位置排序、互不重叠的 [`Replacement`]，原子执行；所有区间都以
-//!   **事务开始前**的字节偏移给出，执行时从后往前应用，后面的区间不需要调用方自己平移。
+//!   **事务开始前**的字节偏移给出，调用方无需平移。编辑通知按从后往前的应用顺序产生。
 //! - [`EditBuffer`]：持有当前文本（写时复制的 rope），每次成功的事务产出新的不可变快照
 //!   [`RopeText`]（新 [`Version`]）以及 [`AppliedEdit`]：给 tree-sitter 的 [`InputEdit`]、
 //!   给视图的按行失效通知 [`LineChanges`]、以及撤销用的反向事务。
@@ -13,8 +13,7 @@
 //! 主换行符；不在编辑区间内的行尾一个字节都不动，所以混合换行符的文档不会因为一次编辑被统一
 //! （`UX_SPEC.md` §3.6）。反向事务与“统一换行符”用 [`NewlineMode::Verbatim`] 原样写入。
 
-use std::borrow::Cow;
-use std::sync::Arc;
+use std::{borrow::Cow, ops::Range, sync::Arc, thread};
 
 use ropey::Rope;
 use rove_base::*;
@@ -285,6 +284,24 @@ pub fn normalize_newlines(text: &str, eol: Eol) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// A transaction prepared against an immutable snapshot. The live session
+/// accepts it only while the source version and newline policy still match.
+#[derive(Debug)]
+pub struct PreparedEdit {
+    buffer: EditBuffer,
+    applied: AppliedEdit,
+}
+
+impl PreparedEdit {
+    pub fn before_version(&self) -> Version {
+        self.applied.before
+    }
+
+    pub fn text(&self) -> &RopeText {
+        self.buffer.text()
+    }
+}
+
 /// 可编辑的文本：当前快照 + 主换行符 + 只读原因。
 ///
 /// 只读原因非空或文档是超大文件时，编辑接口返回 [`Error::Unsupported`]（超大文件一律只读，
@@ -394,6 +411,26 @@ impl EditBuffer {
         }
     }
 
+    /// Apply a transaction to a buffer snapshot owned by a background worker.
+    pub fn prepare(mut self, transaction: &Transaction) -> Result<PreparedEdit> {
+        let applied = self.apply(transaction)?;
+        Ok(PreparedEdit {
+            buffer: self,
+            applied,
+        })
+    }
+
+    pub(super) fn install(&mut self, prepared: PreparedEdit) -> Result<AppliedEdit> {
+        if !self.read_only.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        if self.version() != prepared.applied.before || self.eol() != prepared.buffer.eol() {
+            return Err(Error::Stale);
+        }
+        self.text = prepared.buffer.text;
+        Ok(prepared.applied)
+    }
+
     /// 原子执行一个事务。区间越界、不在 Unicode scalar 边界、或（规范化模式下）落在 CRLF
     /// 中间时返回 [`Error::OutOfBounds`]，文本保持不变。
     pub fn apply(&mut self, transaction: &Transaction) -> Result<AppliedEdit> {
@@ -406,69 +443,64 @@ impl EditBuffer {
         for edit in &transaction.edits {
             let start = to_usize(edit.range.start())?;
             let end = to_usize(edit.range.end())?;
-            if end > len || !is_boundary(old, start) || !is_boundary(old, end) {
-                return Err(Error::OutOfBounds);
-            }
-            if transaction.newlines == NewlineMode::Normalize
-                && (inside_crlf(old, start) || inside_crlf(old, end))
-            {
+            if end > len {
                 return Err(Error::OutOfBounds);
             }
             spans.push((start, end));
         }
         let eol = self.eol();
-        let texts: Vec<Cow<'_, str>> = transaction
+        let texts: Vec<Arc<str>> = transaction
             .edits
             .iter()
             .map(|edit| match transaction.newlines {
-                NewlineMode::Normalize => normalize_newlines(&edit.text, eol),
-                NewlineMode::Verbatim => Cow::Borrowed(&*edit.text),
+                NewlineMode::Normalize => match normalize_newlines(&edit.text, eol) {
+                    Cow::Borrowed(_) => edit.text.clone(),
+                    Cow::Owned(normalized) => normalized.into(),
+                },
+                NewlineMode::Verbatim => edit.text.clone(),
             })
             .collect();
 
         let before = self.text.version();
-        let mut rope = old.clone();
         let count = spans.len();
-        let mut removed: Vec<String> = vec![String::new(); count];
-        let mut input_edits = Vec::with_capacity(count);
-        let mut text_edits = Vec::with_capacity(count);
-        for index in (0..count).rev() {
-            let (start, end) = spans[index];
-            let inserted = &texts[index];
-            let start_position = position_in(&rope, start);
-            let old_end_position = position_in(&rope, end);
-            if start < end {
-                removed[index] = rope.byte_slice(start..end).to_string();
-                let start_char = rope.byte_to_char(start);
-                let end_char = rope.byte_to_char(end);
-                rope.remove(start_char..end_char);
+        let Rewrite {
+            rope,
+            removed,
+            input_edits,
+            line_changes: dense_changes,
+        } = match rewrite_dense_lines(old, &spans, &texts) {
+            Some(rewritten) => rewritten,
+            None => {
+                for &(start, end) in &spans {
+                    if !is_boundary(old, start)
+                        || !is_boundary(old, end)
+                        || (transaction.newlines == NewlineMode::Normalize
+                            && (inside_crlf(old, start) || inside_crlf(old, end)))
+                    {
+                        return Err(Error::OutOfBounds);
+                    }
+                }
+                rewrite_backwards(old, &spans, &texts)
             }
-            if !inserted.is_empty() {
-                rope.insert(rope.byte_to_char(start), inserted);
-            }
-            let new_end = start + inserted.len();
-            let new_end_position = position_in(&rope, new_end);
-            input_edits.push(InputEdit {
-                start_byte: ByteOffset(start as u64),
-                old_end_byte: ByteOffset(end as u64),
-                new_end_byte: ByteOffset(new_end as u64),
-                start_position,
-                old_end_position,
-                new_end_position,
-            });
-            text_edits.push(TextEdit {
+        };
+        let text_edits = transaction
+            .edits
+            .iter()
+            .zip(&texts)
+            .rev()
+            .map(|(edit, inserted)| TextEdit {
                 version: before,
-                range: transaction.edits[index].range.clone(),
-                inserted: Arc::from(&**inserted),
-            });
-        }
+                range: edit.range.clone(),
+                inserted: inserted.clone(),
+            })
+            .collect();
 
         let mut old_ranges = Vec::with_capacity(count);
         let mut new_ranges = Vec::with_capacity(count);
         let mut forward = Vec::with_capacity(count);
         let mut inverse = Vec::with_capacity(count);
         let mut byte_delta: i64 = 0;
-        for index in 0..count {
+        for (index, removed) in removed.into_iter().enumerate() {
             let (start, end) = spans[index];
             let inserted_len = texts[index].len();
             let new_start = (start as i64 + byte_delta) as u64;
@@ -480,16 +512,16 @@ impl EditBuffer {
             old_ranges.push(transaction.edits[index].range.clone());
             forward.push(Replacement::new(
                 transaction.edits[index].range.clone(),
-                &*texts[index],
+                texts[index].clone(),
             ));
-            inverse.push(Replacement::new(
-                new_range.clone(),
-                std::mem::take(&mut removed[index]),
-            ));
+            inverse.push(Replacement::new(new_range.clone(), removed));
             new_ranges.push(new_range);
         }
 
-        let changes = line_changes(old, &rope, &old_ranges, &new_ranges)?;
+        let changes = match dense_changes {
+            Some(changes) => changes,
+            None => line_changes(old, &rope, &old_ranges, &new_ranges)?,
+        };
         self.text = Arc::new(RopeText::from_rope(rope));
         Ok(AppliedEdit {
             before,
@@ -508,6 +540,317 @@ impl EditBuffer {
                 newlines: NewlineMode::Verbatim,
             },
         })
+    }
+}
+
+struct Rewrite {
+    rope: Rope,
+    removed: Vec<Arc<str>>,
+    input_edits: Vec<InputEdit>,
+    line_changes: Option<LineChanges>,
+}
+
+/// Bulk Replace All tends to change most rope leaves. For dense edits that
+/// leave all line terminators intact, build the new rope in document order.
+/// Only bytes to the right of an edit have already changed in the equivalent
+/// reverse application, so its original line and byte column are still valid.
+fn rewrite_dense_lines(
+    old: &Rope,
+    spans: &[(usize, usize)],
+    texts: &[Arc<str>],
+) -> Option<Rewrite> {
+    // 稀疏编辑继续共享未受影响的子树。密集重建只用于普通文件，控制临时内存。
+    if spans.len() < 128
+        || old.len_bytes() / spans.len() > 4096
+        || old.len_bytes() as u64 > crate::size::LARGE_FILE_BYTES
+    {
+        return None;
+    }
+    const CHUNK_BYTES: usize = 2 << 20;
+    let wanted = old.len_bytes().div_ceil(CHUNK_BYTES).clamp(1, 4);
+    let workers = if wanted > 1 {
+        wanted.min(thread::available_parallelism().map_or(1, |cpus| cpus.get()))
+    } else {
+        1
+    };
+    rewrite_dense_sections(old, spans, texts, workers).map(DenseRewrite::finish)
+}
+
+struct DenseRewrite {
+    rope: Rope,
+    removed: Vec<Arc<str>>,
+    input_edits: Vec<InputEdit>,
+    lines: Vec<LineChange>,
+}
+
+impl DenseRewrite {
+    fn append(&mut self, next: Self) {
+        self.rope.append(next.rope);
+        self.removed.extend(next.removed);
+        self.input_edits.extend(next.input_edits);
+        // A section can start midway through a logical line already reported
+        // by its preceding section.
+        let shared_line = self.lines.last().is_some() && self.lines.last() == next.lines.first();
+        self.lines
+            .extend(next.lines.into_iter().skip(usize::from(shared_line)));
+    }
+
+    fn finish(mut self) -> Rewrite {
+        self.input_edits.reverse();
+        Rewrite {
+            rope: self.rope,
+            removed: self.removed,
+            input_edits: self.input_edits,
+            line_changes: Some(LineChanges {
+                ranges: self.lines,
+                line_delta: 0,
+            }),
+        }
+    }
+}
+
+fn rewrite_dense_sections(
+    old: &Rope,
+    spans: &[(usize, usize)],
+    texts: &[Arc<str>],
+    workers: usize,
+) -> Option<DenseRewrite> {
+    let len = old.len_bytes();
+    let build = |edits: Range<usize>| {
+        let start = if edits.start == 0 {
+            0
+        } else {
+            spans[edits.start].0
+        };
+        let end = spans.get(edits.end).map_or(len, |span| span.0);
+        if !is_boundary(old, start) || !is_boundary(old, end) || inside_crlf(old, start) {
+            return None;
+        }
+        let part = old.byte_slice(start..end);
+        let preceded_by_cr = start > 0 && old.byte(start - 1) == b'\r';
+        rewrite_dense_chunk(
+            part,
+            &spans[edits.clone()],
+            &texts[edits],
+            start,
+            preceded_by_cr,
+            position_in(old, start),
+        )
+    };
+    if workers == 1 {
+        return build(0..spans.len());
+    }
+
+    // Approximating equal byte counts avoids leaving a large unchanged suffix
+    // behind several tiny sections. Snap each boundary to the next edit.
+    let mut cuts = vec![0];
+    for part in 1..workers {
+        let byte = len * part / workers;
+        let edit = spans.partition_point(|&(start, _)| start < byte);
+        if edit < spans.len() && cuts.last() != Some(&edit) {
+            cuts.push(edit);
+        }
+    }
+    cuts.push(spans.len());
+    if cuts.len() == 2 {
+        return build(0..spans.len());
+    }
+
+    thread::scope(|scope| {
+        let mut sections = cuts.windows(2).map(|edges| edges[0]..edges[1]);
+        let first = sections
+            .next()
+            .expect("boundaries include the whole edit list");
+        let mut tasks = Vec::with_capacity(cuts.len() - 2);
+        for section in sections {
+            let build = &build;
+            tasks.push(
+                thread::Builder::new()
+                    .spawn_scoped(scope, move || build(section))
+                    .ok()?,
+            );
+        }
+        let mut result = build(first)?;
+        for task in tasks {
+            result.append(task.join().expect("dense rewrite worker did not panic")?);
+        }
+        Some(result)
+    })
+}
+
+/// Walk a shard's Ropey leaves in order, borrowing each unchanged slice.
+struct RopeChunkCursor<'a> {
+    chunks: ropey::iter::Chunks<'a>,
+    active: &'a str,
+    byte: usize,
+}
+
+impl<'a> RopeChunkCursor<'a> {
+    fn peek(&mut self) -> Option<u8> {
+        if self.active.is_empty() {
+            self.active = self.chunks.next().unwrap_or_default();
+        }
+        self.active.as_bytes().first().copied()
+    }
+
+    fn visit_to(&mut self, end: usize, mut visit: impl FnMut(usize, &str)) -> Option<()> {
+        if end < self.byte {
+            return None;
+        }
+        while self.byte < end {
+            self.peek()?;
+            let take = (end - self.byte).min(self.active.len());
+            let chunk = self.active.get(..take)?;
+            visit(self.byte, chunk);
+            self.active = &self.active[take..];
+            self.byte += take;
+        }
+        Some(())
+    }
+
+    /// A removed range normally occupies one leaf. Keep the allocation for
+    /// a temporary string on cross-leaf ranges only.
+    fn erased_to(&mut self, end: usize) -> Option<Arc<str>> {
+        let len = end.checked_sub(self.byte)?;
+        if len == 0 {
+            return Some(Arc::from(""));
+        }
+        self.peek()?;
+        if len <= self.active.len() {
+            let erased = self.active.get(..len)?;
+            self.active = &self.active[len..];
+            self.byte = end;
+            return Some(Arc::from(erased));
+        }
+        let mut text = String::with_capacity(len);
+        self.visit_to(end, |_, chunk| text.push_str(chunk))?;
+        Some(text.into())
+    }
+}
+
+fn rewrite_dense_chunk(
+    source: ropey::RopeSlice<'_>,
+    spans: &[(usize, usize)],
+    texts: &[Arc<str>],
+    offset: usize,
+    mut last_cr: bool,
+    position: Position,
+) -> Option<DenseRewrite> {
+    let end_of_source = offset + source.len_bytes();
+    let mut cursor = RopeChunkCursor {
+        chunks: source.chunks(),
+        active: "",
+        byte: offset,
+    };
+    let mut builder = ropey::RopeBuilder::new();
+    let mut removed = Vec::with_capacity(spans.len());
+    let mut input_edits = Vec::with_capacity(spans.len());
+    let mut lines: Vec<LineChange> = Vec::new();
+    let mut line = position.line;
+    let mut line_start = offset - position.column.0 as usize;
+    for (&(start, end), inserted) in spans.iter().zip(texts) {
+        cursor.visit_to(start, |offset, unchanged| {
+            let bytes = unchanged.as_bytes();
+            for relative in memchr::memchr2_iter(b'\r', b'\n', bytes) {
+                let follows_cr = if relative == 0 {
+                    last_cr
+                } else {
+                    bytes[relative - 1] == b'\r'
+                };
+                if bytes[relative] == b'\r' || !follows_cr {
+                    line.0 += 1;
+                }
+                line_start = offset + relative + 1;
+            }
+            last_cr = bytes.last() == Some(&b'\r');
+            builder.append(unchanged);
+        })?;
+        // Preserve the reverse rewrite's coordinates when an edit touches
+        // a line terminator or could join a CR to the following LF.
+        if (last_cr && (cursor.peek() == Some(b'\n') || inserted.is_empty()))
+            || memchr::memchr2(b'\r', b'\n', inserted.as_bytes()).is_some()
+        {
+            return None;
+        }
+        let erased = cursor.erased_to(end)?;
+        if memchr::memchr2(b'\r', b'\n', erased.as_bytes()).is_some() {
+            return None;
+        }
+        if !erased.is_empty() {
+            last_cr = false;
+        }
+        removed.push(erased);
+        builder.append(inserted);
+        let start_position = Position {
+            line,
+            column: Utf8Column((start - line_start) as u64),
+        };
+        if lines.last().is_none_or(|change| change.old.start() != line) {
+            let range = Span::new(line, Line(line.0 + 1)).unwrap();
+            lines.push(LineChange {
+                old: range.clone(),
+                new: range,
+            });
+        }
+        let position_after = |bytes: usize| Position {
+            line: start_position.line,
+            column: Utf8Column(start_position.column.0 + bytes as u64),
+        };
+        input_edits.push(InputEdit {
+            start_byte: ByteOffset(start as u64),
+            old_end_byte: ByteOffset(end as u64),
+            new_end_byte: ByteOffset((start + inserted.len()) as u64),
+            start_position,
+            old_end_position: position_after(end - start),
+            new_end_position: position_after(inserted.len()),
+        });
+    }
+    cursor.visit_to(end_of_source, |_, tail| builder.append(tail))?;
+    Some(DenseRewrite {
+        rope: builder.finish(),
+        removed,
+        input_edits,
+        lines,
+    })
+}
+
+fn rewrite_backwards(old: &Rope, spans: &[(usize, usize)], texts: &[Arc<str>]) -> Rewrite {
+    let mut rope = old.clone();
+    let mut removed: Vec<Arc<str>> = vec![Arc::from(""); spans.len()];
+    let mut input_edits = Vec::with_capacity(spans.len());
+    for index in (0..spans.len()).rev() {
+        let (start, end) = spans[index];
+        let inserted = &texts[index];
+        let start_position = position_in(&rope, start);
+        let old_end_position = position_in(&rope, end);
+        if start < end {
+            let slice = rope.byte_slice(start..end);
+            removed[index] = match slice.as_str() {
+                Some(text) => Arc::from(text),
+                None => Arc::from(slice.to_string()),
+            };
+            let start_char = rope.byte_to_char(start);
+            let end_char = rope.byte_to_char(end);
+            rope.remove(start_char..end_char);
+        }
+        if !inserted.is_empty() {
+            rope.insert(rope.byte_to_char(start), inserted);
+        }
+        let new_end = start + inserted.len();
+        input_edits.push(InputEdit {
+            start_byte: ByteOffset(start as u64),
+            old_end_byte: ByteOffset(end as u64),
+            new_end_byte: ByteOffset(new_end as u64),
+            start_position,
+            old_end_position,
+            new_end_position: position_in(&rope, new_end),
+        });
+    }
+    Rewrite {
+        rope,
+        removed,
+        input_edits,
+        line_changes: None,
     }
 }
 
@@ -587,5 +930,105 @@ fn position_in(rope: &Rope, byte: usize) -> Position {
     Position {
         line: Line(line as u64),
         column: Utf8Column((byte - rope.line_to_byte(line)) as u64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dense_sections_stitch_edits_that_share_a_line_across_boundaries() {
+        let source = format!(
+            "开头 target\r\n{}\rtarget middle\nshort target",
+            "λ target ".repeat(130)
+        );
+        let old = Rope::from_str(&source);
+        let spans: Vec<_> = source
+            .match_indices("target")
+            .map(|(start, text)| (start, start + text.len()))
+            .collect();
+        let texts: Vec<Arc<str>> = spans
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                if index % 3 == 0 {
+                    "".into()
+                } else {
+                    "树".into()
+                }
+            })
+            .collect();
+
+        let split = rewrite_dense_sections(&old, &spans, &texts, 4)
+            .unwrap()
+            .finish();
+        let single = rewrite_dense_sections(&old, &spans, &texts, 1)
+            .unwrap()
+            .finish();
+        let reverse = rewrite_backwards(&old, &spans, &texts);
+
+        assert_eq!(split.rope, reverse.rope);
+        assert_eq!(split.removed, reverse.removed);
+        assert_eq!(split.input_edits, reverse.input_edits);
+        assert_eq!(split.line_changes, single.line_changes);
+        assert_eq!(split.line_changes.unwrap().ranges.len(), 4);
+    }
+
+    #[test]
+    fn dense_sections_read_removed_text_across_rope_leaves() {
+        let opening = format!("{}\r\n", "界x".repeat(500));
+        let body = "b".repeat(3000);
+        let source = format!("{opening}{body}\rλ tail");
+        let old = Rope::from_str(&source);
+        let body_end = opening.len() + body.len();
+        let leaf_boundary = old
+            .chunks()
+            .scan(0, |offset, chunk| {
+                *offset += chunk.len();
+                Some(*offset)
+            })
+            .find(|offset| (opening.len() + 2..body_end - 2).contains(offset))
+            .expect("a Ropey leaf ends inside the ASCII line");
+        let unicode_start = body_end + 1;
+        let spans = [
+            (leaf_boundary - 2, leaf_boundary + 2),
+            (unicode_start, unicode_start + "λ".len()),
+        ];
+        let texts = ["跨块", "树"].map(Arc::<str>::from);
+
+        let streamed = rewrite_dense_sections(&old, &spans, &texts, 2)
+            .unwrap()
+            .finish();
+        let reverse = rewrite_backwards(&old, &spans, &texts);
+        assert_eq!(streamed.rope, reverse.rope);
+        assert_eq!(streamed.removed, reverse.removed);
+        assert_eq!(streamed.input_edits, reverse.input_edits);
+        let affected = streamed.line_changes.unwrap();
+        assert_eq!(affected.line_delta, 0);
+        assert_eq!(affected.ranges.len(), 2);
+        assert_eq!(affected.ranges[0].old.start(), Line(1));
+        assert_eq!(affected.ranges[1].old.start(), Line(2));
+    }
+
+    #[test]
+    fn dense_sections_preserve_same_offset_insertions_and_reject_split_boundaries() {
+        let old = Rope::from_str("a\r\nμz");
+        let spans = [(0, 1), (3, 3), (3, 3), (3, 3), (3, 5)];
+        let texts = ["", "左", "", "右", "Ω"].map(Arc::<str>::from);
+        let split = rewrite_dense_sections(&old, &spans, &texts, 2)
+            .unwrap()
+            .finish();
+        let reverse = rewrite_backwards(&old, &spans, &texts);
+        assert_eq!(split.rope, "\r\n左右Ωz");
+        assert_eq!(split.rope, reverse.rope);
+        assert_eq!(split.input_edits, reverse.input_edits);
+        assert_eq!(split.removed, reverse.removed);
+
+        let insertions = ["", "x"].map(Arc::<str>::from);
+        assert!(rewrite_dense_sections(&old, &[(0, 1), (2, 2)], &insertions, 2).is_none());
+        assert!(rewrite_dense_sections(&old, &[(0, 1), (4, 4)], &insertions, 2).is_none());
+        let crlf_at_cut = Rope::from_str("a\r\nx");
+        assert!(rewrite_dense_sections(&crlf_at_cut, &[(0, 1), (2, 2)], &insertions, 2).is_none());
     }
 }

@@ -406,6 +406,93 @@ fn line_changes_merge_ranges_on_the_same_line() {
 }
 
 #[test]
+fn prepared_edits_check_the_live_version_and_form_one_undo_unit() {
+    let mut session = lf_session("abc");
+    let source = session.buffer().clone();
+    let prepared = source
+        .clone()
+        .prepare(&Transaction::single(span(0, 1), "xy"))
+        .unwrap();
+    let stale = source
+        .prepare(&Transaction::single(span(1, 2), "z"))
+        .unwrap();
+    assert_eq!(session.contents(), "abc");
+
+    cursor(&mut session, 3);
+    let applied = session.edit_prepared(prepared, Instant::now()).unwrap();
+    let combined = applied.coalesced(&*session.snapshot()).unwrap().unwrap();
+    assert_eq!(&*combined.inserted, "xy");
+    assert_eq!(session.contents(), "xybc");
+    assert_eq!(offsets(&session), [(4, 4)]);
+    assert!(matches!(
+        session.edit_prepared(stale, Instant::now()),
+        Err(Error::Stale)
+    ));
+    assert_eq!(session.contents(), "xybc");
+    session.undo().unwrap();
+    assert_eq!(session.contents(), "abc");
+    assert!(!session.can_undo());
+    session.redo().unwrap();
+    assert_eq!(session.contents(), "xybc");
+}
+
+#[test]
+fn dense_edits_match_reverse_application_and_undo_as_one_transaction() {
+    let text = "文字 target x\r\nβ target y\n単行 target z\r".repeat(180);
+    let edits: Vec<_> = text
+        .match_indices("target")
+        .enumerate()
+        .map(|(index, (byte, old))| {
+            let replacement = if index % 3 == 0 { "" } else { "樹" };
+            Replacement::new(span(byte as u64, (byte + old.len()) as u64), replacement)
+        })
+        .collect();
+    let mut reference = EditBuffer::new(&text, LineEndings::Mixed { preferred: Eol::Lf });
+    let expected: Vec<_> = edits
+        .iter()
+        .rev()
+        .map(|edit| {
+            reference
+                .apply(&Transaction::single(edit.range.clone(), edit.text.clone()))
+                .unwrap()
+                .input_edits[0]
+        })
+        .collect();
+
+    let mut session = lf_session(&text);
+    let applied = session
+        .edit(Transaction::new(edits).unwrap(), Instant::now())
+        .unwrap();
+    assert_eq!(applied.input_edits, expected);
+    assert_eq!(session.contents(), reference.contents());
+    assert_eq!(applied.changes.line_delta, 0);
+    assert_eq!(applied.changes.ranges.len(), expected.len());
+    session.undo().unwrap();
+    assert_eq!(session.contents(), text);
+    assert!(!session.can_undo());
+    session.redo().unwrap();
+    assert_eq!(session.contents(), reference.contents());
+}
+
+#[test]
+fn dense_edits_with_invalid_utf8_boundaries_are_atomic() {
+    let text = "中a\r\n".repeat(160);
+    let mut session = lf_session(&text);
+    let mut edits: Vec<_> = text
+        .match_indices('a')
+        .map(|(offset, _)| Replacement::new(span(offset as u64, offset as u64 + 1), "b"))
+        .collect();
+    edits.push(Replacement::insert(ByteOffset(1), "invalid"));
+
+    assert!(matches!(
+        session.edit(Transaction::new(edits).unwrap(), Instant::now()),
+        Err(Error::OutOfBounds)
+    ));
+    assert_eq!(session.contents(), text);
+    assert!(!session.can_undo());
+}
+
+#[test]
 fn undo_and_redo_multirange_edit_that_forms_crlf() {
     let initial = "ab\n中\r\n";
     let edited = "\r\n中\r\n";

@@ -1504,6 +1504,11 @@ impl Workbench {
         &self.views[&self.editor.focused].primary.code
     }
 
+    /// The find widget paired with the focused group's primary code view.
+    pub fn find_host(&self) -> &Entity<crate::find::host::FindHost> {
+        &self.views[&self.editor.focused].primary.find
+    }
+
     /// The code view of a group, if the group exists.
     fn group_code(&self, group: EditorGroupId, secondary: bool) -> Option<&Entity<CodeView>> {
         let views = self.views.get(&group)?;

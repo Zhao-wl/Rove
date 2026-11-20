@@ -470,6 +470,135 @@ fn replace_all_rewrites_five_thousand_matches_in_one_undo_unit(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn replace_all_then_save_persists_the_replacement_in_the_same_event(cx: &mut TestAppContext) {
+    use crate::find::registry::REPLACE_ALL;
+
+    for warm in [false, true] {
+        let fixture = Fixture::new("{}");
+        fixture.file("repeated.txt", &"foo\n".repeat(160));
+        let (view, cx) = fixture.open(cx);
+        open_file(&view, "repeated.txt", cx);
+        prepare("foo", "bar", cx);
+        assert_eq!(matches(&view, cx), 160);
+        let find = host(&view, cx);
+        if warm {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(30));
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            find.read_with(cx, |find, cx| find.replacement_ready(cx)),
+            warm
+        );
+
+        cx.update(|window, cx| {
+            find.update(cx, |find, cx| {
+                assert!(find.execute(REPLACE_ALL, window, cx));
+            });
+            view.update(cx, |view, cx| {
+                view.save_command(crate::save::registry::SAVE, window, cx);
+            });
+        });
+        refresh(cx);
+        let replaced = "bar\n".repeat(160);
+        assert_eq!(text(&view, cx), replaced);
+        assert_eq!(
+            std::fs::read_to_string(fixture.folder.path().join("repeated.txt")).unwrap(),
+            replaced
+        );
+    }
+}
+
+#[gpui::test]
+fn consecutive_replace_all_commands_each_read_the_previous_result(cx: &mut TestAppContext) {
+    use crate::find::registry::REPLACE_ALL;
+
+    let fixture = Fixture::new("{}");
+    fixture.file("repeated.txt", &"a\n".repeat(160));
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "repeated.txt", cx);
+    prepare("a", "aa", cx);
+    let find = host(&view, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(30));
+    cx.run_until_parked();
+    assert!(find.read_with(cx, |find, cx| find.replacement_ready(cx)));
+
+    cx.update(|window, cx| {
+        find.update(cx, |find, cx| {
+            assert!(find.execute(REPLACE_ALL, window, cx));
+            assert!(find.execute(REPLACE_ALL, window, cx));
+        });
+    });
+    refresh(cx);
+    assert_eq!(text(&view, cx), "aaaa\n".repeat(160));
+    press("escape", cx);
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), "aa\n".repeat(160));
+    press("ctrl-z", cx);
+    assert_eq!(text(&view, cx), "a\n".repeat(160));
+}
+
+#[gpui::test]
+fn replace_all_updates_its_document_before_switching_tabs(cx: &mut TestAppContext) {
+    use crate::find::registry::REPLACE_ALL;
+
+    let fixture = Fixture::new("{}");
+    fixture.file("repeated.txt", &"foo\n".repeat(160));
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "notes.txt", cx);
+    view.update(cx, |view, cx| {
+        view.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new("repeated.txt").unwrap()),
+                OpenOptions {
+                    preview_tab: false,
+                    ..Default::default()
+                },
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    refresh(cx);
+    refresh(cx);
+    focus_code(&view, cx);
+    prepare("foo", "bar", cx);
+    let find = host(&view, cx);
+    let document = view.read_with(cx, |view, _| {
+        view.editor
+            .active()
+            .current()
+            .unwrap()
+            .opened()
+            .unwrap()
+            .document
+            .id
+    });
+    let other = Resource::Workspace(WorkspacePath::new("notes.txt").unwrap());
+
+    cx.update(|window, cx| {
+        find.update(cx, |find, cx| {
+            assert!(find.execute(REPLACE_ALL, window, cx));
+        });
+        view.update(cx, |view, cx| {
+            view.open_documents()
+                .open(other, OpenOptions::default(), Cancellation::default())
+                .unwrap();
+            cx.notify();
+        });
+    });
+    refresh(cx);
+    assert_eq!(text(&view, cx), NOTES);
+    view.read_with(cx, |view, _| {
+        let saves = view.editing.saves.borrow();
+        let file = saves.file(document).unwrap();
+        assert_eq!(file.session().contents(), "bar\n".repeat(160));
+        assert!(saves.is_dirty(document));
+    });
+}
+
+#[gpui::test]
 fn replace_history_is_browsed_with_up_and_down(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
     let (view, cx) = fx.open(cx);

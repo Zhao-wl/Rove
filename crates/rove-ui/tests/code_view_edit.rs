@@ -163,7 +163,7 @@ fn typing_a_character_edits_the_buffer_notifies_and_is_undoable(cx: &mut TestApp
     let edits = f.edits();
     assert_eq!(edits.len(), 1, "一次输入一个编辑事件");
     let notice = &edits[0].0;
-    let combined = notice.combined.clone().unwrap();
+    let combined = notice.combined().unwrap();
     assert_eq!(
         (
             combined.range.start().0,
