@@ -8,10 +8,13 @@ use gpui::{Context, Entity, Focusable, TestAppContext, VisualTestContext, Window
 use rove_base::*;
 use rove_buffer::{RopeText, SizeClass, TextSource};
 use rove_config::{DefaultSettings, Scope, SettingRegistry, Settings, SettingsChange};
-use rove_syntax::{Fold, Symbol, SyntaxSnapshot, Token};
+use rove_syntax::{EmptySyntax, Fold, Symbol, SyntaxSnapshot, Token};
 use rove_theme::{Color, ColorRegistry, DefaultTheme, ThemeKind};
 use rove_ui::code_view::{self, selection::pos, CodeView, CodeViewServices, Feature, Selection};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 // ------------------------------------------------------------------ 夹具
 
@@ -60,16 +63,29 @@ fn services(overrides: Vec<(&'static str, Value)>) -> CodeViewServices {
 
 /// 极简的 C# token：`//` 之后是注释，成对的 `"` 之间是字符串。
 /// 真实运行时这份数据来自 #9 的 tree-sitter 集成；这里只需要同样的 scope。
-struct FakeSyntax(Arc<dyn TextSource>);
+struct FakeSyntax {
+    text: Arc<dyn TextSource>,
+    token_calls: AtomicUsize,
+}
+
+impl FakeSyntax {
+    fn new(text: Arc<dyn TextSource>) -> Self {
+        Self {
+            text,
+            token_calls: AtomicUsize::new(0),
+        }
+    }
+}
 
 impl SyntaxSnapshot for FakeSyntax {
     fn version(&self) -> Version {
-        self.0.version()
+        self.text.version()
     }
     fn tokens(&self, line: Line) -> Result<Arc<[Token]>> {
-        let range = self.0.line_range(line)?;
+        self.token_calls.fetch_add(1, Ordering::Relaxed);
+        let range = self.text.line_range(line)?;
         let mut text = String::new();
-        self.0
+        self.text
             .visit_chunks(range.clone(), &mut |c| text.push_str(c))?;
         let base = range.start().0;
         let tok = |a: usize, b: usize, scope: &'static str| Token {
@@ -112,7 +128,7 @@ fn open<'a>(
     with_syntax: bool,
 ) -> (Entity<CodeView>, &'a mut VisualTestContext) {
     let source: Arc<dyn TextSource> = Arc::new(RopeText::from_text(text));
-    let syntax: Arc<dyn SyntaxSnapshot> = Arc::new(FakeSyntax(source.clone()));
+    let syntax: Arc<dyn SyntaxSnapshot> = Arc::new(FakeSyntax::new(source.clone()));
     let s = services(overrides);
     let (view, cx) = cx.add_window_view(move |_: &mut Window, cx: &mut Context<CodeView>| {
         let mut v = CodeView::new(s, cx);
@@ -191,6 +207,48 @@ const SOURCE: &str = concat!(
 // ------------------------------------------------------------------ 1. 打开 .cs 后的着色深度
 
 #[gpui::test]
+fn switching_open_documents_reuses_brackets_for_the_same_syntax_snapshot(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "", vec![], false);
+    let first: Arc<dyn TextSource> = Arc::new(RopeText::from_text("M() // [ ]\n"));
+    let second: Arc<dyn TextSource> = Arc::new(RopeText::from_text("a[0]\n"));
+    let syntax = Arc::new(FakeSyntax::new(first.clone()));
+    let other_syntax = Arc::new(FakeSyntax::new(second.clone()));
+
+    view.update(cx, |v, cx| {
+        v.set_text(Some(first.clone()), false, cx);
+        v.set_syntax(Some(syntax.clone()), None, cx);
+        assert_eq!(v.bracket_colors(0).len(), 2);
+        let calls = syntax.token_calls.load(Ordering::Relaxed);
+        assert!(calls > 0);
+
+        v.set_text(Some(second.clone()), false, cx);
+        v.set_syntax(Some(other_syntax.clone()), None, cx);
+        assert_eq!(v.bracket_colors(0)[0].0, 1..2);
+        let other_calls = other_syntax.token_calls.load(Ordering::Relaxed);
+        assert!(other_calls > 0);
+
+        v.set_text(Some(first.clone()), false, cx);
+        assert_eq!(v.bracket_colors(0).len(), 4);
+        v.set_syntax(Some(syntax.clone()), None, cx);
+        assert_eq!(v.bracket_colors(0).len(), 2);
+        assert_eq!(syntax.token_calls.load(Ordering::Relaxed), calls);
+
+        v.set_text(Some(second), false, cx);
+        v.set_syntax(Some(other_syntax.clone()), None, cx);
+        assert_eq!(v.bracket_colors(0)[0].0, 1..2);
+        assert_eq!(
+            other_syntax.token_calls.load(Ordering::Relaxed),
+            other_calls
+        );
+
+        // 相同文本和版本也可能有不同的语法结果。
+        v.set_text(Some(first.clone()), false, cx);
+        v.set_syntax(Some(Arc::new(EmptySyntax(first.version()))), None, cx);
+        assert_eq!(v.bracket_colors(0).len(), 4);
+    });
+}
+
+#[gpui::test]
 fn opening_a_cs_file_colors_brackets_by_depth(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, SOURCE, vec![], true);
     // 第 5 行：`public int M(int[] a) { return a[0] + (a[1] * 2); }`
@@ -255,7 +313,7 @@ fn without_tokens_the_tree_still_builds_and_recovers_when_they_arrive(cx: &mut T
         "没有 token 时注释里的括号也会被当成括号"
     );
     let source = view.read_with(cx, |v, _| v.text().unwrap().clone());
-    let syntax: Arc<dyn SyntaxSnapshot> = Arc::new(FakeSyntax(source));
+    let syntax: Arc<dyn SyntaxSnapshot> = Arc::new(FakeSyntax::new(source));
     view.update(cx, |v, cx| v.set_syntax(Some(syntax), None, cx));
     settle(cx);
     assert!(colors(&view, cx, 6).is_empty(), "token 到达后纠正");

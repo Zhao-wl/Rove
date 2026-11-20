@@ -921,7 +921,7 @@ impl CodeView {
             // 换文档：`alt+z` 的会话覆盖跟着这个视图的文档走，重置回设置。
             self.wrap.session = None;
         }
-        // #57：换了文本（或同一文档的新快照）就整棵括号对树重建，并重新判定括号数上限。
+        // #57：换文本就重置活动括号树。切回同一快照时可复用其完整解析结果。
         self.bracket_pairs.borrow_mut().reset();
         // #58：换了文本就得重算全部换行点（分帧进行）。
         self.wrap.applied = None;
@@ -4034,7 +4034,16 @@ impl CodeView {
                 text: &*text,
                 syntax: &syntax,
             };
-            self.bracket_pairs.borrow_mut().update(&doc)
+            let mut pairs = self.bracket_pairs.borrow_mut();
+            match &syntax.current {
+                None => pairs.update_snapshot(&doc, &text, None),
+                Some((snapshot, source))
+                    if syntax.pending.is_empty() && Arc::ptr_eq(source, &text) =>
+                {
+                    pairs.update_snapshot(&doc, &text, Some(snapshot))
+                }
+                Some(_) => pairs.update(&doc),
+            }
         };
         if changed {
             self.decorations.invalidate(&self.bracket_color_layer, None);
