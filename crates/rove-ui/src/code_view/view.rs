@@ -1394,6 +1394,8 @@ impl CodeView {
         }
         if self.options.smart_select_subwords != options.smart_select_subwords
             || self.options.smart_select_whitespace != options.smart_select_whitespace
+            || self.options.word_separators != options.word_separators
+            || self.options.language_brackets != options.language_brackets
         {
             self.smart_selection = None;
         }

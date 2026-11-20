@@ -227,6 +227,56 @@ fn smart_selection_fallback_uses_subwords_line_whitespace_and_utf8_boundaries(
 }
 
 #[gpui::test]
+fn smart_selection_rebuilds_after_word_and_bracket_settings_change(cx: &mut TestAppContext) {
+    let source = "heading\n(\n  foo.bar\n)\nending";
+    let (_folder, view, cx) = open(cx, "notes.txt", source);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.word_separators = ".".into();
+        options.smart_select_subwords = false;
+        options.smart_select_whitespace = true;
+        options.language_brackets = Some(vec![("(".into(), ")".into())]);
+        code.set_options(options, cx);
+    });
+    let start = caret(&view, cx, source.find("bar").unwrap() + 1);
+    cx.simulate_keystrokes("shift-alt-right");
+    assert_eq!(selected(&view, cx).0, "bar");
+    cx.simulate_keystrokes("shift-alt-left");
+    assert_eq!(
+        selected(&view, cx).1,
+        crate::code_view::Selection::caret(start)
+    );
+
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.word_separators = "".into();
+        code.set_options(options, cx);
+    });
+    for expected in ["foo.bar", "  foo.bar", "(\n  foo.bar\n)"] {
+        cx.simulate_keystrokes("shift-alt-right");
+        assert_eq!(selected(&view, cx).0, expected);
+    }
+    for _ in 0..3 {
+        cx.simulate_keystrokes("shift-alt-left");
+    }
+    assert_eq!(
+        selected(&view, cx).1,
+        crate::code_view::Selection::caret(start)
+    );
+
+    code.update(cx, |code, cx| {
+        let mut options = code.options().clone();
+        options.language_brackets = Some(Vec::new());
+        code.set_options(options, cx);
+    });
+    for expected in ["foo.bar", "  foo.bar", source] {
+        cx.simulate_keystrokes("shift-alt-right");
+        assert_eq!(selected(&view, cx).0, expected);
+    }
+}
+
+#[gpui::test]
 fn smart_selection_bracket_commands_select_jump_and_undo_once(cx: &mut TestAppContext) {
     let source = "class C { int M() { return F(G(3)); } }";
     let (_folder, view, cx) = open(cx, "Program.cs", source);
