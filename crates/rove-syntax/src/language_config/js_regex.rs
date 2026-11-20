@@ -176,6 +176,10 @@ impl CompiledRegex {
             Err(_) => Err(Error::Unsupported),
         }
     }
+    /// Capture names in the same order as the slots returned by `capture_ranges`.
+    pub fn capture_names(&self) -> impl Iterator<Item = Option<&str>> + '_ {
+        self.expression.capture_names()
+    }
 }
 /// Compile one configuration regular expression.
 pub fn compile_regex(javascript: &JsRegex, origin: &RegexOrigin) -> ConfigResult<CompiledRegex> {

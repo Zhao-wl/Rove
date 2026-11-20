@@ -229,12 +229,23 @@ pub fn theme_registry() -> ColorRegistry {
 
 /// 登记颜色键；已存在的键跳过（主题或其他视图已登记）。
 pub fn register(registry: &mut ColorRegistry) -> Result<()> {
-    for key in FEATURE_COLORS {
+    let marker_keys = super::minimap::MarkerKind::ALL
+        .into_iter()
+        .flat_map(|kind| {
+            let style = kind.style();
+            [Some(style.ruler), style.minimap].into_iter().flatten()
+        });
+    for key in FEATURE_COLORS
+        .iter()
+        .copied()
+        .chain(super::minimap::PANEL_COLOR_KEYS.iter().copied())
+        .chain(marker_keys)
+    {
         if registry.get(key).is_some() {
             continue;
         }
         if let Some(defaults) = rove_theme::defaults::static_defaults(key) {
-            registry.register(*key, defaults)?;
+            registry.register(key, defaults)?;
         }
     }
     for &(key, dark, light, hcd, hcl) in COLORS {
@@ -477,10 +488,9 @@ mod tests {
             .unwrap();
         register(&mut colors).unwrap();
         register(&mut colors).unwrap();
-        assert_eq!(
-            colors.entries().count(),
-            COLORS.len() + FEATURE_COLORS.len()
-        );
+        for key in super::super::minimap::PANEL_COLOR_KEYS {
+            assert!(colors.get(key).is_some(), "{key} must be registered");
+        }
         let theme = DefaultTheme {
             colors,
             kind: ThemeKind::Dark,

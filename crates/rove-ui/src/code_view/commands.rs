@@ -144,6 +144,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "codeView.command.toggleWordWrap",
         "切换自动换行",
     ),
+    (
+        super::minimap::TOGGLE,
+        "codeView.command.toggleMinimap",
+        "切换缩略图",
+    ),
     // #20：折叠（KEYBINDINGS.md 阅读一节）与“在此会话中切换只读”。
     ("editor.fold", "codeView.command.fold", "折叠"),
     ("editor.unfold", "codeView.command.unfold", "展开"),
@@ -606,6 +611,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("codeView.feature.syntaxHighlighting", "语法高亮"),
     ("codeView.feature.folding", "折叠"),
     ("codeView.feature.stickyScroll", "粘性滚动"),
+    ("codeView.feature.minimap", "缩略图"),
     ("codeView.feature.wordWrap", "软换行"),
     ("codeView.feature.links", "链接检测"),
     // #57
@@ -710,6 +716,7 @@ command_actions! {
     FontZoomOut => "editor.action.fontZoomOut",
     FontZoomReset => "editor.action.fontZoomReset",
     ToggleWordWrap => "editor.action.toggleWordWrap",
+    ToggleMinimap => "editor.action.toggleMinimap",
     Fold => "editor.fold",
     Unfold => "editor.unfold",
     ToggleFold => "editor.toggleFold",

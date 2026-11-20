@@ -2724,3 +2724,25 @@ VS Code `src/vs/platform/theme/common/tokenClassificationRegistry.ts` 的
 | `workbench.editor.historyBasedLanguageDetection`、`workbench.editor.preferHistoryBasedLanguageDetection` | 静默忽略。无用户选择历史。 |
 
 `cargo test -p rove-syntax detection` 覆盖规则及前缀边界，`cargo test -p rove-ui status_language_detection` 覆盖打开入口、手动覆盖和反馈。`cargo xtask bench --only language_detect --no-startup --check-budgets` 测量语言检测本身。
+
+## 66. 缩略图与概览标尺（#56）
+
+缩略图按 256 个采样视觉行在后台生成 BGRA 纹理。每行最多使用 `editor.minimap.maxColumn`，
+前景沿用代码视图的语法色、C# 语义色与预处理区域透明度。后台任务只接收块内的语义样式。
+屏幕只搬运视口涉及的分块。邻近的分节标题依次堆叠，并使用半透明的缩略图底色保证可读。
+缓存限制为 4 MiB，替换和淘汰时释放 GPUI
+图集中的图像。文本换版、主题和视觉行映射变化时同步失效，普通样式回包只清除受影响的块。
+
+滑块沿用代码视图的 f64 滚动换算。三种布局由视觉行采样控制，点击、拖动和滚轮交给现有滚动入口。
+MARK 标题从注释 token 中提取，区域标题使用折叠标记，二者按用户字号和字距绘制文字。
+编辑器设置沿用已登记的 VS Code 键，切换命令写回 `editor.minimap.enabled`。
+
+概览标尺与缩略图共享标记数据。查找、全局结果、选区、同名高亮、配对括号和光标由现有提供方
+更新。问题来源按相同接口提交错误、警告、信息的行区间。三条通道分别组合相交标记。
+Git 的三个主题键按验收条目兼容读取，项目没有 Git 标记数据提供方。大文件和超大文件默认保留概览标尺。
+显式隐藏垂直滚动条时一并隐藏标尺，释放正文右侧空间。缩略图的关闭原因可经代码视图查询。
+
+实机滚动度量由 `scroll_unique` 记录缓存命中帧中缩略图、标尺和整帧的 CPU，离线 30 万行基准
+由 `minimap` 记录。集成入口测试覆盖真实 Workbench 的语法颜色、标题、分块失效与拖动。
+压缩布局的分节标题在后台扫描每一采样行覆盖的逻辑行，按该行的第一个视觉段归属，跳过折叠隐藏的行。
+点击缩略图时用绘制色块的同一采样映射找出视觉行，再通过代码视图的标准定位入口滚动。

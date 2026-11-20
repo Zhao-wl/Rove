@@ -140,6 +140,7 @@ pub enum CodeViewEvent {
 /// 按文档级别（UX_SPEC §3.1）关闭的功能（#20 提供查询，#22 组装状态栏悬停文案）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Feature {
+    Minimap,
     /// 粘性滚动（#55；UX_SPEC §3.1：大文件与超大文件都关闭）。
     StickyScroll,
     OccurrencesHighlight,
@@ -161,6 +162,7 @@ impl Feature {
     /// 界面字符串 key。
     pub fn label_key(self) -> &'static str {
         match self {
+            Feature::Minimap => "codeView.feature.minimap",
             Feature::StickyScroll => "codeView.feature.stickyScroll",
             Feature::OccurrencesHighlight => "codeView.feature.occurrencesHighlight",
             Feature::SyntaxFolding => "codeView.feature.syntaxFolding",
@@ -227,6 +229,9 @@ pub struct FrameStats {
     pub layout: Duration,
     /// Cache lookup and dispatch time for viewport link detection.
     pub links_cpu: Duration,
+    /// 缩略图与概览标尺在本帧 UI 线程上的布局和绘制耗时。
+    pub minimap_cpu: Duration,
+    pub minimap_cache_hit: bool,
     /// 本帧绘制的字形数（已按水平可见范围裁剪）。
     pub glyphs: u32,
     pub visible_lines: u32,
@@ -353,6 +358,9 @@ pub(crate) enum Drag {
     HThumb {
         grab: f64,
     },
+    MinimapThumb {
+        grab: f64,
+    },
 }
 
 struct Animation {
@@ -462,6 +470,7 @@ pub struct CodeView {
     pub(crate) options: EditorOptions,
     pub(crate) suppress_line_numbers: bool,
     pub(crate) palette: Palette,
+    pub(crate) minimap: super::minimap_view::MinimapView,
     pub(crate) zoom: i32,
     pub(crate) scroll: ScrollPosition,
     animation: Option<Animation>,
@@ -747,6 +756,7 @@ impl CodeView {
                 }),
             )
             .expect("built-in layer");
+        cx.on_release(|view, cx| view.minimap.clear(cx)).detach();
         let mut view = Self {
             focus,
             text: None,
@@ -755,6 +765,7 @@ impl CodeView {
             options,
             suppress_line_numbers: false,
             palette,
+            minimap: Default::default(),
             zoom: 0,
             scroll: ScrollPosition::default(),
             animation: None,
@@ -851,6 +862,8 @@ impl CodeView {
             self.semantic.borrow_mut().discard();
         }
         self.text = text;
+        self.minimap.clear(cx);
+        self.clear_minimap_document_marks();
         self.links.reset();
         self.lines.clear();
         self.content_width = 0.0;
@@ -1124,6 +1137,19 @@ impl CodeView {
         }
     }
 
+    pub(super) fn cached_minimap_wrap(&self, line: u64) -> Option<LineWrap> {
+        if self.wrap.columns == 0 {
+            return None;
+        }
+        let entry = self.lines.peek(&line)?;
+        let shaped = self.shapes.peek(&self.shape_key(entry)).is_some();
+        let saved = entry.wrap.borrow();
+        saved
+            .as_ref()
+            .filter(|(key, _)| *key == self.wrap_key(shaped))
+            .map(|(_, wrap)| wrap.as_ref().clone())
+    }
+
     /// 算（或取缓存的）某行换行点，并把视觉行数写回映射。
     pub(crate) fn wrap_of(&mut self, line: u64, entry: &Rc<LineEntry>) -> Rc<LineWrap> {
         if self.wrap.columns == 0 {
@@ -1160,6 +1186,14 @@ impl CodeView {
                 &o,
             ),
         });
+        let changed_boundaries = entry
+            .wrap
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, previous)| **previous != *w);
+        if changed_boundaries {
+            self.invalidate_minimap_mapping();
+        }
         *entry.wrap.borrow_mut() = Some((key, w.clone()));
         if self.wrap.map.set_count(line, w.count()) {
             self.wrap.note_changed(line);
@@ -1230,6 +1264,7 @@ impl CodeView {
         }
         self.wrap.dirty = false;
         self.wrap.map.commit();
+        self.invalidate_minimap_mapping();
     }
 
     /// 取走“哪些行的视觉行数变了”；`None` 表示变化太多，按全部变了处理。
@@ -1332,6 +1367,14 @@ impl CodeView {
 
     /// 直接设置选项快照（测试与嵌入方使用）。
     pub fn set_options(&mut self, options: EditorOptions, cx: &mut Context<Self>) {
+        if self.options.minimap != options.minimap
+            || self.options.tab_size != options.tab_size
+            || self.options.stop_rendering_line_after != options.stop_rendering_line_after
+            || self.options.max_tokenization_line_length != options.max_tokenization_line_length
+        {
+            self.minimap.clear(cx);
+            self.invalidate_minimap_marks();
+        }
         let layout_changed = options.tab_size != self.options.tab_size
             || options.stop_rendering_line_after != self.options.stop_rendering_line_after;
         let folds_changed = options.tab_size != self.options.tab_size
@@ -1407,6 +1450,8 @@ impl CodeView {
 
     /// 更换主题（#10 主题切换）。颜色在绘制时上色，不影响整形缓存。
     pub fn set_theme(&mut self, theme: Arc<dyn Theme>, kind: ThemeKind, cx: &mut Context<Self>) {
+        self.minimap.clear(cx);
+        self.invalidate_minimap_marks();
         self.services.theme = theme;
         self.services.theme_kind = kind;
         self.palette = Palette::resolve(&*self.services.theme, kind);
@@ -1866,10 +1911,13 @@ impl CodeView {
 
     /// 跳转到任意行（`workbench.action.gotoLine` 的落点接口）。行号超出已知范围时钳制到最后一个已知行。
     pub fn reveal_line(&mut self, line: u64, reveal: Reveal, cx: &mut Context<Self>) {
-        self.prepare_on_layout = true;
         let line = line.min(self.doc_line_count().saturating_sub(1));
         self.unfold_to_reveal(line, cx);
-        let line = self.view_line(line);
+        self.reveal_visual_line(self.view_line(line), reveal, cx);
+    }
+
+    pub(super) fn reveal_visual_line(&mut self, line: u64, reveal: Reveal, cx: &mut Context<Self>) {
+        self.prepare_on_layout = true;
         match self.metrics() {
             Some(m) => {
                 let p = self.scroll.reveal_line(line, reveal, 0, &m, &self.zones);
@@ -2155,6 +2203,12 @@ impl CodeView {
             }
             // #58：只切换当前编辑器会话的软换行，不写回 `settings.json`。
             "editor.action.toggleWordWrap" => self.toggle_word_wrap(cx),
+            super::minimap::TOGGLE => {
+                let enabled = !self.options.minimap.enabled;
+                self.options.minimap.enabled = enabled;
+                self.write_setting(super::minimap::ENABLED.id, Value::Bool(enabled), cx);
+                cx.notify();
+            }
             "editor.action.fontZoomIn" => self.set_zoom_level(self.zoom + 1, cx),
             "editor.action.fontZoomOut" => self.set_zoom_level(self.zoom - 1, cx),
             "editor.action.fontZoomReset" => self.set_zoom_level(0, cx),
@@ -3250,6 +3304,7 @@ impl CodeView {
                 .invalidate(&self.semantic_layer, Some(r.clone()));
         }
         if !lines.is_empty() {
+            self.invalidate_minimap_rows(Some(lines), cx);
             cx.notify();
         }
     }
@@ -3291,6 +3346,7 @@ impl CodeView {
                 ),
             }
         }
+        self.invalidate_minimap_rows(invalid.as_deref(), cx);
         self.last_syntax_invalidation = Some(invalid);
         if had_folds || folds_of(&self.syntax.borrow().current) {
             self.recompute_folds(cx);
@@ -3390,6 +3446,7 @@ impl CodeView {
             return;
         }
         self.level = level;
+        self.minimap.clear(cx);
         if level == SizeClass::Huge {
             self.links.reset();
             self.refresh_link_pointer(cx);
@@ -3428,6 +3485,7 @@ impl CodeView {
                 }
             }
             SizeClass::Large => vec![
+                Feature::Minimap,
                 Feature::StickyScroll,
                 Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
@@ -3436,6 +3494,7 @@ impl CodeView {
                 Feature::BackgroundHighlighting,
             ],
             SizeClass::Huge => vec![
+                Feature::Minimap,
                 Feature::StickyScroll,
                 Feature::BracketPairColorization,
                 Feature::OccurrencesHighlight,
@@ -3530,6 +3589,7 @@ impl CodeView {
         // 锚点按**旧**映射取（此时 `self.wrap.map` 还是旧的）。
         let anchor = self.anchor_line();
         self.applied_map = map.clone();
+        self.invalidate_minimap_mapping();
         let known = self.wrap.map.doc_lines();
         self.wrap.map.set_doc_lines(doc_lines);
         self.wrap.map.set_folds(map);
@@ -3622,7 +3682,16 @@ impl CodeView {
         let folding = self.folding_enabled();
         if !folding {
             if !self.folding.ranges().is_empty() || !self.folding.collapsed_keys().is_empty() {
+                let had_region_headers = self.options.minimap.region_headers
+                    && self
+                        .folding
+                        .ranges()
+                        .iter()
+                        .any(|range| range.source == super::folding::FoldSource::Region);
                 self.folding.clear();
+                if had_region_headers {
+                    self.invalidate_minimap_mapping();
+                }
                 self.folds_changed(cx);
             }
             // #55：`editor.folding` 关着时粘性滚动的缩进模型仍然要有区间，所以不在这里返回。
@@ -3684,7 +3753,22 @@ impl CodeView {
                 v.sticky.invalidate();
                 match ranges {
                     Some(ranges) => {
+                        let regions = |ranges: &[FoldRange]| {
+                            ranges
+                                .iter()
+                                .filter(|range| range.source == super::folding::FoldSource::Region)
+                                .map(|range| range.start)
+                                .collect::<Vec<_>>()
+                        };
+                        let previous = v
+                            .options
+                            .minimap
+                            .region_headers
+                            .then(|| regions(v.folding.ranges()));
                         v.folding.set_computed(ranges, max);
+                        if previous.is_some_and(|old| old != regions(v.folding.ranges())) {
+                            v.invalidate_minimap_mapping();
+                        }
                         v.folds_changed(cx);
                     }
                     None => cx.notify(),
@@ -3874,6 +3958,7 @@ impl CodeView {
 
     /// 选区变化后更新括号匹配与同名高亮。括号对树要先更新：活动括号对以它为准。
     pub(crate) fn update_highlights(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_minimap_marks();
         self.sync_bracket_pairs();
         self.update_brackets();
         self.update_occurrences(cx);
@@ -4235,12 +4320,14 @@ impl CodeView {
             _ => false,
         };
         if same {
+            self.refresh_minimap_occurrences(self.occurrence_epoch.get(), cx);
             return;
         }
         self.occurrence_epoch.set(self.occurrence_epoch.get() + 1);
         let delay = self.options.occurrences_highlight_delay_ms;
         let deferred = delay > 0 && matches!(target, Some(Target::Word { .. }));
         self.occurrences.borrow_mut().target = if deferred { None } else { target.clone() };
+        self.refresh_minimap_occurrences(self.occurrence_epoch.get(), cx);
         self.decorations.invalidate(&self.occurrence_layer, None);
         if deferred {
             let epoch = self.occurrence_epoch.clone();
@@ -4254,6 +4341,7 @@ impl CodeView {
                 }
                 let _ = this.update(cx, |v, cx| {
                     v.occurrences.borrow_mut().target = target;
+                    v.refresh_minimap_occurrences(mine, cx);
                     v.decorations.invalidate(&v.occurrence_layer, None);
                     cx.notify();
                 });

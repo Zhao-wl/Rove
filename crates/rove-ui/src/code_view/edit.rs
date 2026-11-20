@@ -485,6 +485,11 @@ impl CodeView {
         }
         self.mark_wrap_dirty(&wrap_dirty);
         if lines_moved {
+            self.invalidate_minimap_rows(None, cx);
+        } else {
+            self.invalidate_minimap_rows(Some(&wrap_dirty), cx);
+        }
+        if lines_moved {
             self.sync_fold_map();
             self.recompute_folds(cx);
         }

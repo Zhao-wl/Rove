@@ -23,6 +23,7 @@ use std::sync::Arc;
 pub type SyntaxPair = (Arc<dyn SyntaxSnapshot>, Arc<dyn TextSource>);
 
 /// 着色层的状态（视图持有，提供方只读）。
+#[derive(Clone)]
 pub struct SyntaxLayer {
     /// 快照及其对应的文本（版本相同）；快照落后时仍用它换算列。
     pub current: Option<SyntaxPair>,
@@ -145,6 +146,16 @@ impl SyntaxLayer {
     /// #57 的括号对树据此跳过注释与字符串里的括号：判定一律走 #9 的 token（scope），
     /// 不自己扫引号与注释起止，所以 C# 的逐字字符串（`@"..."`）与 XML 的 CDATA 都能正确跳过。
     pub fn ignored_ranges(&self, line: u64, out: &mut Vec<Range<u32>>) {
+        self.scope_ranges(line, out, |scope| {
+            scope.starts_with("string") || scope.starts_with("comment")
+        });
+    }
+
+    pub fn comment_ranges(&self, line: u64, out: &mut Vec<Range<u32>>) {
+        self.scope_ranges(line, out, |scope| scope.starts_with("comment"));
+    }
+
+    fn scope_ranges(&self, line: u64, out: &mut Vec<Range<u32>>, matches: impl Fn(&str) -> bool) {
         let Some((snapshot, text)) = &self.current else {
             return;
         };
@@ -155,11 +166,7 @@ impl SyntaxLayer {
         };
         let (line_start, line_end) = (range.start().0, range.end().0);
         for token in tokens.iter() {
-            if !token
-                .scopes
-                .iter()
-                .any(|s| s.starts_with("string") || s.starts_with("comment"))
-            {
+            if !token.scopes.iter().any(|s| matches(s)) {
                 continue;
             }
             let start = (token.range.start().0.max(line_start) - line_start) as u32;

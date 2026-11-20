@@ -369,3 +369,10 @@ Rove 只读加载该主题，不修改字体与图标定义。**#69 合并前仓
   可选 feature `intl-segmenter`（默认关闭）启用时会把 ICU4X 的分词数据编进二进制，
   届时需随发布包附上该许可全文。
 - **Apache-2.0 单授权**：`gpui`（见上文）。
+
+## VS Code 缩略图分节标题（#56）
+
+`crates/rove-ui/src/code_view/minimap_view.rs` 的标题堆叠与半透明底色参考 VS Code
+的 `InnerMinimap._renderSectionHeaders`，并通过 GPUI 原生绘制实现。原实现使用 MIT 许可，
+版权与许可全文见上文“VS Code 默认主题与主题引擎”一节。
+[VS Code 缩略图实现](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/viewParts/minimap/minimap.ts#L1856-L1925)

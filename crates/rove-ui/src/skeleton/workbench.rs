@@ -1392,6 +1392,7 @@ impl Workbench {
         } else {
             tab.view.clone()
         };
+        let search_range = tab.search_range();
         tab.reveal &= secondary;
         // A new snapshot of the document already shown keeps the live view state.
         let same = matches!((previous, target), (Some(p), Some(t)) if p.tab == t.tab && p.document == t.document);
@@ -1420,6 +1421,17 @@ impl Workbench {
                         code.set_selection(selection_of(&state), None, cx);
                     }
                 }
+            }
+            if changed || reveal {
+                use crate::code_view::minimap::{Marker, MarkerKind};
+                let markers = search_range
+                    .into_iter()
+                    .map(|range| Marker {
+                        lines: range.start().line.0..range.end().line.0.saturating_add(1),
+                        kind: MarkerKind::Range,
+                    })
+                    .collect();
+                code.set_minimap_markers("searchResult", markers, cx);
             }
             if reveal {
                 code.set_selection(selection_of(&state), Some(Reveal::CenterIfOutside), cx);
