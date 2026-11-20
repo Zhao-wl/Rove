@@ -559,7 +559,7 @@ fn rewrite_dense_lines(
     spans: &[(usize, usize)],
     texts: &[Arc<str>],
 ) -> Option<Rewrite> {
-    // 稀疏编辑继续共享未受影响的子树。密集路径最多为普通文件额外持有一份源文本。
+    // 稀疏编辑继续共享未受影响的子树。密集重建只用于普通文件，控制临时内存。
     if spans.len() < 128
         || old.len_bytes() / spans.len() > 4096
         || old.len_bytes() as u64 > crate::size::LARGE_FILE_BYTES
@@ -627,12 +627,9 @@ fn rewrite_dense_sections(
             return None;
         }
         let part = old.byte_slice(start..end);
-        let source = part
-            .as_str()
-            .map_or_else(|| Cow::Owned(part.to_string()), Cow::Borrowed);
         let preceded_by_cr = start > 0 && old.byte(start - 1) == b'\r';
         rewrite_dense_chunk(
-            &source,
+            part,
             &spans[edits.clone()],
             &texts[edits],
             start,
@@ -681,61 +678,115 @@ fn rewrite_dense_sections(
     })
 }
 
+/// Walk a shard's Ropey leaves in order, borrowing each unchanged slice.
+struct RopeChunkCursor<'a> {
+    chunks: ropey::iter::Chunks<'a>,
+    active: &'a str,
+    byte: usize,
+}
+
+impl<'a> RopeChunkCursor<'a> {
+    fn peek(&mut self) -> Option<u8> {
+        if self.active.is_empty() {
+            self.active = self.chunks.next().unwrap_or_default();
+        }
+        self.active.as_bytes().first().copied()
+    }
+
+    fn visit_to(&mut self, end: usize, mut visit: impl FnMut(usize, &str)) -> Option<()> {
+        if end < self.byte {
+            return None;
+        }
+        while self.byte < end {
+            self.peek()?;
+            let take = (end - self.byte).min(self.active.len());
+            let chunk = self.active.get(..take)?;
+            visit(self.byte, chunk);
+            self.active = &self.active[take..];
+            self.byte += take;
+        }
+        Some(())
+    }
+
+    /// A removed range normally occupies one leaf. Keep the allocation for
+    /// a temporary string on cross-leaf ranges only.
+    fn erased_to(&mut self, end: usize) -> Option<Arc<str>> {
+        let len = end.checked_sub(self.byte)?;
+        if len == 0 {
+            return Some(Arc::from(""));
+        }
+        self.peek()?;
+        if len <= self.active.len() {
+            let erased = self.active.get(..len)?;
+            self.active = &self.active[len..];
+            self.byte = end;
+            return Some(Arc::from(erased));
+        }
+        let mut text = String::with_capacity(len);
+        self.visit_to(end, |_, chunk| text.push_str(chunk))?;
+        Some(text.into())
+    }
+}
+
 fn rewrite_dense_chunk(
-    source: &str,
+    source: ropey::RopeSlice<'_>,
     spans: &[(usize, usize)],
     texts: &[Arc<str>],
     offset: usize,
-    preceded_by_cr: bool,
+    mut last_cr: bool,
     position: Position,
 ) -> Option<DenseRewrite> {
-    let bytes = source.as_bytes();
-    let follows_cr = |at| {
-        if at == 0 {
-            preceded_by_cr
-        } else {
-            bytes[at - 1] == b'\r'
-        }
+    let end_of_source = offset + source.len_bytes();
+    let mut cursor = RopeChunkCursor {
+        chunks: source.chunks(),
+        active: "",
+        byte: offset,
     };
     let mut builder = ropey::RopeBuilder::new();
     let mut removed = Vec::with_capacity(spans.len());
     let mut input_edits = Vec::with_capacity(spans.len());
     let mut lines: Vec<LineChange> = Vec::new();
-    let mut copied = 0;
     let mut line = position.line;
     let mut line_start = offset - position.column.0 as usize;
-    for (&(old_start, old_end), inserted) in spans.iter().zip(texts) {
-        let start = old_start - offset;
-        let end = old_end - offset;
-        // 切片同时校验两个 UTF-8 边界。跨换行符、拆分 CRLF 或可能把 CR/LF
-        // 接合时沿用通用路径，确保原有的中间坐标与换行失效规则。
-        let erased = source.get(start..end)?;
-        if memchr::memchr2(b'\r', b'\n', inserted.as_bytes()).is_some()
-            || memchr::memchr2(b'\r', b'\n', erased.as_bytes()).is_some()
-            || (follows_cr(start) && (bytes.get(start) == Some(&b'\n') || inserted.is_empty()))
+    for (&(start, end), inserted) in spans.iter().zip(texts) {
+        cursor.visit_to(start, |offset, unchanged| {
+            let bytes = unchanged.as_bytes();
+            for relative in memchr::memchr2_iter(b'\r', b'\n', bytes) {
+                let follows_cr = if relative == 0 {
+                    last_cr
+                } else {
+                    bytes[relative - 1] == b'\r'
+                };
+                if bytes[relative] == b'\r' || !follows_cr {
+                    line.0 += 1;
+                }
+                line_start = offset + relative + 1;
+            }
+            last_cr = bytes.last() == Some(&b'\r');
+            builder.append(unchanged);
+        })?;
+        // Preserve the reverse rewrite's coordinates when an edit touches
+        // a line terminator or could join a CR to the following LF.
+        if (last_cr && (cursor.peek() == Some(b'\n') || inserted.is_empty()))
+            || memchr::memchr2(b'\r', b'\n', inserted.as_bytes()).is_some()
         {
             return None;
         }
-
-        let unchanged = &source[copied..start];
-        // 已删区间完全在行内。统计本次跳过的原文即可沿用同一套旧文本坐标。
-        for relative in memchr::memchr2_iter(b'\r', b'\n', unchanged.as_bytes()) {
-            let at = copied + relative;
-            if bytes[at] == b'\r' || !follows_cr(at) {
-                line.0 += 1;
-            }
-            line_start = offset + at + 1;
+        let erased = cursor.erased_to(end)?;
+        if memchr::memchr2(b'\r', b'\n', erased.as_bytes()).is_some() {
+            return None;
         }
-        builder.append(unchanged);
+        if !erased.is_empty() {
+            last_cr = false;
+        }
+        removed.push(erased);
         builder.append(inserted);
-        copied = end;
-        removed.push(Arc::from(erased));
         let start_position = Position {
             line,
-            column: Utf8Column((old_start - line_start) as u64),
+            column: Utf8Column((start - line_start) as u64),
         };
         if lines.last().is_none_or(|change| change.old.start() != line) {
-            let range = Span::new(line, Line(line.0 + 1)).expect("单行区间有效");
+            let range = Span::new(line, Line(line.0 + 1)).unwrap();
             lines.push(LineChange {
                 old: range.clone(),
                 new: range,
@@ -746,15 +797,15 @@ fn rewrite_dense_chunk(
             column: Utf8Column(start_position.column.0 + bytes as u64),
         };
         input_edits.push(InputEdit {
-            start_byte: ByteOffset(old_start as u64),
-            old_end_byte: ByteOffset(old_end as u64),
-            new_end_byte: ByteOffset((old_start + inserted.len()) as u64),
+            start_byte: ByteOffset(start as u64),
+            old_end_byte: ByteOffset(end as u64),
+            new_end_byte: ByteOffset((start + inserted.len()) as u64),
             start_position,
             old_end_position: position_after(end - start),
             new_end_position: position_after(inserted.len()),
         });
     }
-    builder.append(&source[copied..]);
+    cursor.visit_to(end_of_source, |_, tail| builder.append(tail))?;
     Some(DenseRewrite {
         rope: builder.finish(),
         removed,
@@ -922,6 +973,42 @@ mod tests {
         assert_eq!(split.input_edits, reverse.input_edits);
         assert_eq!(split.line_changes, single.line_changes);
         assert_eq!(split.line_changes.unwrap().ranges.len(), 4);
+    }
+
+    #[test]
+    fn dense_sections_read_removed_text_across_rope_leaves() {
+        let opening = format!("{}\r\n", "界x".repeat(500));
+        let body = "b".repeat(3000);
+        let source = format!("{opening}{body}\rλ tail");
+        let old = Rope::from_str(&source);
+        let body_end = opening.len() + body.len();
+        let leaf_boundary = old
+            .chunks()
+            .scan(0, |offset, chunk| {
+                *offset += chunk.len();
+                Some(*offset)
+            })
+            .find(|offset| (opening.len() + 2..body_end - 2).contains(offset))
+            .expect("a Ropey leaf ends inside the ASCII line");
+        let unicode_start = body_end + 1;
+        let spans = [
+            (leaf_boundary - 2, leaf_boundary + 2),
+            (unicode_start, unicode_start + "λ".len()),
+        ];
+        let texts = ["跨块", "树"].map(Arc::<str>::from);
+
+        let streamed = rewrite_dense_sections(&old, &spans, &texts, 2)
+            .unwrap()
+            .finish();
+        let reverse = rewrite_backwards(&old, &spans, &texts);
+        assert_eq!(streamed.rope, reverse.rope);
+        assert_eq!(streamed.removed, reverse.removed);
+        assert_eq!(streamed.input_edits, reverse.input_edits);
+        let affected = streamed.line_changes.unwrap();
+        assert_eq!(affected.line_delta, 0);
+        assert_eq!(affected.ranges.len(), 2);
+        assert_eq!(affected.ranges[0].old.start(), Line(1));
+        assert_eq!(affected.ranges[1].old.start(), Line(2));
     }
 
     #[test]
