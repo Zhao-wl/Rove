@@ -133,18 +133,20 @@ async fn measure(
         })
         .await?;
         let readback: FrameReadback = Rc::default();
-        let (sent, returned, immediate, selected) = any.update(cx, |_, window, app| {
+        let (sent, handled) = any.update(cx, |_, window, app| {
             let key = key.clone();
+            read_first_frame(window, code.clone(), readback.clone());
             let sent = Instant::now();
             let handled = window.dispatch_keystroke(key, app);
-            let returned = Instant::now();
+            (sent, handled)
+        })?;
+        // GPUI 的快捷键处理器把命令放到 update 的末尾执行。到这里才完成命令及其通知。
+        let returned = Instant::now();
+        let (immediate, selected) = any.update(cx, |_, window, app| {
             let view = code.read(app);
             let frame = view.last_frame();
             let selected = view.selection();
             let immediate = frame.end.is_some_and(|end| end >= sent);
-            if !immediate {
-                read_first_frame(window, code.clone(), readback.clone());
-            }
             let selected = if handled && !selected.is_empty() {
                 Ok(selected)
             } else {
@@ -153,7 +155,7 @@ async fn measure(
                     window.context_stack()
                 ))
             };
-            (sent, returned, immediate.then_some(frame), selected)
+            (immediate.then_some(frame), selected)
         })?;
         let selected = selected?;
         let (frame_started, frame) = if let Some(frame) = immediate {
