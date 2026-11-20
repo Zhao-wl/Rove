@@ -126,6 +126,9 @@ impl CodeView {
                 && self.scroll_position() == scroll
             {
                 self.prepare_on_layout = prepared;
+                // Recheck the selected row in the frame itself. Incoming syntax
+                // or decorations can invalidate it after the key is dispatched.
+                self.selection_line_to_prepare = Some((self.version(), active.line));
             }
         } else {
             self.reveal_line(active.line.0, Reveal::CenterIfOutside, cx);

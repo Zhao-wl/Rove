@@ -101,17 +101,19 @@ async fn measure(
         })?;
         timer.timer(Duration::from_millis(24)).await;
         let readback: FrameReadback = Rc::default();
-        let (sent, returned, immediate) = any.update(cx, |_, window, app| {
+        let (sent, returned, immediate, selected) = any.update(cx, |_, window, app| {
             let key = Keystroke::parse("shift-alt-right").unwrap();
             let sent = Instant::now();
             window.dispatch_keystroke(key, app);
             let returned = Instant::now();
-            let frame = code.read(app).last_frame();
+            let view = code.read(app);
+            let frame = view.last_frame();
+            let selected = view.selection();
             let immediate = frame.end.is_some_and(|end| end >= sent);
             if !immediate {
                 read_first_frame(window, code.clone(), readback.clone());
             }
-            (sent, returned, immediate.then_some(frame))
+            (sent, returned, immediate.then_some(frame), selected)
         })?;
         let (frame_started, frame) = if let Some(frame) = immediate {
             (returned, frame)
@@ -124,7 +126,11 @@ async fn measure(
             .filter(|end| *end >= sent && (immediate.is_some() || *end >= frame_started))
             .ok_or("按键后第一个帧请求没有绘制代码视图")?;
         if !frame.selection_painted {
-            return Err(format!("样本 {i} 未在按键后的第一帧绘制选区").into());
+            return Err(format!(
+                "样本 {i} 未在按键后的第一帧绘制选区，分发后的选区 {selected:?}，首行 {}，可见 {}，整形 {}，占位 {}，缺失 {}",
+                frame.first_line, frame.visible_lines, frame.shaped, frame.placeholders, frame.missing,
+            )
+            .into());
         }
         let dispatch = returned - sent;
         let draw = end.saturating_duration_since(frame_started);

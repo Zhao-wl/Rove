@@ -537,6 +537,7 @@ pub struct CodeView {
     prepare_scheduled: bool,
     /// #132：视口刚跳到新位置，下一次布局要在绘制前同步准备目标区域（一次性）。
     pub(crate) prepare_on_layout: bool,
+    pub(crate) selection_line_to_prepare: Option<(Version, Line)>,
     pub(crate) last_viewport: Option<Viewport>,
     pub(crate) caret_visible: bool,
     blink_epoch: Rc<Cell<u64>>,
@@ -822,6 +823,7 @@ impl CodeView {
             direction: 1,
             prepare_scheduled: false,
             prepare_on_layout: false,
+            selection_line_to_prepare: None,
             last_viewport: None,
             caret_visible: true,
             blink_epoch: Rc::new(Cell::new(0)),

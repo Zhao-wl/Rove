@@ -192,6 +192,12 @@ impl CodeView {
         if std::mem::take(&mut self.prepare_on_layout) {
             self.prepare_jump(window);
         }
+        if let Some((version, line)) = self.selection_line_to_prepare.take() {
+            if version == self.version() && line == self.selection().active.line {
+                self.ensure_entry(line.0);
+                self.ensure_shaped(line.0, window);
+            }
+        }
         let o = &self.options;
 
         // 行号栏：字形边距 | 行号 | 行装饰区（含折叠控件）。
