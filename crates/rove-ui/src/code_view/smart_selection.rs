@@ -112,7 +112,18 @@ impl CodeView {
                 range.end().0 - range.start().0 <= columns::MAX_SELECTION_LINE_BYTES
             });
         if can_measure_column {
+            let prepared = self.prepare_on_layout;
+            let scroll = self.scroll_position();
+            let ready = self.metrics().is_some()
+                && !self.is_animating()
+                && !self.folding.map().is_hidden(active.line.0)
+                && self.is_line_shaped(active.line.0);
             self.reveal_position(active, Reveal::CenterIfOutside, cx);
+            // The current shaped row stays on screen. Keep any pending jump
+            // preparation, but don't revisit every visible row for this selection.
+            if ready && self.scroll_position() == scroll {
+                self.prepare_on_layout = prepared;
+            }
         } else {
             self.reveal_line(active.line.0, Reveal::CenterIfOutside, cx);
             // 长行改由常规预取处理，避免首帧的同步跳转准备。

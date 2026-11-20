@@ -28,6 +28,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Measurements {
     active: Vec<f64>,
     wall: Vec<f64>,
+    slow_samples: Vec<(usize, Duration, Duration, FrameStats)>,
 }
 
 async fn wait_for(cx: &mut AsyncApp, mut ready: impl FnMut(&mut AsyncApp) -> bool) -> Result<()> {
@@ -89,6 +90,7 @@ async fn measure(
     let timer = cx.background_executor().clone();
     let mut active = Vec::with_capacity(SAMPLES);
     let mut wall = Vec::with_capacity(SAMPLES);
+    let mut slow_samples = Vec::new();
     for i in 0..WARMUP + SAMPLES {
         any.update(cx, |_, window, app| {
             window.focus(&code.focus_handle(app));
@@ -124,13 +126,22 @@ async fn measure(
         if !frame.selection_painted {
             return Err(format!("样本 {i} 未在按键后的第一帧绘制选区").into());
         }
-        let actual_active = returned - sent + end.saturating_duration_since(frame_started);
+        let dispatch = returned - sent;
+        let draw = end.saturating_duration_since(frame_started);
+        let actual_active = dispatch + draw;
         if i >= WARMUP {
             active.push(actual_active.as_nanos() as f64);
             wall.push((end - sent).as_nanos() as f64);
+            if actual_active >= Duration::from_millis(7) {
+                slow_samples.push((i - WARMUP + 1, dispatch, draw, frame));
+            }
         }
     }
-    Ok(Measurements { active, wall })
+    Ok(Measurements {
+        active,
+        wall,
+        slow_samples,
+    })
 }
 
 fn record(parent: &Path, id: &str, samples: &[f64]) -> Result<()> {
@@ -204,6 +215,15 @@ fn main() -> Result<()> {
             measurements.active.len(),
             SAMPLES
         );
+        for (sample, dispatch, draw, frame) in &measurements.slow_samples {
+            println!(
+                "智能扩选样本 {sample}: 分发 {:.3} ms，帧回调至绘制完成 {:.3} ms，代码视图 {:.3} ms，其中布局 {:.3} ms",
+                dispatch.as_secs_f64() * 1000.0,
+                draw.as_secs_f64() * 1000.0,
+                frame.cpu.as_secs_f64() * 1000.0,
+                frame.layout.as_secs_f64() * 1000.0,
+            );
+        }
         let exe = std::env::current_exe()?;
         let target = exe.ancestors().nth(3).ok_or("找不到性能目标目录")?;
         record(target, "key_active", &measurements.active)?;
