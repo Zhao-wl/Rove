@@ -344,6 +344,42 @@ fn smart_selection_brackets_follow_the_active_cursor_with_highlighting_off(
 }
 
 #[gpui::test]
+fn smart_selection_bracket_jump_prepares_newly_unfolded_rows(cx: &mut TestAppContext) {
+    let source = "class C {\n    int x;\n}\n";
+    let (_folder, view, cx) = open(cx, "Program.cs", source);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    cx.update(|window, app| {
+        code.update(app, |code, cx| {
+            let text = code.text().unwrap();
+            let open = text
+                .position(ByteOffset(source.find('{').unwrap() as u64))
+                .unwrap();
+            let close_offset = source.rfind('}').unwrap() as u64;
+            let close = text.position(ByteOffset(close_offset)).unwrap();
+            let after_close = text.position(ByteOffset(close_offset + 1)).unwrap();
+            assert!(code.is_line_shaped(close.line.0));
+
+            use crate::code_view::Selection;
+            code.set_selection(Selection::new(open, after_close), None, cx);
+            assert!(code.execute("editor.createFoldingRangeFromSelection", window, cx));
+            assert!(code.folding.map().is_hidden(close.line.0));
+            code.set_selection(Selection::caret(open), None, cx);
+            code.prepare_on_layout = false;
+            let scroll = code.scroll_position();
+
+            assert!(code.execute(ids::JUMP_TO_BRACKET, window, cx));
+            assert_eq!(code.selection(), Selection::caret(close));
+            assert!(!code.folding.map().is_hidden(close.line.0));
+            assert_eq!(code.scroll_position(), scroll);
+            assert!(
+                code.prepare_on_layout,
+                "newly exposed rows need first-frame preparation"
+            );
+        });
+    });
+}
+
+#[gpui::test]
 fn smart_selection_bracket_delete_leaves_strings_intact_without_current_syntax(
     cx: &mut TestAppContext,
 ) {

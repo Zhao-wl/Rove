@@ -102,6 +102,9 @@ impl CodeView {
     }
 
     fn apply_smart_selections(&mut self, selections: Vec<Selection>, cx: &mut Context<Self>) {
+        let scroll = self.scroll_position();
+        let fold_generation = self.folding.generation;
+        let stationary = !self.is_animating();
         self.set_selections(selections, None, cx);
         let active = self.selection().active;
         let can_measure_column = self
@@ -113,15 +116,15 @@ impl CodeView {
             });
         if can_measure_column {
             let prepared = self.prepare_on_layout;
-            let scroll = self.scroll_position();
-            let ready = self.metrics().is_some()
-                && !self.is_animating()
-                && !self.folding.map().is_hidden(active.line.0)
-                && self.is_line_shaped(active.line.0);
+            let ready =
+                stationary && self.metrics().is_some() && self.is_line_shaped(active.line.0);
             self.reveal_position(active, Reveal::CenterIfOutside, cx);
             // The current shaped row stays on screen. Keep any pending jump
-            // preparation, but don't revisit every visible row for this selection.
-            if ready && self.scroll_position() == scroll {
+            // preparation, and prepare newly exposed rows after automatic unfolding.
+            if ready
+                && self.folding.generation == fold_generation
+                && self.scroll_position() == scroll
+            {
                 self.prepare_on_layout = prepared;
             }
         } else {
