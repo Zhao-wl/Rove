@@ -418,7 +418,7 @@ impl CodeView {
         }
         let sticky_bounds = (!sticky.is_empty()).then(|| {
             Bounds::new(
-                bounds.origin,
+                gutter_origin,
                 size(px(gutter_w + text_w), px(sticky_height)),
             )
         });

@@ -4,7 +4,10 @@
 //!
 //! 运行：`cargo test -p rove-ui --test code_view_sticky`
 
-use gpui::{Context, Entity, Focusable, TestAppContext, VisualTestContext, Window};
+use gpui::{
+    point, px, Context, Entity, Focusable, Modifiers, MouseButton, TestAppContext,
+    VisualTestContext, Window,
+};
 use rove_base::*;
 use rove_buffer::{RopeText, SizeClass, TextSource};
 use rove_commands::{
@@ -376,7 +379,16 @@ fn outline_model_falls_back_in_a_fixed_order(cx: &mut TestAppContext) {
 fn clicking_a_sticky_line_reveals_it_below_the_band(cx: &mut TestAppContext) {
     let text = csharp_5000();
     let symbols = symbols_of(&text, "csharp");
-    let (view, cx, _) = open(cx, &text, Some("csharp"), vec![]);
+    let (view, cx, _) = open(
+        cx,
+        &text,
+        Some("csharp"),
+        vec![
+            ("editor.minimap.enabled", Value::Bool(true)),
+            ("editor.minimap.side", Value::String("left".into())),
+            ("editor.scrollbar.vertical", Value::String("visible".into())),
+        ],
+    );
     view.update(cx, |v, cx| v.set_symbols(Some(symbols), cx));
     settle(cx);
     let class = line_of(&text, "class Component7");
@@ -385,8 +397,18 @@ fn clicking_a_sticky_line_reveals_it_below_the_band(cx: &mut TestAppContext) {
     let before = sticky(&view, cx);
     assert_eq!(before.len(), 3);
 
-    // 点击最内层（方法声明行）。
-    view.update(cx, |v, cx| v.go_to_sticky_line(2, cx));
+    // 点击正文右缘的最内层粘性行。左侧缩略图占用左缘，不能命中粘性区。
+    let at = cx.update(|window, cx| {
+        let code = view.read(cx);
+        let y = px(code.line_height() * 2.5);
+        let scrollbar = (code.options().vertical_scrollbar_size as f32).max(8.0);
+        let at = point(window.viewport_size().width - px(scrollbar + 1.0), y);
+        assert_eq!(code.sticky_index_at(point(px(2.0), y)), None);
+        assert_eq!(code.sticky_index_at(at), Some(2));
+        at
+    });
+    cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
     settle(cx);
     let first = view.read_with(cx, |v, _| v.viewport().unwrap().first_line);
     let band = view.read_with(cx, |v, _| v.sticky_lines().len() as u64);
