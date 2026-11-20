@@ -461,8 +461,9 @@ impl CodeView {
         // #53：任何编辑都让“这对括号是编辑器补的”失效（自动闭合自己在编辑之后重新记）。
         self.auto_closed.clear();
         let mut lines_moved = false;
-        // #58：被改写的行要重算换行点，其余行的视觉行数跟着行号平移。
-        let mut wrap_dirty: Vec<std::ops::Range<u64>> = Vec::new();
+        // 有软换行或缩略图时，保留同一份受编辑影响的行区间。
+        let track_rows = self.wrap.columns > 0 || self.options.minimap.enabled;
+        let mut changed_rows: Vec<std::ops::Range<u64>> = Vec::new();
         let first = self.doc_line(self.visible.start);
         let keep = first.saturating_sub(2048)..first + 4096;
         for e in edits {
@@ -482,8 +483,8 @@ impl CodeView {
             self.decorations.remap(|l| old_to_new(changes, l));
             self.links.remap(|l| old_to_new(changes, *l));
             self.remap_wrap(changes);
-            if self.wrap.columns > 0 {
-                wrap_dirty.extend(
+            if track_rows {
+                changed_rows.extend(
                     changes
                         .ranges
                         .iter()
@@ -508,11 +509,11 @@ impl CodeView {
                 pairs.note_lines(line_edits);
             }
         }
-        self.mark_wrap_dirty(&wrap_dirty);
+        self.mark_wrap_dirty(&changed_rows);
         if lines_moved {
             self.invalidate_minimap_rows(None, cx);
         } else {
-            self.invalidate_minimap_rows(Some(&wrap_dirty), cx);
+            self.invalidate_minimap_rows(Some(&changed_rows), cx);
         }
         if lines_moved {
             self.sync_fold_map();
