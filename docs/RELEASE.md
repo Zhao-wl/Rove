@@ -31,7 +31,8 @@ Actions 读 secret `ROVE_UPDATE_SIGNING_KEY`，本地读 `%LOCALAPPDATA%\Rove-re
 | `latest.json` + `latest.json.sig` | #149 的更新清单与 ed25519 分离签名 |
 | `release-notes.md` | Release 说明草稿（SmartScreen、WebView2、卸载说明都写好了） |
 | `upload.ps1` | 人工执行的上传脚本（打 tag → 建**草稿** Release → 上传） |
-| `rove-indexer-cs-<版本>-win-x64.zip` | C# 索引组件包，由 `scripts/components/package-indexer.ps1` 单独打，`--component` 传进来后**复制进本目录**（#238） |
+| `rove-indexer-cs-<版本>-win-x64.zip` | C# 索引组件手动包，保留版本目录，也随 Inno Setup 安装器分发 |
+| `rove-indexer-cs-<版本>-win-x64-update.zip` | 从手动包生成的自动更新包，`component.json` 和索引程序位于 ZIP 根目录 |
 
 **发布附件 = 这个目录里的全部文件（`upload.ps1` 除外）**，两条路径都照这个目录上传，
 所以组件包必须躺在这里，而不是留在 `target/components/`。`cargo xtask release` 收工前会自检
@@ -129,8 +130,9 @@ powershell -NoProfile -File target\release-dist\<版本>\upload.ps1
 `installer` 在没有产出安装包时是 `null`（例如本机没装 Inno Setup 就跑了 `cargo xtask release`），
 `components` 没有可选组件时是空数组；**正式发布的清单里两者都必须有内容**：`components` 为空
 意味着已装索引组件的用户拿不到这次更新（issue #238），所以漏传 `--component` 时发布命令直接失败。
-`components[].version` 从包名 `rove-indexer-cs-<版本>-win-x64.zip` 解析，与 `component.json`
-里的版本是同一个（打包脚本两边都按 `rove-indexer-cs --version` 的输出写）。
+`components[].version` 从手动包名解析，生成自动更新包时会核对 ZIP 内 `component.json`
+里的版本。组件条目的 `file`、`url`、`size` 和 `sha256` 指向自动更新包。可选的 `manual`
+字段登记手动包的同一组信息，两份 ZIP 都纳入签名清单和 `SHA256SUMS.txt` 校验。
 
 更新端（#149）拿到这份清单后：**只有已经装了组件的机器才会下载组件包**，没装的不会被自动装上
 （`rove_update::component::plan`，#43 的组件是可选的）。`cargo test -p xtask` 里有一条测试直接

@@ -165,7 +165,8 @@
 ## 5. C# 索引组件（#43）
 
 - **只有已经装了组件**才检查组件更新；没装的不替用户下载。
-- 组件包（zip）下载并校验后解到 `%LOCALAPPDATA%\Rove\components\indexer-cs\<新版本>.staging\`，
+- `components[].url` 指向根目录含 `component.json` 的自动更新 ZIP。下载并校验后解到
+  `%LOCALAPPDATA%\Rove\components\indexer-cs\<新版本>.staging\`，
   确认里面有 `component.json` 之后整体改名成 `<新版本>\`——**校验通过才切换**。
   版本握手仍然是 #43 的那一套（`Roves` 的发现规则会自己选版本号最高的兼容候选）。
 - 旧版本**在下次启动**清理（`component::cleanup_old`）；文件被占用就删不掉，留到再下次。

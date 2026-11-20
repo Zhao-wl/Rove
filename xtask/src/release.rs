@@ -5,6 +5,8 @@
 //! ```text
 //! Rove-<版本>-win-x64.zip            便携版（解压即用）
 //! Rove-<版本>-win-x64-setup.exe      安装包（需要 Inno Setup 6 的 ISCC.exe；没装就跳过）
+//! rove-indexer-cs-<版本>-win-x64.zip         手动安装的 C# 索引组件
+//! rove-indexer-cs-<版本>-win-x64-update.zip  更新器使用的 C# 索引组件
 //! SHA256SUMS.txt                     上面所有产物的 SHA-256
 //! latest.json / latest.json.sig      #149 的更新清单与 ed25519 分离签名
 //! release-notes.md                   Release 说明草稿（SmartScreen、WebView2 的说明已写好）
@@ -71,6 +73,8 @@ struct Component {
     url: String,
     size: u64,
     sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manual: Option<Artifact>,
 }
 
 pub fn sha256(bytes: &[u8]) -> String {
@@ -252,6 +256,10 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     if let Some(path) = &component {
         println!("  随包携带 C# 索引组件：{}", path.display());
     }
+    let update_component = component
+        .as_deref()
+        .map(|manual| stage_component_update(manual, &out))
+        .transpose()?;
     let installer = match find_iscc() {
         Some(iscc) => Some(build_installer(
             &iscc,
@@ -277,6 +285,7 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
     let mut artifacts: Vec<PathBuf> = vec![zip.clone()];
     artifacts.extend(installer.clone());
     artifacts.extend(component.clone());
+    artifacts.extend(update_component.clone());
 
     let mut sums = String::new();
     for path in &artifacts {
@@ -300,6 +309,7 @@ pub fn run(args: &[String]) -> Result<u8, Box<dyn std::error::Error>> {
         &base_url,
         &zip,
         installer.as_deref(),
+        update_component.as_deref(),
         component.as_deref(),
     )?;
     let manifest_path = out.join("latest.json");
@@ -506,6 +516,47 @@ fn stage_component(src: &Path, out: &Path) -> Result<PathBuf, Box<dyn std::error
     Ok(dest)
 }
 
+fn component_version(path: &Path) -> Result<&str, Box<dyn std::error::Error>> {
+    let version = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("rove-indexer-cs-"))
+        .and_then(|name| name.strip_suffix("-win-x64.zip"))
+        .ok_or("组件包名应为 rove-indexer-cs-<版本>-win-x64.zip")?;
+    if version.split('.').count() != 4
+        || !version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(format!("组件包的版本号无效：{version}").into());
+    }
+    Ok(version)
+}
+
+/// 已发布的更新器要求根目录包含 component.json。手动包与 Inno 继续用版本目录。
+fn stage_component_update(
+    manual: &Path,
+    out: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let version = component_version(manual)?;
+    let dest = out.join(format!("rove-indexer-cs-{version}-win-x64-update.zip"));
+    let script = util::repo_root().join("scripts/components/package-update-archive.ps1");
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(script)
+        .arg("-Source")
+        .arg(manual)
+        .arg("-Destination")
+        .arg(&dest)
+        .args(["-Version", version])
+        .status()
+        .map_err(|error| format!("生成自动更新组件包失败：{error}"))?;
+    if !status.success() {
+        return Err("生成自动更新组件包失败".into());
+    }
+    Ok(dest)
+}
+
 /// 发布附件与签名清单必须一一对应（issue #238 的验收标准）。
 ///
 /// 两个方向都查，少了哪一边都是事故：
@@ -548,6 +599,14 @@ pub fn verify_attachments(
             component.sha256.clone(),
             format!("组件 {} {}", component.id, component.version),
         ));
+        if let Some(manual) = &component.manual {
+            referenced.push((
+                manual.file.clone(),
+                manual.size,
+                manual.sha256.clone(),
+                format!("手动组件 {} {}", component.id, component.version),
+            ));
+        }
     }
 
     let mut report = Vec::new();
@@ -658,7 +717,8 @@ fn build_manifest(
     base_url: &str,
     zip: &Path,
     installer: Option<&Path>,
-    component: Option<&Path>,
+    update_component: Option<&Path>,
+    manual_component: Option<&Path>,
 ) -> Result<Manifest, Box<dyn std::error::Error>> {
     let artifact = |path: &Path, silent: bool| -> Result<Artifact, Box<dyn std::error::Error>> {
         let file = path
@@ -678,25 +738,20 @@ fn build_manifest(
             file,
         })
     };
-    let components = match component {
+    let components = match update_component {
         Some(path) => {
-            let file = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            // 包名形如 rove-indexer-cs-<版本>-win-x64.zip（#43 的打包脚本产出）。
-            let version = file
-                .trim_start_matches("rove-indexer-cs-")
-                .trim_end_matches("-win-x64.zip")
-                .to_string();
+            let version = component_version(manual_component.unwrap_or(path))?.to_owned();
+            let package = artifact(path, false)?;
             vec![Component {
                 id: "indexer-cs".into(),
                 version,
-                url: format!("{base_url}/{file}"),
-                size: fs::metadata(path)?.len(),
-                sha256: sha256_file(path)?,
-                file,
+                file: package.file,
+                url: package.url,
+                size: package.size,
+                sha256: package.sha256,
+                manual: manual_component
+                    .map(|path| artifact(path, false))
+                    .transpose()?,
             }]
         }
         None => Vec::new(),
@@ -729,7 +784,7 @@ fn release_notes(version: &str, info: &BuildInfo, sums: &str) -> String {
          - **安装包** `Rove-{version}-win-x64-setup.exe`：用户级安装，装到 `%LOCALAPPDATA%\\Programs\\Rove`，\n\
            **不需要管理员权限**，不写 `HKLM`。文件关联与资源管理器右键菜单是安装时的可选项，默认不勾选。\n\
          - **便携版** `Rove-{version}-win-x64.zip`：解压即用，不写注册表。\n\
-         - **C# 索引组件**（可选，单独下载）：解压到 `%LOCALAPPDATA%\\Rove\\components\\indexer-cs\\`，\n\
+         - **C# 索引组件**（可选，单独下载）：将 `rove-indexer-cs-<版本>-win-x64.zip` 解压到 `%LOCALAPPDATA%\\Rove\\components\\indexer-cs\\`，\n\
            没有它时 C# 导航自动降级（见 README）。\n\
          \n\
          ## 首次运行会看到 SmartScreen 提示\n\
@@ -1093,9 +1148,20 @@ mod tests {
         installer: Option<&Path>,
         component: Option<&Path>,
     ) -> PathBuf {
+        write_release_manifest(out, zip, installer, component, None)
+    }
+
+    fn write_release_manifest(
+        out: &Path,
+        zip: &Path,
+        installer: Option<&Path>,
+        component: Option<&Path>,
+        manual_component: Option<&Path>,
+    ) -> PathBuf {
         let mut artifacts = vec![zip.to_path_buf()];
         artifacts.extend(installer.map(Path::to_path_buf));
         artifacts.extend(component.map(Path::to_path_buf));
+        artifacts.extend(manual_component.map(Path::to_path_buf));
         let mut sums = String::new();
         for path in &artifacts {
             sums.push_str(&format!(
@@ -1114,6 +1180,7 @@ mod tests {
             zip,
             installer,
             component,
+            manual_component,
         )
         .unwrap();
         let path = out.join("latest.json");
@@ -1123,6 +1190,60 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_packaged_component_can_upgrade_older_clients_without_changing_manual_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let version = "1.4.0.0";
+        let payload = out.join(version);
+        fs::create_dir_all(payload.join("lang")).unwrap();
+        let metadata = br#"{"component":"indexer-cs","version":"1.4.0.0"}"#;
+        fs::write(payload.join("component.json"), metadata).unwrap();
+        fs::write(payload.join("rove-indexer-cs.exe"), b"indexer").unwrap();
+        fs::write(payload.join("lang/resources.dll"), b"resources").unwrap();
+        let manual = out.join(format!("rove-indexer-cs-{version}-win-x64.zip"));
+        compress(&payload, &manual).unwrap();
+        let original = fs::read(&manual).unwrap();
+        let update = stage_component_update(&manual, out).unwrap();
+        assert_eq!(fs::read(&manual).unwrap(), original);
+
+        let portable = fake_artifact(out, "Rove-0.1.0-win-x64.zip", b"portable");
+        let manifest = write_release_manifest(out, &portable, None, Some(&update), Some(&manual));
+        let bytes = fs::read(&manifest).unwrap();
+        let client = rove_update::manifest::Manifest::parse(&bytes).unwrap();
+        let component = client.indexer_component().unwrap();
+        assert_eq!(component.version, version);
+        assert_eq!(
+            component.file,
+            format!("rove-indexer-cs-{version}-win-x64-update.zip")
+        );
+        let update_bytes = fs::read(out.join(&component.file)).unwrap();
+        assert_eq!(component.sha256, sha256(&update_bytes));
+        let installed = rove_update::component::Installed {
+            root: out.join("profile"),
+            version: Some("1.3.0.0".into()),
+            manifest_file: "component.json".into(),
+        };
+        let target =
+            rove_update::component::install_archive(&update_bytes, &installed, version).unwrap();
+        assert_eq!(target, installed.root.join(version));
+        assert_eq!(fs::read(target.join("component.json")).unwrap(), metadata);
+        assert_eq!(
+            fs::read(target.join("rove-indexer-cs.exe")).unwrap(),
+            b"indexer"
+        );
+        assert_eq!(
+            fs::read(target.join("lang/resources.dll")).unwrap(),
+            b"resources"
+        );
+        assert_eq!(verify_attachments(out, &manifest).unwrap().len(), 3);
+
+        fs::write(&manual, b"modified manual archive").unwrap();
+        let error = verify_attachments(out, &manifest).unwrap_err().to_string();
+        assert!(error.contains("手动组件"), "{error}");
     }
 
     /// 一次带组件的发布：组件包进了附件、也进了清单，版本 / 摘要 / 大小都对得上。
