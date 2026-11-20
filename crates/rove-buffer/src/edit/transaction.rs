@@ -570,15 +570,14 @@ fn rewrite_dense_lines(
     {
         return None;
     }
-    let source = old.to_string();
     const CHUNK_BYTES: usize = 2 << 20;
-    let wanted = source.len().div_ceil(CHUNK_BYTES).clamp(1, 4);
+    let wanted = old.len_bytes().div_ceil(CHUNK_BYTES).clamp(1, 4);
     let workers = if wanted > 1 {
         wanted.min(thread::available_parallelism().map_or(1, |cpus| cpus.get()))
     } else {
         1
     };
-    rewrite_dense_sections(old, &source, spans, texts, workers).map(DenseRewrite::finish)
+    rewrite_dense_sections(old, spans, texts, workers).map(DenseRewrite::finish)
 }
 
 struct DenseRewrite {
@@ -616,28 +615,33 @@ impl DenseRewrite {
 
 fn rewrite_dense_sections(
     old: &Rope,
-    source: &str,
     spans: &[(usize, usize)],
     texts: &[Arc<str>],
     workers: usize,
 ) -> Option<DenseRewrite> {
+    let len = old.len_bytes();
     let build = |edits: Range<usize>| {
         let start = if edits.start == 0 {
             0
         } else {
             spans[edits.start].0
         };
-        let end = spans.get(edits.end).map_or(source.len(), |span| span.0);
-        if !source.is_char_boundary(start) || !source.is_char_boundary(end) {
+        let end = spans.get(edits.end).map_or(len, |span| span.0);
+        if !is_boundary(old, start) || !is_boundary(old, end) || inside_crlf(old, start) {
             return None;
         }
-        let position = position_in(old, start);
+        let part = old.byte_slice(start..end);
+        let source = part
+            .as_str()
+            .map_or_else(|| Cow::Owned(part.to_string()), Cow::Borrowed);
+        let preceded_by_cr = start > 0 && old.byte(start - 1) == b'\r';
         rewrite_dense_chunk(
-            source,
+            &source,
             &spans[edits.clone()],
             &texts[edits],
-            start..end,
-            position,
+            start,
+            preceded_by_cr,
+            position_in(old, start),
         )
     };
     if workers == 1 {
@@ -648,7 +652,7 @@ fn rewrite_dense_sections(
     // behind several tiny sections. Snap each boundary to the next edit.
     let mut cuts = vec![0];
     for part in 1..workers {
-        let byte = source.len() * part / workers;
+        let byte = len * part / workers;
         let edit = spans.partition_point(|&(start, _)| start < byte);
         if edit < spans.len() && cuts.last() != Some(&edit) {
             cuts.push(edit);
@@ -685,37 +689,46 @@ fn rewrite_dense_chunk(
     source: &str,
     spans: &[(usize, usize)],
     texts: &[Arc<str>],
-    part: Range<usize>,
+    offset: usize,
+    preceded_by_cr: bool,
     position: Position,
 ) -> Option<DenseRewrite> {
     let bytes = source.as_bytes();
+    let follows_cr = |at| {
+        if at == 0 {
+            preceded_by_cr
+        } else {
+            bytes[at - 1] == b'\r'
+        }
+    };
     let mut builder = ropey::RopeBuilder::new();
     let mut removed = Vec::with_capacity(spans.len());
     let mut input_edits = Vec::with_capacity(spans.len());
     let mut lines: Vec<LineChange> = Vec::new();
-    let mut copied = part.start;
+    let mut copied = 0;
     let mut line = position.line;
-    let mut line_start = part.start - position.column.0 as usize;
-    for (&(start, end), inserted) in spans.iter().zip(texts) {
+    let mut line_start = offset - position.column.0 as usize;
+    for (&(old_start, old_end), inserted) in spans.iter().zip(texts) {
+        let start = old_start - offset;
+        let end = old_end - offset;
         // 切片同时校验两个 UTF-8 边界。跨换行符、拆分 CRLF 或可能把 CR/LF
         // 接合时沿用通用路径，确保原有的中间坐标与换行失效规则。
         let erased = source.get(start..end)?;
-        let follows_cr = start > 0 && bytes[start - 1] == b'\r';
         if memchr::memchr2(b'\r', b'\n', inserted.as_bytes()).is_some()
             || memchr::memchr2(b'\r', b'\n', erased.as_bytes()).is_some()
-            || (follows_cr && (bytes.get(start) == Some(&b'\n') || inserted.is_empty()))
+            || (follows_cr(start) && (bytes.get(start) == Some(&b'\n') || inserted.is_empty()))
         {
             return None;
         }
 
         let unchanged = &source[copied..start];
         // 已删区间完全在行内。统计本次跳过的原文即可沿用同一套旧文本坐标。
-        for offset in memchr::memchr2_iter(b'\r', b'\n', unchanged.as_bytes()) {
-            let at = copied + offset;
-            if bytes[at] == b'\r' || at == 0 || bytes[at - 1] != b'\r' {
+        for relative in memchr::memchr2_iter(b'\r', b'\n', unchanged.as_bytes()) {
+            let at = copied + relative;
+            if bytes[at] == b'\r' || !follows_cr(at) {
                 line.0 += 1;
             }
-            line_start = at + 1;
+            line_start = offset + at + 1;
         }
         builder.append(unchanged);
         builder.append(inserted);
@@ -723,7 +736,7 @@ fn rewrite_dense_chunk(
         removed.push(Arc::from(erased));
         let start_position = Position {
             line,
-            column: Utf8Column((start - line_start) as u64),
+            column: Utf8Column((old_start - line_start) as u64),
         };
         if lines.last().is_none_or(|change| change.old.start() != line) {
             let range = Span::new(line, Line(line.0 + 1)).expect("单行区间有效");
@@ -737,15 +750,15 @@ fn rewrite_dense_chunk(
             column: Utf8Column(start_position.column.0 + bytes as u64),
         };
         input_edits.push(InputEdit {
-            start_byte: ByteOffset(start as u64),
-            old_end_byte: ByteOffset(end as u64),
-            new_end_byte: ByteOffset((start + inserted.len()) as u64),
+            start_byte: ByteOffset(old_start as u64),
+            old_end_byte: ByteOffset(old_end as u64),
+            new_end_byte: ByteOffset((old_start + inserted.len()) as u64),
             start_position,
             old_end_position: position_after(end - start),
             new_end_position: position_after(inserted.len()),
         });
     }
-    builder.append(&source[copied..part.end]);
+    builder.append(&source[copied..]);
     Some(DenseRewrite {
         rope: builder.finish(),
         removed,
@@ -900,10 +913,10 @@ mod tests {
             })
             .collect();
 
-        let split = rewrite_dense_sections(&old, &source, &spans, &texts, 4)
+        let split = rewrite_dense_sections(&old, &spans, &texts, 4)
             .unwrap()
             .finish();
-        let single = rewrite_dense_sections(&old, &source, &spans, &texts, 1)
+        let single = rewrite_dense_sections(&old, &spans, &texts, 1)
             .unwrap()
             .finish();
         let reverse = rewrite_backwards(&old, &spans, &texts);
@@ -913,5 +926,26 @@ mod tests {
         assert_eq!(split.input_edits, reverse.input_edits);
         assert_eq!(split.line_changes, single.line_changes);
         assert_eq!(split.line_changes.unwrap().ranges.len(), 4);
+    }
+
+    #[test]
+    fn dense_sections_preserve_same_offset_insertions_and_reject_split_boundaries() {
+        let old = Rope::from_str("a\r\nμz");
+        let spans = [(0, 1), (3, 3), (3, 3), (3, 3), (3, 5)];
+        let texts = ["", "左", "", "右", "Ω"].map(Arc::<str>::from);
+        let split = rewrite_dense_sections(&old, &spans, &texts, 2)
+            .unwrap()
+            .finish();
+        let reverse = rewrite_backwards(&old, &spans, &texts);
+        assert_eq!(split.rope, "\r\n左右Ωz");
+        assert_eq!(split.rope, reverse.rope);
+        assert_eq!(split.input_edits, reverse.input_edits);
+        assert_eq!(split.removed, reverse.removed);
+
+        let insertions = ["", "x"].map(Arc::<str>::from);
+        assert!(rewrite_dense_sections(&old, &[(0, 1), (2, 2)], &insertions, 2).is_none());
+        assert!(rewrite_dense_sections(&old, &[(0, 1), (4, 4)], &insertions, 2).is_none());
+        let crlf_at_cut = Rope::from_str("a\r\nx");
+        assert!(rewrite_dense_sections(&crlf_at_cut, &[(0, 1), (2, 2)], &insertions, 2).is_none());
     }
 }
