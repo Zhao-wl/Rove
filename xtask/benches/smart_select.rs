@@ -31,7 +31,11 @@ struct Measurements {
     slow_samples: Vec<(usize, Duration, Duration, FrameStats)>,
 }
 
-async fn wait_for(cx: &mut AsyncApp, mut ready: impl FnMut(&mut AsyncApp) -> bool) -> Result<()> {
+async fn wait_for(
+    cx: &mut AsyncApp,
+    phase: &str,
+    mut ready: impl FnMut(&mut AsyncApp) -> bool,
+) -> Result<()> {
     let start = Instant::now();
     let timer = cx.background_executor().clone();
     loop {
@@ -39,7 +43,7 @@ async fn wait_for(cx: &mut AsyncApp, mut ready: impl FnMut(&mut AsyncApp) -> boo
             return Ok(());
         }
         if start.elapsed() > Duration::from_secs(8) {
-            return Err("选择探针等待首个可用绘制超时".into());
+            return Err(format!("智能扩选探针等待{phase}超时").into());
         }
         timer.timer(Duration::from_millis(3)).await;
     }
@@ -79,7 +83,7 @@ async fn measure(
         window.activate_window();
         window.focus(&code.focus_handle(cx));
     })?;
-    wait_for(cx, |cx| {
+    wait_for(cx, "语法分析和正文绘制", |cx| {
         any.update(cx, |_, _, app| {
             let code = code.read(app);
             code.current_syntax_version().is_some() && code.last_frame().glyphs > 0
@@ -87,24 +91,52 @@ async fn measure(
         .unwrap_or(false)
     })
     .await?;
-    let timer = cx.background_executor().clone();
+    let key = Keystroke::parse("shift-alt-right").unwrap();
+    let action = rove_ui::keys::action_for("editor.action.smartSelect.expand")
+        .ok_or("找不到智能扩选命令")?;
     let mut active = Vec::with_capacity(SAMPLES);
     let mut wall = Vec::with_capacity(SAMPLES);
     let mut slow_samples = Vec::new();
     for i in 0..WARMUP + SAMPLES {
-        any.update(cx, |_, window, app| {
+        let (prepared, caret, version) = any.update(cx, |_, window, app| {
             window.focus(&code.focus_handle(app));
             code.update(app, |code, cx| {
-                let position = code.text().unwrap().position(offset).unwrap();
-                code.set_selection(Selection::caret(position), None, cx);
-            });
+                let text = code.text().unwrap();
+                let caret = Selection::caret(text.position(offset).unwrap());
+                let version = text.version().0;
+                code.set_selection(caret, None, cx);
+                (Instant::now(), caret, version)
+            })
         })?;
-        timer.timer(Duration::from_millis(24)).await;
+        // 本轮计时前，编辑器必须完成复位，并已在当前渲染树接收扩选快捷键。
+        wait_for(cx, "编辑器焦点和光标复位", |cx| {
+            any.update(cx, |_, window, app| {
+                let focus = code.focus_handle(app);
+                if !focus.is_focused(window) {
+                    window.focus(&focus);
+                    return false;
+                }
+                let view = code.read(app);
+                let frame = view.last_frame();
+                window.is_window_active()
+                    && view.selection() == caret
+                    && frame.end.is_some_and(|end| end >= prepared)
+                    && frame.text_version == version
+                    && !frame.selection_painted
+                    && window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("editorTextFocus"))
+                    && window.is_action_available(action.as_ref(), app)
+            })
+            .unwrap_or(false)
+        })
+        .await?;
         let readback: FrameReadback = Rc::default();
         let (sent, returned, immediate, selected) = any.update(cx, |_, window, app| {
-            let key = Keystroke::parse("shift-alt-right").unwrap();
+            let key = key.clone();
             let sent = Instant::now();
-            window.dispatch_keystroke(key, app);
+            let handled = window.dispatch_keystroke(key, app);
             let returned = Instant::now();
             let view = code.read(app);
             let frame = view.last_frame();
@@ -113,12 +145,21 @@ async fn measure(
             if !immediate {
                 read_first_frame(window, code.clone(), readback.clone());
             }
+            let selected = if handled && !selected.is_empty() {
+                Ok(selected)
+            } else {
+                Err(format!(
+                    "样本 {i} 未完成快捷键扩选，已处理 {handled}，选区 {selected:?}，焦点上下文 {:?}",
+                    window.context_stack()
+                ))
+            };
             (sent, returned, immediate.then_some(frame), selected)
         })?;
+        let selected = selected?;
         let (frame_started, frame) = if let Some(frame) = immediate {
             (returned, frame)
         } else {
-            wait_for(cx, |_| readback.get().is_some()).await?;
+            wait_for(cx, "按键后的第一帧", |_| readback.get().is_some()).await?;
             readback.get().unwrap()
         };
         let end = frame
