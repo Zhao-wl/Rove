@@ -416,11 +416,12 @@ fn prepared_edits_check_the_live_version_and_form_one_undo_unit() {
     let stale = source
         .prepare(&Transaction::single(span(1, 2), "z"))
         .unwrap();
-    assert_eq!(&*prepared.coalesced().unwrap().unwrap().inserted, "xy");
     assert_eq!(session.contents(), "abc");
 
     cursor(&mut session, 3);
-    session.edit_prepared(prepared, Instant::now()).unwrap();
+    let applied = session.edit_prepared(prepared, Instant::now()).unwrap();
+    let combined = applied.coalesced(&*session.snapshot()).unwrap().unwrap();
+    assert_eq!(&*combined.inserted, "xy");
     assert_eq!(session.contents(), "xybc");
     assert_eq!(offsets(&session), [(4, 4)]);
     assert!(matches!(

@@ -712,7 +712,7 @@ impl EditorService {
     pub(crate) fn replace_document(
         &mut self,
         document: Arc<Document>,
-        edit: Option<TextEdit>,
+        edit: Option<crate::code_view::edit::CoalescedEdit>,
     ) -> bool {
         let mut found = false;
         for pane in self.groups.values_mut() {

@@ -142,19 +142,74 @@ impl BufferStates {
         edit: &TextEdit,
         after: Arc<dyn TextSource>,
     ) -> Result<()> {
+        let inserted_end = edit.range.start().0.checked_add(edit.inserted.len() as u64);
+        self.record_edit(path, edit.version, after, |after| {
+            if before.version() != edit.version {
+                return Err(Error::Stale);
+            }
+            let start = before.position(edit.range.start())?;
+            let end = before.position(edit.range.end())?;
+            Ok(inserted_end
+                .and_then(|inserted_end| {
+                    indexed_line_edit(
+                        start,
+                        end,
+                        edit.range.start(),
+                        ByteOffset(inserted_end),
+                        after,
+                    )
+                })
+                .unwrap_or_else(|| LineEdit::new(start, end, &edit.inserted)))
+        })
+    }
+
+    /// Record an edit whose inserted bytes are still in the next immutable snapshot.
+    pub fn edited_from_snapshot(
+        &self,
+        path: &WorkspacePath,
+        before: &dyn TextSource,
+        version: Version,
+        old: &ByteRange,
+        inserted: &ByteRange,
+        after: Arc<dyn TextSource>,
+    ) -> Result<()> {
+        self.record_edit(path, version, after, |after| {
+            if before.version() != version {
+                return Err(Error::Stale);
+            }
+            if old.start() != inserted.start() {
+                return Err(Error::OutOfBounds);
+            }
+            let start = before.position(old.start())?;
+            let end = before.position(old.end())?;
+            if let Some(edit) =
+                indexed_line_edit(start, end, inserted.start(), inserted.end(), after)
+            {
+                return Ok(edit);
+            }
+            let mut text = String::new();
+            after.visit_chunks(inserted.clone(), &mut |chunk| text.push_str(chunk))?;
+            Ok(LineEdit::new(start, end, &text))
+        })
+    }
+
+    fn record_edit(
+        &self,
+        path: &WorkspacePath,
+        version: Version,
+        after: Arc<dyn TextSource>,
+        line_edit: impl FnOnce(&dyn TextSource) -> Result<LineEdit>,
+    ) -> Result<()> {
         let key = path.as_str();
         let registered_version = {
             let docs = lock(&self.docs);
             docs.get(key).ok_or(Error::NotFound)?.state.version
         };
-        if registered_version != edit.version || before.version() != edit.version {
+        if registered_version != version {
             return Err(Error::Stale);
         }
-        // 插入文本可能很大。计算换行范围时让并发导航查询继续访问已登记快照。
-        let start = before.position(edit.range.start())?;
-        let end = before.position(edit.range.end())?;
-        let line_edit = indexed_line_edit(start, end, edit, &*after)
-            .unwrap_or_else(|| LineEdit::new(start, end, &edit.inserted));
+        // Keep concurrent navigation queries unblocked during a snapshot read.
+        let line_edit = line_edit(after.as_ref())?;
         let mut docs = lock(&self.docs);
         let entry = docs.get_mut(key).ok_or(Error::NotFound)?;
         if entry.state.version != registered_version {
@@ -284,15 +339,14 @@ fn common_affixes(old: &[u8], new: &[u8]) -> (usize, usize, usize) {
 fn indexed_line_edit(
     start: Position,
     end: Position,
-    edit: &TextEdit,
+    offset: ByteOffset,
+    inserted_end: ByteOffset,
     after: &dyn TextSource,
 ) -> Option<LineEdit> {
-    let inserted_len = edit.inserted.len() as u64;
-    let offset = edit.range.start();
+    let inserted_len = inserted_end.0.checked_sub(offset.0)?;
     if inserted_len < 8 * 1024 || after.position(offset).ok()? != start {
         return None;
     }
-    let inserted_end = ByteOffset(offset.0.checked_add(inserted_len)?);
     let inserted_end = after.position(inserted_end).ok()?;
     let inserted_breaks = inserted_end.line.0.checked_sub(start.line.0)?;
     Some(LineEdit {
@@ -363,8 +417,16 @@ mod tests {
                 range: ByteRange::new(byte, byte).unwrap(),
                 inserted: inserted.into(),
             };
+            let inserted_range =
+                ByteRange::new(byte, ByteOffset(byte.0 + edit.inserted.len() as u64)).unwrap();
             assert_eq!(
-                indexed_line_edit(start, start, &edit, &*after),
+                indexed_line_edit(
+                    start,
+                    start,
+                    inserted_range.start(),
+                    inserted_range.end(),
+                    &*after
+                ),
                 indexed.then_some(expected)
             );
 
@@ -372,10 +434,29 @@ mod tests {
             let before = Arc::new(before);
             let buffers = BufferStates::new();
             buffers.opened(&path, before.clone(), 0);
-            buffers.edited(&path, &*before, &edit, after).unwrap();
+            buffers
+                .edited(&path, &*before, &edit, after.clone())
+                .unwrap();
             let mut reference = EditMap::new();
             reference.push(expected);
             assert_eq!(*buffers.get(path.as_str()).unwrap().edits, reference);
+
+            let snapshot_buffers = BufferStates::new();
+            snapshot_buffers.opened(&path, before.clone(), 0);
+            snapshot_buffers
+                .edited_from_snapshot(
+                    &path,
+                    &*before,
+                    edit.version,
+                    &edit.range,
+                    &inserted_range,
+                    after,
+                )
+                .unwrap();
+            assert_eq!(
+                *snapshot_buffers.get(path.as_str()).unwrap().edits,
+                reference
+            );
         }
     }
 

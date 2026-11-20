@@ -23,7 +23,7 @@ use gpui::{
     point, px, size, Bounds, ClipboardItem, Context, EntityInputHandler, Pixels, UTF16Selection,
     Window,
 };
-use rove_base::{ByteOffset, Error, Position, Span, TextEdit};
+use rove_base::{ByteOffset, ByteRange, Error, Position, Span, TextEdit, Version};
 use rove_buffer::edit::{
     self as ed, AppliedEdit, ClipboardData, CursorEdit, DeleteWord, EditKind, EditSession,
     LineChanges, MoveWord, Replacement, Selections, Transaction, WordClassifier,
@@ -58,8 +58,36 @@ pub struct TextEdited {
     pub after: Arc<dyn TextSource>,
     /// 按应用顺序的事务结果（撤销一个单元可能有多步）。
     pub edits: Arc<[AppliedEdit]>,
-    /// 合成一个替换（相对 `before`）：交给 #94 的增量解析与 #38 的 `BufferStates::edited`。
-    pub combined: Option<TextEdit>,
+    /// 合并编辑的坐标，插入内容来自编辑后快照。
+    pub(crate) combined: Option<CoalescedEdit>,
+}
+
+impl TextEdited {
+    /// 将本次操作合并成相对编辑前快照的一次替换。
+    pub fn combined(&self) -> Option<TextEdit> {
+        self.combined.as_ref()?.materialize(self.after.as_ref())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CoalescedEdit {
+    pub(crate) before: Version,
+    pub(crate) old: ByteRange,
+    pub(crate) new: ByteRange,
+}
+
+impl CoalescedEdit {
+    pub(crate) fn materialize(&self, after: &dyn TextSource) -> Option<TextEdit> {
+        let mut inserted = String::with_capacity((self.new.end().0 - self.new.start().0) as usize);
+        after
+            .visit_chunks(self.new.clone(), &mut |chunk| inserted.push_str(chunk))
+            .ok()?;
+        Some(TextEdit {
+            version: self.before,
+            range: self.old.clone(),
+            inserted: inserted.into(),
+        })
+    }
 }
 
 /// [`CodeViewEvent::Edited`] 的载荷（按指针比较）。
@@ -159,6 +187,10 @@ pub fn new_to_old(changes: &LineChanges, line: u64) -> u64 {
 
 /// 把依次应用的若干事务合成一个相对第一个快照的替换（区间覆盖所有改动，中间未改的文本也算在内）。
 pub fn combine_edits(edits: &[AppliedEdit], after: &dyn TextSource) -> Option<TextEdit> {
+    coalesced_edit(edits)?.materialize(after)
+}
+
+fn coalesced_edit(edits: &[AppliedEdit]) -> Option<CoalescedEdit> {
     let spans = edits.iter().flat_map(|e| {
         e.input_edits.iter().map(|ie| {
             (
@@ -168,15 +200,22 @@ pub fn combine_edits(edits: &[AppliedEdit], after: &dyn TextSource) -> Option<Te
             )
         })
     });
-    combine_spans(spans, edits.first()?.before, after)
+    coalesce_spans(spans, edits.first()?.before)
 }
 
 /// 依次发生的替换（各自坐标系里的 `(起点, 旧终点, 新终点)`）合成一个相对 `version` 的替换。
 pub fn combine_spans(
     spans: impl IntoIterator<Item = (i64, i64, i64)>,
-    version: rove_base::Version,
+    version: Version,
     after: &dyn TextSource,
 ) -> Option<TextEdit> {
+    coalesce_spans(spans, version)?.materialize(after)
+}
+
+pub(crate) fn coalesce_spans(
+    spans: impl IntoIterator<Item = (i64, i64, i64)>,
+    version: Version,
+) -> Option<CoalescedEdit> {
     // (起点, 旧终点, 当前终点)：[起点, 当前终点) 在当前坐标里覆盖全部改动，[起点, 旧终点) 在最初坐标里。
     let mut acc: Option<(i64, i64, i64)> = None;
     for (a, b, l) in spans {
@@ -191,15 +230,11 @@ pub fn combine_spans(
         });
     }
     let (s, oe, ne) = acc?;
-    let span = Span::new(ByteOffset(s as u64), ByteOffset(ne as u64)).ok()?;
-    let mut inserted = String::with_capacity((ne - s).max(0) as usize);
-    after
-        .visit_chunks(span, &mut |c| inserted.push_str(c))
-        .ok()?;
-    Some(TextEdit {
-        version,
-        range: Span::new(ByteOffset(s as u64), ByteOffset(oe as u64)).ok()?,
-        inserted: inserted.into(),
+    let start = ByteOffset(u64::try_from(s).ok()?);
+    Some(CoalescedEdit {
+        before: version,
+        old: Span::new(start, ByteOffset(u64::try_from(oe).ok()?)).ok()?,
+        new: Span::new(start, ByteOffset(u64::try_from(ne).ok()?)).ok()?,
     })
 }
 
@@ -557,27 +592,11 @@ impl CodeView {
         });
     }
 
-    /// 执行一条编辑：把视图选区写进会话 → `f` → 增量更新视图并发出 [`CodeViewEvent::Edited`]。
-    /// 只读时提示原因并返回 `false`；没有编辑入口时什么也不做。
-    pub(crate) fn run_edit(
-        &mut self,
-        window: Option<&mut Window>,
-        cx: &mut Context<Self>,
-        f: impl FnOnce(
-            &mut EditSession,
-            &Arc<rove_buffer::RopeText>,
-            Instant,
-        ) -> rove_base::Result<EditOutcome>,
-    ) -> bool {
-        self.run_edit_inner(window, cx, None, f)
-    }
-
     pub(crate) fn run_prepared_edit(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
         prepared: ed::PreparedEdit,
-        combined: Option<TextEdit>,
     ) -> bool {
         let version = self
             .edit_host()
@@ -586,16 +605,17 @@ impl CodeView {
         if version != expected || self.text.as_ref().map(|text| text.version()) != expected {
             return false;
         }
-        self.run_edit_inner(Some(window), cx, combined, |session, _, now| {
+        self.run_edit(Some(window), cx, |session, _, now| {
             Ok(Some(session.edit_prepared(prepared, now)?).into())
         })
     }
 
-    fn run_edit_inner(
+    /// 执行一条编辑：把视图选区写进会话 → `f` → 增量更新视图并发出 [`CodeViewEvent::Edited`]。
+    /// 只读时提示原因并返回 `false`；没有编辑入口时什么也不做。
+    pub(crate) fn run_edit(
         &mut self,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
-        combined: Option<TextEdit>,
         f: impl FnOnce(
             &mut EditSession,
             &Arc<rove_buffer::RopeText>,
@@ -678,7 +698,7 @@ impl CodeView {
             self.rebuild_lines_now(&outcome.edits, window);
             window.invalidate_character_coordinates();
         }
-        let combined = combined.or_else(|| combine_edits(&outcome.edits, &*after));
+        let combined = coalesced_edit(&outcome.edits);
         let notice = EditNotice(Arc::new(TextEdited {
             before,
             after,

@@ -28,9 +28,7 @@ use gpui::{
     div, prelude::*, px, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
     IntoElement, KeyContext, MouseButton, Render, SharedString, Task, Window,
 };
-use rove_base::{
-    ByteOffset, ByteRange, Cancellation, Position, Span, TextEdit, TextRange, Version,
-};
+use rove_base::{ByteOffset, ByteRange, Cancellation, Position, Span, TextRange, Version};
 use rove_buffer::edit::{EditBuffer, PreparedEdit, Transaction};
 use rove_buffer::{Eol, RopeText, TextSource};
 use rove_config::{Key, Scope, Settings};
@@ -116,7 +114,6 @@ struct PreparationKey {
 
 struct PreparedReplacement {
     edit: PreparedEdit,
-    combined: Option<TextEdit>,
     scope: Option<TextRange>,
 }
 
@@ -1415,7 +1412,6 @@ impl FindHost {
             worker_cancel.check()?;
             let prepared = PreparedReplacement {
                 scope: updated_scope(plan.scope, edit.text()),
-                combined: edit.coalesced()?,
                 edit,
             };
             Ok::<_, rove_base::Error>(Some((prepared, byte_ranges)))
@@ -1441,6 +1437,18 @@ impl FindHost {
             _task: task,
             ready: None,
         });
+    }
+
+    /// 当前已发布的搜索结果是否已有与文本版本匹配的字节区间（实窗基准使用）。
+    pub fn replacement_ranges_ready(&self, cx: &App) -> bool {
+        let Some(text) = self.code.read(cx).text() else {
+            return false;
+        };
+        self.searched_version == Some(text.version())
+            && self
+                .replacement_byte_ranges
+                .as_ref()
+                .is_some_and(|(key, _)| *key == self.replacement_matches_key(text.version()))
     }
 
     /// 当前替换参数是否已有可同步提交的预备事务（实窗基准使用）。
@@ -1471,7 +1479,7 @@ impl FindHost {
         if let Some(ready) = ready {
             self.keep_scope = true;
             let edited = self.code.update(cx, |code, cx| {
-                code.run_prepared_edit(window, cx, ready.edit, ready.combined)
+                code.run_prepared_edit(window, cx, ready.edit)
             });
             self.finish_replacements(edited, None, ready.scope, &template, cx);
             if edited {

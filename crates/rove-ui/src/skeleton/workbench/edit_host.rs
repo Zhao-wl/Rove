@@ -350,7 +350,14 @@ impl Workbench {
         if let (Resource::Workspace(path), Some(edit)) = (&document.resource, &edited.combined) {
             let states = self.nav.router.buffers();
             if states
-                .edited(path, &*edited.before, edit, edited.after.clone())
+                .edited_from_snapshot(
+                    path,
+                    edited.before.as_ref(),
+                    edit.before,
+                    &edit.old,
+                    &edit.new,
+                    edited.after.clone(),
+                )
                 .is_ok()
             {
                 self.nav.buffers.note_edited(path, document.id, version);

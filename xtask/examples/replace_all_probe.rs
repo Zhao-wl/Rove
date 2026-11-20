@@ -158,6 +158,7 @@ struct Injection {
     returned_at: Instant,
     phase: Duration,
     prepared: bool,
+    ranges_ready: bool,
 }
 
 async fn inject(
@@ -186,7 +187,7 @@ async fn inject(
                     timer
                         .timer(deadline.saturating_duration_since(Instant::now()))
                         .await;
-                    let _ = cx.update(|window, cx| {
+                    let dispatched = cx.update(|window, cx| {
                         if let Some((keystrokes, template)) = cold_input {
                             type_word(keystrokes, window, cx);
                             let actual = find.read(cx).replace_text(cx);
@@ -194,11 +195,17 @@ async fn inject(
                                 eprintln!("sample {sample}: expected replacement input {template:?}, got {actual:?}");
                             }
                         }
-                        let prepared = find.read(cx).replacement_ready(cx);
+                        let host = find.read(cx);
+                        let prepared = host.replacement_ready(cx);
+                        let ranges_ready = host.replacement_ranges_ready(cx);
                         let before = code.read(cx).text().expect("loaded text").version().0;
                         let wall_at = SystemTime::now();
                         let at = Instant::now();
                         press("ctrl-alt-enter", window, cx);
+                        (before, at, wall_at, prepared, ranges_ready)
+                    });
+                    // GPUI executes the shortcut's deferred action when the outer update returns.
+                    if let Ok((before, at, wall_at, prepared, ranges_ready)) = dispatched {
                         capture.set(Some(Injection {
                             before,
                             at,
@@ -206,8 +213,9 @@ async fn inject(
                             returned_at: Instant::now(),
                             phase: at.saturating_duration_since(frame_start),
                             prepared,
+                            ranges_ready,
                         }));
-                    });
+                    }
                 })
                 .detach();
         });
@@ -390,8 +398,8 @@ async fn run(
                 "inject_unix_ms": ms(injection.wall_at.duration_since(UNIX_EPOCH)?),
                 "inject_phase_ms": ms(injection.phase),
                 "prepared_at_dispatch": injection.prepared,
-                // Workbench can defer execution until after the key dispatch returns.
-            "keystroke_dispatch_ms": ms(injection.returned_at - injection.at),
+                "cached_ranges_at_dispatch": injection.ranges_ready,
+                "keystroke_dispatch_ms": ms(injection.returned_at - injection.at),
                 "first_new_paint_ms": ms(end - injection.at),
                 "max_callback_gap_ms": ms(max_callback),
                 "max_paint_gap_ms": ms(max_paint),

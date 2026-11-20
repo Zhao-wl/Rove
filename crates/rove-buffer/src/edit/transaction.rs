@@ -300,10 +300,6 @@ impl PreparedEdit {
     pub fn text(&self) -> &RopeText {
         self.buffer.text()
     }
-
-    pub fn coalesced(&self) -> Result<Option<TextEdit>> {
-        self.applied.coalesced(self.text())
-    }
 }
 
 /// 可编辑的文本：当前快照 + 主换行符 + 只读原因。

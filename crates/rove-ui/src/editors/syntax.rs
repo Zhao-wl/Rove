@@ -6,7 +6,8 @@
 //! show that document at that version. Releasing the last tab of a document cancels its
 //! running analysis and drops its baseline in the [`DocumentHighlighter`].
 
-use rove_base::{Cancellation, DocumentId, Line, LineRange, Span, Task, TextEdit, Version};
+use crate::code_view::edit::{coalesce_spans, CoalescedEdit};
+use rove_base::{Cancellation, DocumentId, Line, LineRange, Span, Task, Version};
 use rove_buffer::{Document, SizeClass};
 use rove_syntax::{highlight::DocumentHighlighter, SyntaxUpdate};
 use std::{collections::BTreeMap, sync::Arc};
@@ -36,7 +37,7 @@ pub(crate) struct Highlights {
     serial: u64,
     /// #47：分析进行中又来了编辑：不取消它（它完成后基线前进到它的版本），先记下最新文档与
     /// 之后的编辑，完成时合成一个增量编辑再分析。`None` 表示中间有无法增量的变化（整篇重来）。
-    pending: BTreeMap<DocumentId, (Arc<Document>, Option<Vec<TextEdit>>)>,
+    pending: BTreeMap<DocumentId, (Arc<Document>, Option<Vec<CoalescedEdit>>)>,
     /// #47：同一内容换了版本（可编辑文档换上会话的快照）：(旧版本, 新版本)。两个版本的分析结果与
     /// 增量编辑互认，不因为换快照丢掉进行中的着色、也不让第一次输入退化成整篇重解析。
     alias: BTreeMap<DocumentId, (Version, Version)>,
@@ -95,11 +96,13 @@ impl Highlights {
     pub(crate) fn edited(
         &mut self,
         document: &Arc<Document>,
-        edit: Option<TextEdit>,
+        edit: Option<CoalescedEdit>,
     ) -> Option<SyntaxJob> {
         if !highlighted(document) {
             return None;
         }
+        let edit =
+            edit.filter(|_| rove_syntax::highlight::has_grammar(&document.metadata.language));
         if self.running.contains_key(&document.id) {
             let entry = self
                 .pending
@@ -121,16 +124,16 @@ impl Highlights {
         let edit = edits
             .filter(|e| {
                 e.first()
-                    .is_some_and(|e| self.same_content(document, e.version, finished))
+                    .is_some_and(|e| self.same_content(document, e.before, finished))
             })
-            .and_then(|e| combine_text_edits(&e, &*latest.text));
+            .and_then(|edits| combine_pending_edits(&edits));
         Some(self.launch(&latest, edit, None))
     }
 
     fn launch(
         &mut self,
         document: &Document,
-        edit: Option<TextEdit>,
+        edit: Option<CoalescedEdit>,
         visible: Option<LineRange>,
     ) -> SyntaxJob {
         if let Some(running) = self.running.get(&document.id) {
@@ -139,8 +142,8 @@ impl Highlights {
         // 增量编辑以基线为准：基线与编辑的起点是同一内容的两个版本时改写成基线的版本。
         let edit = edit.map(|mut e| {
             if let Some(base) = self.baseline.get(&document.id).copied() {
-                if self.same_content(document.id, e.version, base) {
-                    e.version = base;
+                if self.same_content(document.id, e.before, base) {
+                    e.before = base;
                 }
             }
             e
@@ -156,17 +159,20 @@ impl Highlights {
                 partial: visible.is_some(),
             },
         );
+        let service = self.service.clone();
+        let id = document.id;
+        let text = document.text.clone();
+        let language = document.metadata.language.clone();
         SyntaxJob {
-            document: document.id,
+            document: id,
             generation: self.serial,
-            task: self.service.analyze(
-                document.id,
-                document.text.clone(),
-                document.metadata.language.clone(),
-                edit,
-                visible,
-                cancel,
-            ),
+            task: Box::pin(async move {
+                cancel.check()?;
+                let edit = edit.and_then(|change| change.materialize(text.as_ref()));
+                service
+                    .analyze(id, text, language, edit, visible, cancel)
+                    .await
+            }),
         }
     }
 
@@ -238,14 +244,14 @@ impl Highlights {
     }
 }
 
-/// #47：依次发生的若干替换合成一个相对第一个版本的替换（覆盖全部改动，`after` 是最后的文本）。
-pub(crate) fn combine_text_edits(
-    edits: &[TextEdit],
-    after: &dyn rove_buffer::TextSource,
-) -> Option<TextEdit> {
-    let spans = edits.iter().map(|e| {
-        let a = e.range.start().0 as i64;
-        (a, e.range.end().0 as i64, a + e.inserted.len() as i64)
+/// #47：合并按时间顺序发生的编辑坐标，插入内容由后台分析从最后的快照读取。
+fn combine_pending_edits(edits: &[CoalescedEdit]) -> Option<CoalescedEdit> {
+    let spans = edits.iter().map(|edit| {
+        (
+            edit.old.start().0 as i64,
+            edit.old.end().0 as i64,
+            edit.new.end().0 as i64,
+        )
     });
-    crate::code_view::edit::combine_spans(spans, edits.first()?.version, after)
+    coalesce_spans(spans, edits.first()?.before)
 }
