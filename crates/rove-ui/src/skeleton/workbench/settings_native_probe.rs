@@ -1,8 +1,8 @@
 //! 实机测量从打开设置命令到搜索框获得焦点的时间。
 use super::{LayoutStore, Workbench};
-use crate::{keys::RunCommand, settings_ui::SharedSettings, shell::Shell};
+use crate::{keys, settings_ui::SharedSettings, shell::Shell};
 use gpui::{px, size, App, AppContext, Application, Bounds, WindowBounds, WindowOptions};
-use rove_base::{Resource, Value};
+use rove_base::Resource;
 use rove_config::{SettingsOptions, SettingsService};
 use std::{
     borrow::Cow,
@@ -71,13 +71,9 @@ fn settings_open_in_a_native_window() {
             let started = window
                 .update(cx, |_, window, cx| {
                     let started = Instant::now();
-                    window.dispatch_action(
-                        Box::new(RunCommand {
-                            id: crate::welcome::registry::OPEN_SETTINGS.into(),
-                            args: Value::Null,
-                        }),
-                        cx,
-                    );
+                    let action = keys::action_for(crate::welcome::registry::OPEN_SETTINGS)
+                        .expect("registered settings command");
+                    window.dispatch_action(action, cx);
                     started
                 })
                 .expect("dispatch open settings");
