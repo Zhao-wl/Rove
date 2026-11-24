@@ -57,6 +57,7 @@ impl VirtualSource for WelcomeSource {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PickMode {
     Theme,
+    IconTheme,
     Recent,
 }
 
@@ -258,6 +259,8 @@ impl Workbench {
             reg::OPEN_FOLDER => self.prompt_for_path(true, cx),
             reg::OPEN_RECENT => self.show_recent_picker(window, cx),
             reg::SELECT_THEME => self.show_theme_picker(window, cx),
+            reg::SELECT_ICON_THEME => self.show_icon_theme_picker(window, cx),
+            reg::TOGGLE_COLOR_SCHEME => self.toggle_color_scheme(cx),
             reg::OPEN_SETTINGS => {
                 let path = self.welcome.settings_path.clone();
                 self.open_shared_file(path, b"{}\n", cx);
@@ -545,7 +548,7 @@ impl Workbench {
 
     fn show_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.theme_service.current().id().to_string();
-        let picker = ThemePicker::new(self.theme_service.catalog(), &current);
+        let picker = ThemePicker::new(&self.theme_service.available_catalog(), &current);
         let rows = picker
             .items
             .iter()
@@ -562,6 +565,57 @@ impl Workbench {
             window,
             cx,
         );
+    }
+
+    fn show_icon_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        const NONE: &str = "rove.noFileIcons";
+        let mut choices = vec![
+            (
+                Arc::<str>::from("vs-seti"),
+                Arc::<str>::from(self.label("welcome.iconTheme.seti", &[])),
+            ),
+            (
+                Arc::<str>::from(NONE),
+                Arc::<str>::from(self.label("welcome.iconTheme.none", &[])),
+            ),
+        ];
+        choices.extend(super::theme_host::installed_icon_themes(cx));
+        let current = super::theme_host::icon_theme_setting(self.settings.as_ref());
+        let focus = choices
+            .iter()
+            .position(|(id, _)| id.as_ref() == current.as_deref().unwrap_or(NONE));
+        self.show_pick(
+            PickMode::IconTheme,
+            "welcome.iconTheme.placeholder",
+            choices
+                .iter()
+                .map(|(id, label)| row(id, label, None))
+                .collect(),
+            focus,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    fn toggle_color_scheme(&mut self, cx: &mut Context<Self>) {
+        use rove_theme::{
+            service::{preferred_theme, AUTO_COLOR_SCHEME},
+            ThemeKind,
+        };
+        let settings = self.settings.as_ref();
+        if AUTO_COLOR_SCHEME
+            .read(settings, &Scope::default())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let use_dark = matches!(
+            self.theme_service.current().kind(),
+            ThemeKind::Light | ThemeKind::HighContrastLight
+        );
+        let theme = preferred_theme(settings, use_dark);
+        self.write_color_theme(theme.into(), cx);
     }
 
     fn show_recent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -608,6 +662,16 @@ impl Workbench {
                 });
                 if let Some(theme) = write {
                     self.write_color_theme(theme, cx);
+                }
+            }
+            Some(PickMode::IconTheme) => {
+                if let Some(item) = items.first() {
+                    let value = if item.0.as_ref() == "rove.noFileIcons" {
+                        Value::Null
+                    } else {
+                        Value::String(item.0.clone())
+                    };
+                    self.write_setting(super::theme_host::ICON_THEME, value, cx);
                 }
             }
             Some(PickMode::Recent) => {
@@ -973,6 +1037,7 @@ fn open_new_window(root: PathBuf, files: Vec<PathBuf>, settings: Arc<dyn Setting
             let mut view = Workbench::with_settings(root, started, store, settings, cx)
                 .expect("valid editor settings");
             Shell::attach_window(&mut view, window, cx);
+            super::theme_host::attach_window(&mut view, window, cx);
             edit_host::attach_close_confirmation(&mut view, window, cx);
             for file in files {
                 view.open_path_here(file, cx);

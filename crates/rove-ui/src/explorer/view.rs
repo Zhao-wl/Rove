@@ -14,6 +14,7 @@ use super::{
     },
     registry::{self, context as ck, ExplorerAction},
 };
+use crate::file_icons::FileIcons;
 use crate::{
     list_widget::{
         options::ListOptions,
@@ -34,7 +35,7 @@ use gpui::{
 use rove_base::WorkspacePath;
 use rove_config::Settings;
 use rove_i18n::{Message, Strings};
-use rove_theme::Theme;
+use rove_theme::{file_icons::IconTarget, Theme, ThemeKind};
 use rove_workspace::{FileEvent, Workspace};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -71,6 +72,8 @@ impl TreeSource for NoFolder {
 
 /// 行渲染读取的共享状态（渲染闭包在 GPUI 的单线程里运行）。
 struct RenderState {
+    file_icons: FileIcons,
+    theme_kind: ThemeKind,
     changes: Changes,
     providers: Vec<Arc<dyn DecorationProvider>>,
     badges: bool,
@@ -97,7 +100,7 @@ pub struct ExplorerView {
 
 impl EventEmitter<ExplorerEvent> for ExplorerView {}
 
-/// 文件图标（codicon 名称）：按扩展名区分常见类型；Seti 文件图标主题属于 R68。
+/// 文件图标主题完成后台初始化前使用的内置 codicon。
 pub fn file_icon(name: &str) -> &'static str {
     let ext = name
         .rsplit_once('.')
@@ -175,7 +178,7 @@ fn row_renderer(state: Rc<RefCell<RenderState>>, theme: Arc<dyn Theme>) -> RowRe
             .min_w_0()
             .flex_1()
             .overflow_hidden();
-        let twistie = if is_dir {
+        let twistie = if is_dir && !state.file_icons.hides_explorer_arrows() {
             if row.expanded {
                 "chevron-down"
             } else {
@@ -198,7 +201,27 @@ fn row_renderer(state: Rc<RefCell<RenderState>>, theme: Arc<dyn Theme>) -> RowRe
         } else {
             (file_icon(name), "symbolIcon.fileForeground")
         };
-        left = left.child(codicon(icon, px(ICON), color_of(&*theme, key)));
+        let language = (!is_dir)
+            .then(|| rove_syntax::highlight::language_for_path(std::path::Path::new(name), None));
+        let target = if is_dir {
+            IconTarget::Folder {
+                name,
+                expanded: row.expanded,
+                root: false,
+            }
+        } else {
+            IconTarget::File {
+                name,
+                language: language.as_deref(),
+            }
+        };
+        left = left.children(
+            state
+                .file_icons
+                .element(target, state.theme_kind, ICON, || {
+                    codicon(icon, px(ICON), color_of(&*theme, key))
+                }),
+        );
         let segments = if is_dir {
             row.label.split('/').count()
         } else {
@@ -280,6 +303,8 @@ impl ExplorerView {
         let explorer = ExplorerSettings::read(settings);
         let render = Rc::new(RefCell::new(RenderState {
             changes: Changes::new(),
+            file_icons: FileIcons::default(),
+            theme_kind: ThemeKind::Dark,
             providers: Vec::new(),
             badges: explorer.badges,
             colors: explorer.colors,
@@ -429,6 +454,19 @@ impl ExplorerView {
     }
 
     /// 设置变化：排序、紧凑文件夹等影响数据的设置重建树，徽标与颜色只影响绘制。
+    pub(crate) fn set_file_icons(
+        &mut self,
+        icons: FileIcons,
+        kind: ThemeKind,
+        cx: &mut Context<Self>,
+    ) {
+        let mut render = self.render.borrow_mut();
+        render.file_icons = icons;
+        render.theme_kind = kind;
+        drop(render);
+        self.list.update(cx, |_, cx| cx.notify());
+    }
+
     pub fn reload_settings(&mut self, settings: &dyn Settings, cx: &mut Context<Self>) {
         let new = ExplorerSettings::read(settings);
         let rebuild = new.compact_folders != self.settings.compact_folders

@@ -7,7 +7,7 @@ use crate::{Color, ColorRegistry, Theme, ThemeKind, TokenStyle};
 use rove_base::{Error, Events, Result, Subscription, Value, Version};
 use rove_config::{Key, Scope, Settings};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 /// 未设置 `workbench.colorTheme` 或它指向不存在的主题时使用的主题（VS Code 1.145 的默认值）。
@@ -20,6 +20,31 @@ pub const TOKEN_COLOR_CUSTOMIZATIONS: Key<Value> = Key::new("editor.tokenColorCu
 pub const SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS: Key<Value> =
     Key::new("editor.semanticTokenColorCustomizations");
 /// 触发重新加载的设置键。
+pub const AUTO_COLOR_SCHEME: Key<bool> = Key::new("window.autoDetectColorScheme");
+pub const PREFERRED_DARK_THEME: Key<String> = Key::new("workbench.preferredDarkColorTheme");
+pub const PREFERRED_LIGHT_THEME: Key<String> = Key::new("workbench.preferredLightColorTheme");
+
+pub fn preferred_theme(settings: &dyn Settings, dark: bool) -> String {
+    let key = if dark {
+        &PREFERRED_DARK_THEME
+    } else {
+        &PREFERRED_LIGHT_THEME
+    };
+    key.read(settings, &Scope::default()).unwrap_or_else(|_| {
+        if dark {
+            DEFAULT_THEME.into()
+        } else {
+            "Light 2026".into()
+        }
+    })
+}
+
+const SYSTEM_THEME_SETTING_KEYS: [&str; 3] = [
+    AUTO_COLOR_SCHEME.id,
+    PREFERRED_DARK_THEME.id,
+    PREFERRED_LIGHT_THEME.id,
+];
+
 pub const THEME_SETTING_KEYS: [&str; 4] = [
     COLOR_THEME.id,
     COLOR_CUSTOMIZATIONS.id,
@@ -180,6 +205,13 @@ impl ThemeCatalog {
         self.0.iter().find(|e| &*e.id == id)
     }
 
+    fn find_by_setting(&self, setting: &str) -> Option<&ThemeEntry> {
+        self.0
+            .iter()
+            .find(|entry| entry.label.as_ref() == setting)
+            .or_else(|| self.get(setting))
+    }
+
     pub fn entries(&self) -> &[ThemeEntry] {
         &self.0
     }
@@ -262,6 +294,8 @@ pub struct ThemeService {
     current: RwLock<Arc<ResolvedTheme>>,
     registry: Arc<ColorRegistry>,
     catalog: ThemeCatalog,
+    extension_catalog: RwLock<Option<ThemeCatalog>>,
+    system_scheme: AtomicU8,
     settings: Arc<dyn Settings>,
     semantic_scope: Scope,
     revision: AtomicU64,
@@ -309,7 +343,7 @@ impl ThemeService {
         registry: Arc<ColorRegistry>,
         semantic_scope: Scope,
     ) -> Arc<Self> {
-        let (theme, diags) = Self::build(&*settings, &catalog, &registry, &semantic_scope);
+        let (theme, diags) = Self::build(&*settings, &catalog, &registry, &semantic_scope, None);
         // 首次加载失败（例如目录里的主题文件损坏）时退回内置默认主题，保证总有可用快照。
         let theme = theme.unwrap_or_else(|_| {
             let builtin = ThemeCatalog::builtin();
@@ -323,6 +357,8 @@ impl ThemeService {
             current: RwLock::new(Arc::new(theme)),
             registry,
             catalog,
+            extension_catalog: RwLock::new(None),
+            system_scheme: AtomicU8::new(0),
             settings: settings.clone(),
             semantic_scope,
             revision: AtomicU64::new(1),
@@ -337,10 +373,9 @@ impl ThemeService {
         let weak = Arc::downgrade(&service);
         let sub = settings.changes().subscribe(Arc::new(move |change| {
             let relevant = change.keys.is_empty()
-                || change
-                    .keys
-                    .iter()
-                    .any(|k| THEME_SETTING_KEYS.contains(&&**k));
+                || change.keys.iter().any(|k| {
+                    THEME_SETTING_KEYS.contains(&&**k) || SYSTEM_THEME_SETTING_KEYS.contains(&&**k)
+                });
             if let (true, Some(s)) = (relevant, weak.upgrade()) {
                 s.schedule_reload();
             }
@@ -407,19 +442,26 @@ impl ThemeService {
         catalog: &ThemeCatalog,
         registry: &Arc<ColorRegistry>,
         semantic_scope: &Scope,
+        system_dark: Option<bool>,
     ) -> (Result<ResolvedTheme>, Vec<Diagnostic>) {
         let mut diags = Vec::new();
         let (wanted, custom) = Self::read_settings(settings, semantic_scope, &mut diags);
-        let wanted = wanted.unwrap_or_else(|| DEFAULT_THEME.to_owned());
-        let entry = match catalog.get(&wanted) {
+        let wanted = if let Some(dark) = system_dark.filter(|_| {
+            AUTO_COLOR_SCHEME
+                .read(settings, &Scope::default())
+                .unwrap_or(false)
+        }) {
+            preferred_theme(settings, dark)
+        } else {
+            wanted.unwrap_or_else(|| DEFAULT_THEME.to_owned())
+        };
+        let entry = match catalog.find_by_setting(&wanted) {
             Some(e) => e,
             None => {
                 diags.push(Diagnostic {
                     file: "settings.json".into(),
                     field: COLOR_THEME.id.into(),
-                    message: format!(
-                        "主题 {wanted:?} 未安装（扩展主题由 R68 支持），回退到内置主题 {DEFAULT_THEME:?}"
-                    ),
+                    message: format!("主题 {wanted:?} 未安装，回退到内置主题 {DEFAULT_THEME:?}"),
                 });
                 catalog
                     .get(DEFAULT_THEME)
@@ -465,9 +507,14 @@ impl ThemeService {
         let ticket = self.reload_requested.fetch_add(1, Ordering::AcqRel) + 1;
         let (theme, diags) = Self::build(
             &*self.settings,
-            &self.catalog,
+            &self.available_catalog(),
             &self.registry,
             &self.semantic_scope,
+            match self.system_scheme.load(Ordering::Acquire) {
+                1 => Some(false),
+                2 => Some(true),
+                _ => None,
+            },
         );
         let result = match theme {
             Ok(theme) => {
@@ -499,7 +546,11 @@ impl ThemeService {
     /// [`reload`](Self::reload)：它按设置重新构建，等于回到用户真正选择的主题。
     pub fn preview(&self, id: &str) -> Result<Version> {
         let ticket = self.reload_requested.fetch_add(1, Ordering::AcqRel) + 1;
-        let entry = self.catalog.get(id).ok_or(Error::NotFound)?.clone();
+        let entry = self
+            .available_catalog()
+            .get(id)
+            .ok_or(Error::NotFound)?
+            .clone();
         let mut diags = Vec::new();
         let (_, custom) = Self::read_settings(&*self.settings, &self.semantic_scope, &mut diags);
         let theme = load_theme(&entry, &custom, self.registry.clone())?;
@@ -532,6 +583,36 @@ impl ThemeService {
 
     pub fn catalog(&self) -> &ThemeCatalog {
         &self.catalog
+    }
+
+    /// Records the window host's appearance. The current settings determine whether it is used.
+    pub fn set_system_dark(&self, dark: bool) -> bool {
+        let value = if dark { 2 } else { 1 };
+        self.system_scheme.swap(value, Ordering::AcqRel) != value
+    }
+
+    /// Returns the base catalogue plus the latest extension scan.
+    pub fn available_catalog(&self) -> ThemeCatalog {
+        self.extension_catalog
+            .read()
+            .expect("extension theme catalogue")
+            .as_ref()
+            .unwrap_or(&self.catalog)
+            .clone()
+    }
+
+    /// Publishes new theme entries. Reload the resolved theme on a worker afterwards.
+    pub fn set_extension_catalog(&self, entries: Vec<ThemeEntry>) {
+        let mut catalog = self.catalog.clone();
+        for entry in entries {
+            if let Err(error) = catalog.add(entry) {
+                eprintln!("rove-theme: {error}");
+            }
+        }
+        *self
+            .extension_catalog
+            .write()
+            .expect("extension theme catalogue") = Some(catalog);
     }
 
     pub fn registry(&self) -> &ColorRegistry {

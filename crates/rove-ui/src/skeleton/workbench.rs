@@ -355,6 +355,7 @@ impl Workbench {
         let mut view = Self::build(root, started, store, settings, editor, cx);
         // #36：应用入口按设置启动 C# 索引（测试入口 `new` 不启动，条目不显示）。
         view.start_index(cx);
+        theme_host::attach(&mut view, cx);
         // #50：应用入口才碰用户目录里的备份；测试显式调用 `start_hot_exit_in`，不写用户目录
         //（与上面的 `LayoutStore::disabled()` 同一套做法）。
         if !cfg!(test) {
@@ -734,6 +735,7 @@ impl Workbench {
     fn theme_changed(&mut self, cx: &mut Context<Self>) {
         let kind = self.theme_service.current().kind();
         self.shell.set_theme_kind(kind);
+        theme_host::apply_icons(self, cx);
         // The code view recolours tokens (colour and fontStyle) itself; stale styles stay on
         // screen until the new ones are ready.
         for code in self.code_views() {
@@ -2006,6 +2008,7 @@ impl Render for Workbench {
                 );
                 // #150：「可交互」埋点（预算 cold_start_interactive）。
                 startup_probe::after_first_frame(start, window, cx);
+                theme_host::after_first_frame(cx);
             });
             // #149：第一次更新检查排在**首帧之后**（冷启动预算不受影响）。
             self.start_update_checks(cx);
@@ -2215,6 +2218,17 @@ pub fn launch(
     settings: Arc<dyn Settings>,
     started: Instant,
 ) {
+    launch_with_theme_extensions(startup, settings, started, None);
+}
+
+mod theme_host;
+
+pub fn launch_with_theme_extensions(
+    startup: crate::welcome::startup::Startup,
+    settings: Arc<dyn Settings>,
+    started: Instant,
+    extensions: Option<PathBuf>,
+) {
     // #50：panic 与致命错误写一份本地崩溃日志（`%LOCALAPPDATA%\Rove\logs`，保留最近 10 份）。
     // 只保存在本地，不上传、不发起任何网络请求（FEATURES §10：遥测不做）。
     if let Some(state) = rove_buffer::hotexit::default_state_root(|key| std::env::var_os(key)) {
@@ -2230,6 +2244,7 @@ pub fn launch(
     // 拒绝一切请求并把方法与 URI 写进日志，违例无法悄悄发生（编译期的保证见 crates/rove-gpui-http-stub）。
     let application = Application::new().with_http_client(crate::net::blocked_http_client());
     application.run(move |cx: &mut App| {
+        theme_host::start(extensions, settings.clone(), cx);
         if let Err(e) = cx
             .text_system()
             .add_fonts(vec![Cow::Borrowed(shell::icons::FONT)])
@@ -2256,6 +2271,7 @@ pub fn launch(
                         )
                         .expect("valid editor settings");
                         Shell::attach_window(&mut view, window, cx);
+                        theme_host::attach_window(&mut view, window, cx);
                         // #47：窗口关闭按钮先确认未保存的文档（替换上一行登记的回调，并做它原来的事）。
                         edit_host::attach_close_confirmation(&mut view, window, cx);
                         // #28：启动时的欢迎页（`workbench.startupEditor`；空窗口总是显示），
@@ -2288,6 +2304,7 @@ pub fn launch(
                         Workbench::with_settings(folder.clone(), started, store, settings, cx)
                             .expect("valid editor settings");
                     Shell::attach_window(&mut view, window, cx);
+                    theme_host::attach_window(&mut view, window, cx);
                     edit_host::attach_close_confirmation(&mut view, window, cx);
                     view.open_startup_editor(cx);
                     view.note_recent(folder, crate::welcome::recent::RecentKind::Folder);

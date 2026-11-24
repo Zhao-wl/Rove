@@ -28,6 +28,8 @@ memchr.workspace = true
 fancy-regex.workspace = true
 globset.workspace = true
 async-channel.workspace = true
+notify.workspace = true
+ttf-parser = "0.25"
 rayon.workspace = true
 git2 = { version = "0.20.4", default-features = false }
 # #29 Markdown 预览。
@@ -48,6 +50,7 @@ raw-window-handle = "0.6"
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_DirectWrite",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_ProcessStatus",

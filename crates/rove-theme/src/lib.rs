@@ -109,3 +109,6 @@ mod tests {
         assert!(!theme.token_style(&[]).bold);
     }
 }
+
+pub mod extensions;
+pub mod file_icons;

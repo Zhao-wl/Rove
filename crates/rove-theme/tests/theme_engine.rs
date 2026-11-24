@@ -524,3 +524,55 @@ fn preview_swaps_the_snapshot_in_memory_and_reload_restores_it() {
     assert!(matches!(theme.preview("Monokai"), Err(Error::NotFound)));
     assert_eq!(theme.current().id(), "Dark 2026");
 }
+
+#[test]
+fn extension_labels_and_ids_resolve_the_same_configured_theme() {
+    use std::borrow::Cow;
+    struct Installed;
+    impl rove_theme::file::ThemeSource for Installed {
+        fn read(&self, _: &str) -> Result<Cow<'static, str>> {
+            Ok(Cow::Borrowed(
+                r##"{"colors":{"editor.background":"#546789"}}"##,
+            ))
+        }
+    }
+    for configured in ["Installed Label", "installed-id"] {
+        let (_, service) = service_with(Some(configured));
+        service.set_extension_catalog(vec![rove_theme::ThemeEntry {
+            id: "installed-id".into(),
+            label: "Installed Label".into(),
+            kind: rove_theme::ThemeKind::Dark,
+            path: "theme.json".into(),
+            source: Arc::new(Installed),
+        }]);
+        service.reload().unwrap();
+        assert_eq!(service.current().id(), "installed-id");
+        assert_eq!(
+            service.color("editor.background").unwrap(),
+            Some(c("#546789"))
+        );
+    }
+}
+
+#[test]
+fn enabled_system_scheme_uses_both_preferred_themes() {
+    let settings = Arc::new(UserSettings::default());
+    settings.values.lock().unwrap().extend([
+        ("workbench.colorTheme".into(), s("Dark+")),
+        ("window.autoDetectColorScheme".into(), Value::Bool(true)),
+        ("workbench.preferredDarkColorTheme".into(), s("Dark Modern")),
+        (
+            "workbench.preferredLightColorTheme".into(),
+            s("Light Modern"),
+        ),
+    ]);
+    let service = ThemeService::new(settings);
+    assert_eq!(service.current().id(), "Dark+");
+    assert!(service.set_system_dark(false));
+    service.reload().unwrap();
+    assert_eq!(service.current().id(), "Light Modern");
+    assert!(!service.set_system_dark(false));
+    assert!(service.set_system_dark(true));
+    service.reload().unwrap();
+    assert_eq!(service.current().id(), "Dark Modern");
+}
