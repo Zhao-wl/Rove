@@ -549,6 +549,117 @@ fn replace_workspace_selection_file_folder_and_cancel_widget(cx: &mut TestAppCon
     assert_eq!(fixture.read("other.txt"), b"needle");
 }
 
+fn outline_has(wb: &Workbench, cx: &App, label: &str) -> bool {
+    let widget = &wb.outline.list.read(cx).widget;
+    widget
+        .display_rows(0..widget.len())
+        .iter()
+        .any(|row| row.label.as_ref() == label)
+}
+
+fn structure_is_current(wb: &Workbench, document: DocumentId) -> bool {
+    use rove_buffer::TextSource;
+    use rove_docview::Structure;
+
+    let saves = wb.editing.saves.borrow();
+    let version = saves.file(document).unwrap().snapshot().version();
+    wb.structured.documents.get(&document).is_some_and(|entry| {
+        entry.snapshot.version() == version && !wb.structured.diagnostics.contains_key(&document)
+    })
+}
+
+fn has_structure_problem(wb: &Workbench, cx: &App, resource: &Resource) -> bool {
+    wb.listed_problem_positions(cx)
+        .iter()
+        .any(|(path, _)| path == resource)
+}
+
+#[gpui::test]
+fn replace_workspace_application_and_undo_refresh_structure_and_problems(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    fixture.file("config.json", br#"{"oldName": true, "enabled": false}"#);
+    let (view, cx) = fixture.open(cx);
+    let document = open_file(&fixture, &view, cx, "config.json");
+    let resource = Resource::Workspace(WorkspacePath::new("config.json").unwrap());
+    wait(&view, cx, |wb, cx| {
+        structure_is_current(wb, document)
+            && outline_has(wb, cx, "oldName")
+            && !has_structure_problem(wb, cx, &resource)
+    });
+    view.update(cx, |wb, cx| {
+        wb.search
+            .update(cx, |search, _| search.toggles.regex = true);
+    });
+    prepare(&view, cx, "oldName|false", "newName");
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+            && structure_is_current(wb, document)
+            && outline_has(wb, cx, "newName")
+            && has_structure_problem(wb, cx, &resource)
+    });
+
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+            && structure_is_current(wb, document)
+            && outline_has(wb, cx, "oldName")
+            && !has_structure_problem(wb, cx, &resource)
+    });
+}
+
+#[gpui::test]
+fn replace_workspace_refreshes_background_problems_without_switching_the_active_outline(
+    cx: &mut TestAppContext,
+) {
+    use crate::explorer::decorations::DecorationProvider;
+
+    let fixture = Fixture::new("{}");
+    fixture.file("config.json", br#"{"enabled": invalid}"#);
+    fixture.file("active.json", br#"{"untouched": 1}"#);
+    let (view, cx) = fixture.open(cx);
+    let document = open_file(&fixture, &view, cx, "config.json");
+    let path = WorkspacePath::new("config.json").unwrap();
+    let resource = Resource::Workspace(path.clone());
+    let badge = |wb: &Workbench, cx: &App| {
+        wb.explorer
+            .read(cx)
+            .problems()
+            .decorate(&path, false)
+            .is_some()
+    };
+    wait(&view, cx, |wb, cx| {
+        structure_is_current(wb, document)
+            && has_structure_problem(wb, cx, &resource)
+            && badge(wb, cx)
+    });
+    let active = open_file(&fixture, &view, cx, "active.json");
+    let active_outline = |wb: &Workbench, cx: &App| {
+        wb.focused_text()
+            .is_some_and(|(_, doc, _)| doc.id == active)
+            && outline_has(wb, cx, "untouched")
+    };
+    wait(&view, cx, active_outline);
+    prepare(&view, cx, "invalid", "false");
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+            && structure_is_current(wb, document)
+            && !has_structure_problem(wb, cx, &resource)
+            && !badge(wb, cx)
+            && active_outline(wb, cx)
+    });
+
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+            && structure_is_current(wb, document)
+            && has_structure_problem(wb, cx, &resource)
+            && badge(wb, cx)
+            && active_outline(wb, cx)
+    });
+}
+
 #[gpui::test]
 fn replace_workspace_application_and_undo_move_the_context_basket(cx: &mut TestAppContext) {
     use crate::context_basket::model::{Entry, LineRange};

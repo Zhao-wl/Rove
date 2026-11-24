@@ -306,6 +306,7 @@ pub struct State {
     pub current: Option<(DocumentId, Version)>,
     pub failed: Option<(DocumentId, Version)>,
     pub pending: Option<(DocumentId, Version, Cancellation)>,
+    pub replacement_parses: BTreeMap<DocumentId, (Version, Cancellation)>,
     pub documents: BTreeMap<DocumentId, Entry>,
     pub diagnostics: BTreeMap<DocumentId, (Version, Cancellation)>,
     pub nodes: BTreeMap<u64, StructureNode>,

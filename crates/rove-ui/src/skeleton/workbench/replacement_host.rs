@@ -418,7 +418,17 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         self.basket_text_edited(path, &edited, cx);
+        let incremental_structure = self
+            .structured
+            .documents
+            .contains_key(&document)
+            .then(|| edited.combined())
+            .flatten();
+        if let Some(edit) = incremental_structure {
+            self.note_structure_edit(document, edit);
+        }
         self.sync_document_from_session(document, cx);
+        self.refresh_replaced_structure(document, cx);
         if let Some(edit) = edited.combined {
             let states = self.nav.router.buffers();
             let version = edited.after.version();
