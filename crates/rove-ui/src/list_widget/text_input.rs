@@ -328,14 +328,8 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range);
         let text_left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
-            point(
-                text_left + layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                text_left + layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            point(text_left + layout.x_for_index(range.start), bounds.top()),
+            point(text_left + layout.x_for_index(range.end), bounds.bottom()),
         ))
     }
 
@@ -347,7 +341,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let local = self.last_bounds?.localize(&p)?;
         let layout = self.last_layout.as_ref()?;
-        let i = layout.index_for_x(p.x - local.x + self.scroll_x)?;
+        let i = layout.index_for_x(local.x + self.scroll_x)?;
         Some(self.offset_to_utf16(i))
     }
 }
@@ -657,6 +651,62 @@ mod tests {
         assert_eq!(utf16_to_utf8("中", 1), 3);
         assert_eq!(utf16_to_utf8("a😀b", 3), 5);
         assert_eq!(utf16_to_utf8("a😀b", 99), 6);
+    }
+
+    #[gpui::test]
+    fn ime_hit_testing_uses_the_scrolled_input_origin(cx: &mut TestAppContext) {
+        struct PaddedInput(Entity<TextInput>);
+
+        impl Render for PaddedInput {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let input = div().flex().w(px(160.0)).pl(px(32.0)).child(self.0.clone());
+                div().child(input)
+            }
+        }
+
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            PaddedInput(cx.new(|cx| {
+                let mut input = TextInput::new(
+                    cx,
+                    TextInputColors {
+                        text: gpui::white(),
+                        placeholder: gpui::white(),
+                        caret: gpui::white(),
+                        selection: gpui::blue(),
+                    },
+                );
+                input.set_text(&"W".repeat(80), cx);
+                input
+            }))
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let input = view.read(cx).0.clone();
+            input.update(cx, |input, cx| {
+                let bounds = input.last_bounds.unwrap();
+                assert!(bounds.left() > px(0.0));
+                assert!(input.scroll_x > px(0.0));
+                for index in [77, 78] {
+                    let layout = input.last_layout.as_ref().unwrap();
+                    let x0 = layout.x_for_index(index);
+                    let x1 = layout.x_for_index(index + 1);
+                    let local_x = (x0 + x1) * 0.5 - input.scroll_x;
+                    assert_eq!(
+                        input.character_index_for_point(
+                            point(bounds.left() + local_x, bounds.center().y),
+                            window,
+                            cx,
+                        ),
+                        Some(index)
+                    );
+                }
+            });
+        });
     }
 
     /// Regression (PR #102 review): the IME selection was converted against the whole content
