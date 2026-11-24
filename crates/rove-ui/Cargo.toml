@@ -40,6 +40,7 @@ image = { version = "0.25.10", default-features = false, features = ["gif", "jpe
 resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 roxmltree = "0.20"
 smallvec = "1"
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com.workspace = true
@@ -65,7 +66,6 @@ flate2.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-tempfile = "3"
 rove-test-support.workspace = true
 futures-lite = "2"
 # #74：no_network 入口测试要捕获被拒绝请求写出的日志。

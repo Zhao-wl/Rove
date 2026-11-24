@@ -31,6 +31,11 @@ use crate::{
     },
 };
 use rove_buffer::ReadOnlyReason;
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
 
 /// 欢迎页的虚拟文档内容来源：没有磁盘文件，正文是空的（绘制完全由本模块负责）。
 pub(super) struct WelcomeSource;
@@ -114,6 +119,25 @@ pub fn shared_paths(
         dir.as_ref()
             .map(|d| d.join(rove_config::paths::KEYBINDINGS_FILE)),
     )
+}
+
+/// 首次进入首选项时初始化对应文件。另一进程先创建时保留它写入的内容。
+fn initialize_shared_file(path: &Path, initial: &[u8]) -> io::Result<()> {
+    if path.try_exists()? {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(initial)?;
+    match file.persist_noclobber(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.error),
+    }
 }
 
 fn row(id: &str, label: &str, detail: Option<&str>) -> Row {
@@ -236,11 +260,11 @@ impl Workbench {
             reg::SELECT_THEME => self.show_theme_picker(window, cx),
             reg::OPEN_SETTINGS => {
                 let path = self.welcome.settings_path.clone();
-                self.open_shared_file(path, cx);
+                self.open_shared_file(path, b"{}\n", cx);
             }
             reg::OPEN_KEYBINDINGS => {
                 let path = self.welcome.keybindings_path.clone();
-                self.open_shared_file(path, cx);
+                self.open_shared_file(path, b"[]\n", cx);
             }
             _ => {}
         }
@@ -368,7 +392,12 @@ impl Workbench {
 
     // ------------------------------------------------------------------ 共用的设置与键位文件
 
-    fn open_shared_file(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn open_shared_file(
+        &mut self,
+        path: Option<PathBuf>,
+        initial: &'static [u8],
+        cx: &mut Context<Self>,
+    ) {
         let Some(path) = path else {
             let _ = shell::view::report(
                 self,
@@ -380,19 +409,31 @@ impl Workbench {
             );
             return;
         };
-        self.welcome.pending_notice = Some(path.clone());
-        if let Err(e) = self.open_documents().open(
-            Resource::File(path),
-            OpenOptions {
-                preview_tab: false,
-                presentation: crate::documents::Presentation::Source,
-                ..Default::default()
-            },
-            Cancellation::default(),
-        ) {
-            eprintln!("welcome: {e}");
-        }
-        cx.notify();
+        let initialize = cx.background_executor().spawn(async move {
+            if let Err(e) = initialize_shared_file(&path, initial) {
+                eprintln!("welcome: {}: {e}", path.display());
+            }
+            path
+        });
+        cx.spawn(async move |this, cx| {
+            let path = initialize.await;
+            let _ = this.update(cx, |view, cx| {
+                view.welcome.pending_notice = Some(path.clone());
+                if let Err(e) = view.open_documents().open(
+                    Resource::File(path),
+                    OpenOptions {
+                        preview_tab: false,
+                        presentation: crate::documents::Presentation::Source,
+                        ..Default::default()
+                    },
+                    Cancellation::default(),
+                ) {
+                    eprintln!("welcome: {e}");
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 共用文件的标签就绪后显示第 3 级提示条（UX_SPEC §6.1）。「不再提示」与持久化由 #16 负责。
