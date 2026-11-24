@@ -676,7 +676,10 @@ impl Workbench {
                         self.markdown.was_focused = true;
                     }
                 }
-                window.dispatch_keystroke(keystroke, cx);
+                // 键位监听器会再次更新工作台；等当前 WebView2 事件处理释放它后再分发。
+                window.defer(cx, move |window, cx| {
+                    window.dispatch_keystroke(keystroke, cx);
+                });
             }
             BackendEvent::Navigate(uri) => {
                 if !uri.is_empty() && uri != "about:blank" {

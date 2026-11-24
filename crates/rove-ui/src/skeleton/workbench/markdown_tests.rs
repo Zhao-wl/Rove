@@ -175,12 +175,24 @@ fn opening_markdown_shows_preview_and_toggles_to_source(cx: &mut TestAppContext)
         window.focus(&focus);
     });
     settle(cx);
-    cx.simulate_keystrokes("ctrl-shift-v");
+    view.read_with(cx, |v, _| {
+        v.markdown
+            .sender_for_test()
+            .try_send(crate::markdown::backend::BackendEvent::Key(
+                gpui::Keystroke::parse("ctrl-shift-v").unwrap(),
+            ))
+            .unwrap();
+    });
     settle(cx);
     assert_eq!(active_kind(&view, cx), ("README.md".into(), false));
     view.read_with(cx, |v, _| assert!(!v.markdown_snapshot().visible));
-    // 源码里再按一次切回预览（when：editorFocus && resourceLangId == markdown），实例复用。
     focus_editor(&view, cx);
+    cx.simulate_input("已编辑");
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        assert!(v.editor.active().current().unwrap().dirty)
+    });
+    // 源码里再按一次切回预览（when：editorFocus && resourceLangId == markdown），实例复用。
     cx.simulate_keystrokes("ctrl-shift-v");
     settle(cx);
     assert_eq!(active_kind(&view, cx), ("README.md".into(), true));
@@ -309,11 +321,44 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
     });
 }
 
+fn open_from_quick_access(view: &Entity<Workbench>, input: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.focus(&view.read(cx).focus));
+    cx.simulate_keystrokes("ctrl-p");
+    cx.run_until_parked();
+    cx.simulate_input(input);
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+}
+
+#[gpui::test]
+fn quick_open_uses_markdown_preview_unless_a_position_is_requested(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+
+    open_from_quick_access(&view, "README.md", cx);
+    assert_eq!(active_kind(&view, cx), ("README.md".into(), true));
+    let snapshot = view.read_with(cx, |v, _| v.markdown_snapshot());
+    assert!(
+        snapshot.ready && snapshot.rendered && snapshot.visible,
+        "{snapshot:?}"
+    );
+
+    open_from_quick_access(&view, "README.md:1:2", cx);
+    assert_eq!(active_kind(&view, cx), ("README.md".into(), false));
+    view.read_with(cx, |v, _| {
+        let cursor = v.editor.active().current().unwrap().view.cursor;
+        assert_eq!(cursor, pos(0, 1));
+    });
+}
+
 /// `ctrl+k v`：源码旁边并排打开预览；标题栏按钮切换。
 #[gpui::test]
 fn preview_to_side_and_title_button(cx: &mut TestAppContext) {
     let fx = Fixture::new(r#"{ "workbench.editorAssociations": { "*.md": "default" } }"#);
     let (view, cx) = fx.open(cx);
+    open_from_quick_access(&view, "Other.md", cx);
+    assert_eq!(active_kind(&view, cx), ("Other.md".into(), false));
     // 用户设置了 editorAssociations：以用户设置为准，双击文件树打开源码。
     open(&view, "README.md", explorer(), cx);
     assert_eq!(active_kind(&view, cx), ("README.md".into(), false));
