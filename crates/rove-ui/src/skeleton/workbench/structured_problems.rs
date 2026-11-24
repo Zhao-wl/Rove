@@ -293,12 +293,15 @@ impl Workbench {
                     })),
             );
         }
+        let mut context = gpui::KeyContext::default();
+        context.add("problemsVisibility");
+        context.set("focusedView", "workbench.panel.markers.view");
         let rendered = div()
             .id("structure-problems")
             .size_full()
             .flex()
             .flex_col()
-            .key_context("problemsVisibility focusedView=workbench.panel.markers.view")
+            .key_context(context)
             .child(
                 div()
                     .key_context("problemsFilterFocus")
