@@ -894,16 +894,19 @@ impl Workbench {
             let FileEvent::Renamed { from, to } = event else {
                 continue;
             };
-            let map = |resource: &Resource| match resource {
-                Resource::Workspace(path) => {
-                    path_after_rename(path, from, to).map(Resource::Workspace)
-                }
-                Resource::File(path) => {
-                    let relative = under_root(path)?;
-                    let path = path_after_rename(&relative, from, to)?;
-                    Some(Resource::File(root.join(path.as_str())))
-                }
-                Resource::Virtual(_) => None,
+            let map = |resource: &Resource| {
+                let target = match resource {
+                    Resource::Workspace(path) => {
+                        path_after_rename(path, from, to).map(Resource::Workspace)
+                    }
+                    Resource::File(path) => {
+                        let relative = under_root(path)?;
+                        let path = path_after_rename(&relative, from, to)?;
+                        Some(Resource::File(root.join(path.as_str())))
+                    }
+                    Resource::Virtual(_) => None,
+                };
+                target.filter(|target| target != resource)
             };
             for (original, document) in self.editor.follow_rename(&map) {
                 refreshed = true;

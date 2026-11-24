@@ -936,7 +936,6 @@ impl Workbench {
         })));
         cx.spawn(async move |this, cx| {
             while let Ok(first) = receive.recv().await {
-                let mut removed = BTreeSet::new();
                 let mut changes = Vec::new();
                 // #24：快速打开的文件列表按事件增量更新。
                 let mut quick = Vec::new();
@@ -948,34 +947,14 @@ impl Workbench {
                     quick.push((batch.revision.0, batch.events.clone()));
                     nav.extend(batch.events.iter().cloned());
                     changes.extend(batch.events.iter().map(index_change));
-                    for event in batch.events.iter() {
-                        if let FileEvent::Removed(path) = event {
-                            removed.insert(path.clone());
-                        }
-                    }
                 }
                 if this
                     .update(cx, |view, cx| {
                         // #36：源文件变化标记过期，项目配置变化触发重建。
                         view.index_files_changed(&changes);
                         view.quick_files_changed(quick, cx);
-                        // #47：打开中的文档在磁盘上被修改 / 删除。
-                        view.follow_workspace_renames(&nav, cx);
-
-                        view.note_disk_events(&nav, cx);
-                        view.refresh_workspace_images(&nav, cx);
-                        view.basket_workspace_files_changed(&nav, cx);
                         view.nav_files_changed(&nav, cx);
-                        if !view.editor.settings.close_on_delete {
-                            return;
-                        }
-                        let mut changed = false;
-                        for path in removed {
-                            changed |= view.editor.file_removed(&Resource::Workspace(path));
-                        }
-                        if changed {
-                            cx.notify();
-                        }
+                        view.apply_explorer_workspace_events(nav, cx);
                     })
                     .is_err()
                 {

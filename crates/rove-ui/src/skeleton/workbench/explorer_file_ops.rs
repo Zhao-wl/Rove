@@ -2,8 +2,10 @@
 //! thread, while the workspace and Shell operations run in the background.
 
 use super::Workbench;
+use crate::context_basket::model::at_or_below;
 use crate::explorer::{registry, view::ExplorerUndo};
 use crate::feedback::FeedbackAction;
+use crate::save::controller::relative_path;
 use crate::shell::feedback::{Reason, Severity};
 use gpui::Context;
 use rove_base::{Value, WorkspacePath};
@@ -11,7 +13,7 @@ use rove_config::{Key, Scope};
 use rove_i18n::Message;
 use rove_workspace::{
     file_operations::{EntryStamp, OperationError},
-    Folder,
+    FileEvent, Folder,
 };
 use std::{
     collections::VecDeque,
@@ -80,6 +82,10 @@ pub(super) struct FileOperations {
     next: u64,
     pending: Option<(Arc<str>, Request)>,
     undo: Vec<Vec<UndoStep>>,
+    watched_paths: Vec<WorkspacePath>,
+    deferred_events: Vec<FileEvent>,
+    // The last completed move only. A stale removal of a replaced target can follow it.
+    moved_destinations: Vec<WorkspacePath>,
     #[cfg(windows)]
     clipboard: Option<transfer_ops::ClipboardToken>,
 }
@@ -103,6 +109,118 @@ impl FileOperations {
             .filter(|(pending, _)| pending.as_ref() == key)?;
         self.pending.take().map(|(_, request)| request)
     }
+}
+
+impl Workbench {
+    pub(super) fn apply_explorer_workspace_events(
+        &mut self,
+        mut events: Vec<FileEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.file_operations.watched_paths.is_empty() {
+            let relative_to_operation = |path: &WorkspacePath| {
+                self.file_operations
+                    .watched_paths
+                    .iter()
+                    .any(|reserved| at_or_below(path, reserved) || at_or_below(reserved, path))
+            };
+            let (deferred, ready): (Vec<_>, Vec<_>) =
+                events.into_iter().partition(|event| match event {
+                    FileEvent::Created(path)
+                    | FileEvent::Changed(path)
+                    | FileEvent::Removed(path) => relative_to_operation(path),
+                    FileEvent::Renamed { from, to } => {
+                        relative_to_operation(from) || relative_to_operation(to)
+                    }
+                    FileEvent::RescanRequired => true,
+                });
+            self.file_operations.deferred_events.extend(deferred);
+            events = ready;
+        }
+        self.apply_explorer_document_changes(events, cx);
+    }
+
+    fn apply_explorer_document_changes(
+        &mut self,
+        mut events: Vec<FileEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        if events.is_empty() {
+            return;
+        }
+        // A replacement can report removal of the old target after the move is
+        // already complete. Treat the observed path as changed if it still exists.
+        for event in &mut events {
+            if let FileEvent::Removed(path) = event {
+                if self
+                    .file_operations
+                    .moved_destinations
+                    .iter()
+                    .any(|target| at_or_below(path, target))
+                    && self.root.join(path.as_str()).try_exists().unwrap_or(false)
+                {
+                    *event = FileEvent::Changed(path.clone());
+                }
+            }
+        }
+        self.follow_workspace_renames(&events, cx);
+        self.note_disk_events(&events, cx);
+        self.refresh_workspace_images(&events, cx);
+        self.basket_workspace_files_changed(&events, cx);
+        if self.editor.settings.close_on_delete {
+            let mut changed = false;
+            for event in events {
+                if let FileEvent::Removed(path) = event {
+                    changed |= self
+                        .editor
+                        .file_removed(&rove_base::Resource::Workspace(path));
+                }
+            }
+            if changed {
+                cx.notify();
+            }
+        }
+    }
+
+    fn finish_explorer_workspace_files(
+        &mut self,
+        moves: &[(PathBuf, PathBuf)],
+        cx: &mut Context<Self>,
+    ) {
+        self.file_operations.watched_paths.clear();
+        let mut logical = Vec::new();
+        let mut destinations = Vec::new();
+        for (source, destination) in moves {
+            if let (Some(from), Some(to)) = (
+                workspace_path(&self.root, source),
+                workspace_path(&self.root, destination),
+            ) {
+                destinations.push(to.clone());
+                logical.push(FileEvent::Renamed { from, to });
+            }
+        }
+        if !destinations.is_empty() {
+            self.file_operations.moved_destinations = destinations;
+        }
+        // A native cross-directory move can arrive as removal and creation.
+        // Apply the confirmed mapping before anything can close the source tab.
+        let mut deferred = std::mem::take(&mut self.file_operations.deferred_events);
+        deferred.retain(|event| {
+            let FileEvent::Renamed { from, to } = event else {
+                return true;
+            };
+            !logical.iter().any(|logical| {
+                matches!(logical, FileEvent::Renamed { from: old, to: new } if old == from && new == to)
+            })
+        });
+        logical.append(&mut deferred);
+        self.apply_explorer_document_changes(logical, cx);
+    }
+}
+
+fn workspace_path(root: &Path, absolute: &Path) -> Option<WorkspacePath> {
+    let relative = relative_path(absolute, root)?;
+    WorkspacePath::new(&relative.to_str()?.replace('\\', "/")).ok()
 }
 
 impl Request {
@@ -361,6 +479,10 @@ impl Workbench {
             }
         }
         let paths = request.paths(&root, &folder);
+        let watched_paths = paths
+            .iter()
+            .filter_map(|path| workspace_path(&root, path))
+            .collect();
         let ticket = self
             .editing
             .saves
@@ -376,6 +498,7 @@ impl Workbench {
             return;
         };
         self.file_operations.busy = true;
+        self.file_operations.watched_paths = watched_paths;
         let worker = cx.background_executor().spawn(async move {
             match request {
                 Request::Delete(plan) => delete(&folder, plan),
@@ -392,6 +515,7 @@ impl Workbench {
                     .saves
                     .borrow_mut()
                     .complete_file_operation(ticket, &result.moves);
+                view.finish_explorer_workspace_files(&result.moves, cx);
                 if !result.undo.is_empty()
                     && ENABLE_UNDO
                         .read(&*view.settings, &Scope::default())

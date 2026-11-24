@@ -980,7 +980,7 @@ fn open_structured_fixture(
 
 #[cfg(windows)]
 #[gpui::test]
-fn explorer_structured_problems_follow_rename_move_and_delete(cx: &mut TestAppContext) {
+fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut TestAppContext) {
     use crate::explorer::decorations::DecorationProvider;
 
     let fixture = Fixture::new(
@@ -1034,18 +1034,37 @@ fn explorer_structured_problems_follow_rename_move_and_delete(cx: &mut TestAppCo
         assert!(explorer.problems().decorate(&target, true).is_some());
     });
 
+    // A queued removal belongs to the previous occupant of the moved path.
+    view.update(cx, |v, cx| {
+        v.apply_explorer_workspace_events(vec![FileEvent::Removed(moved.clone())], cx);
+    });
+    wait_for_structured_problems(&view, cx, Some(&resource));
+
     let index = rows(&view, cx)
         .iter()
         .position(|row| row.trim_end_matches('/') == "Target")
         .unwrap();
     focus_row(&view, index, cx);
-    cx.simulate_keystrokes("right");
-    wait_until(&view, cx, "target folder expanded", |rows| {
-        rows.iter().any(|row| row.trim() == "Renamed.json")
+    cx.simulate_keystrokes("ctrl-z");
+    let restored = Resource::Workspace(renamed.clone());
+    wait_for_structured_problems(&view, cx, Some(&restored));
+    assert!(!fixture.path("Target/Renamed.json").exists());
+    assert!(fixture.path("Renamed.json").is_file());
+    view.read_with(cx, |v, cx| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(current.resource, restored);
+        assert_eq!(current.text.version(), version);
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&target, true).is_none());
+        assert!(explorer.problems().decorate(&renamed, false).is_some());
+    });
+
+    wait_until(&view, cx, "moved file restored to the root", |rows| {
+        rows.iter().any(|row| row == "Renamed.json")
     });
     let index = rows(&view, cx)
         .iter()
-        .position(|row| row.trim() == "Renamed.json")
+        .position(|row| row == "Renamed.json")
         .unwrap();
     focus_row(&view, index, cx);
     cx.simulate_keystrokes("shift-delete");
@@ -1064,11 +1083,11 @@ fn explorer_structured_problems_follow_rename_move_and_delete(cx: &mut TestAppCo
             .unwrap();
     });
     wait_for_structured_problems(&view, cx, None);
-    assert!(!fixture.path("Target/Renamed.json").exists());
+    assert!(!fixture.path("Renamed.json").exists());
     view.read_with(cx, |v, cx| {
         assert!(v.open_document(document).is_none());
         let explorer = v.explorer.read(cx);
-        assert!(explorer.problems().decorate(&moved, false).is_none());
+        assert!(explorer.problems().decorate(&renamed, false).is_none());
         assert!(explorer.problems().decorate(&target, true).is_none());
     });
 }
