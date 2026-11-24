@@ -653,7 +653,7 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     let service = fx.service.clone();
     workbench.update_in(cx, |view, window, cx| {
         cx.set_global(SharedSettings(service));
-        window.focus(&view.code_view().focus_handle(cx));
+        window.focus(&view.focus);
     });
     cx.run_until_parked();
     cx.simulate_keystrokes("ctrl-,");

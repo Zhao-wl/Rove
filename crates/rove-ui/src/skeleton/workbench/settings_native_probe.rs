@@ -1,9 +1,7 @@
 //! 实机测量从打开设置命令到搜索框获得焦点的时间。
 use super::{LayoutStore, Workbench};
 use crate::{keys::RunCommand, settings_ui::SharedSettings, shell::Shell};
-use gpui::{
-    px, size, App, AppContext, Application, Bounds, Focusable, WindowBounds, WindowOptions,
-};
+use gpui::{px, size, App, AppContext, Application, Bounds, WindowBounds, WindowOptions};
 use rove_base::{Resource, Value};
 use rove_config::{SettingsOptions, SettingsService};
 use std::{
@@ -60,7 +58,7 @@ fn settings_open_in_a_native_window() {
                         )
                         .expect("settings workbench");
                         Shell::attach_window(&mut workbench, window, cx);
-                        window.focus(&workbench.code_view().focus_handle(cx));
+                        window.focus(&workbench.focus);
                         workbench
                     })
                 },
