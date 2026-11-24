@@ -4,7 +4,7 @@ use crate::{
     context_basket::{model::LineRange, registry as reg},
     documents::OpenOptions,
 };
-use gpui::{prelude::*, Focusable, TestAppContext};
+use gpui::{Focusable, TestAppContext};
 use rove_base::{Cancellation, Line, Position, Resource, Utf8Column, WorkspacePath};
 use rove_config::{Settings, SettingsOptions, SettingsService};
 use std::{sync::Arc, time::Instant};
