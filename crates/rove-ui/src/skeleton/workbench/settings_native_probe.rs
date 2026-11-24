@@ -88,7 +88,7 @@ fn settings_open_in_a_native_window() {
                             });
                         ready
                             && view.settings_view.as_ref().is_some_and(|settings| {
-                                settings.read(cx).search_focus(cx).is_focused(window)
+                                settings.read(cx).is_native_open_ready(window, cx)
                             })
                     })
                     .expect("read window focus");

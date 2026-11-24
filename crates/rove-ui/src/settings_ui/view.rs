@@ -237,6 +237,12 @@ impl SettingsView {
         window.focus(&self.search_focus(cx));
     }
 
+    #[cfg(all(test, windows))]
+    pub(crate) fn is_native_open_ready(&self, window: &Window, cx: &App) -> bool {
+        self.search_focus(cx).is_focused(window)
+            && self.results.read(cx).widget.visible_range().len() > 1
+    }
+
     pub fn navigate(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
         match command {
             reg::CLEAR_SEARCH => self.set_search_query("", cx),
@@ -547,6 +553,7 @@ impl SettingsView {
                             .h(px(2.0 * SETTING_LINE_HEIGHT))
                             .flex_shrink_0()
                             .text_size(px(12.))
+                            .whitespace_normal()
                             .line_clamp(2)
                             .child(styled(
                                 &entry.row.description,
