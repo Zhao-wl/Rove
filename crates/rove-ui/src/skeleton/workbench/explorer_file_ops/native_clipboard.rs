@@ -222,6 +222,16 @@ pub(super) fn write(owner: HWND, paths: &[PathBuf], effect: Effect) -> io::Resul
     Ok(sequence())
 }
 
+pub(super) fn clear_current(owner: usize, expected: u32) -> io::Result<()> {
+    let _open = Open::begin(Some(HWND(owner as *mut _)))?;
+    if sequence() == expected {
+        // SAFETY: this lock still holds the exact clipboard content written
+        // or consumed by this file operation.
+        unsafe { EmptyClipboard() }.map_err(io::Error::other)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,14 +246,4 @@ mod tests {
         let decoded = query_drop_list(HDROP(block.0 .0)).unwrap();
         assert_eq!(decoded, paths);
     }
-}
-
-pub(super) fn clear_current(owner: usize, expected: u32) -> io::Result<()> {
-    let _open = Open::begin(Some(HWND(owner as *mut _)))?;
-    if sequence() == expected {
-        // SAFETY: this lock still holds the exact clipboard content written
-        // or consumed by this file operation.
-        unsafe { EmptyClipboard() }.map_err(io::Error::other)?;
-    }
-    Ok(())
 }
