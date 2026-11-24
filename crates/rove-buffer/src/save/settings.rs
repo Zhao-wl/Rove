@@ -21,6 +21,7 @@ pub const TRIM_TRAILING_WHITESPACE_IN_REGEX_AND_STRINGS: &str =
 pub const SAVE_CONFLICT_RESOLUTION: &str = "files.saveConflictResolution";
 pub const AUTO_SAVE: &str = "files.autoSave";
 pub const AUTO_SAVE_DELAY: &str = "files.autoSaveDelay";
+pub const MIN_AUTO_SAVE_DELAY: f64 = 0.0;
 pub const AUTO_SAVE_WORKSPACE_FILES_ONLY: &str = "files.autoSaveWorkspaceFilesOnly";
 pub const AUTO_SAVE_WHEN_NO_ERRORS: &str = "files.autoSaveWhenNoErrors";
 
@@ -141,7 +142,7 @@ impl SaveOptions {
             _ => None,
         };
         let delay = match value(AUTO_SAVE_DELAY) {
-            Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
+            Some(Value::Number(n)) if n.is_finite() && n >= MIN_AUTO_SAVE_DELAY => n as u64,
             _ => 1000,
         };
         Self {

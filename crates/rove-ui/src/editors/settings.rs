@@ -5,6 +5,9 @@ use rove_base::{Error, Registry, Resource, Result, Value};
 use rove_config::{DefaultSettings, Key, Scope, Setting, SettingRegistry, Settings};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
+pub(crate) const LARGE_FILE_THRESHOLD: &str = "rove.largeFile.threshold";
+pub(crate) const MIN_LARGE_FILE_THRESHOLD: f64 = 1.0;
+
 pub(crate) const SOURCE: &str = "default";
 pub(crate) const MARKDOWN: &str = "vscode.markdown.preview.editor";
 /// #28：欢迎页的编辑器类型与它的虚拟资源名。
@@ -207,6 +210,10 @@ impl EditorTypes {
 }
 
 /// #28：这是不是欢迎页的虚拟资源。
+pub(crate) fn is_settings_resource(resource: &Resource) -> bool {
+    matches!(resource, Resource::Virtual(id) if id.as_ref() == crate::settings_ui::registry::RESOURCE)
+}
+
 pub(crate) fn is_welcome_resource(resource: &Resource) -> bool {
     matches!(resource, Resource::Virtual(name) if name.as_ref() == WELCOME_RESOURCE)
 }
@@ -357,7 +364,7 @@ pub fn register() -> Result<SettingRegistry> {
             Value::Bool(SizePolicy::default().optimize),
         ),
         (
-            "rove.largeFile.threshold",
+            LARGE_FILE_THRESHOLD,
             Value::Number(SizePolicy::default().huge_bytes as f64),
         ),
     ] {
@@ -453,7 +460,7 @@ impl EditorSettings {
             badges: flag("workbench.editor.decorations.badges")?,
             colors: flag("workbench.editor.decorations.colors")?,
             size: SizePolicy {
-                huge_bytes: number("rove.largeFile.threshold")?.max(1.0) as u64,
+                huge_bytes: number(LARGE_FILE_THRESHOLD)?.max(MIN_LARGE_FILE_THRESHOLD) as u64,
                 optimize: flag("editor.largeFileOptimizations")?,
             },
             explorer_preserve_focus: match flag("explorer.openFilePreserveFocus") {

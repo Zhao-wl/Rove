@@ -21,7 +21,7 @@ pub struct SettingRow {
     pub category: String,
     pub description: String,
     pub choices: Vec<Choice>,
-    pub rove_default: bool,
+    pub rove_default: Option<String>,
     pub language_overridable: bool,
 }
 
@@ -56,7 +56,7 @@ pub fn catalog_rows() -> &'static [SettingRow] {
                     category: metadata["category"].as_str()?.to_owned(),
                     description: metadata["description"].as_str()?.to_owned(),
                     choices,
-                    rove_default: setting.rove_default.is_some(),
+                    rove_default: entry.get("roveDefault").map(ToString::to_string),
                     language_overridable: setting.language_overridable,
                 })
             })
@@ -317,9 +317,15 @@ pub(crate) fn valid_edit(key: &str, value: &Value) -> bool {
     let Value::Number(value) = value else {
         return true;
     };
-    value.is_finite()
-        && crate::code_view::options::number_limits(key)
-            .is_none_or(|(min, max)| (min..=max).contains(value))
+    use crate::editors::settings::{LARGE_FILE_THRESHOLD, MIN_LARGE_FILE_THRESHOLD};
+    use rove_buffer::save::settings::{AUTO_SAVE_DELAY, MIN_AUTO_SAVE_DELAY};
+
+    let limits = match key {
+        LARGE_FILE_THRESHOLD => Some((MIN_LARGE_FILE_THRESHOLD, u64::MAX as f64)),
+        AUTO_SAVE_DELAY => Some((MIN_AUTO_SAVE_DELAY, u64::MAX as f64)),
+        _ => crate::code_view::options::number_limits(key),
+    };
+    value.is_finite() && limits.is_none_or(|(min, max)| (min..=max).contains(value))
 }
 
 #[cfg(test)]
@@ -331,6 +337,10 @@ mod tests {
         assert!(!valid_edit("editor.fontSize", &Value::Number(101.0)));
         assert!(!valid_edit("editor.tabSize", &Value::Number(0.0)));
         assert!(valid_edit("editor.fontSize", &Value::Number(14.5)));
+        assert!(!valid_edit("rove.largeFile.threshold", &Value::Number(0.0)));
+        assert!(valid_edit("rove.largeFile.threshold", &Value::Number(1.0)));
+        assert!(!valid_edit("files.autoSaveDelay", &Value::Number(-1.0)));
+        assert!(valid_edit("files.autoSaveDelay", &Value::Number(0.0)));
     }
 
     #[test]
@@ -349,11 +359,29 @@ mod tests {
             ("window.autoDetectColorScheme", "Auto Detect Color Scheme"),
             ("workbench.startupEditor", "Startup Editor"),
             ("rove.update.mode", "Update Mode"),
+            ("explorer.compactFolders", "Compact Folders"),
+            ("explorer.autoReveal", "Auto Reveal"),
+            ("breadcrumbs.enabled", "Enabled"),
+            ("outline.icons", "Icons"),
+            ("outline.showClasses", "Show Classes"),
+            ("breadcrumbs.showMethods", "Show Methods"),
         ] {
             let row = catalog_rows().iter().find(|row| row.key == key).unwrap();
             assert_eq!(row.title, label);
         }
         let rows = catalog_rows();
+        for (key, default) in [
+            ("files.autoGuessEncoding", "true"),
+            ("files.candidateGuessEncodings", r#"["gbk"]"#),
+            ("markdown.preview.doubleClickToSwitchToEditor", "true"),
+            (
+                "workbench.editorAssociations",
+                r#"{"*.md":"vscode.markdown.preview.editor"}"#,
+            ),
+        ] {
+            let row = rows.iter().find(|row| row.key == key).unwrap();
+            assert_eq!(row.rove_default.as_deref(), Some(default), "{key}");
+        }
         let wrap = rows
             .iter()
             .find(|row| row.key == "editor.wordWrap")

@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 14] {
+fn modules() -> [(&'static str, Register); 16] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -50,19 +50,41 @@ fn modules() -> [(&'static str, Register); 14] {
                 crate::welcome::registry::STARTUP_EDITOR,
                 rove_update::mode::SETTING_KEY,
             ]);
-            for key in consumed {
-                let setting = rove_config::catalog::catalog()
-                    .get(key)
-                    .ok_or(rove_base::Error::NotFound)?;
-                registry.register(key, setting.setting.clone())?;
-            }
-            Ok(())
+            register_catalog_keys(registry, consumed)
+        }),
+        ("explorer", |registry| {
+            register_catalog_keys(
+                registry,
+                crate::explorer::model::SETTING_KEYS.iter().copied(),
+            )
+        }),
+        ("outline", |registry| {
+            use crate::outline::model::{SETTING_KEYS, SHOW_SETTINGS};
+
+            register_catalog_keys(registry, SETTING_KEYS.iter().copied())?;
+            let filters = ["outline", "breadcrumbs"].into_iter().flat_map(|section| {
+                SHOW_SETTINGS.map(move |(_, suffix)| format!("{section}.show{suffix}"))
+            });
+            register_catalog_keys(registry, filters)
         }),
         (
             "settings_ui",
             crate::settings_ui::registry::register_settings,
         ),
     ]
+}
+
+fn register_catalog_keys(
+    registry: &mut SettingRegistry,
+    keys: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<()> {
+    let catalog = rove_config::catalog::catalog();
+    for key in keys {
+        let key = key.as_ref();
+        let setting = catalog.get(key).ok_or(rove_base::Error::NotFound)?;
+        registry.register(key, setting.setting.clone())?;
+    }
+    Ok(())
 }
 
 /// 把 `from` 中尚未登记的键并入 `into`（先登记者胜出）。

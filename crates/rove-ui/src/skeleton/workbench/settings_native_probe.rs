@@ -70,9 +70,8 @@ fn settings_open_in_a_native_window() {
             let _fixture = fixture;
             let executor = cx.background_executor().clone();
             executor.timer(Duration::from_millis(250)).await;
-            let (started, previous_focus) = window
+            let started = window
                 .update(cx, |_, window, cx| {
-                    let previous_focus = window.focused(cx);
                     let started = Instant::now();
                     window.dispatch_action(
                         Box::new(RunCommand {
@@ -81,7 +80,7 @@ fn settings_open_in_a_native_window() {
                         }),
                         cx,
                     );
-                    (started, previous_focus)
+                    started
                 })
                 .expect("dispatch open settings");
             let opened = loop {
@@ -94,10 +93,8 @@ fn settings_open_in_a_native_window() {
                                     if id.as_ref() == crate::settings_ui::registry::RESOURCE)
                             });
                         ready
-                            && window.focused(cx).is_some_and(|focus| {
-                                previous_focus
-                                    .as_ref()
-                                    .is_none_or(|previous| focus != *previous)
+                            && view.settings_view.as_ref().is_some_and(|settings| {
+                                settings.read(cx).search_focus(cx).is_focused(window)
                             })
                     })
                     .expect("read window focus");

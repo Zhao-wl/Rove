@@ -401,7 +401,10 @@ impl EditorService {
         let source = self.focused;
         let target = self.add_group(source, direction)?;
         let id = self.next();
-        if let Some(tab) = self.groups[&source].current() {
+        if let Some(tab) = self.groups[&source]
+            .current()
+            .filter(|tab| !settings::is_settings_resource(&tab.resource))
+        {
             let copy = Tab {
                 id,
                 resource: tab.resource.clone(),
@@ -1146,7 +1149,8 @@ impl EditorService {
                         .as_ref()
                         .is_some_and(|doc| tab.opened().is_some_and(|o| o.document.id == doc.id)))
         };
-        let reveal = self.settings.reveal_if_open && matches!(options.target, OpenTarget::Active);
+        let reveal = settings::is_settings_resource(&resource)
+            || (self.settings.reveal_if_open && matches!(options.target, OpenTarget::Active));
         let group = if reveal {
             self.groups
                 .iter()

@@ -51,6 +51,7 @@ pub struct SettingsView {
     category: Option<Arc<str>>,
     show_categories: bool,
     revision: Version,
+    mutations: async_channel::Sender<rove_base::Task<()>>,
     write_error: Option<String>,
     language_overrides: Arc<BTreeSet<String>>,
     row_editor: Option<RowEditor>,
@@ -177,6 +178,25 @@ impl SettingsView {
         })
         .detach();
 
+        // The settings service performs synchronous file operations when its task is polled.
+        // A single queue keeps edits in user order while the window remains responsive.
+        let (mutations, pending) = async_channel::unbounded::<rove_base::Task<()>>();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            while let Ok(write) = pending.recv().await {
+                let error = background
+                    .spawn(write)
+                    .await
+                    .err()
+                    .map(|error| error.to_string());
+                let _ = this.update(cx, |view, cx| {
+                    view.write_error = error;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
         let mut view = Self {
             settings,
             theme,
@@ -190,6 +210,7 @@ impl SettingsView {
             category: None,
             show_categories: true,
             revision: Version(0),
+            mutations,
             write_error: None,
             language_overrides: Arc::default(),
             row_editor: None,
@@ -201,8 +222,12 @@ impl SettingsView {
         view
     }
 
+    pub(crate) fn search_focus(&self, cx: &App) -> FocusHandle {
+        self.search.focus_handle(cx)
+    }
+
     pub fn focus_search(&self, window: &mut Window, cx: &App) {
-        window.focus(&self.search.focus_handle(cx));
+        window.focus(&self.search_focus(cx));
     }
 
     pub fn navigate(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -343,15 +368,10 @@ impl SettingsView {
 
     fn finish_mutation(&mut self, write: rove_base::Task<()>, cx: &mut Context<Self>) {
         self.write_error = None;
-        cx.spawn(async move |this, cx| {
-            if let Err(error) = write.await {
-                let _ = this.update(cx, |view, cx| {
-                    view.write_error = Some(error.to_string());
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
+        self.mutations
+            .try_send(write)
+            .expect("settings write queue is alive");
+        cx.notify();
     }
 
     pub fn open_key(&self, key: Arc<str>, language: bool, cx: &mut Context<Self>) {
@@ -435,7 +455,7 @@ impl SettingsView {
             .map(|entry| Row {
                 id: ItemId(entry.row.key.as_str().into()),
                 label: entry.row.title.as_str().into(),
-                detail: (entry.row.rove_default
+                detail: (entry.row.rove_default.is_some()
                     || (entry.row.language_overridable && overrides.contains(&entry.row.key)))
                 .then(|| Arc::<str>::from("badges")),
                 depth: 0,
@@ -483,13 +503,15 @@ impl SettingsView {
                         &entry.description,
                         highlight,
                     )));
-                if entry.row.rove_default {
+                if let Some(default) = &entry.row.rove_default {
+                    let label = strings
+                        .text(&Message::key("settings.roveDefault"))
+                        .unwrap_or_default();
                     row = row.child(
-                        div().text_size(px(11.)).child(
-                            strings
-                                .text(&Message::key("settings.roveDefault"))
-                                .unwrap_or_default(),
-                        ),
+                        div()
+                            .text_size(px(11.))
+                            .truncate()
+                            .child(format!("{label} {default}")),
                     );
                 }
 

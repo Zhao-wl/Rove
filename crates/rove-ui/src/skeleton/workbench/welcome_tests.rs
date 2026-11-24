@@ -651,8 +651,13 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     let fx = Fixture::new(source);
     let (workbench, cx) = fx.open(cx);
     let service = fx.service.clone();
-    workbench.update(cx, |_, cx| cx.set_global(SharedSettings(service)));
-    run(&workbench, cx, reg::OPEN_SETTINGS);
+    workbench.update_in(cx, |view, window, cx| {
+        cx.set_global(SharedSettings(service));
+        window.focus(&view.code_view().focus_handle(cx));
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-,");
+    cx.run_until_parked();
     assert!(tabs(&workbench, cx).contains(&Resource::Virtual(settings::RESOURCE.into())));
     workbench.read_with(cx, |view, _| {
         let current = view
@@ -671,13 +676,42 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     });
     assert_eq!(fx.settings_text(), source);
     let editor = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
-    editor.update(cx, |view, cx| {
-        view.set_query_for_test("font size @modified", cx)
+    workbench.update_in(cx, |view, _, _| {
+        view.editor
+            .split(crate::editors::Direction::Right)
+            .expect("open another editor group");
+        assert!(view.editor.active().current().is_none());
     });
+    run(&workbench, cx, reg::OPEN_SETTINGS);
+    assert_eq!(
+        tabs(&workbench, cx)
+            .iter()
+            .filter(|tab| crate::editors::settings::is_settings_resource(tab))
+            .count(),
+        1
+    );
     workbench.update_in(cx, |view, window, cx| {
-        view.settings_command(settings::LIST_FROM_SEARCH_ENTER, window, cx);
-        view.settings_command(settings::CLEAR_SEARCH, window, cx);
+        assert!(crate::editors::settings::is_settings_resource(
+            &view
+                .editor
+                .active()
+                .current()
+                .expect("settings tab")
+                .resource
+        ));
+        assert!(editor.read(cx).search_focus(cx).is_focused(window));
     });
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("font size @modified");
+    cx.simulate_keystrokes("enter");
+    editor.update_in(cx, |view, window, cx| {
+        assert!(!view.search_focus(cx).is_focused(window));
+    });
+    cx.simulate_keystrokes("up");
+    editor.update_in(cx, |view, window, cx| {
+        assert!(view.search_focus(cx).is_focused(window));
+    });
+    cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     editor.update(cx, |view, cx| {
         assert!(view.select_result_for_test("editor.wordWrap", cx));
@@ -743,11 +777,26 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     let after_bool = after_enum.replace(": false", ": true");
     wait_for_text(cx, &after_bool);
 
+    // Queue two edits before the background executor has polled either write.
+    editor.update(cx, |view, cx| {
+        view.write_value("editor.fontSize".into(), Value::Number(17.0), cx);
+        view.write_value("editor.fontSize".into(), Value::Number(18.0), cx);
+    });
+    let first_queued = after_bool.replace(": 16,", ": 17,");
+    let last_queued = after_bool.replace(": 16,", ": 18,");
+    wait_for_text(cx, &last_queued);
+
     let backups: Vec<_> = std::fs::read_dir(fx._app_data.path().join("backup"))
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
         .collect();
-    for prior in [source, after_number.as_str(), after_enum.as_str()] {
+    for prior in [
+        source,
+        after_number.as_str(),
+        after_enum.as_str(),
+        after_bool.as_str(),
+        first_queued.as_str(),
+    ] {
         assert!(backups.iter().any(|backup| backup == prior));
     }
 
