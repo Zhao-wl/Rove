@@ -185,6 +185,7 @@ pub(super) struct WindowBasket {
     pub(super) previews: BTreeMap<u64, BasketPreview>,
     pub(super) revision: u64,
     pub(super) pending_anchors: BTreeMap<u64, u64>,
+    deferred_disk_checks: BTreeSet<rove_base::WorkspacePath>,
     next_read: u64,
     collection_epoch: u64,
     pending_copy: Option<PendingCopy>,
@@ -229,6 +230,7 @@ impl WindowBasket {
             contents: Basket::default(),
             revision: 0,
             pending_anchors: BTreeMap::new(),
+            deferred_disk_checks: BTreeSet::new(),
             next_read: 0,
             collection_epoch: 0,
             pending_copy: None,
@@ -352,12 +354,14 @@ impl Workbench {
             return;
         };
         if self.basket.loaded && self.basket.revision == snapshot.revision {
+            self.recheck_deferred_basket_files(cx);
             self.resume_basket_copy(cx);
             return;
         }
         let first_load = !self.basket.loaded && snapshot.revision == 0;
         if self.basket.collection_epoch != snapshot.collection_epoch {
             self.basket.pending_anchors.clear();
+            self.basket.deferred_disk_checks.clear();
             self.basket.reselect = None;
         } else if !self.basket.pending_anchors.is_empty() {
             let previous: BTreeMap<_, _> = self
@@ -392,6 +396,8 @@ impl Workbench {
         self.basket.loaded = true;
         if first_load {
             self.verify_basket_on_disk(&BTreeSet::new(), true, cx);
+        } else {
+            self.recheck_deferred_basket_files(cx);
         }
         self.resume_basket_copy(cx);
         cx.notify();
@@ -492,6 +498,13 @@ impl Workbench {
         self.verify_basket_on_disk(&refresh, all, cx);
     }
 
+    fn recheck_deferred_basket_files(&mut self, cx: &mut Context<Self>) {
+        let paths = std::mem::take(&mut self.basket.deferred_disk_checks);
+        if !paths.is_empty() {
+            self.verify_basket_on_disk(&paths, false, cx);
+        }
+    }
+
     fn verify_basket_on_disk(
         &mut self,
         refresh: &BTreeSet<rove_base::WorkspacePath>,
@@ -511,25 +524,25 @@ impl Workbench {
         let mut paths = BTreeMap::<_, Vec<_>>::new();
         let shared = self.basket.shared.as_ref().map(|shared| shared.read(cx));
         for entry in self.basket.contents.items() {
-            if entry.anchor.is_none()
-                && shared.is_some_and(|state| {
-                    state
-                        .captures
-                        .get(&entry.id())
-                        .is_some_and(|capture| capture.matches(entry))
-                })
+            if dirty.iter().any(|path| same_path(path, &entry.path))
+                || !(all || refresh.iter().any(|path| same_path(path, &entry.path)))
             {
                 continue;
             }
-            if !dirty.iter().any(|path| same_path(path, &entry.path))
-                && (all || refresh.iter().any(|path| same_path(path, &entry.path)))
-            {
-                paths.entry(entry.path.clone()).or_default().push((
-                    entry.id(),
-                    entry.lines,
-                    entry.anchor,
-                ));
+            if shared.is_some_and(|state| {
+                state
+                    .captures
+                    .get(&entry.id())
+                    .is_some_and(|capture| capture.matches(entry))
+            }) {
+                self.basket.deferred_disk_checks.insert(entry.path.clone());
+                continue;
             }
+            paths.entry(entry.path.clone()).or_default().push((
+                entry.id(),
+                entry.lines,
+                entry.anchor,
+            ));
         }
         if paths.is_empty() {
             return;

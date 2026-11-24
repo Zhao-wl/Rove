@@ -1,7 +1,10 @@
 use super::{LayoutStore, Workbench};
 use crate::{
     code_view::Selection,
-    context_basket::{model::LineRange, registry as reg},
+    context_basket::{
+        model::{Availability, LineRange},
+        registry as reg,
+    },
     documents::OpenOptions,
 };
 use gpui::{Focusable, TestAppContext};
@@ -221,6 +224,29 @@ fn context_basket_can_copy_from_another_window_while_anchors_are_prepared(cx: &m
         });
     });
     assert_shared_capture_copies(cx);
+}
+
+#[gpui::test]
+fn context_basket_rechecks_a_real_disk_change_after_shared_capture(cx: &mut TestAppContext) {
+    let fixture = start_shared_capture(cx);
+    let path = WorkspacePath::new("example.txt").unwrap();
+    std::fs::write(
+        fixture.root.path().join("example.txt"),
+        "new line\nfirst\nselected\nlast\n",
+    )
+    .unwrap();
+    cx.update(|app| {
+        fixture.second.update(app, |view, cx| {
+            view.basket_workspace_files_changed(&[super::FileEvent::Changed(path)], cx);
+            assert!(view.basket.contents.items()[0].anchor.is_none());
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|app| {
+        let entry = &fixture.second.read(app).basket.contents.items()[0];
+        assert_eq!(entry.availability, Availability::Current);
+        assert_eq!(entry.lines, LineRange::new(3, 3).unwrap());
+    });
 }
 
 #[gpui::test]
