@@ -151,7 +151,7 @@ pub fn search<'a>(
             Some((total, result))
         })
         .collect::<Vec<_>>();
-    matches.sort_by(|a, b| b.0.cmp(&a.0));
+    matches.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     matches.into_iter().map(|(_, row)| row).collect()
 }
 
