@@ -138,6 +138,8 @@ mod update_tests;
 // #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）的装配。
 mod image_host;
 mod settings_host;
+#[cfg(all(test, windows))]
+mod settings_native_probe;
 mod welcome_host;
 #[cfg(test)]
 mod welcome_tests;
