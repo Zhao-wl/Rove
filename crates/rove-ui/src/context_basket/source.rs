@@ -1,9 +1,47 @@
 use super::{model::LineRange, tracking::Anchor};
-use rove_base::{Line, Position, Span};
+use rove_base::{Line, Position, Span, WorkspacePath};
 use rove_buffer::{
     edit::{AppliedEdit, Bias},
     TextSource,
 };
+
+use std::{io, path::Path, sync::Arc};
+
+pub fn open_workspace_file(
+    root: &Path,
+    relative: &WorkspacePath,
+    settings: &dyn rove_config::Settings,
+    policy: rove_buffer::SizePolicy,
+) -> rove_base::Result<(Arc<str>, rove_buffer::OpenedFile)> {
+    let mut path = root.to_path_buf();
+    for component in Path::new(relative.as_str()).components() {
+        path.push(component);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if workspace_link(&metadata) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "basket source crosses a link",
+            )
+            .into());
+        }
+    }
+    let language = rove_syntax::highlight::language_for_path(&path, Some(settings));
+    let options = rove_buffer::LoadOptions::new(&language, settings);
+    let opened = rove_buffer::open_file(&path, &options, policy)?;
+    Ok((language, opened))
+}
+
+fn workspace_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
 
 pub fn selection_lines(start: Position, end: Position) -> Option<LineRange> {
     let first = start.line.0 + 1;
@@ -123,6 +161,40 @@ mod tests {
         };
         assert_eq!(selection_lines(start, end), LineRange::new(4, 7));
         assert_eq!(selection_lines(start, start), LineRange::new(4, 4));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn context_basket_workspace_reads_reject_directory_junctions() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("source.txt"), "outside").unwrap();
+        std::fs::write(workspace.path().join("inside.txt"), "inside").unwrap();
+        let link = workspace.path().join("linked");
+        let linked = std::process::Command::new("cmd")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(linked.status.success(), "{:?}", linked);
+        let settings = rove_config::DefaultSettings(Default::default());
+        let open = |path| {
+            open_workspace_file(
+                workspace.path(),
+                &WorkspacePath::new(path).unwrap(),
+                &settings,
+                rove_buffer::SizePolicy::default(),
+            )
+        };
+        assert!(open("inside.txt").is_ok());
+        assert!(matches!(
+            open("linked/source.txt"),
+            Err(rove_base::Error::Io {
+                kind: io::ErrorKind::PermissionDenied,
+                ..
+            })
+        ));
     }
 
     #[test]

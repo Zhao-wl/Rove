@@ -2,6 +2,7 @@ use super::{
     basket_host::BasketCapture, markdown_host::MarkdownSourceSelection, Context, Workbench,
 };
 use crate::{
+    code_view::Selection,
     context_basket::{capture::SourceRange, source},
     lists::ItemId,
 };
@@ -9,10 +10,17 @@ use gpui::{anchored, deferred, div, prelude::*, px, AnyElement, Corner, Pixels, 
 use rove_base::{DocumentId, Resource, Version};
 use std::sync::Arc;
 
+struct EditorSelection {
+    group: crate::documents::EditorGroupId,
+    secondary: bool,
+    document: DocumentId,
+    version: Version,
+    selections: Vec<Selection>,
+}
+
 enum MenuAction {
-    Editor(crate::documents::EditorGroupId, bool),
-    Sources(Vec<BasketCapture>),
-    Markdown(BasketCapture, DocumentId, Version),
+    Editor(EditorSelection),
+    Sources(Vec<BasketCapture>, Option<(DocumentId, Version)>),
 }
 
 pub(super) struct BasketMenu {
@@ -39,10 +47,27 @@ impl Workbench {
         secondary: bool,
         cx: &mut Context<Self>,
     ) {
+        let Some(document) = self.shown_document(group, secondary) else {
+            return;
+        };
+        let Some(editor) = self.group_code(group, secondary) else {
+            return;
+        };
+        let editor = editor.read(cx);
+        let Some(version) = editor.text().map(|text| text.version()) else {
+            return;
+        };
+        let selection = EditorSelection {
+            group,
+            secondary,
+            document: document.id,
+            version,
+            selections: editor.selections(),
+        };
         self.show_basket_menu(
             vec![(
                 "command.rove.contextBasket.add",
-                MenuAction::Editor(group, secondary),
+                MenuAction::Editor(selection),
             )],
             None,
             cx,
@@ -59,11 +84,14 @@ impl Workbench {
         if !primary.is_empty() {
             options.push((
                 "command.rove.contextBasket.add",
-                MenuAction::Sources(primary),
+                MenuAction::Sources(primary, None),
             ));
         }
         if !whole.is_empty() {
-            options.push(("contextBasket.addWholeFile", MenuAction::Sources(whole)));
+            options.push((
+                "contextBasket.addWholeFile",
+                MenuAction::Sources(whole, None),
+            ));
         }
         self.show_basket_menu(options, None, cx);
     }
@@ -95,7 +123,7 @@ impl Workbench {
         self.show_basket_menu(
             vec![(
                 "command.rove.contextBasket.add",
-                MenuAction::Markdown(capture, document, selection.version),
+                MenuAction::Sources(vec![capture], Some((document, selection.version))),
             )],
             Some(selection.anchor),
             cx,
@@ -176,8 +204,17 @@ impl Workbench {
                     symbol: Some(node.symbol.name.to_string()),
                 })
             })
-            .collect();
-        self.show_basket_sources_menu(targets, Vec::new(), cx);
+            .collect::<Vec<_>>();
+        if !targets.is_empty() {
+            self.show_basket_menu(
+                vec![(
+                    "command.rove.contextBasket.add",
+                    MenuAction::Sources(targets, Some((document, doc.text.version()))),
+                )],
+                None,
+                cx,
+            );
+        }
     }
 
     pub(super) fn dismiss_basket_menu(&mut self) -> bool {
@@ -224,18 +261,30 @@ impl Workbench {
                             .take()
                             .and_then(|menu| menu.options.into_iter().nth(index));
                         match action.map(|(_, action)| action) {
-                            Some(MenuAction::Editor(group, secondary)) => {
-                                view.add_basket_editor_pane(group, secondary, cx);
+                            Some(MenuAction::Editor(selection)) => {
+                                let current_doc = view
+                                    .shown_document(selection.group, selection.secondary)
+                                    .is_some_and(|document| document.id == selection.document);
+                                let current_selection = view
+                                    .group_code(selection.group, selection.secondary)
+                                    .is_some_and(|editor| {
+                                        let code = editor.read(cx);
+                                        code.text()
+                                            .is_some_and(|text| text.version() == selection.version)
+                                            && code.selections() == selection.selections
+                                    });
+                                if current_doc && current_selection {
+                                    view.add_basket_editor_pane(
+                                        selection.group,
+                                        selection.secondary,
+                                        cx,
+                                    );
+                                } else {
+                                    view.report_basket("contextBasket.reselect", Arc::from([]), cx);
+                                }
                             }
-                            Some(MenuAction::Sources(targets)) => {
-                                view.add_basket_sources(targets, None, cx);
-                            }
-                            Some(MenuAction::Markdown(capture, document, version)) => {
-                                view.add_basket_sources(
-                                    vec![capture],
-                                    Some((document, version)),
-                                    cx,
-                                );
+                            Some(MenuAction::Sources(targets, document)) => {
+                                view.add_basket_sources(targets, document, cx);
                             }
                             None => {}
                         }

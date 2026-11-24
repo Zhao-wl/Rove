@@ -23,6 +23,8 @@ pub(super) struct WindowBasket {
     pub(super) revision: u64,
     pub(super) pending_anchors: BTreeMap<u64, u64>,
     next_read: u64,
+    next_copy: u64,
+    collection_epoch: u64,
     written: Arc<Mutex<u64>>,
 }
 
@@ -63,6 +65,8 @@ impl WindowBasket {
             revision: 0,
             pending_anchors: BTreeMap::new(),
             next_read: 0,
+            next_copy: 0,
+            collection_epoch: 0,
             written: Arc::default(),
         }
     }
@@ -233,10 +237,7 @@ impl Workbench {
             let policy = rove_buffer::SizePolicy::read(&*settings).unwrap_or_default();
             let mut results = Vec::new();
             for (relative, entries) in paths {
-                let path = root.join(relative.as_str());
-                let language = rove_syntax::highlight::language_for_path(&path, Some(&*settings));
-                let options = rove_buffer::LoadOptions::new(&language, &*settings);
-                let opened = rove_buffer::open_file(&path, &options, policy);
+                let opened = source::open_workspace_file(&root, &relative, &*settings, policy);
                 let missing = matches!(
                     &opened,
                     Err(rove_base::Error::Io {
@@ -244,7 +245,7 @@ impl Workbench {
                         ..
                     })
                 );
-                let text = opened.ok().map(|file| file.text.source());
+                let text = opened.ok().map(|(_, file)| file.text.source());
                 for (id, range, anchor) in entries {
                     let relocated = anchor.and_then(|anchor| {
                         source::relocate_source(text.as_deref()?, range, anchor)
@@ -562,6 +563,7 @@ impl Workbench {
     }
 
     fn clear_basket(&mut self, cx: &mut Context<Self>) {
+        self.basket.collection_epoch += 1;
         self.basket.contents.clear();
         self.basket.pending_anchors.clear();
         self.basket.previews.clear();
@@ -571,6 +573,8 @@ impl Workbench {
 
     fn copy_basket(&mut self, markdown: bool, cx: &mut Context<Self>) {
         use crate::context_basket::{export, registry as reg};
+        self.basket.next_copy += 1;
+        let request = self.basket.next_copy;
         if self.basket.contents.items().is_empty() {
             let key = if self.basket.loaded {
                 "contextBasket.noExportableEntries"
@@ -615,11 +619,8 @@ impl Workbench {
                     continue;
                 }
                 let file = cached.entry(entry.path.clone()).or_insert_with(|| {
-                    let path = root.join(entry.path.as_str());
-                    let language =
-                        rove_syntax::highlight::language_for_path(&path, Some(&*settings));
-                    let options = rove_buffer::LoadOptions::new(&language, &*settings);
-                    let file = rove_buffer::open_file(&path, &options, policy).ok()?;
+                    let (language, file) =
+                        source::open_workspace_file(&root, &entry.path, &*settings, policy).ok()?;
                     Some((language, file.text.source()))
                 });
                 let verified = file.as_ref().and_then(|(language, text)| {
@@ -654,32 +655,46 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {
-                if result.entries == 0 {
-                    view.report_basket("contextBasket.noExportableEntries", Arc::from([]), cx);
-                    return;
-                }
-                let count = result.entries.to_string();
-                let tokens = result.estimated_tokens().to_string();
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(result.text));
-                if clear && view.basket.revision == revision {
-                    view.clear_basket(cx);
-                }
-                let key = if result.used_default_template {
-                    "contextBasket.copiedFallback"
-                } else {
-                    "contextBasket.copied"
-                };
-                view.report_basket(
-                    key,
-                    Arc::from([
-                        ("count".into(), count.into()),
-                        ("tokens".into(), tokens.into()),
-                    ]),
-                    cx,
-                );
+                view.finish_basket_copy(request, revision, clear, result, cx);
             });
         })
         .detach();
+    }
+
+    pub(super) fn finish_basket_copy(
+        &mut self,
+        request: u64,
+        revision: u64,
+        clear: bool,
+        result: crate::context_basket::export::Export,
+        cx: &mut Context<Self>,
+    ) {
+        if self.basket.next_copy != request || self.basket.revision != revision {
+            return;
+        }
+        if result.entries == 0 {
+            self.report_basket("contextBasket.noExportableEntries", Arc::from([]), cx);
+            return;
+        }
+        let count = result.entries.to_string();
+        let tokens = result.estimated_tokens().to_string();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(result.text));
+        if clear {
+            self.clear_basket(cx);
+        }
+        let key = if result.used_default_template {
+            "contextBasket.copiedFallback"
+        } else {
+            "contextBasket.copied"
+        };
+        self.report_basket(
+            key,
+            Arc::from([
+                ("count".into(), count.into()),
+                ("tokens".into(), tokens.into()),
+            ]),
+            cx,
+        );
     }
 }
 
@@ -693,7 +708,7 @@ impl Workbench {
     pub(super) fn add_basket_sources(
         &mut self,
         requests: Vec<BasketCapture>,
-        preview: Option<(rove_base::DocumentId, rove_base::Version)>,
+        expected_document: Option<(rove_base::DocumentId, rove_base::Version)>,
         cx: &mut Context<Self>,
     ) {
         use crate::context_basket::{
@@ -708,7 +723,7 @@ impl Workbench {
             return;
         }
         let mut opened = BTreeMap::new();
-        if let Some((document, version)) = preview {
+        if let Some((document, version)) = expected_document {
             let Some(doc) = self
                 .open_document(document)
                 .filter(|doc| doc.text.version() == version)
@@ -737,6 +752,7 @@ impl Workbench {
                 }
             }
         }
+        let collection_epoch = self.basket.collection_epoch;
         let settings = self.settings.clone();
         let root = self.root.clone();
         let task = cx.background_executor().spawn(async move {
@@ -746,12 +762,9 @@ impl Workbench {
                 let (text, size) = match opened.entry(request.path.clone()) {
                     std::collections::btree_map::Entry::Occupied(value) => value.into_mut(),
                     std::collections::btree_map::Entry::Vacant(value) => {
-                        let path = root.join(request.path.as_str());
-                        let language =
-                            rove_syntax::highlight::language_for_path(&path, Some(&*settings));
-                        let options = rove_buffer::LoadOptions::new(&language, &*settings);
-                        let loaded = rove_buffer::open_file(&path, &options, policy)
-                            .map_err(|_| "contextBasket.sourceUnavailable")?;
+                        let (_, loaded) =
+                            source::open_workspace_file(&root, &request.path, &*settings, policy)
+                                .map_err(|_| "contextBasket.sourceUnavailable")?;
                         value.insert((loaded.text.source(), loaded.metadata.size))
                     }
                 };
@@ -775,7 +788,10 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let prepared = task.await;
             let _ = this.update(cx, |view, cx| {
-                if preview.is_some_and(|(document, version)| {
+                if view.basket.collection_epoch != collection_epoch {
+                    return;
+                }
+                if expected_document.is_some_and(|(document, version)| {
                     view.open_document(document)
                         .is_none_or(|doc| doc.text.version() != version)
                 }) {

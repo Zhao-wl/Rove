@@ -88,6 +88,35 @@ fn context_basket_editor_collects_two_ranges_and_copies_after_verification(
     assert!(!clipboard.contains("ignore"));
 }
 
+#[gpui::test]
+fn context_basket_ignores_superseded_copy_completions(cx: &mut TestAppContext) {
+    use crate::context_basket::export::Export;
+
+    let root = tempfile::tempdir().unwrap();
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx));
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.basket.use_test_state();
+        let revision = view.basket.revision;
+        let result = |text: &str| Export {
+            text: text.to_owned(),
+            entries: 1,
+            ..Export::default()
+        };
+        assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        assert!(view.basket_command(reg::COPY_REFERENCES, cx));
+        view.finish_basket_copy(2, revision, false, result("latest references"), cx);
+        view.finish_basket_copy(1, revision, false, result("old markdown"), cx);
+        assert!(view.basket_command(reg::CLEAR, cx));
+        view.finish_basket_copy(2, revision, false, result("cleared contents"), cx);
+    });
+    assert_eq!(
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+        Some("latest references".to_owned())
+    );
+}
+
 pub(super) fn click_basket_menu(cx: &mut gpui::VisualTestContext, index: usize) {
     cx.run_until_parked();
     cx.update(|window, cx| {
