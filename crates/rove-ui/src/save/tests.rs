@@ -102,6 +102,47 @@ fn save(controller: &mut SaveController, feedback: &mut FeedbackHub) -> Vec<Effe
 }
 
 #[test]
+fn explorer_rename_and_save_share_the_path_until_the_move_completes() {
+    let directory = tempfile::tempdir().unwrap();
+    let old_directory = directory.path().join("Before");
+    let new_directory = directory.path().join("After");
+    std::fs::create_dir(&old_directory).unwrap();
+    let old_file = old_directory.join("Player.cs");
+    let new_file = new_directory.join("Player.cs");
+    std::fs::write(&old_file, "base").unwrap();
+
+    let mut c = controller();
+    let mut feedback = FeedbackHub::default();
+    open(&mut c, &old_file, &TestSettings::new(&[]));
+    type_end(&mut c, " first");
+    let request = Default::default();
+    let options = SaveOptions::default();
+    let now = Instant::now();
+    let job = c
+        .begin_save(DOC, &request, &options, &mut feedback, now)
+        .unwrap();
+    let paths = vec![old_directory.clone(), new_directory.clone()];
+    assert!(c.reserve_file_operation(paths.clone()).is_none());
+    c.complete_save(DOC, job.run(), &mut feedback, now);
+
+    type_end(&mut c, " second");
+    let ticket = c.reserve_file_operation(paths).unwrap();
+    assert!(c
+        .begin_save(DOC, &request, &options, &mut feedback, now)
+        .is_err());
+    std::fs::rename(&old_directory, &new_directory).unwrap();
+    c.complete_file_operation(ticket, &[(old_directory.clone(), new_directory)]);
+    assert_eq!(c.file_mut(DOC).unwrap().path(), Some(new_file.as_path()));
+
+    save(&mut c, &mut feedback);
+    assert!(!old_directory.exists());
+    assert_eq!(
+        std::fs::read_to_string(new_file).unwrap(),
+        "base first second"
+    );
+}
+
+#[test]
 fn conflict_notification_hides_compare_and_both_buttons_work() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Player.cs");

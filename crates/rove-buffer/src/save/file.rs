@@ -277,6 +277,15 @@ impl TextFile {
         self.path.as_deref()
     }
 
+    /// Moves the save target after the workspace watcher reports a successful
+    /// filesystem rename. This is a metadata update and leaves the edit history
+    /// and dirty marker intact.
+    pub fn follow_rename(&mut self, path: PathBuf) {
+        if self.path.is_some() {
+            self.path = Some(path);
+        }
+    }
+
     /// 未命名文档的名字（`Untitled-1`）；有路径的文档为 `None`。
     pub fn untitled_name(&self) -> Option<&str> {
         self.untitled.as_deref()

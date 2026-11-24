@@ -751,7 +751,12 @@ impl Workbench {
         cx.notify();
     }
 
-    fn write_setting(&mut self, key: &'static str, value: Value, cx: &mut Context<Self>) {
+    pub(super) fn write_setting(
+        &mut self,
+        key: &'static str,
+        value: Value,
+        cx: &mut Context<Self>,
+    ) {
         let settings = self.settings.clone();
         let task = settings.write(
             Arc::from(key),

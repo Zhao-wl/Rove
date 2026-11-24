@@ -83,6 +83,7 @@ COMMAND_RULES = [
     (r"^search\.action\.replace|^workbench\.action\.replaceInFiles", IMPL, "P1", "搜索", "全局替换（FEATURES §6）"),
     (r"(SearchEditor|searchEditor)", IMPL, "P2", "搜索", "搜索编辑器（FEATURES §6）"),
     # —— 文件与资源管理器 ——
+    (r"^explorer\.(download|upload)$", NO, "", "文件", "仅用于 Web/远程场景（FEATURES §10）"),
     (r"^workbench\.action\.files\.(save|saveAs|saveAll|saveWithoutFormatting|revert|newUntitledFile|openFile|openFolder|openFileFolder|copyPathOfActiveFile|showActiveFileInExplorer|revealActiveFileInWindows|compareWithSaved|compareFileWith)", IMPL, "P0", "文件", "FEATURES §6"),
     (r"^workbench\.files\.action\.(compareWithSaved|compareFileWith)", IMPL, "P2", "文件", "对比视图（FEATURES §6）"),
     (r"^workbench\.files\.action\.|^explorer\.|^workbench\.view\.explorer|^workbench\.explorer", IMPL, "P0", "文件", "资源管理器（FEATURES §6）"),
@@ -107,7 +108,6 @@ COMMAND_RULES = [
     (r"^(closeBreakpointWidget|editor\.action\.(extensioneditor|submitComment)|workbench\.action\.(browser|addComment|hideComment|editorDictation|issueReporter|openAgentsWindow|openChat|quickchat|files\.openLocalFile|files\.openLocalFolder|closeModalEditor|navigateModalEditor)|insertBestCompletion|toggleExplainMode|toggleQuickDiffWidgetFocus)", NO, "", "调试/终端/SCM/AI/扩展",
      "扩展页、WebView、内置浏览器、评论、听写、问题上报、AI、远程文件对话框、模态编辑器等，均不做"),
     (r"^editor\.action\.webvieweditor\.", IMPL, "P1", "Markdown", "Markdown 预览（WebView2）中的查找（UX_SPEC §4.3）"),
-    (r"^explorer\.(download|upload)", NO, "", "调试/终端/SCM/AI/扩展", "仅用于 Web/远程场景或依赖 AI，不做（FEATURES §10）"),
     (r"^workbench\.action\.(openWorkspaceSettings|openWorkspaceSettingsFile|openFolderSettings)", IMPL, "P2", "设置", "工作区级设置首版不做（P2）"),
     (r"^(goToNextReference|goToPreviousReference|openReferenceToSide|revealReference|togglePeekWidgetFocus)", IMPL, "P0", "导航", "速览窗口内的操作（D3）"),
     (r"^(editor\.action\.showContextMenu|leaveEditorMessage|saveAll|workbench\.action\.(showHover|editor\.changeLanguageMode|joinEditorInGroup))", IMPL, "P0", "编辑器组", ""),

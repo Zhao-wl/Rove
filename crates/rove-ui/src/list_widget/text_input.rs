@@ -89,6 +89,18 @@ impl TextInput {
         cx.notify();
     }
 
+    pub(crate) fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        if self.content.get(range.clone()).is_some() {
+            self.selected = range;
+            self.reversed = false;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn has_composition(&self) -> bool {
+        self.marked.is_some()
+    }
+
     /// Programmatic replacement (no `Changed` event).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = text.to_string();

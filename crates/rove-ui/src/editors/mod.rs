@@ -714,6 +714,64 @@ impl EditorService {
         changed
     }
 
+    /// Changes workspace resources in open tabs and navigation state while
+    /// retaining document identity, live content, selection and scroll state.
+    pub(crate) fn follow_rename(
+        &mut self,
+        map: &impl Fn(&Resource) -> Option<Resource>,
+    ) -> Vec<(Resource, Arc<Document>)> {
+        let mut replacements = BTreeMap::new();
+        let mut reload = Vec::new();
+        let remap = |resource: &mut Resource| {
+            if let Some(target) = map(resource) {
+                *resource = target;
+            }
+        };
+        for (id, group) in &mut self.groups {
+            for tab in &mut group.tabs {
+                if let Some(location) = tab.request.as_mut().and_then(|r| r.from.as_mut()) {
+                    remap(&mut location.resource);
+                }
+                let Some(target) = map(&tab.resource) else {
+                    continue;
+                };
+                tab.resource = target.clone();
+                match &mut tab.content {
+                    Content::Ready(opened) => {
+                        let (_, document) =
+                            replacements.entry(opened.document.id).or_insert_with(|| {
+                                let original = opened.document.resource.clone();
+                                let resource = map(&original).unwrap_or(target);
+                                let document = Arc::new(Document {
+                                    resource,
+                                    ..(*opened.document).clone()
+                                });
+                                (original, document)
+                            });
+                        opened.document = document.clone();
+                    }
+                    Content::Loading | Content::Failed(_) => reload.push((*id, tab.id)),
+                }
+            }
+            for (resource, _, _) in &mut group.saved {
+                remap(resource);
+            }
+        }
+        for location in &mut self.history.entries {
+            remap(&mut location.resource);
+        }
+        if let Some(location) = &mut self.last_location {
+            remap(&mut location.resource);
+        }
+        for (_, resource, _) in &mut self.closed {
+            remap(resource);
+        }
+        for (group, tab) in reload {
+            self.retry(group, tab);
+        }
+        replacements.into_values().collect()
+    }
+
     /// #47：编辑后的新快照换进所有显示该文档的标签（文档身份不变，语法旧结果保留到新结果到达），
     /// 并按增量编辑在后台重新分析。返回是否有标签显示它。
     pub(crate) fn replace_document(

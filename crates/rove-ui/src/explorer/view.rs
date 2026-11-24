@@ -42,10 +42,26 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 use super::branch_history::{Change, Changes};
 #[path = "branch_view.rs"]
 mod branch_view;
+mod file_menu;
+mod name_edit;
 
 /// 行高（与 #2 骨架一致；缩放由窗口整体处理）。
 pub const ROW_HEIGHT: f32 = 24.0;
 const ICON: f32 = 16.0;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExplorerUndo {
+    Created {
+        path: WorkspacePath,
+        stamp: rove_workspace::file_operations::EntryStamp,
+        directory: bool,
+    },
+    Renamed {
+        source: WorkspacePath,
+        target: WorkspacePath,
+        stamp: rove_workspace::file_operations::EntryStamp,
+    },
+}
 
 /// 资源管理器对宿主的请求。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +77,11 @@ pub enum ExplorerEvent {
     /// 空状态按钮的命令 ID（`workbench.action.files.openFolder`）。
     Command(Arc<str>),
     FileContext(Vec<WorkspacePath>),
+    UndoRecorded(Vec<ExplorerUndo>),
+    MoveDropped {
+        paths: Vec<WorkspacePath>,
+        parent: Option<WorkspacePath>,
+    },
 }
 
 /// 没有打开文件夹时的空树。
@@ -75,6 +96,8 @@ impl TreeSource for NoFolder {
 struct RenderState {
     file_icons: FileIcons,
     theme_kind: ThemeKind,
+    name_edit: Option<name_edit::NameEdit>,
+    cut_paths: std::collections::BTreeSet<String>,
     changes: Changes,
     providers: Vec<Arc<dyn DecorationProvider>>,
     badges: bool,
@@ -85,6 +108,18 @@ struct RenderState {
 
 pub struct ExplorerView {
     branch_filter: branch_view::Filter,
+    operations_folder: Option<Arc<rove_workspace::Folder>>,
+    operation_saves: Option<(
+        std::path::PathBuf,
+        Rc<RefCell<crate::save::controller::SaveController>>,
+    )>,
+    files_enable_trash: bool,
+    drag_enabled: bool,
+    auto_open_dropped: bool,
+    menu_open: bool,
+    menu_anchor: Option<gpui::Point<gpui::Pixels>>,
+    theme_for_name_edit: Arc<dyn Theme>,
+    rename_or_create_reveal: Option<WorkspacePath>,
     list: Entity<ListView>,
     render: Rc<RefCell<RenderState>>,
     source: Option<Arc<ExplorerSource>>,
@@ -125,6 +160,12 @@ pub fn file_icon(name: &str) -> &'static str {
     }
 }
 
+fn explorer_flag(settings: &dyn Settings, id: &'static str) -> bool {
+    rove_config::Key::<bool>::new(id)
+        .read(settings, &rove_config::Scope::default())
+        .unwrap_or(true)
+}
+
 fn color_of(theme: &dyn Theme, key: &str) -> Option<Hsla> {
     theme.color(key).ok().flatten().map(hsla)
 }
@@ -137,6 +178,13 @@ fn row_renderer(state: Rc<RefCell<RenderState>>, theme: Arc<dyn Theme>) -> RowRe
         }
         let row = ctx.row;
         let state = state.borrow();
+        if let Some(element) = state
+            .name_edit
+            .as_ref()
+            .and_then(|edit| edit.row(&row.id, &*theme, ctx.strings))
+        {
+            return element;
+        }
         // 读取失败的提示行：一句话原因，不是文件。
         if is_error_id(&row.id.0) {
             return div()
@@ -159,6 +207,11 @@ fn row_renderer(state: Rc<RefCell<RenderState>>, theme: Arc<dyn Theme>) -> RowRe
             .last()
             .and_then(|p| WorkspacePath::new(p).ok())
             .and_then(|p| decorate(&state.providers, &p, is_dir));
+        let cut_color = paths
+            .iter()
+            .any(|path| state.cut_paths.contains(&rove_workspace::fold_key(path)))
+            .then(|| color_of(&*theme, "list.deemphasizedForeground"))
+            .flatten();
         let name_color = decoration
             .and_then(|d| d.color)
             .filter(|_| state.colors)
@@ -253,7 +306,7 @@ fn row_renderer(state: Rc<RefCell<RenderState>>, theme: Arc<dyn Theme>) -> RowRe
         } else {
             label = label.child(highlighted_label(ctx));
         }
-        if let Some(color) = name_color {
+        if let Some(color) = cut_color.or(name_color) {
             label = label.text_color(color);
         }
         left = left.child(label);
@@ -303,6 +356,8 @@ impl ExplorerView {
     ) -> Self {
         let explorer = ExplorerSettings::read(settings);
         let render = Rc::new(RefCell::new(RenderState {
+            name_edit: None,
+            cut_paths: std::collections::BTreeSet::new(),
             changes: Changes::new(),
             file_icons: FileIcons::default(),
             theme_kind: ThemeKind::Dark,
@@ -312,7 +367,10 @@ impl ExplorerView {
             segment: None,
         }));
         let options = ListOptions::read(settings);
+        let drag_enabled = cfg!(windows) && explorer_flag(settings, "explorer.enableDragAndDrop");
+        let auto_open_dropped = explorer_flag(settings, "explorer.autoOpenDroppedFile");
         let renderer = row_renderer(render.clone(), theme.clone());
+        let theme_for_name_edit = theme.clone();
         let list = cx.new(|cx| {
             let widget = ListWidget::tree(
                 TreeModel::new(Arc::new(NoFolder)),
@@ -321,20 +379,37 @@ impl ExplorerView {
             );
             let mut view = ListView::new(widget, theme, strings.clone(), cx);
             view.set_renderer(renderer);
+            view.drag_and_drop = drag_enabled;
             view
         });
         let subscriptions = vec![
             cx.subscribe(&list, |this, _, event: &ListEvent, cx| {
                 this.list_event(event, cx)
             }),
-            cx.subscribe(&list, |_, _, event: &ListViewEvent, cx| {
-                if let ListViewEvent::EmptyAction(command) = event {
-                    cx.emit(ExplorerEvent::Command(command.clone()));
+            cx.subscribe(&list, |this, _, event: &ListViewEvent, cx| match event {
+                ListViewEvent::EmptyAction(command) => {
+                    cx.emit(ExplorerEvent::Command(command.clone()))
                 }
+                ListViewEvent::Drop {
+                    items,
+                    target,
+                    position,
+                } => this.file_drop(items, target.as_ref(), *position, cx),
             }),
         ];
         let mut view = Self {
             branch_filter: branch_view::Filter::new(cx),
+            operations_folder: None,
+            operation_saves: None,
+            files_enable_trash: rove_config::Key::<bool>::new("files.enableTrash")
+                .read(settings, &rove_config::Scope::default())
+                .unwrap_or(true),
+            theme_for_name_edit,
+            drag_enabled,
+            auto_open_dropped,
+            menu_open: false,
+            menu_anchor: None,
+            rename_or_create_reveal: None,
             list,
             render,
             source: None,
@@ -469,6 +544,11 @@ impl ExplorerView {
     }
 
     pub fn reload_settings(&mut self, settings: &dyn Settings, cx: &mut Context<Self>) {
+        self.files_enable_trash = rove_config::Key::<bool>::new("files.enableTrash")
+            .read(settings, &rove_config::Scope::default())
+            .unwrap_or(true);
+        self.drag_enabled = cfg!(windows) && explorer_flag(settings, "explorer.enableDragAndDrop");
+        self.auto_open_dropped = explorer_flag(settings, "explorer.autoOpenDroppedFile");
         let new = ExplorerSettings::read(settings);
         let rebuild = new.compact_folders != self.settings.compact_folders
             || new.sort != self.settings.sort
@@ -481,8 +561,10 @@ impl ExplorerView {
         }
         self.settings = new;
         let options = ListOptions::read(settings);
-        self.list
-            .update(cx, |list, cx| list.set_options(options, cx));
+        self.list.update(cx, |list, cx| {
+            list.drag_and_drop = self.drag_enabled;
+            list.set_options(options, cx);
+        });
         if rebuild {
             let workspace = self.workspace.clone();
             self.set_workspace(workspace, cx);
@@ -493,7 +575,10 @@ impl ExplorerView {
     /// 这批设置键里有没有资源管理器关心的。
     pub fn cares_about(keys: &std::collections::BTreeSet<Arc<str>>) -> bool {
         keys.iter().any(|k| {
-            SETTING_KEYS.contains(&&**k)
+            matches!(
+                k.as_ref(),
+                "files.enableTrash" | "explorer.enableDragAndDrop" | "explorer.autoOpenDroppedFile"
+            ) || SETTING_KEYS.contains(&&**k)
                 || k.starts_with("workbench.list.")
                 || k.starts_with("workbench.tree.")
         })
@@ -528,6 +613,7 @@ impl ExplorerView {
                 });
             }
         }
+        self.restore_name_slots(cx);
         cx.notify();
     }
 
@@ -710,6 +796,7 @@ impl ExplorerView {
                     }
                 }
             }
+            ListEvent::ContextMenu(_) => self.open_file_menu(cx),
             // 焦点换到另一行：紧凑文件夹从最后一段开始（与 VS Code 一致）。
             ListEvent::FocusChanged(_) => {
                 self.segment = None;
@@ -722,6 +809,16 @@ impl ExplorerView {
     /// 命令（键位服务分发的 action，或宿主转发）。
     pub fn command(&mut self, id: &str, cx: &mut Context<Self>) {
         match id {
+            registry::REFRESH_FILES | registry::DELETE_FILE | registry::MOVE_TO_TRASH => {
+                cx.emit(ExplorerEvent::Command(Arc::from(id)));
+            }
+            registry::COPY_PATH
+            | registry::COPY_RELATIVE_PATH
+            | registry::COPY_ACTIVE_PATH
+            | registry::REVEAL_PATH
+            | registry::REVEAL_ACTIVE_PATH => {
+                cx.emit(ExplorerEvent::Command(Arc::from(id)));
+            }
             registry::OPEN_AND_PASS_FOCUS => self.open_focused(false, true, false, cx),
             registry::OPEN_TO_SIDE => self.open_focused(false, true, true, cx),
             registry::OPEN_PRESERVE_FOCUS => self.open_focused(true, false, false, cx),
@@ -781,6 +878,9 @@ impl ExplorerView {
         k.add(ck::FILES_EXPLORER_FOCUS);
         k.add(ck::VIEWLET_FOCUS);
         k.add(ck::FOLDERS_VIEW_VISIBLE);
+        if !self.render.borrow().cut_paths.is_empty() {
+            k.add(ck::RESOURCE_CUT);
+        }
         // 单文件夹工作区不显示根行，所以 `explorerResourceIsRoot` 恒为 false（不加入上下文）。
         if let Some(row) = self.focused_row(cx) {
             if row.expandable {
@@ -804,6 +904,8 @@ impl ExplorerView {
                 .is_some_and(|rules| !rules.read_only.is_empty());
             if readonly {
                 k.add(ck::RESOURCE_READONLY);
+            } else if cfg!(windows) && self.files_enable_trash && self.focused_path(cx).is_some() {
+                k.add(ck::RESOURCE_TRASHABLE);
             }
         }
         k
@@ -817,7 +919,7 @@ impl Focusable for ExplorerView {
 }
 
 impl Render for ExplorerView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(id) = self.pending_reveal.take() {
             let ready = self.list.update(cx, |list, _| {
                 let at = list.widget.tree_model().and_then(|t| t.index_of(&id));
@@ -840,14 +942,48 @@ impl Render for ExplorerView {
             .iter()
             .any(|path| self.render.borrow().changes.get(path) == Some(&Change::Deleted));
         let status = self.branch_summary();
+        let menu = self.menu(window, cx);
         div()
             .size_full()
             .flex()
             .flex_col()
             .key_context(context)
+            .on_action(cx.listener(|this, action: &ExplorerAction, window, cx| {
+                if registry::is_clipboard_command(action.0) {
+                    cx.propagate();
+                } else if registry::is_name_command(action.0) {
+                    this.name_command(action.0, window, cx);
+                } else {
+                    this.command(action.0, cx);
+                }
+            }))
             .on_action(
-                cx.listener(|this, action: &ExplorerAction, _, cx| this.command(action.0, cx)),
+                cx.listener(|this, _: &crate::code_view::commands::EditUndo, _, cx| {
+                    if this.render.borrow().name_edit.is_some() {
+                        cx.propagate();
+                    } else {
+                        cx.emit(ExplorerEvent::Command(Arc::from(
+                            registry::UNDO_FILE_OPERATION,
+                        )));
+                    }
+                }),
             )
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.menu_open && event.keystroke.key == "escape" {
+                    this.dismiss_file_menu(cx);
+                    cx.stop_propagation();
+                } else {
+                    this.name_input_key(event, window, cx);
+                }
+            }))
+            .on_drop(cx.listener(|this, _: &gpui::ExternalPaths, _, cx| {
+                if !this.auto_open_dropped {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .children(menu)
             .children(status.map(|(label, count)| {
                 div()
                     .flex()

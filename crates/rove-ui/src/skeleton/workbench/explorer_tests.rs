@@ -789,3 +789,169 @@ fn context_basket_explorer_context_collects_multiple_entire_files(cx: &mut TestA
         );
     });
 }
+
+#[cfg(windows)]
+#[gpui::test]
+fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete": true, "explorer.copyRelativePathSeparator": "/"}"#,
+        &["Seed.txt"],
+    );
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(ExplorerAction(registry::NEW_FILE)), cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_input("Src/Foo.cs");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "new file added by the watcher", |rows| {
+        rows.iter().any(|row| row.trim() == "Foo.cs")
+    });
+    assert!(fixture.path("Src/Foo.cs").is_file());
+    let document = view.read_with(cx, |v, _| {
+        v.editor
+            .active()
+            .current()
+            .unwrap()
+            .opened()
+            .unwrap()
+            .document
+            .id
+    });
+
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| {
+        window.focus(&code.read(cx).focus_handle(cx));
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_input("edited");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.editor.active().current().unwrap().dirty));
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim() == "Foo.cs")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("foo");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "case-only rename from F2", |rows| {
+        rows.iter().any(|row| row.trim() == "foo.cs")
+    });
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(
+            tab.resource,
+            Resource::Workspace(WorkspacePath::new("Src/foo.cs").unwrap())
+        );
+        assert_eq!(tab.opened().unwrap().document.id, document);
+        assert!(tab.dirty);
+        assert_eq!(
+            v.editing.saves.borrow().file(document).unwrap().path(),
+            Some(fixture.path("Src/foo.cs").as_path())
+        );
+    });
+
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(ExplorerAction(registry::COPY_RELATIVE_PATH)), cx);
+    });
+    cx.run_until_parked();
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("Src/foo.cs"));
+
+    cx.update(|window, cx| {
+        window.focus(&code.read(cx).focus_handle(cx));
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-s");
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Src/foo.cs")).unwrap(),
+        "edited"
+    );
+}
+
+#[gpui::test]
+fn explorer_permanent_delete_requires_confirmation_even_when_recycle_prompt_is_off(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(
+        r#"{"files.enableTrash": false, "explorer.confirmDelete": false}"#,
+        &["Delete.txt"],
+    );
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("shift-delete");
+    cx.run_until_parked();
+    assert!(fixture.path("Delete.txt").exists());
+    let key = view.read_with(cx, |v, _| {
+        let modal = v.shell.feedback.modal().expect("permanent confirmation");
+        assert_eq!(modal.message.key.as_ref(), "explorer.delete.permanent");
+        assert!(modal.checkbox.is_none());
+        modal.key.clone()
+    });
+    view.update(cx, |v, _| {
+        v.shell
+            .feedback
+            .act(&key, registry::FILE_OP_CONFIRM)
+            .unwrap()
+    });
+    wait_until(&view, cx, "confirmed deletion reaches the tree", |rows| {
+        rows.is_empty()
+    });
+    assert!(!fixture.path("Delete.txt").exists());
+}
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_create_rename_recycle_then_undo_through_the_workbench(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"explorer.confirmDelete": false}"#, &["Seed.txt"]);
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(ExplorerAction(registry::NEW_FILE)), cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_input("Created.txt");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "created entry", |rows| {
+        rows.iter().any(|row| row == "Created.txt")
+    });
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row == "Created.txt")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "renamed entry", |rows| {
+        rows.iter().any(|row| row == "Renamed.txt")
+    });
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row == "Renamed.txt")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("delete");
+    wait_until(&view, cx, "recycled entry", |rows| rows == ["Seed.txt"]);
+    assert!(!fixture.path("Renamed.txt").exists());
+    view.read_with(cx, |v, _| assert!(v.shell.feedback.modal().is_none()));
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(&view, cx, "restored by undo", |rows| {
+        rows.iter().any(|row| row == "Renamed.txt")
+    });
+    assert!(fixture.path("Renamed.txt").is_file());
+}

@@ -2932,7 +2932,41 @@ fn render_modal<T: ShellHost>(
         window.defer(cx, move |window, _| window.focus(&handle));
     }
     let mut buttons = div().flex().flex_row().justify_end().gap(shell.z(8.0));
-    for (i, action) in modal.actions.iter().enumerate() {
+    let checkbox = modal.checkbox.as_ref().map(|checkbox| {
+        let key = modal.key.clone();
+        let foreground = p.or("notifications.foreground", "sideBar.foreground");
+        let icon = checkbox
+            .checked
+            .then(|| crate::outline::view::codicon("check", shell.z(12.0), Some(foreground)));
+        div()
+            .id("modal-option")
+            .flex()
+            .items_center()
+            .gap(shell.z(7.0))
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(shell.z(16.0))
+                    .border_1()
+                    .border_color(p.or("notifications.border", "panel.border"))
+                    .children(icon),
+            )
+            .child(text(host, &checkbox.label))
+            .on_click(cx.listener(move |host: &mut T, _, _, cx| {
+                host.shell_mut().feedback.toggle_modal_checkbox(&key);
+                cx.notify();
+            }))
+    });
+    let actions = modal.actions.iter().filter(|action| {
+        modal
+            .checkbox
+            .as_ref()
+            .is_none_or(|checkbox| checkbox.alternate_action != action.id)
+    });
+    for (i, action) in actions.enumerate() {
         let (key, id) = (modal.key.clone(), action.id.clone());
         buttons = buttons.child(
             div()
@@ -2988,6 +3022,7 @@ fn render_modal<T: ShellHost>(
                             &[],
                         )))
                         .child(text(host, &modal.message))
+                        .children(checkbox)
                         .child(buttons),
                 ),
         )
