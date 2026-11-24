@@ -1,0 +1,604 @@
+//! #62：替换命令经过真实工作台和搜索视图。所有写入发生在测试工作区副本。
+use super::*;
+use crate::search::registry as commands;
+use gpui::{TestAppContext, VisualTestContext};
+use rove_config::{SettingsOptions, SettingsService};
+
+struct Fixture {
+    folder: tempfile::TempDir,
+    user: tempfile::TempDir,
+}
+
+impl Fixture {
+    fn new(settings: &str) -> Self {
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(user.path().join("settings.json"), settings).unwrap();
+        Self {
+            folder: tempfile::tempdir().unwrap(),
+            user,
+        }
+    }
+
+    fn file(&self, rel: &str, contents: &[u8]) {
+        let path = self.folder.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn read(&self, rel: &str) -> Vec<u8> {
+        std::fs::read(self.folder.path().join(rel)).unwrap()
+    }
+
+    fn open<'a>(
+        &self,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+        let mut options = SettingsOptions::new(self.user.path(), self.user.path().join("backup"));
+        options.watch = None;
+        let settings = Arc::new(SettingsService::open(
+            options,
+            crate::app_settings::registry().unwrap(),
+        ));
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            Workbench::with_settings(
+                self.folder.path().to_owned(),
+                Instant::now(),
+                LayoutStore::disabled(),
+                settings,
+                cx,
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.focus(&view.read(cx).focus));
+        (view, cx)
+    }
+}
+
+#[track_caller]
+fn wait(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    ready: impl Fn(&Workbench, &App) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() <= deadline {
+        cx.run_until_parked();
+        if view.read_with(cx, |wb, cx| ready(wb, cx)) {
+            return;
+        }
+        cx.executor().advance_clock(Duration::from_millis(25));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    panic!("等待全局替换条件超时");
+}
+
+fn prepare(view: &Entity<Workbench>, cx: &mut VisualTestContext, query: &str, replacement: &str) {
+    cx.simulate_keystrokes("ctrl-shift-h");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let search = view.read(cx).search.clone();
+        assert!(search.read(cx).replacement_test_state().0);
+        assert!(search
+            .read(cx)
+            .replace_input
+            .focus_handle(cx)
+            .is_focused(window));
+        search.update(cx, |search, cx| {
+            search
+                .replace_input
+                .update(cx, |input, cx| input.set_text(replacement, cx));
+            search.set_query(query, cx);
+        });
+        window.refresh();
+    });
+    wait(view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+}
+
+fn command(view: &Entity<Workbench>, cx: &mut VisualTestContext, id: &'static str) {
+    cx.update(|window, cx| {
+        view.update(cx, |wb, cx| {
+            wb.search_command(&commands::SearchAction(id), window, cx)
+        });
+    });
+    cx.run_until_parked();
+}
+
+fn focus_file(view: &Entity<Workbench>, cx: &mut VisualTestContext, path: &WorkspacePath) {
+    cx.update(|_, cx| {
+        let search = view.read(cx).search.read(cx);
+        let row = search.rows().file_row(path).unwrap();
+        search.list.clone().update(cx, |list, cx| {
+            list.widget.set_focus(Some(row));
+            cx.notify();
+        });
+    });
+}
+
+#[gpui::test]
+fn replace_workspace_batch_undo_restores_bytes_and_keeps_open_buffer_dirty(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(r#"{"files.autoGuessEncoding": true}"#);
+    let mut originals = BTreeMap::new();
+    for i in 0..10 {
+        let (path, data) = match i {
+            0 => (
+                "0.txt".to_string(),
+                b"\xef\xbb\xbfneedle\r\nkeep\n".to_vec(),
+            ),
+            1 => {
+                let (gbk, _, errors) =
+                    encoding_rs::GBK.encode("全局替换的编码保留测试样本\r\nneedle\r\n保留原始中文");
+                assert!(!errors);
+                ("1.txt".to_string(), gbk.into_owned())
+            }
+            _ => (
+                format!("{i}.txt"),
+                format!("content\rneedle\nkeep {i}\r\n").into_bytes(),
+            ),
+        };
+        fixture.file(&path, &data);
+        originals.insert(path, data);
+    }
+    fixture.file("dirty.txt", b"needle\r\nkeep\n");
+    fixture.file("omitted.txt", b"needle");
+    let (view, cx) = fixture.open(cx);
+    let path = fixture.folder.path().join("dirty.txt");
+    view.update(cx, |wb, cx| {
+        wb.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new("dirty.txt").unwrap()),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    wait(&view, cx, |wb, _| {
+        wb.editing.saves.borrow().document_for(&path).is_some()
+    });
+    let document = view.read_with(cx, |wb, _| {
+        wb.editing.saves.borrow().document_for(&path).unwrap()
+    });
+    view.update(cx, |wb, cx| {
+        {
+            let mut saves = wb.editing.saves.borrow_mut();
+            let file = saves.file_mut(document).unwrap();
+            let offset = rove_base::ByteOffset(0);
+            file.session_mut()
+                .edit(
+                    rove_buffer::edit::Transaction::single(
+                        rove_base::ByteRange::new(offset, offset).unwrap(),
+                        "unsaved\r\n",
+                    ),
+                    Instant::now(),
+                )
+                .unwrap();
+        }
+        wb.sync_document_from_session(document, cx);
+    });
+    prepare(&view, cx, "needle", "REPLACED");
+    view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        assert!(search.replacement_test_state().2);
+        for file in originals.keys() {
+            let path = WorkspacePath::new(file).unwrap();
+            assert_eq!(
+                search.replacement_test_comparison(&path),
+                Some(("needle".to_owned(), "REPLACED".to_owned())),
+                "{file}"
+            );
+        }
+    });
+    let omitted = WorkspacePath::new("omitted.txt").unwrap();
+    focus_file(&view, cx, &omitted);
+    command(&view, cx, commands::REMOVE);
+    wait(&view, cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        search.results().file(&omitted).is_none() && search.replacement_test_state().1
+    });
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    for (path, before) in &originals {
+        let index = before
+            .windows(6)
+            .position(|word| word == b"needle")
+            .unwrap();
+        let expected = [&before[..index], b"REPLACED", &before[index + 6..]].concat();
+        assert_eq!(fixture.read(path), expected, "{path}");
+    }
+    assert_eq!(fixture.read("dirty.txt"), b"needle\r\nkeep\n");
+    assert_eq!(fixture.read("omitted.txt"), b"needle");
+    view.read_with(cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        let file = saves.file(document).unwrap();
+        assert!(file.is_dirty());
+        assert_eq!(file.session().contents(), "unsaved\r\nREPLACED\r\nkeep\n");
+    });
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+    });
+    for (path, before) in &originals {
+        assert_eq!(&fixture.read(path), before, "{path}");
+    }
+    view.read_with(cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        let file = saves.file(document).unwrap();
+        assert!(file.is_dirty());
+        assert_eq!(file.session().contents(), "unsaved\r\nneedle\r\nkeep\n");
+    });
+}
+
+#[gpui::test]
+fn replace_workspace_selection_file_folder_and_cancel_widget(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"search.useReplacePreview": false}"#);
+    fixture.file("folder/first.txt", b"needle needle");
+    fixture.file("folder/second.txt", b"needle");
+    fixture.file("other.txt", b"needle");
+    let (view, cx) = fixture.open(cx);
+    prepare(&view, cx, "needle", "NEW");
+    assert!(!view.read_with(cx, |wb, cx| wb.search.read(cx).replacement_test_state().2));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        !search.replacement_test_state().0 && search.results().match_count() == 4
+    }));
+    command(&view, cx, commands::REPLACE_IN_FILES);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+    let set_focus = |view: &Entity<Workbench>, cx: &mut VisualTestContext, line: bool| {
+        cx.update(|_, cx| {
+            let search = view.read(cx).search.clone();
+            let search = search.read(cx);
+            let path = WorkspacePath::new("folder/first.txt").unwrap();
+            let index = search.rows().file_row(&path).unwrap() + usize::from(line);
+            search.list.clone().update(cx, |list, cx| {
+                list.widget.set_focus(Some(index));
+                cx.notify();
+            });
+        });
+    };
+    set_focus(&view, cx, true);
+    command(&view, cx, commands::REPLACE_MATCH);
+    wait(&view, cx, |_, _| {
+        fixture.read("folder/first.txt") == b"NEW needle"
+    });
+    command(&view, cx, commands::REFRESH);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+    set_focus(&view, cx, false);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |_, _| {
+        fixture.read("folder/first.txt") == b"NEW NEW"
+    });
+    command(&view, cx, commands::REFRESH);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+    cx.update(|_, cx| {
+        let search = view.read(cx).search.clone();
+        let search = search.read(cx);
+        let path = WorkspacePath::new("folder/second.txt").unwrap();
+        let index = search.rows().file_row(&path).unwrap();
+        search.list.clone().update(cx, |list, cx| {
+            list.widget.set_focus(Some(index));
+            cx.notify();
+        });
+    });
+    command(&view, cx, commands::REPLACE_FOLDER);
+    wait(&view, cx, |_, _| {
+        fixture.read("folder/second.txt") == b"NEW"
+    });
+    assert_eq!(fixture.read("other.txt"), b"needle");
+}
+
+#[cfg(windows)]
+fn lock_in_child(first: &std::path::Path, second: &std::path::Path) -> std::process::Child {
+    use std::{
+        io::{BufRead, BufReader},
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+    };
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$first = [IO.File]::Open($env:ROVE_REPLACE_LOCK_FIRST, 'Open', 'Read', 'None')
+try {
+    $second = [IO.File]::Open($env:ROVE_REPLACE_LOCK_SECOND, 'Open', 'Read', 'None')
+    try {
+        [Console]::WriteLine('locked')
+        [void][Console]::ReadLine()
+    } finally {
+        $second.Dispose()
+    }
+} finally {
+    $first.Dispose()
+}
+"#;
+    let mut child = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", script])
+        .env("ROVE_REPLACE_LOCK_FIRST", first)
+        .env("ROVE_REPLACE_LOCK_SECOND", second)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "locked");
+    child
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn replace_workspace_skips_protected_and_keeps_locked_failure_in_results(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"rove.largeFile.threshold": 128}"#);
+    fixture.file("free.txt", b"needle");
+    fixture.file("locked.txt", b"needle");
+    fixture.file("locked-again.txt", b"needle");
+    fixture.file("Library/PackageCache/package/read-only.txt", b"needle");
+    let huge = [b"needle\n".as_slice(), &[b'a'; 200]].concat();
+    fixture.file("huge.txt", &huge);
+    let (view, cx) = fixture.open(cx);
+    view.update(cx, |wb, cx| {
+        wb.search
+            .update(cx, |search, _| search.toggles.use_exclude_settings = false);
+    });
+    prepare(&view, cx, "needle", "NEW");
+    let skipped = ["Library/PackageCache/package/read-only.txt", "huge.txt"]
+        .map(|path| WorkspacePath::new(path).unwrap());
+    for path in &skipped {
+        focus_file(&view, cx, path);
+        cx.update(|window, cx| {
+            let search = view.read(cx).search.read(cx);
+            assert!(!search.replacement_test_editable(window, cx));
+            assert_eq!(
+                search.replacement_test_comparison(path),
+                Some(("needle".to_owned(), "NEW".to_owned())),
+                "{path:?}"
+            );
+        });
+    }
+    let mut lock = lock_in_child(
+        &fixture.folder.path().join("locked.txt"),
+        &fixture.folder.path().join("locked-again.txt"),
+    );
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    assert_eq!(fixture.read("free.txt"), b"NEW");
+    drop(lock.stdin.take());
+    assert!(lock.wait().unwrap().success());
+    assert_eq!(fixture.read("locked.txt"), b"needle");
+    assert_eq!(fixture.read("locked-again.txt"), b"needle");
+    assert_eq!(
+        fixture.read("Library/PackageCache/package/read-only.txt"),
+        b"needle"
+    );
+    assert_eq!(fixture.read("huge.txt"), huge);
+    view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        let result = search.results();
+        assert!(result
+            .file(&WorkspacePath::new("locked.txt").unwrap())
+            .is_some());
+        assert!(result
+            .file(&WorkspacePath::new("locked-again.txt").unwrap())
+            .is_some());
+        let report = search.replacement_test_report().unwrap();
+        assert_eq!(report.skipped.len(), skipped.len());
+        assert!(skipped.iter().all(|path| report.skipped.contains(path)));
+        let notes = wb.shell.feedback.notifications();
+        let mut busy = notes
+            .iter()
+            .filter(|notice| notice.key.as_ref() == "search.replace.busyFiles");
+        let notice = busy.next().expect("应汇总报告被占用的文件");
+        assert_eq!(notice.count, 1);
+        assert!(notice.message.args.iter().any(|(key, value)| {
+            key.as_ref() == "paths"
+                && value.contains("locked.txt")
+                && value.contains("locked-again.txt")
+        }));
+        assert!(busy.next().is_none());
+        assert!(result
+            .file(&WorkspacePath::new("Library/PackageCache/package/read-only.txt").unwrap())
+            .is_some());
+        assert!(result
+            .file(&WorkspacePath::new("huge.txt").unwrap())
+            .is_some());
+        assert!(result
+            .file(&WorkspacePath::new("free.txt").unwrap())
+            .is_none());
+    });
+}
+
+#[gpui::test]
+fn replace_workspace_rechecks_read_only_rules_entered_after_preview(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    fixture.file("newly-protected.txt", b"needle");
+    fixture.file("still-writable.txt", b"needle");
+    let (view, cx) = fixture.open(cx);
+    prepare(&view, cx, "needle", "NEW");
+    let path = WorkspacePath::new("newly-protected.txt").unwrap();
+    let rule = rove_base::Value::Object(Arc::new(BTreeMap::from([(
+        path.as_str().to_owned(),
+        rove_base::Value::Bool(true),
+    )])));
+    let key = rove_workspace::FILES_READONLY_INCLUDE;
+    let scope = rove_config::Scope::default();
+    view.update(cx, |wb, cx| {
+        let task = wb.settings.write(
+            key.into(),
+            scope.clone(),
+            rule.clone(),
+            Cancellation::default(),
+        );
+        cx.background_executor()
+            .spawn(async move {
+                task.await.unwrap();
+            })
+            .detach();
+    });
+    wait(&view, cx, |wb, _| {
+        wb.settings
+            .read(key, &scope)
+            .is_ok_and(|value| value == rule)
+    });
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                report.skipped.as_slice() == std::slice::from_ref(&path)
+                    && report
+                        .applied
+                        .contains_key(&WorkspacePath::new("still-writable.txt").unwrap())
+            })
+    });
+    assert_eq!(fixture.read("newly-protected.txt"), b"needle");
+    assert_eq!(fixture.read("still-writable.txt"), b"NEW");
+}
+
+#[gpui::test]
+fn replace_workspace_previews_multiline_captures_in_huge_read_only_file(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"rove.largeFile.threshold": 128}"#);
+    let huge = [b"needle\r\nsize\n".as_slice(), &[b'a'; 200]].concat();
+    fixture.file("huge.txt", &huge);
+    let (view, cx) = fixture.open(cx);
+    view.update(cx, |wb, cx| {
+        wb.search
+            .update(cx, |search, _| search.toggles.regex = true);
+    });
+    prepare(&view, cx, r"(nee)(dle)\r?\n(size)", "$3 $2$1");
+    let path = WorkspacePath::new("huge.txt").unwrap();
+    view.read_with(cx, |wb, cx| {
+        assert_eq!(
+            wb.search.read(cx).replacement_test_comparison(&path),
+            Some(("needle\r\nsize".to_owned(), "size dlenee".to_owned()))
+        );
+    });
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                report.skipped.as_slice() == std::slice::from_ref(&path)
+                    && report.applied.is_empty()
+            })
+    });
+    assert_eq!(fixture.read("huge.txt"), huge);
+}
+
+#[gpui::test]
+fn replace_workspace_refuses_all_when_search_results_are_truncated(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"search.maxResults": 1}"#);
+    fixture.file("a.txt", b"needle needle");
+    let (view, cx) = fixture.open(cx);
+    prepare(&view, cx, "needle", "NEW");
+    assert!(view.read_with(cx, |wb, cx| matches!(
+        wb.search.read(cx).state(),
+        crate::search::view::State::Done(summary) if summary.limit_hit
+    )));
+    command(&view, cx, commands::REPLACE_ALL);
+    assert_eq!(fixture.read("a.txt"), b"needle needle");
+    assert!(!view.read_with(cx, |wb, cx| wb.search.read(cx).replacement_test_state().3));
+}
+
+#[gpui::test]
+fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut TestAppContext) {
+    use rove_test_support::UnityProject;
+    let original = rove_test_support::require_unity_project!(UnityProject::Large);
+    let fixture = Fixture::new(r#"{"search.maxResults": 10000}"#);
+    let mut folders = vec![original.join("Assets")];
+    let mut file_count = 0;
+    let mut total_bytes = 0;
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                folders.push(path);
+                continue;
+            }
+            if !kind.is_file() || path.extension() != Some(std::ffi::OsStr::new("cs")) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.len() > 256 * 1024 {
+                continue;
+            }
+            let relative = path.strip_prefix(&original).unwrap();
+            let dest = fixture.folder.path().join(relative);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::copy(path, dest).unwrap();
+            file_count += 1;
+            total_bytes += metadata.len();
+            if file_count == 1500 {
+                break;
+            }
+        }
+        if file_count == 1500 {
+            break;
+        }
+    }
+    assert!(
+        file_count >= 250,
+        "大型 Unity 项目源码样本过少：{file_count}"
+    );
+    let (view, cx) = fixture.open(cx);
+    let preview_start = Instant::now();
+    prepare(&view, cx, "namespace", "rove_sample_namespace");
+    let preview_elapsed = preview_start.elapsed();
+    let matches = view.read_with(cx, |wb, cx| wb.search.read(cx).results().match_count());
+    assert!(matches > 100, "真实样本匹配过少：{matches}");
+    let scroll_start = Instant::now();
+    for _ in 0..5 {
+        cx.update(|window, cx| {
+            let list = view.read(cx).search.read(cx).list.clone();
+            list.update(cx, |list, cx| {
+                list.widget.scroll_by(320.0);
+                cx.notify();
+            });
+            window.refresh();
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+    }
+    let scroll_elapsed = scroll_start.elapsed();
+    let apply_start = Instant::now();
+    // 本测量在替换已派发后取消，后台线程必须保留成功前缀供撤销。
+    cx.update(|window, cx| {
+        let search = view.read(cx).search.clone();
+        search.update(cx, |search, cx| {
+            search.command(commands::REPLACE_ALL, window, cx);
+            search.command(commands::CANCEL, window, cx);
+        });
+    });
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_cancelled()
+    });
+    let cancel_elapsed = apply_start.elapsed();
+    eprintln!(
+        "全局替换真实 Unity 源码副本：{file_count} 文件 / {total_bytes} B / {matches} 处；预览 {preview_elapsed:?}，五次滚动 {scroll_elapsed:?}，取消 {cancel_elapsed:?}"
+    );
+}

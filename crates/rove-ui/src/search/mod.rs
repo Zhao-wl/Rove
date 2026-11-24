@@ -11,4 +11,5 @@
 //! `searchViewletVisible` / `hasSearchResult`。
 pub mod model;
 pub mod registry;
+pub(crate) mod replace;
 pub mod view;

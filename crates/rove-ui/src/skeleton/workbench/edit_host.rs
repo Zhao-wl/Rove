@@ -379,7 +379,11 @@ impl Workbench {
     }
 
     /// 会话的快照领先于文档（保存时的变换、重载、还原）：换进文档与所有显示它的视图，保持视图状态。
-    fn sync_document_from_session(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+    pub(super) fn sync_document_from_session(
+        &mut self,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
         let Some(current) = self.open_document(document) else {
             return;
         };

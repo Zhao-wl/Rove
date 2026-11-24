@@ -5,7 +5,7 @@ use crate::{
     documents::OpenTarget,
     search::{
         registry::{context as ck, SearchAction, SEARCH_VIEW},
-        view::{OpenRequest, SearchView, SearchViewEvent},
+        view::{OpenRequest, ReplacementEvent, SearchView, SearchViewEvent},
     },
 };
 use rove_commands::ContextKeys;
@@ -21,6 +21,10 @@ impl Workbench {
         let view = cx.new(|cx| SearchView::new(root, settings, theme, strings, cx));
         cx.subscribe(&view, |this, _, event: &SearchViewEvent, cx| {
             this.search_event(event, cx)
+        })
+        .detach();
+        cx.subscribe(&view, |this, _, event: &ReplacementEvent, cx| {
+            this.replacement_event(event, cx);
         })
         .detach();
         view
@@ -39,6 +43,10 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let id = action.0;
+        if id == crate::search::registry::REPLACE_IN_FILES {
+            self.shell.layout.active_container = Some(crate::shell::catalog::SEARCH.into());
+            self.shell.layout.sidebar_visible = true;
+        }
         self.search
             .update(cx, |search, cx| search.command(id, window, cx));
     }
@@ -49,6 +57,7 @@ impl Workbench {
         let visible = self.shell.layout.sidebar_visible
             && self.shell.active_container() == crate::shell::catalog::SEARCH;
         let has_results = self.search.read(cx).has_results();
+        let replacing = self.search.read(cx).replace_active(cx);
         if let Some(keys) = cx.try_global::<crate::keys::Keys>() {
             let _ = keys
                 .context
@@ -56,6 +65,10 @@ impl Workbench {
             let _ = keys
                 .context
                 .set(ck::HAS_RESULT.into(), Some(Value::Bool(has_results)));
+            let _ = keys.context.set(
+                ck::REPLACE_ACTIVE.into(),
+                Some(Value::Bool(visible && replacing)),
+            );
         }
         if visible && self.shell.sidebar_focus().is_focused(window) {
             let seed = self.code_view().read(cx).selected_text();

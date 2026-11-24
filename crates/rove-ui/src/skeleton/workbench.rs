@@ -101,9 +101,12 @@ mod peek_tests;
 #[cfg(test)]
 #[path = "workbench_readonly_tests.rs"]
 mod readonly_tests;
+mod replacement_host;
 mod search_host;
 #[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod workspace_replace_tests;
 // #27：状态栏右侧的文件状态条目（行列、缩进、编码、换行符、语言模式、只读 / 超大文件）。
 mod status_host;
 #[cfg(test)]
@@ -325,6 +328,7 @@ pub struct Workbench {
     about: about_host::About,
     /// #149：自动更新服务与调度（见 `update_host.rs`）。
     updates: update_host::Updates,
+    replacement: replacement_host::ReplacementBatch,
 }
 impl Workbench {
     /// 布局按工作区持久化到用户数据目录；单元测试不写用户目录。
@@ -583,6 +587,7 @@ impl Workbench {
             settings_notice_shown: false,
             about: Default::default(),
             updates: Default::default(),
+            replacement: replacement_host::ReplacementBatch::default(),
             has_folder,
             large_files,
             status: Default::default(),
