@@ -75,7 +75,9 @@ fn context_basket_editor_collects_two_ranges_and_copies_after_verification(
         );
     });
     workbench.update(cx, |view, cx| {
-        assert!(view.basket_command(reg::COPY_MARKDOWN, cx))
+        assert!(view.basket_command(reg::ADD, cx));
+        assert!(!view.basket.pending_anchors.is_empty());
+        assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
     });
     cx.run_until_parked();
     let clipboard = cx

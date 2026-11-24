@@ -35,6 +35,29 @@ struct BasketClipboardRequest(u64);
 
 impl Global for BasketClipboardRequest {}
 
+struct PendingCopy {
+    request: u64,
+    markdown: bool,
+    contents: Basket,
+}
+
+impl PendingCopy {
+    fn still_matches(&self, current: &Basket) -> bool {
+        let expected = self.contents.items();
+        let actual = current.items();
+        self.contents.introduction == current.introduction
+            && expected.len() == actual.len()
+            && expected.iter().zip(actual).all(|(old, new)| {
+                old.id() == new.id()
+                    && old.path == new.path
+                    && old.lines == new.lines
+                    && old.note == new.note
+                    && old.symbol == new.symbol
+                    && old.availability == new.availability
+            })
+    }
+}
+
 #[cfg(test)]
 pub(super) struct BasketTestStateRoot(pub(super) PathBuf);
 
@@ -57,6 +80,7 @@ pub(super) struct WindowBasket {
     pub(super) pending_anchors: BTreeMap<u64, u64>,
     next_read: u64,
     collection_epoch: u64,
+    pending_copy: Option<PendingCopy>,
     written: Arc<Mutex<u64>>,
 }
 
@@ -100,6 +124,7 @@ impl WindowBasket {
             pending_anchors: BTreeMap::new(),
             next_read: 0,
             collection_epoch: 0,
+            pending_copy: None,
             written: Arc::default(),
         }
     }
@@ -241,6 +266,7 @@ impl Workbench {
         if first_load {
             self.verify_basket_on_disk(&BTreeSet::new(), true, cx);
         }
+        self.resume_basket_copy(cx);
         cx.notify();
     }
 
@@ -421,6 +447,7 @@ impl Workbench {
                 if changed {
                     view.basket_changed(cx);
                 }
+                view.resume_basket_copy(cx);
             });
         })
         .detach();
@@ -628,6 +655,7 @@ impl Workbench {
                 if changed {
                     view.basket_changed(cx);
                 }
+                view.resume_basket_copy(cx);
             });
         })
         .detach();
@@ -714,6 +742,7 @@ impl Workbench {
     fn clear_basket(&mut self, cx: &mut Context<Self>) -> bool {
         self.basket.collection_epoch += 1;
         self.basket.contents.clear();
+        self.basket.pending_copy = None;
         self.basket.pending_anchors.clear();
         self.basket.previews.clear();
         self.basket.reselect = None;
@@ -721,10 +750,10 @@ impl Workbench {
     }
 
     fn copy_basket(&mut self, markdown: bool, cx: &mut Context<Self>) {
-        use crate::context_basket::{export, registry as reg};
         let latest = &mut cx.default_global::<BasketClipboardRequest>().0;
         *latest += 1;
         let request = *latest;
+        self.basket.pending_copy = None;
         if self.basket.contents.items().is_empty() {
             let key = if self.basket.loaded {
                 "contextBasket.noExportableEntries"
@@ -734,6 +763,39 @@ impl Workbench {
             self.report_basket(key, Arc::from([]), cx);
             return;
         }
+        if self.basket_has_pending_anchors() {
+            self.basket.pending_copy = Some(PendingCopy {
+                request,
+                markdown,
+                contents: self.basket.contents.clone(),
+            });
+        } else {
+            self.start_basket_copy(request, markdown, cx);
+        }
+    }
+
+    fn basket_has_pending_anchors(&self) -> bool {
+        self.basket.contents.items().iter().any(|entry| {
+            entry.availability == Availability::Current
+                && self.basket.pending_anchors.contains_key(&entry.id())
+        })
+    }
+
+    fn resume_basket_copy(&mut self, cx: &mut Context<Self>) {
+        if self.basket.pending_copy.is_none() || self.basket_has_pending_anchors() {
+            return;
+        }
+        let copy = self.basket.pending_copy.take().expect("a copy is waiting");
+        let current_request = cx
+            .try_global::<BasketClipboardRequest>()
+            .map(|latest| latest.0);
+        if current_request == Some(copy.request) && copy.still_matches(&self.basket.contents) {
+            self.start_basket_copy(copy.request, copy.markdown, cx);
+        }
+    }
+
+    fn start_basket_copy(&mut self, request: u64, markdown: bool, cx: &mut Context<Self>) {
+        use crate::context_basket::{export, registry as reg};
         let revision = self.basket.revision;
         let mut contents = self.basket.contents.clone();
         let mut cached: BTreeMap<_, _> = self
