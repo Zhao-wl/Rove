@@ -306,6 +306,13 @@ impl Formatter<'_> {
     }
 
     fn xml(&mut self, root: Node<'_>) -> Result<()> {
+        // A DTD can set xml:space independently on every element with no explicit value.
+        // Treat those elements as preserved without reading or evaluating declarations.
+        let has_dtd = named(root).any(|child| {
+            child.kind() == "doctypedecl"
+                || (child.kind() == "prolog"
+                    && named(child).any(|entry| entry.kind() == "doctypedecl"))
+        });
         let mut edits = Vec::new();
         let mut stack = vec![(root, 0, false)];
         while let Some((node, depth, inherited_preserve)) = stack.pop() {
@@ -313,7 +320,7 @@ impl Formatter<'_> {
             let tag = named(node).find(|child| matches!(child.kind(), "STag" | "EmptyElemTag"));
             let preserve = tag
                 .and_then(|tag| xml_space(self.text, tag))
-                .unwrap_or(inherited_preserve);
+                .unwrap_or(inherited_preserve || (has_dtd && node.kind() == "element"));
             if node.kind() == "element" {
                 if let Some(tag) = tag {
                     let start = named(tag).find(|child| child.kind() == "Name");

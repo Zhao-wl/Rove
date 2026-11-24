@@ -342,6 +342,15 @@ fn xml_space_keeps_references_and_unresolved_entities_conservative() {
     let unresolved = r#"<root xml:space="&requested;"><block><a/><b/></block>  <end/></root>"#;
     let with_entity = format!("<!DOCTYPE root [<!ENTITY requested 'preserve'>]>{unresolved}");
     assert!(format(&with_entity).ends_with(unresolved));
+
+    let dtd = r#"<!DOCTYPE root [<!ATTLIST root xml:space (default|preserve) 'preserve'>]>"#;
+    let undeclared_in_tag = "<root><a/><b/></root>";
+    assert!(format(&format!("{dtd}{undeclared_in_tag}")).ends_with(undeclared_in_tag));
+
+    let dtd = r#"<!DOCTYPE root [<!ATTLIST block xml:space (default|preserve) 'preserve'>]>"#;
+    let parent_default = r#"<root xml:space="default"><block><a/><b/></block><end/></root>"#;
+    let expected = "<root xml:space=\"default\">\n  <block><a/><b/></block>\n  <end/>\n</root>";
+    assert!(format(&format!("{dtd}{parent_default}")).ends_with(expected));
 }
 
 #[test]
