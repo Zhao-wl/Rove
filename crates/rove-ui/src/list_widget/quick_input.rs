@@ -156,6 +156,8 @@ pub struct RowIcon {
 #[derive(Clone, Debug, Default)]
 pub struct RowDecor {
     pub icon: Option<RowIcon>,
+    /// The row ID is a workspace file path and supplies a themed file icon.
+    pub file_icon: bool,
     pub label_highlights: Vec<std::ops::Range<usize>>,
     pub detail_highlights: Vec<std::ops::Range<usize>>,
     pub trailing: Option<Arc<str>>,

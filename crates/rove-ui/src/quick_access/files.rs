@@ -882,6 +882,7 @@ fn push_hit(picks: &mut Picks, index: &FileIndex, hit: &Hit) {
         },
         RowDecor {
             icon: None,
+            file_icon: true,
             label_highlights,
             detail_highlights,
             trailing: None,

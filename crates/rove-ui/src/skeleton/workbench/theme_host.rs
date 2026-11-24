@@ -214,6 +214,7 @@ pub(super) fn apply_icons(view: &mut Workbench, cx: &mut Context<Workbench>) {
     };
     let kind = view.theme_service.current().kind();
     let icons = icons.0.clone();
+    view.update_quick_file_icons(icons.clone(), kind, cx);
     view.explorer
         .update(cx, |explorer, cx| explorer.set_file_icons(icons, kind, cx));
     cx.notify();
