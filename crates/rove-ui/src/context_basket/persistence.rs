@@ -26,11 +26,15 @@ impl BasketStore {
         Self::with_base(base, workspace)
     }
 
-    fn with_base(base: Option<PathBuf>, workspace: &Path) -> Self {
+    pub(crate) fn with_base(base: Option<PathBuf>, workspace: &Path) -> Self {
         Self {
             path: base
                 .map(|directory| directory.join(workspace_key(workspace)).join("basket.json")),
         }
+    }
+
+    pub(crate) fn state_path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     pub fn load(&self) -> Basket {

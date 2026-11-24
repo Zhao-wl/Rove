@@ -117,6 +117,74 @@ fn context_basket_ignores_superseded_copy_completions(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn context_basket_syncs_same_workspace_windows_and_keeps_other_roots_independent(
+    cx: &mut TestAppContext,
+) {
+    use super::basket_host::BasketTestStateRoot;
+    use crate::context_basket::{model::Entry, persistence::BasketStore};
+
+    let root = tempfile::tempdir().unwrap();
+    let other_root = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    cx.update(|app| app.set_global(BasketTestStateRoot(app_data.path().into())));
+    let first = cx
+        .add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx))
+        .0;
+    let second = cx
+        .add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx))
+        .0;
+    let unrelated = cx
+        .add_window_view(|_, cx| Workbench::new(other_root.path().into(), Instant::now(), cx))
+        .0;
+    cx.run_until_parked();
+
+    let insert = |view: &gpui::Entity<Workbench>, name: &str, cx: &mut TestAppContext| {
+        cx.update(|app| {
+            view.update(app, |view, cx| {
+                assert!(view.basket.loaded);
+                view.basket
+                    .contents
+                    .insert(Entry::new(
+                        WorkspacePath::new(name).unwrap(),
+                        LineRange::new(1, 1).unwrap(),
+                        None,
+                    ))
+                    .unwrap();
+                view.basket_changed(cx);
+            })
+        });
+        cx.run_until_parked();
+    };
+    let names = |view: &gpui::Entity<Workbench>, cx: &TestAppContext| {
+        cx.read(|app| {
+            view.read(app)
+                .basket
+                .contents
+                .items()
+                .iter()
+                .map(|entry| entry.path.as_str().to_owned())
+                .collect::<Vec<_>>()
+        })
+    };
+    insert(&first, "one.cs", cx);
+    assert_eq!(names(&second, cx), ["one.cs"]);
+    insert(&second, "two.cs", cx);
+    assert_eq!(names(&first, cx), ["one.cs", "two.cs"]);
+    assert!(names(&unrelated, cx).is_empty());
+    let store = BasketStore::with_base(Some(app_data.path().into()), root.path());
+    assert_eq!(store.load().items().len(), 2);
+
+    cx.update(|app| {
+        first.update(app, |view, cx| assert!(view.basket_command(reg::CLEAR, cx)));
+    });
+    cx.run_until_parked();
+    assert!(names(&second, cx).is_empty());
+    assert!(store.load().items().is_empty());
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(other_root.path()).unwrap().count(), 0);
+}
+
 pub(super) fn click_basket_menu(cx: &mut gpui::VisualTestContext, index: usize) {
     cx.run_until_parked();
     cx.update(|window, cx| {

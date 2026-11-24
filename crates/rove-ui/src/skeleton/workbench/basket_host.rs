@@ -4,14 +4,42 @@ use crate::context_basket::{
     persistence::BasketStore,
     source,
 };
+use gpui::{Entity, Global, Subscription, WeakEntity};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
+#[derive(Clone, Default)]
+struct BasketSnapshot {
+    contents: Basket,
+    previews: BTreeMap<u64, BasketPreview>,
+    revision: u64,
+    collection_epoch: u64,
+}
+
+#[derive(Default)]
+struct WorkspaceBasket {
+    snapshot: Option<BasketSnapshot>,
+    written: Arc<Mutex<u64>>,
+}
+
+#[derive(Default)]
+struct WorkspaceBaskets(BTreeMap<PathBuf, WeakEntity<WorkspaceBasket>>);
+
+impl Global for WorkspaceBaskets {}
+
+#[cfg(test)]
+pub(super) struct BasketTestStateRoot(pub(super) PathBuf);
+
+#[cfg(test)]
+impl Global for BasketTestStateRoot {}
+
 pub(super) struct WindowBasket {
     store: Option<BasketStore>,
+    shared: Option<Entity<WorkspaceBasket>>,
+    shared_observer: Option<Subscription>,
     pub(super) menu: Option<super::basket_menu::BasketMenu>,
     pub(super) contents: Basket,
     pub(super) loaded: bool,
@@ -60,6 +88,8 @@ impl WindowBasket {
             reselect: None,
             previews: BTreeMap::new(),
             store,
+            shared: None,
+            shared_observer: None,
             menu: None,
             contents: Basket::default(),
             revision: 0,
@@ -74,6 +104,8 @@ impl WindowBasket {
     #[cfg(test)]
     pub(super) fn use_test_state(&mut self) {
         self.store = None;
+        self.shared = None;
+        self.shared_observer = None;
         self.loaded = true;
     }
 
@@ -111,24 +143,105 @@ impl WindowBasket {
 
 impl Workbench {
     pub(super) fn restore_basket(&mut self, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        if let Some(base) = cx
+            .try_global::<BasketTestStateRoot>()
+            .filter(|_| self.basket.store.is_some())
+        {
+            self.basket.store = Some(BasketStore::with_base(Some(base.0.clone()), &self.root));
+        }
+
         let Some(store) = self.basket.store.clone() else {
             return;
         };
-        let task = cx.background_executor().spawn(async move { store.load() });
-        cx.spawn(async move |this, cx| {
-            let contents = task.await;
-            let _ = this.update(cx, |view, cx| {
-                view.basket.contents = contents;
-                view.basket.loaded = true;
-                view.verify_basket_on_disk(&BTreeSet::new(), true, cx);
-                cx.notify();
+        let Some(key) = store.state_path().map(Path::to_path_buf) else {
+            self.basket.loaded = true;
+            return;
+        };
+        let existing = cx
+            .default_global::<WorkspaceBaskets>()
+            .0
+            .get(&key)
+            .and_then(WeakEntity::upgrade);
+        let needs_load = existing.is_none();
+        let shared = existing.unwrap_or_else(|| {
+            let shared = cx.new(|_| WorkspaceBasket::default());
+            let windows = &mut cx.default_global::<WorkspaceBaskets>().0;
+            windows.retain(|_, handle| handle.upgrade().is_some());
+            windows.insert(key, shared.downgrade());
+            shared
+        });
+        self.basket.written = shared.read(cx).written.clone();
+        self.basket.shared = Some(shared.clone());
+        self.basket.shared_observer = Some(cx.observe(&shared, |view, shared, cx| {
+            view.sync_basket_snapshot(&shared, cx);
+        }));
+        self.sync_basket_snapshot(&shared, cx);
+        if needs_load {
+            let task = cx.background_executor().spawn(async move { store.load() });
+            cx.spawn(async move |_, cx| {
+                let contents = task.await;
+                let _ = shared.update(cx, |state, cx| {
+                    state.snapshot = Some(BasketSnapshot {
+                        contents,
+                        ..BasketSnapshot::default()
+                    });
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn sync_basket_snapshot(&mut self, shared: &Entity<WorkspaceBasket>, cx: &mut Context<Self>) {
+        let Some(snapshot) = shared.read(cx).snapshot.as_ref() else {
+            return;
+        };
+        if self.basket.loaded && self.basket.revision == snapshot.revision {
+            return;
+        }
+        let first_load = !self.basket.loaded && snapshot.revision == 0;
+        if self.basket.collection_epoch != snapshot.collection_epoch {
+            self.basket.pending_anchors.clear();
+            self.basket.reselect = None;
+        } else if !self.basket.pending_anchors.is_empty() {
+            let previous: BTreeMap<_, _> = self
+                .basket
+                .contents
+                .items()
+                .iter()
+                .map(|entry| (entry.id(), entry))
+                .collect();
+            let current: BTreeMap<_, _> = snapshot
+                .contents
+                .items()
+                .iter()
+                .map(|entry| (entry.id(), entry))
+                .collect();
+            self.basket.pending_anchors.retain(|id, _| {
+                previous
+                    .get(id)
+                    .zip(current.get(id))
+                    .is_some_and(|(old, new)| {
+                        old.path == new.path
+                            && old.lines == new.lines
+                            && old.availability == new.availability
+                            && old.anchor == new.anchor
+                    })
             });
-        })
-        .detach();
+        }
+        self.basket.contents = snapshot.contents.clone();
+        self.basket.previews = snapshot.previews.clone();
+        self.basket.revision = snapshot.revision;
+        self.basket.collection_epoch = snapshot.collection_epoch;
+        self.basket.loaded = true;
+        if first_load {
+            self.verify_basket_on_disk(&BTreeSet::new(), true, cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn basket_changed(&mut self, cx: &mut Context<Self>) {
-        self.basket.revision += 1;
         self.basket.previews.retain(|id, _| {
             self.basket
                 .contents
@@ -136,10 +249,39 @@ impl Workbench {
                 .iter()
                 .any(|item| item.id() == *id && item.availability == Availability::Current)
         });
+        if let Some(shared) = self.basket.shared.clone() {
+            let accepted = shared.update(cx, |state, cx| {
+                if state
+                    .snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.revision != self.basket.revision)
+                {
+                    return false;
+                }
+                state.snapshot = Some(BasketSnapshot {
+                    contents: self.basket.contents.clone(),
+                    previews: self.basket.previews.clone(),
+                    revision: self.basket.revision + 1,
+                    collection_epoch: self.basket.collection_epoch,
+                });
+                cx.notify();
+                true
+            });
+            if !accepted {
+                self.sync_basket_snapshot(&shared, cx);
+                self.report_basket("contextBasket.changedInOtherWindow", Arc::from([]), cx);
+                return;
+            }
+        }
+        self.basket.revision += 1;
         if let Some(write) = self.basket.write_job() {
-            cx.background_executor()
-                .spawn(async move { write() })
-                .detach();
+            let task = cx.background_executor().spawn(async move { write() });
+            let shared = self.basket.shared.clone();
+            cx.spawn(async move |_, _| {
+                task.await;
+                drop(shared);
+            })
+            .detach();
         }
         cx.notify();
     }

@@ -53,6 +53,10 @@ pub fn register_strings(table: &mut StringTable) -> Result<()> {
         ("contextBasket.noExportableEntries", "没有可复制的代码段。"),
         ("contextBasket.cleared", "已清空上下文篮子。"),
         (
+            "contextBasket.changedInOtherWindow",
+            "上下文篮子已在另一个窗口更新，请重试。",
+        ),
+        (
             "contextBasket.copied",
             "已复制 {count} 段内容（约 {tokens} tokens）",
         ),
