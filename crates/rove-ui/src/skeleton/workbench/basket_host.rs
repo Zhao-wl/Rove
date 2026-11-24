@@ -492,9 +492,8 @@ impl Workbench {
                 };
                 let id = *id;
                 self.basket.reselect = None;
-                if self.basket.contents.replace_range(id, Some(range)) {
+                if self.basket.contents.replace_range(id, Some(range)) && self.basket_changed(cx) {
                     self.capture_basket_anchors(vec![(id, range)], text, cx);
-                    self.basket_changed(cx);
                 }
                 return;
             }
@@ -566,10 +565,10 @@ impl Workbench {
             .filter(|entry| ids.contains(&entry.id()))
             .map(|entry| (entry.id(), entry.lines))
             .collect();
-        self.capture_basket_anchors(ranges, text, cx);
         if !self.basket_changed(cx) {
             return;
         }
+        self.capture_basket_anchors(ranges, text, cx);
         let key = if fallback {
             "contextBasket.addedCurrentLine"
         } else {
@@ -662,8 +661,9 @@ impl Workbench {
                 updated.push((id, range));
             }
         }
-        self.capture_basket_anchors(updated, edited.after.clone(), cx);
-        self.basket_changed(cx);
+        if self.basket_changed(cx) {
+            self.capture_basket_anchors(updated, edited.after.clone(), cx);
+        }
     }
 
     pub(super) fn report_basket(
@@ -988,11 +988,11 @@ impl Workbench {
                     })
                     .collect();
                 view.basket.contents = next;
-                for (id, range, text) in ranges {
-                    view.capture_basket_anchors(vec![(id, range)], text, cx);
-                }
                 if !view.basket_changed(cx) {
                     return;
+                }
+                for (id, range, text) in ranges {
+                    view.capture_basket_anchors(vec![(id, range)], text, cx);
                 }
                 view.report_basket(
                     "contextBasket.added",
