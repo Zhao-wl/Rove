@@ -7,7 +7,7 @@ rove.* / 隐藏设置 / 默认值差异表。判定有异议时改 rules.py，�
 rove-config 的测试会对照 SETTINGS.md 检查这份数据，防止漏登记或偷偷支持“不支持”的键。
 """
 from __future__ import annotations
-import json, sys
+import json, re, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,6 +32,29 @@ LANGUAGE_OVERRIDABLE_FILES = {
 }
 
 
+# VS Code's export writes enum descriptions as “ - value: explanation”.
+# Other bullet lists are retained as prose instead of being mistaken for choices.
+ENUM_LINE = re.compile(r"^\s*-\s+`?([\w.-]+)`?\s*[:：]\s*(.+)$")
+
+
+def editor_metadata(category: str, description: str, default) -> dict:
+    prose, options = [], []
+    for line in description.splitlines():
+        match = ENUM_LINE.match(line)
+        if match:
+            options.append({"value": match[1], "description": match[2].strip()})
+        else:
+            prose.append(line.strip())
+    has_enum = isinstance(default, str) and any(option["value"] == default for option in options)
+    result = {
+        "category": category,
+        "description": "\n".join(prose).strip() if has_enum else description,
+    }
+    if has_enum:
+        result["enum"] = options
+    return result
+
+
 def main() -> None:
     rows = c.classify_settings()
     lang_blocks = {k: v for k, v, _, cls in rows if k.startswith("[") and cls and cls[0] == "impl"}
@@ -46,17 +69,22 @@ def main() -> None:
             or key in in_lang_defaults
         )
 
-    for key, value, _, cls in rows:
+    for key, value, description, cls in rows:
         if key.startswith("[") or not cls or cls[0] != "impl":
             continue
         entries[key] = {"key": key, "priority": cls[1], "source": "vscode", "default": value,
-                        "languageOverridable": overridable(key)}
-    for key, value, pr, _ in g.HIDDEN_SETTINGS:
-        entries[key] = {"key": key, "priority": pr, "source": "vscode-hidden", "default": json.loads(value),
-                        "languageOverridable": overridable(key)}
-    for key, value, pr, _ in g.ROVE_SETTINGS:
-        entries[key] = {"key": key, "priority": pr, "source": "rove", "default": json.loads(value),
-                        "languageOverridable": False}
+                        "languageOverridable": overridable(key),
+                        "editor": editor_metadata(cls[2], description, value)}
+    for key, value, pr, description in g.HIDDEN_SETTINGS:
+        default = json.loads(value)
+        entries[key] = {"key": key, "priority": pr, "source": "vscode-hidden", "default": default,
+                        "languageOverridable": overridable(key),
+                        "editor": editor_metadata("编辑器", description, default)}
+    for key, value, pr, description in g.ROVE_SETTINGS:
+        default = json.loads(value)
+        entries[key] = {"key": key, "priority": pr, "source": "rove", "default": default,
+                        "languageOverridable": False,
+                        "editor": editor_metadata("Rove", description, default)}
     for key, vscode, rove, _ in g.DIFFERENT_DEFAULTS:
         entry = entries[key]  # 差异项必须是已支持的 VS Code 设置
         assert entry["default"] == json.loads(vscode), key

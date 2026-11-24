@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 11] {
+fn modules() -> [(&'static str, Register); 12] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -39,6 +39,7 @@ fn modules() -> [(&'static str, Register); 11] {
             "context_basket",
             crate::context_basket::registry::register_settings,
         ),
+        ("markdown", crate::markdown::registry::register_settings),
     ]
 }
 
@@ -54,13 +55,19 @@ fn merge(into: &mut SettingRegistry, from: &SettingRegistry) -> Result<()> {
 
 /// 应用的统一设置登记表：各模块的键 + 内置目录。
 pub fn registry() -> Result<SettingRegistry> {
+    let mut registry = consumer_registry()?;
+    rove_config::register_builtin(&mut registry)?;
+    Ok(registry)
+}
+
+/// Settings declared by running features, excluding catalog placeholders.
+pub(crate) fn consumer_registry() -> Result<SettingRegistry> {
     let mut registry = SettingRegistry::default();
     for (_, register) in modules() {
         let mut own = SettingRegistry::default();
         register(&mut own)?;
         merge(&mut registry, &own)?;
     }
-    rove_config::register_builtin(&mut registry)?;
     Ok(registry)
 }
 

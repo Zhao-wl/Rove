@@ -3,9 +3,7 @@
 //!
 //! - 默认键位来自 #14 生成的 VS Code 默认键位表（`ctrl+shift+v` → `markdown.togglePreview`、
 //!   `ctrl+k v` → `markdown.showPreviewToSide`，`when` 照抄 `KEYBINDINGS.md`），本模块不重复登记；
-//! - 设置项 `markdown.*` 与 `rove.markdown.*` 已由 `rove_config::register_builtin` 按
-//!   `compat/SETTINGS.md` 登记（含 `markdown.preview.doubleClickToSwitchToEditor` 的 Rove 默认值
-//!   `true`，只在用户未设置时生效），本模块只读取；
+//! - 已启用的预览设置与兼容目录共用默认值。
 //! - **不登记** `markdown.preview.toggleLock`、`markdown.showLockedPreviewToSide`、
 //!   `markdown.showPreviewSecuritySelector`：Rove 的预览总是绑定到一个文件（相当于 VS Code 的锁定预览），
 //!   远程资源始终拦截；未实现的命令不进命令面板（ARCHITECTURE §6）。
@@ -13,6 +11,7 @@ use crate::contributions::{Contribution, ContributionRegistry, Placement};
 use gpui::Action;
 use rove_base::{Error, Result};
 use rove_commands::{Command, CommandRegistry};
+use rove_config::SettingRegistry;
 use rove_i18n::{Message, StringTable};
 use rove_theme::ColorRegistry;
 use std::sync::Arc;
@@ -256,4 +255,32 @@ mod tests {
             assert!(registry.get(key).is_some(), "{key}");
         }
     }
+}
+
+/// Register the settings read by the active Markdown preview.
+pub fn register_settings(registry: &mut SettingRegistry) -> Result<()> {
+    for key in [
+        "markdown.links.openLocation",
+        "markdown.math.enabled",
+        "markdown.math.macros",
+        "markdown.preview.breaks",
+        "markdown.preview.doubleClickToSwitchToEditor",
+        "markdown.preview.fontFamily",
+        "markdown.preview.fontSize",
+        "markdown.preview.frontMatter",
+        "markdown.preview.lineHeight",
+        "markdown.preview.linkify",
+        "markdown.preview.markEditorSelection",
+        "markdown.preview.openMarkdownLinks",
+        "markdown.preview.scrollEditorWithPreview",
+        "markdown.preview.scrollPreviewWithEditor",
+        "markdown.preview.typographer",
+        "markdown.styles",
+        "rove.markdown.webviewIdleTimeout",
+    ] {
+        if let Some(entry) = rove_config::catalog::catalog().get(key) {
+            registry.register(key, entry.setting.clone())?;
+        }
+    }
+    Ok(())
 }
