@@ -432,9 +432,7 @@ fn fixed_wrap_column_wider_than_the_viewport_can_scroll_to_the_row_end(cx: &mut 
     assert!(span(&view, cx, 0) > 1);
     let first = pos(0, 0);
     let first_row_end = pos(0, u64::from(breaks(&view, cx, 0)[0] - 1));
-    let left = view
-        .update(cx, |v, _| v.point_for_position(first))
-        .unwrap();
+    let left = view.update(cx, |v, _| v.point_for_position(first)).unwrap();
     let right_edge = left.x + px(view.read_with(cx, |v, _| v.viewport().unwrap().width));
     let end_before = view
         .update(cx, |v, _| v.point_for_position(first_row_end))

@@ -1357,13 +1357,12 @@ impl CodeView {
         let text = self.layout.text;
         let min_x = f32::from(text.origin.x - left) - self.font.cell_width * 4.0;
         // #58：软换行时这一行只画到换行列为止，后面的字形属于下一条视觉行。
-        let width = if self.wrap.columns > 0
-            && !self.horizontal_scroll_allowed(text.size.width.to_f64())
-        {
-            px((self.wrap.width as f32).min(f32::from(text.size.width)))
-        } else {
-            text.size.width
-        };
+        let width =
+            if self.wrap.columns > 0 && !self.horizontal_scroll_allowed(text.size.width.to_f64()) {
+                px((self.wrap.width as f32).min(f32::from(text.size.width)))
+            } else {
+                text.size.width
+            };
         let max_x = f32::from(text.origin.x + width - left);
         let spacing = self.font.letter_spacing;
         let (raw_min_x, raw_max_x) = if spacing == 0.0 {
