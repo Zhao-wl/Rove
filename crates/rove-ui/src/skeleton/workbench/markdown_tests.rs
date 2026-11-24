@@ -228,6 +228,16 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
         );
     });
     settle(cx);
+    // 更换回同一文档时行缓存和宽度会重置，但整形结果仍可复用。
+    cx.update(|window, cx| {
+        code.update(cx, |c, cx| {
+            c.ensure_line_now(body_line, window);
+            let text = c.text().cloned();
+            c.set_text(text, true, cx);
+            c.ensure_line_now(body_line, window);
+        });
+    });
+    settle(cx);
     let left = code.update(cx, |c, _| c.point_for_position(first)).unwrap();
     let group = view.read_with(cx, |v, _| v.editor.focused);
     let pane_id = format!("editor-body-{}", group.0);
