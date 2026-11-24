@@ -277,7 +277,7 @@ impl Folder {
     /// Validates the source and destination against the current workspace before
     /// moving it. The watcher publishes the rename and updates the tree.
     pub fn move_entry(&self, source: &WorkspacePath, target: &WorkspacePath) -> Result<()> {
-        let (source_path, _) = self.editable_entry(source)?;
+        let (source_path, metadata) = self.editable_entry(source)?;
         self.verify_parent(parent_path(target).as_ref())?;
         self.verify_writable(target, false)?;
         if source == target {
@@ -291,6 +291,9 @@ impl Folder {
         {
             return Err(disk_error(target, io::ErrorKind::InvalidInput.into()));
         }
+        if metadata.is_dir() {
+            self.verify_writable_descendants(&source_path, Some(source), Some(target))?;
+        }
         let target_path = self.absolute(target);
         if source_key == target_key {
             return rename_case_only(&source_path, &target_path, target);
@@ -301,11 +304,11 @@ impl Folder {
 
     /// Also used by the Windows Recycle Bin adapter before it queues shell items.
     pub fn editable_path(&self, path: &WorkspacePath) -> Result<PathBuf> {
-        self.editable_entry(path).map(|(path, _)| path)
+        self.editable_tree(path).map(|(path, _)| path)
     }
 
     pub fn entry_stamp(&self, path: &WorkspacePath) -> Result<EntryStamp> {
-        let (absolute, metadata) = self.editable_entry(path)?;
+        let (absolute, metadata) = self.editable_tree(path)?;
         EntryStamp::read(&absolute, &metadata).map_err(|error| disk_error(path, error))
     }
 
@@ -323,7 +326,7 @@ impl Folder {
         path: &WorkspacePath,
         expected: &EntryStamp,
     ) -> Result<PathBuf> {
-        let (absolute, metadata) = self.editable_entry(path)?;
+        let (absolute, metadata) = self.editable_tree(path)?;
         let live =
             EntryStamp::read(&absolute, &metadata).map_err(|error| disk_error(path, error))?;
         if !live.same_object(expected) {
@@ -368,7 +371,7 @@ impl Folder {
         path: &WorkspacePath,
         expected: &EntryStamp,
     ) -> Result<(PathBuf, Metadata)> {
-        let (absolute, metadata) = self.editable_entry(path)?;
+        let (absolute, metadata) = self.editable_tree(path)?;
         let live =
             EntryStamp::read(&absolute, &metadata).map_err(|error| disk_error(path, error))?;
         if &live != expected {
@@ -381,6 +384,57 @@ impl Folder {
             ));
         }
         Ok((absolute, metadata))
+    }
+
+    fn editable_tree(&self, path: &WorkspacePath) -> Result<(PathBuf, Metadata)> {
+        let (absolute, metadata) = self.editable_entry(path)?;
+        if metadata.is_dir() {
+            self.verify_writable_descendants(&absolute, Some(path), None)?;
+        }
+        Ok((absolute, metadata))
+    }
+
+    fn verify_writable_descendants(
+        &self,
+        absolute: &Path,
+        source: Option<&WorkspacePath>,
+        target: Option<&WorkspacePath>,
+    ) -> Result<()> {
+        let root = source.or(target).expect("one workspace side");
+        let mut pending = vec![(absolute.to_path_buf(), source.cloned(), target.cloned())];
+        while let Some((directory, source, target)) = pending.pop() {
+            let label = source.as_ref().or(target.as_ref()).unwrap_or(root);
+            for entry in fs::read_dir(&directory).map_err(|error| disk_error(label, error))? {
+                let entry = entry.map_err(|error| disk_error(label, error))?;
+                let absolute = entry.path();
+                let metadata =
+                    fs::symlink_metadata(&absolute).map_err(|error| disk_error(label, error))?;
+                let name = entry.file_name();
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| disk_error(label, io::ErrorKind::InvalidData.into()))?;
+                let project = |parent: Option<&WorkspacePath>| {
+                    parent
+                        .map(|parent| {
+                            WorkspacePath::new(&format!("{}/{name}", parent.as_str()))
+                                .map_err(|_| disk_error(parent, io::ErrorKind::InvalidData.into()))
+                        })
+                        .transpose()
+                };
+                let source = project(source.as_ref())?;
+                let target = project(target.as_ref())?;
+                if let Some(path) = &source {
+                    self.verify_writable(path, metadata.permissions().readonly())?;
+                }
+                if let Some(path) = &target {
+                    self.verify_writable(path, false)?;
+                }
+                if metadata.is_dir() && !is_link(&metadata) {
+                    pending.push((absolute, source, target));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn editable_entry(&self, path: &WorkspacePath) -> Result<(PathBuf, Metadata)> {
@@ -445,18 +499,22 @@ fn check_directory(path: &Path) -> io::Result<Metadata> {
 
 fn check_entry(path: &Path) -> io::Result<Metadata> {
     let metadata = fs::symlink_metadata(path)?;
-    #[cfg(windows)]
-    let is_link = {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    };
-    #[cfg(not(windows))]
-    let is_link = metadata.is_symlink();
-    if is_link || (!metadata.is_file() && !metadata.is_dir()) {
+    if is_link(&metadata) || (!metadata.is_file() && !metadata.is_dir()) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(metadata)
+}
+
+#[cfg(windows)]
+fn is_link(metadata: &Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_link(metadata: &Metadata) -> bool {
+    metadata.is_symlink()
 }
 
 fn rename_case_only(source: &Path, target: &Path, label: &WorkspacePath) -> Result<()> {

@@ -381,3 +381,71 @@ fn stages_copies_and_moves_without_replacing_destinations() {
         b"native clipboard data"
     );
 }
+
+#[test]
+fn operations_reject_a_writable_directory_with_readonly_descendants() {
+    let root = tempfile::tempdir().unwrap();
+    let original = root.path().join("Source/Protected/notes.txt");
+    fs::create_dir_all(original.parent().unwrap()).unwrap();
+    fs::write(&original, "owned data").unwrap();
+    let config = WorkspaceConfig::default().without_watching();
+    let original_folder = Folder::scan_root(root.path(), config.clone()).unwrap();
+    let source = path("Source");
+    let selected = original_folder.entry_stamp(&source).unwrap();
+
+    let mut sealed = config;
+    sealed.readonly.extra_include = readonly_rule("Source/Protected/**");
+    let folder = Folder::scan_root(root.path(), sealed).unwrap();
+    assert!(matches!(
+        folder.entry_stamp(&source),
+        Err(OperationError::ReadOnly(_))
+    ));
+    assert!(matches!(
+        folder.checked_entry_path(&source, &selected),
+        Err(OperationError::ReadOnly(_))
+    ));
+    assert!(matches!(
+        folder.move_entry(&source, &path("Renamed")),
+        Err(OperationError::ReadOnly(_))
+    ));
+    assert!(matches!(
+        folder.remove_permanently(&source, &selected),
+        Err(OperationError::ReadOnly(_))
+    ));
+    assert_eq!(fs::read_to_string(original).unwrap(), "owned data");
+    assert!(!root.path().join("Renamed").exists());
+}
+
+#[test]
+fn transfers_reject_a_readonly_projected_descendant_before_writing() {
+    use rove_workspace::file_operations::transfer::Transfer;
+    let root = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    fs::write(external.path().join("Protected.txt"), "external bytes").unwrap();
+    let mut config = WorkspaceConfig::default().without_watching();
+    config.readonly.extra_include = readonly_rule("Incoming/Protected.txt");
+    let folder = Folder::scan_root(root.path(), config).unwrap();
+    let target = path("Incoming");
+    assert!(matches!(
+        folder.verify_transfer_tree(external.path(), &target, Transfer::Copy),
+        Err(OperationError::ReadOnly(at)) if at == path("Incoming/Protected.txt")
+    ));
+    assert!(matches!(
+        folder.transfer_from(external.path(), &target, Transfer::Copy),
+        Err(OperationError::ReadOnly(_))
+    ));
+    assert!(!root.path().join("Incoming").exists());
+    assert_eq!(
+        fs::read_to_string(external.path().join("Protected.txt")).unwrap(),
+        "external bytes"
+    );
+}
+
+fn readonly_rule(pattern: &str) -> rove_workspace::RuleSet {
+    rove_workspace::RuleSet::from_value(&rove_base::Value::Object(std::sync::Arc::new(
+        [(pattern.to_owned(), rove_base::Value::Bool(true))]
+            .into_iter()
+            .collect(),
+    )))
+    .unwrap()
+}

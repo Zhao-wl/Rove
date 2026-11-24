@@ -104,7 +104,36 @@ impl Folder {
                 return Ok(TransferOutcome::Moved);
             }
         }
+        self.verify_transfer_tree(&source, target, transfer)?;
         transfer_between(&source, &target_path, transfer).map_err(|error| disk_error(target, error))
+    }
+
+    /// Check a transfer's source and projected destination before showing its confirmation.
+    pub fn verify_transfer_tree(
+        &self,
+        source: &Path,
+        target: &WorkspacePath,
+        transfer: Transfer,
+    ) -> Result<()> {
+        let from = (transfer == Transfer::Move)
+            .then(|| {
+                relative_str(self.root(), source).and_then(|path| WorkspacePath::new(&path).ok())
+            })
+            .flatten();
+        if let Some(from) = &from {
+            self.editable_entry(from)?;
+        }
+        self.verify_writable(target, false)?;
+        if check_entry(source)
+            .map_err(|error| disk_error(target, error))?
+            .is_dir()
+        {
+            if enters_directory(source, &self.absolute(target)) {
+                return Err(disk_error(target, io::ErrorKind::InvalidInput.into()));
+            }
+            self.verify_writable_descendants(source, from.as_ref(), Some(target))?;
+        }
+        Ok(())
     }
 
     /// Undo a move back to the original clipboard path. Refuses to replace an
@@ -114,7 +143,7 @@ impl Folder {
         source: &WorkspacePath,
         original: &Path,
     ) -> Result<TransferOutcome> {
-        let (current, _) = self.editable_entry(source)?;
+        let (current, _) = self.editable_tree(source)?;
         let parent = original
             .parent()
             .ok_or_else(|| disk_error(source, io::ErrorKind::InvalidInput.into()))?;
@@ -133,14 +162,36 @@ impl Folder {
     }
 }
 
-pub fn inspect_source(path: &Path) -> io::Result<(PathBuf, EntryKind)> {
+pub struct TransferSource {
+    pub path: PathBuf,
+    pub kind: EntryKind,
+    stamp: EntryStamp,
+}
+
+impl TransferSource {
+    pub fn verify(&self) -> io::Result<()> {
+        let path = local_entry(&self.path)?;
+        let live = EntryStamp::read(&path, &check_entry(&path)?)?;
+        if live != self.stamp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transfer source changed since selection",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn inspect_source(path: &Path) -> io::Result<TransferSource> {
     let path = local_entry(path)?;
-    let kind = if check_entry(&path)?.is_dir() {
+    let metadata = check_entry(&path)?;
+    let kind = if metadata.is_dir() {
         EntryKind::Directory
     } else {
         EntryKind::File
     };
-    Ok((path, kind))
+    let stamp = EntryStamp::read(&path, &metadata)?;
+    Ok(TransferSource { path, kind, stamp })
 }
 
 fn local_entry(path: &Path) -> io::Result<PathBuf> {
@@ -187,24 +238,24 @@ fn local_entry(path: &Path) -> io::Result<PathBuf> {
     Ok(canonical)
 }
 
+fn enters_directory(source: &Path, target: &Path) -> bool {
+    let mut target = target.components();
+    source.components().all(|part| {
+        target.next().is_some_and(|actual| {
+            identity_key(&part.as_os_str().to_string_lossy())
+                == identity_key(&actual.as_os_str().to_string_lossy())
+        })
+    })
+}
+
 fn transfer_between(
     source: &Path,
     target: &Path,
     transfer: Transfer,
 ) -> io::Result<TransferOutcome> {
     let source_meta = check_entry(source)?;
-    if source_meta.is_dir() {
-        // Both paths are absolute and have a canonical parent. Compare by
-        // components, including workspace case-insensitivity on Windows.
-        let mut target = target.components();
-        if source.components().all(|part| {
-            target.next().is_some_and(|actual| {
-                identity_key(&part.as_os_str().to_string_lossy())
-                    == identity_key(&actual.as_os_str().to_string_lossy())
-            })
-        }) {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
+    if source_meta.is_dir() && enters_directory(source, target) {
+        return Err(io::ErrorKind::InvalidInput.into());
     }
     match fs::symlink_metadata(target) {
         Ok(_) => return Err(io::ErrorKind::AlreadyExists.into()),
@@ -315,6 +366,7 @@ mod tests {
 
         fs::write(source.join("arrived-later.txt"), "keep me").unwrap();
         assert!(remove_copied_entries(observed).is_err());
+        assert!(!source.join("copied.txt").exists());
         assert_eq!(
             fs::read_to_string(target.join("copied.txt")).unwrap(),
             "first"
