@@ -3,5 +3,6 @@
 *.png binary
 *.gif binary
 *.ttf binary
+*.woff binary
 *.woff2 binary
 *.ico binary
