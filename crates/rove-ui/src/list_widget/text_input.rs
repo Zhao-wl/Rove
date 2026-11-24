@@ -7,7 +7,7 @@ use super::{
     registry::context as ck,
 };
 use gpui::{
-    div, fill, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem, Context,
+    div, fill, point, prelude::*, px, relative, App, Bounds, ClipboardItem, Context,
     CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, Hsla, KeyContext, LayoutId, MouseButton,
     MouseDownEvent, PaintQuad, Pixels, ShapedLine, SharedString, Style, TextRun, UTF16Selection,
