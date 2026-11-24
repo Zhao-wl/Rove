@@ -18,7 +18,7 @@ use super::source::{self, Loaded, PeekQueries};
 use super::zone::zone_overlay;
 use crate::code_view::{
     decorations::{DecorationProvider, InlineDecoration, LineDecorations, TextStyle},
-    view::hsla,
+    view::{hsla, TextDoubleClicked},
     CodeView, CodeViewServices, Reveal, Selection,
 };
 use crate::list_widget::{
@@ -369,6 +369,10 @@ impl PeekWidget {
                 code
             })
         };
+        // 代码视图消费正文按下事件，预览通过选词后的事件取得本次双击位置。
+        let preview_double_click = cx.subscribe(&preview, |w, _, e: &TextDoubleClicked, cx| {
+            w.open_preview_selection(e.0, cx);
+        });
         // 只读预览里尝试输入只会发出 `EditBlocked`；没有订阅者，内容不变，也不在主编辑器上弹提示。
         let mut widget = Self {
             services,
@@ -398,7 +402,7 @@ impl PeekWidget {
             focus: cx.focus_handle(),
             drag: None,
             cancel: Cancellation::default(),
-            _subscriptions: Vec::new(),
+            _subscriptions: vec![preview_double_click],
         };
         widget.start(window, cx);
         widget
@@ -1387,18 +1391,6 @@ impl Render for PeekWidget {
             .on_action(
                 cx.listener(|w, a: &PeekAction, window, cx| w.on_preview_action(a.0, window, cx)),
             )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|w, e: &MouseDownEvent, window, cx| {
-                    if e.click_count == 2 && w.settings.can_close_by_escape() {
-                        // 双击预览内容：在编辑器中打开插入符处（代码视图先处理这次点击）。
-                        cx.spawn_in(window, async move |this, cx| {
-                            let _ = this.update(cx, |w, cx| w.open_at_caret(cx));
-                        })
-                        .detach();
-                    }
-                }),
-            )
             .child(self.preview.clone());
         if let Some(n) = &self.nested {
             preview = preview.child(zone_overlay(
@@ -1513,13 +1505,21 @@ impl Render for PeekWidget {
 }
 
 impl PeekWidget {
-    /// 双击预览：在编辑器中打开预览文档的插入符处（`editor.stablePeek` 为 true 时不处理）。
-    fn open_at_caret(&mut self, cx: &mut Context<Self>) {
-        let Some(document) = &self.document else {
+    /// 双击预览：在编辑器中打开预览文档的选区（`editor.stablePeek` 为 true 时不处理）。
+    fn open_preview_selection(&self, selection: Selection, cx: &mut Context<Self>) {
+        if !self.settings.can_close_by_escape() {
+            return;
+        }
+        let (Some(document), Some(Shown::File(file)), Some(results)) =
+            (&self.document, &self.shown, &self.results)
+        else {
             return;
         };
-        let s = self.preview.read(cx).selection();
-        let Ok(selection) = TextRange::new(s.start(), s.end()) else {
+        // 切文件时异步加载；新文档就绪前，预览里可能还显示上一个文档的正文。
+        if results.files[*file].resource != document.resource {
+            return;
+        }
+        let Ok(selection) = TextRange::new(selection.start(), selection.end()) else {
             return;
         };
         cx.emit(PeekEvent::Open {
@@ -1527,14 +1527,6 @@ impl PeekWidget {
             selection,
             side: false,
         });
-    }
-
-    /// 测试：直接双击预览的效果（不经鼠标事件）。
-    #[doc(hidden)]
-    pub fn double_click_preview(&mut self, cx: &mut Context<Self>) {
-        if self.settings.can_close_by_escape() {
-            self.open_at_caret(cx);
-        }
     }
 
     /// 主题变了：重新解析调色板。
