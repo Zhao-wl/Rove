@@ -12,7 +12,7 @@ use rove_base::{Value, WorkspacePath};
 use rove_config::{Key, Scope};
 use rove_i18n::Message;
 use rove_workspace::{
-    file_operations::{EntryStamp, OperationError},
+    file_operations::{path_after_rename, EntryStamp, OperationError},
     FileEvent, Folder,
 };
 use std::{
@@ -84,8 +84,8 @@ pub(super) struct FileOperations {
     undo: Vec<Vec<UndoStep>>,
     watched_paths: Vec<WorkspacePath>,
     deferred_events: Vec<FileEvent>,
-    // The last completed move only. A stale removal of a replaced target can follow it.
-    moved_destinations: Vec<WorkspacePath>,
+    // Only the last completed move batch. A delayed watcher event can describe its old state.
+    completed_moves: Vec<(WorkspacePath, WorkspacePath)>,
     #[cfg(windows)]
     clipboard: Option<transfer_ops::ClipboardToken>,
 }
@@ -137,31 +137,39 @@ impl Workbench {
             self.file_operations.deferred_events.extend(deferred);
             events = ready;
         }
+        self.reconcile_move_notifications(&mut events);
         self.apply_explorer_document_changes(events, cx);
     }
 
-    fn apply_explorer_document_changes(
-        &mut self,
-        mut events: Vec<FileEvent>,
-        cx: &mut Context<Self>,
-    ) {
-        if events.is_empty() {
-            return;
-        }
-        // A replacement can report removal of the old target after the move is
-        // already complete. Treat the observed path as changed if it still exists.
-        for event in &mut events {
-            if let FileEvent::Removed(path) = event {
-                if self
-                    .file_operations
-                    .moved_destinations
-                    .iter()
-                    .any(|target| at_or_below(path, target))
-                    && self.root.join(path.as_str()).try_exists().unwrap_or(false)
+    fn reconcile_move_notifications(&self, events: &mut Vec<FileEvent>) {
+        let moves = &self.file_operations.completed_moves;
+        let exists = |path: &WorkspacePath| self.root.join(path.as_str()).try_exists();
+        events.retain_mut(|event| match event {
+            FileEvent::Removed(path) => {
+                // The old occupant may have been recycled before a replacement was installed.
+                if moves.iter().any(|(_, target)| at_or_below(path, target))
+                    && matches!(exists(path), Ok(true))
                 {
                     *event = FileEvent::Changed(path.clone());
                 }
+                true
             }
+            FileEvent::Renamed { from, to } => {
+                // An older forward notification may arrive after we have already undone the move.
+                // The same pair is valid again once it describes a real movement on disk.
+                let reverse_of_completed = moves
+                    .iter()
+                    .any(|(old, new)| path_after_rename(from, new, old).as_ref() == Some(to));
+                !reverse_of_completed
+                    || !matches!((exists(from), exists(to)), (Ok(true), Ok(false)))
+            }
+            _ => true,
+        });
+    }
+
+    fn apply_explorer_document_changes(&mut self, events: Vec<FileEvent>, cx: &mut Context<Self>) {
+        if events.is_empty() {
+            return;
         }
         self.follow_workspace_renames(&events, cx);
         self.note_disk_events(&events, cx);
@@ -189,22 +197,23 @@ impl Workbench {
     ) {
         self.file_operations.watched_paths.clear();
         let mut logical = Vec::new();
-        let mut destinations = Vec::new();
+        let mut completed = Vec::new();
         for (source, destination) in moves {
             if let (Some(from), Some(to)) = (
                 workspace_path(&self.root, source),
                 workspace_path(&self.root, destination),
             ) {
-                destinations.push(to.clone());
+                completed.push((from.clone(), to.clone()));
                 logical.push(FileEvent::Renamed { from, to });
             }
         }
-        if !destinations.is_empty() {
-            self.file_operations.moved_destinations = destinations;
+        if !completed.is_empty() {
+            self.file_operations.completed_moves = completed;
         }
         // A native cross-directory move can arrive as removal and creation.
         // Apply the confirmed mapping before anything can close the source tab.
         let mut deferred = std::mem::take(&mut self.file_operations.deferred_events);
+        self.reconcile_move_notifications(&mut deferred);
         deferred.retain(|event| {
             let FileEvent::Renamed { from, to } = event else {
                 return true;

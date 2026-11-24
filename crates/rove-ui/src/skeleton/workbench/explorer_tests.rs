@@ -1059,35 +1059,52 @@ fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut Test
         assert!(explorer.problems().decorate(&renamed, false).is_some());
     });
 
-    wait_until(&view, cx, "moved file restored to the root", |rows| {
-        rows.iter().any(|row| row == "Renamed.json")
+    let forward = FileEvent::Renamed {
+        from: renamed.clone(),
+        to: moved.clone(),
+    };
+    view.update(cx, |v, cx| {
+        v.apply_explorer_workspace_events(vec![forward.clone()], cx);
     });
-    let index = rows(&view, cx)
-        .iter()
-        .position(|row| row == "Renamed.json")
+    view.read_with(cx, |v, _| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(
+            current.resource, restored,
+            "a late forward event cannot undo the undo"
+        );
+        assert_eq!(current.text.version(), version);
+    });
+    wait_for_structured_problems(&view, cx, Some(&restored));
+
+    // The same ordered event remains valid once an external operation really moves the file.
+    view.update(cx, |v, cx| {
+        std::fs::rename(
+            fixture.path("Renamed.json"),
+            fixture.path("Target/Renamed.json"),
+        )
         .unwrap();
-    focus_row(&view, index, cx);
-    cx.simulate_keystrokes("shift-delete");
-    cx.run_until_parked();
-    view.update(cx, |v, _| {
-        let modal = v
-            .shell
-            .feedback
-            .modal()
-            .expect("permanent delete confirmation")
-            .key
-            .clone();
-        v.shell
-            .feedback
-            .act(&modal, registry::FILE_OP_CONFIRM)
-            .unwrap();
+        v.apply_explorer_workspace_events(vec![forward], cx);
     });
+    wait_for_structured_problems(&view, cx, Some(&resource));
+    view.read_with(cx, |v, _| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(current.resource, resource);
+        assert_eq!(current.text.version(), version);
+    });
+    std::fs::write(fixture.path("Unrelated.txt"), "external").unwrap();
+    wait_until(
+        &view,
+        cx,
+        "unrelated external creation is visible",
+        |rows| rows.iter().any(|row| row == "Unrelated.txt"),
+    );
+    std::fs::remove_file(fixture.path("Target/Renamed.json")).unwrap();
     wait_for_structured_problems(&view, cx, None);
-    assert!(!fixture.path("Renamed.json").exists());
+    assert!(!fixture.path("Target/Renamed.json").exists());
     view.read_with(cx, |v, cx| {
         assert!(v.open_document(document).is_none());
         let explorer = v.explorer.read(cx);
-        assert!(explorer.problems().decorate(&renamed, false).is_none());
+        assert!(explorer.problems().decorate(&moved, false).is_none());
         assert!(explorer.problems().decorate(&target, true).is_none());
     });
 }
