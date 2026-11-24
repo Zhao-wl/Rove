@@ -7,7 +7,7 @@ use crate::{
         SharedSettings,
     },
 };
-use gpui::{Context, Window};
+use gpui::{AppContext, Context, Window};
 use rove_base::{Cancellation, Resource};
 use rove_config::Scope;
 

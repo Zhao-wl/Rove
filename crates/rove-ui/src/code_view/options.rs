@@ -488,6 +488,7 @@ pub(crate) fn number_limits(key: &str) -> Option<(f64, f64)> {
         "editor.occurrencesHighlightDelay" => (0.0, 2000.0),
         "editor.selectionHighlightMaxLength" => (0.0, 1e9),
         "editor.foldingMaximumRegions" => (10.0, 65000.0),
+        "editor.stickyScroll.maxLineCount" => (1.0, super::sticky::MAX_LINE_COUNT as f64),
         _ => return None,
     })
 }
@@ -875,11 +876,7 @@ impl EditorOptions {
                 _ => super::guides::ActiveIndentMode::On,
             },
             sticky_scroll: r.bool("editor.stickyScroll.enabled"),
-            sticky_scroll_max_line_count: r.num(
-                "editor.stickyScroll.maxLineCount",
-                1.0,
-                super::sticky::MAX_LINE_COUNT as f64,
-            ) as usize,
+            sticky_scroll_max_line_count: r.num("editor.stickyScroll.maxLineCount") as usize,
             sticky_scroll_model: super::sticky::StickyModel::parse(
                 &r.str("editor.stickyScroll.defaultModel"),
             ),

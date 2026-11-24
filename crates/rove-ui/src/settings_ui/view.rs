@@ -423,7 +423,7 @@ impl SettingsView {
         self.revision.0 += 1;
         let revision = self.revision;
         let overrides = self.language_overrides.clone();
-        let list_rows = rows
+        let list_rows: Vec<_> = rows
             .iter()
             .map(|entry| Row {
                 id: ItemId(entry.row.key.as_str().into()),
