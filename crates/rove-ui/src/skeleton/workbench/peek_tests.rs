@@ -769,6 +769,41 @@ fn peek_empty_results_and_unavailable_implementations_hint_without_a_window(
 }
 
 #[gpui::test]
+fn peek_implementation_empty_hint_expires_without_input(cx: &mut TestAppContext) {
+    let f = Fixture::new("{}");
+    let fake = Fake {
+        implementations_available: true,
+        ..Default::default()
+    };
+    let (view, cx, fake) = f.open(fake, cx);
+    caret(&view, pos(3, 22), cx);
+    press("ctrl-shift-f12", cx);
+    assert!(peek(&view, cx).is_none());
+    view.read_with(cx, |v, _| {
+        let hint = v.shell.feedback.cursor_hint().unwrap();
+        assert_eq!(hint.message.key.as_ref(), "peek.empty.implementations");
+    });
+    assert!(matches!(
+        fake.points.lock().unwrap()[0].0,
+        NavigationKind::Implementations
+    ));
+
+    cx.executor().advance_clock(Duration::from_millis(2999));
+    cx.run_until_parked();
+    assert!(cursor_hint(&view, cx).is_some());
+    press("ctrl-shift-f12", cx);
+    assert!(cursor_hint(&view, cx).is_some());
+
+    // 第一条提示的计时到期时，新的提示仍保留自己的完整时限。
+    cx.executor().advance_clock(Duration::from_millis(1));
+    cx.run_until_parked();
+    assert!(cursor_hint(&view, cx).is_some());
+    cx.executor().advance_clock(Duration::from_millis(2999));
+    cx.run_until_parked();
+    assert_eq!(cursor_hint(&view, cx), None);
+}
+
+#[gpui::test]
 fn peek_implementations_when_available_and_approximate_empty_hint(cx: &mut TestAppContext) {
     let f = Fixture::new("{}");
     let mut empty_approx = Fake {

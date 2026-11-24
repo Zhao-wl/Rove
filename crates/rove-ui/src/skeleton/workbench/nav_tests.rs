@@ -966,6 +966,12 @@ fn empty_state_hints_at_the_cursor(cx: &mut TestAppContext) {
         cursor_hint(&view, cx).as_deref(),
         Some("未找到 `void` 的定义（语义索引构建中）")
     );
+    cx.executor().advance_clock(Duration::from_millis(2999));
+    cx.run_until_parked();
+    assert!(cursor_hint(&view, cx).is_some());
+    cx.executor().advance_clock(Duration::from_millis(1));
+    cx.run_until_parked();
+    assert_eq!(cursor_hint(&view, cx), None);
 }
 
 #[gpui::test]

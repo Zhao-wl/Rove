@@ -5,7 +5,9 @@
 //! 工作台状态都在 [`Shell`] 里。视图按需创建：面板默认隐藏时不调用面板视图工厂。
 use super::{
     catalog::{self, *},
-    feedback::{FeedbackHub, Reason, Severity, NEVER_SHOW_AGAIN, TOAST_AUTO_HIDE_MS},
+    feedback::{
+        FeedbackHub, Reason, Severity, NEVER_SHOW_AGAIN, STATUS_DURATION_MS, TOAST_AUTO_HIDE_MS,
+    },
     icons::{self, LabelPart},
     layout::{
         write_json, LayoutState, LayoutStore, PanelLocation, SaveGate, SideBarLocation,
@@ -116,6 +118,7 @@ pub struct Shell {
     save_generation: u64,
     save_gate: SaveGate,
     status_timer: u64,
+    cursor_timer: u64,
     toast_timers: BTreeMap<Arc<str>, u64>,
     zoom_level: f64,
     pub(crate) title: String,
@@ -222,6 +225,7 @@ impl Shell {
             save_generation: 0,
             save_gate: SaveGate::default(),
             status_timer: 0,
+            cursor_timer: 0,
             toast_timers: BTreeMap::new(),
             zoom_level,
             title,
@@ -525,7 +529,7 @@ fn hsla(c: Color) -> Hsla {
 
 // ===================================================================== 反馈接入
 
-/// 显示一条反馈并按需启动计时（状态栏消息 3 秒、toast 自动收起）。
+/// 显示一条反馈并按需启动计时。
 pub fn report<T: ShellHost>(
     host: &mut T,
     key: &str,
@@ -542,7 +546,7 @@ pub fn report<T: ShellHost>(
     Ok(())
 }
 
-/// 为当前的状态栏消息与 toast 启动计时；重复调用是幂等的（绘制时也会调用，
+/// 为当前的状态栏消息、光标提示与 toast 启动计时；重复调用是幂等的（绘制时也会调用，
 /// 覆盖直接用 `FeedbackService::show` 的调用方）。
 pub fn ensure_timers<T: ShellHost>(host: &mut T, cx: &mut Context<T>) {
     let shell = host.shell_mut();
@@ -556,6 +560,23 @@ pub fn ensure_timers<T: ShellHost>(host: &mut T, cx: &mut Context<T>) {
                     .await;
                 let _ = this.update(cx, |host, cx| {
                     if host.shell_mut().feedback.expire_status(generation) {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+    if let Some(hint) = shell.feedback.cursor_hint() {
+        if hint.generation != shell.cursor_timer {
+            let generation = hint.generation;
+            shell.cursor_timer = generation;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(STATUS_DURATION_MS.into()))
+                    .await;
+                let _ = this.update(cx, |host, cx| {
+                    if host.shell_mut().feedback.expire_cursor_hint(generation) {
                         cx.notify();
                     }
                 });
