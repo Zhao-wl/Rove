@@ -1,6 +1,11 @@
 use super::{Context, FileEvent, Workbench};
-use crate::context_basket::{model::Basket, persistence::BasketStore};
+use crate::context_basket::{
+    model::{at_or_below, same_path, Availability, Basket, LineRange},
+    persistence::BasketStore,
+    source,
+};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -8,9 +13,37 @@ use std::{
 pub(super) struct WindowBasket {
     store: Option<BasketStore>,
     pub(super) contents: Basket,
-    loaded: bool,
-    revision: u64,
+    pub(super) loaded: bool,
+    pub(super) panel: Option<super::basket_view::BasketPanel>,
+    pub(super) focus_requested: bool,
+    secondary_pane: bool,
+    pub(super) reselect: Option<(u64, rove_base::Resource)>,
+    pub(super) previews: BTreeMap<u64, BasketPreview>,
+    pub(super) revision: u64,
+    pub(super) pending_anchors: BTreeMap<u64, u64>,
+    next_read: u64,
     written: Arc<Mutex<u64>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BasketPreview {
+    pub(super) lines: Vec<String>,
+    pub(super) characters: usize,
+}
+
+impl BasketPreview {
+    fn from_text(text: &dyn rove_buffer::TextSource, range: LineRange) -> Option<Self> {
+        let raw = source::read_excerpt(text, range)?;
+        let canonical = raw.replace("\r\n", "\n").replace('\r', "\n");
+        Some(Self {
+            lines: canonical
+                .lines()
+                .take(2)
+                .map(|line| line.chars().take(160).collect())
+                .collect(),
+            characters: canonical.chars().count(),
+        })
+    }
 }
 
 impl WindowBasket {
@@ -18,10 +51,34 @@ impl WindowBasket {
         let store = (!root.as_os_str().is_empty()).then(|| BasketStore::for_workspace(root));
         Self {
             loaded: store.is_none(),
+            panel: None,
+            focus_requested: false,
+            secondary_pane: false,
+            reselect: None,
+            previews: BTreeMap::new(),
             store,
             contents: Basket::default(),
             revision: 0,
+            pending_anchors: BTreeMap::new(),
+            next_read: 0,
             written: Arc::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn use_test_state(&mut self) {
+        self.store = None;
+        self.loaded = true;
+    }
+
+    fn set_preview(&mut self, id: u64, next: Option<BasketPreview>) -> bool {
+        match next {
+            Some(next) if self.previews.get(&id) != Some(&next) => {
+                self.previews.insert(id, next);
+                true
+            }
+            None => self.previews.remove(&id).is_some(),
+            Some(_) => false,
         }
     }
 
@@ -57,14 +114,22 @@ impl Workbench {
             let _ = this.update(cx, |view, cx| {
                 view.basket.contents = contents;
                 view.basket.loaded = true;
+                view.verify_basket_on_disk(&BTreeSet::new(), true, cx);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    fn basket_changed(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn basket_changed(&mut self, cx: &mut Context<Self>) {
         self.basket.revision += 1;
+        self.basket.previews.retain(|id, _| {
+            self.basket
+                .contents
+                .items()
+                .iter()
+                .any(|item| item.id() == *id && item.availability == Availability::Current)
+        });
         if let Some(write) = self.basket.write_job() {
             cx.background_executor()
                 .spawn(async move { write() })
@@ -88,15 +153,521 @@ impl Workbench {
             return;
         }
         let before = self.basket.contents.clone();
+        let mut refresh = BTreeSet::new();
+        let mut all = false;
         for event in events {
             match event {
-                FileEvent::Renamed { from, to } => self.basket.contents.rename(from, to),
-                FileEvent::Removed(path) => self.basket.contents.mark_removed(path),
-                _ => {}
+                FileEvent::Renamed { from, to } => {
+                    self.basket.contents.rename(from, to);
+                    refresh.remove(from);
+                    refresh.insert(to.clone());
+                }
+                FileEvent::Removed(path) => {
+                    self.basket.contents.mark_removed(path);
+                    refresh.remove(path);
+                    for entry in self
+                        .basket
+                        .contents
+                        .items()
+                        .iter()
+                        .filter(|entry| at_or_below(&entry.path, path))
+                    {
+                        self.basket.pending_anchors.remove(&entry.id());
+                    }
+                }
+                FileEvent::Changed(path) | FileEvent::Created(path) => {
+                    refresh.insert(path.clone());
+                }
+                FileEvent::RescanRequired => all = true,
             }
         }
         if self.basket.contents != before {
             self.basket_changed(cx);
         }
+        self.verify_basket_on_disk(&refresh, all, cx);
+    }
+
+    fn verify_basket_on_disk(
+        &mut self,
+        refresh: &BTreeSet<rove_base::WorkspacePath>,
+        all: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty: Vec<_> = self
+            .editor
+            .groups
+            .values()
+            .flat_map(|group| group.tabs.iter())
+            .filter_map(|tab| match (&tab.resource, tab.dirty) {
+                (rove_base::Resource::Workspace(path), true) => Some(path),
+                _ => None,
+            })
+            .collect();
+        let mut paths = BTreeMap::<_, Vec<_>>::new();
+        for entry in self.basket.contents.items() {
+            if !dirty.iter().any(|path| same_path(path, &entry.path))
+                && (all || refresh.iter().any(|path| same_path(path, &entry.path)))
+            {
+                paths.entry(entry.path.clone()).or_default().push((
+                    entry.id(),
+                    entry.lines,
+                    entry.anchor,
+                ));
+            }
+        }
+        if paths.is_empty() {
+            return;
+        }
+        self.basket.next_read += 1;
+        let generation = self.basket.next_read;
+        for entries in paths.values() {
+            self.basket
+                .pending_anchors
+                .extend(entries.iter().map(|(id, _, _)| (*id, generation)));
+        }
+        let settings = self.settings.clone();
+        let root = self.root.clone();
+        let task = cx.background_executor().spawn(async move {
+            let policy = rove_buffer::SizePolicy::read(&*settings).unwrap_or_default();
+            let mut results = Vec::new();
+            for (relative, entries) in paths {
+                let path = root.join(relative.as_str());
+                let language = rove_syntax::highlight::language_for_path(&path, Some(&*settings));
+                let options = rove_buffer::LoadOptions::new(&language, &*settings);
+                let opened = rove_buffer::open_file(&path, &options, policy);
+                let missing = matches!(
+                    &opened,
+                    Err(rove_base::Error::Io {
+                        kind: std::io::ErrorKind::NotFound,
+                        ..
+                    })
+                );
+                let text = opened.ok().map(|file| file.text.source());
+                for (id, range, anchor) in entries {
+                    let relocated = anchor.and_then(|anchor| {
+                        source::relocate_source(text.as_deref()?, range, anchor)
+                    });
+                    let preview = relocated
+                        .and_then(|(range, _)| BasketPreview::from_text(text.as_deref()?, range));
+                    results.push((id, range, relocated, preview, missing));
+                }
+            }
+            results
+        });
+        cx.spawn(async move |this, cx| {
+            let results = task.await;
+            let _ = this.update(cx, |view, cx| {
+                let mut changed = false;
+                for (id, range, located, preview, missing) in results {
+                    if view.basket.pending_anchors.get(&id) != Some(&generation) {
+                        continue;
+                    }
+                    view.basket.pending_anchors.remove(&id);
+                    changed |= view
+                        .basket
+                        .contents
+                        .resolve_external(id, range, located, missing);
+                    changed |= view.basket.set_preview(id, preview);
+                }
+                if changed {
+                    view.basket_changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+impl Workbench {
+    pub(super) fn sync_basket_editor_focus(&mut self, window: &super::Window, cx: &super::App) {
+        use gpui::Focusable;
+        let group = self.editor.focused;
+        for secondary in [false, true] {
+            if self
+                .group_code(group, secondary)
+                .is_some_and(|view| view.read(cx).focus_handle(cx).contains_focused(window, cx))
+            {
+                self.basket.secondary_pane = secondary;
+                break;
+            }
+        }
+    }
+
+    pub(super) fn add_editor_selection_to_basket(&mut self, cx: &mut Context<Self>) {
+        use crate::context_basket::model::Entry;
+
+        let Some((group, document, _)) = self.focused_text() else {
+            self.report_basket("contextBasket.noFile", Arc::from([]), cx);
+            return;
+        };
+        let rove_base::Resource::Workspace(path) = &document.resource else {
+            self.report_basket("contextBasket.noFile", Arc::from([]), cx);
+            return;
+        };
+        if !self.basket.loaded {
+            self.report_basket("contextBasket.loading", Arc::from([]), cx);
+            return;
+        }
+        let editor = self
+            .group_code(group, self.basket.secondary_pane)
+            .unwrap_or_else(|| self.code_view())
+            .read(cx);
+        let cursor = editor.selection().active;
+        let Some(text) = editor.text().cloned() else {
+            return;
+        };
+        let selections: Vec<_> = editor
+            .selections()
+            .into_iter()
+            .filter(|selection| !selection.is_empty())
+            .collect();
+        if let Some((id, requested)) = &self.basket.reselect {
+            if requested == &document.resource {
+                let Some(selection) = selections.first() else {
+                    self.report_basket("contextBasket.reselect", Arc::from([]), cx);
+                    return;
+                };
+                let Some(range) = source::selection_lines(selection.start(), selection.end())
+                else {
+                    self.report_basket("contextBasket.tooLong", Arc::from([]), cx);
+                    return;
+                };
+                let id = *id;
+                self.basket.reselect = None;
+                if self.basket.contents.replace_range(id, Some(range)) {
+                    self.capture_basket_anchors(vec![(id, range)], text, cx);
+                    self.basket_changed(cx);
+                }
+                return;
+            }
+        }
+        let mut fallback = false;
+        let entries = if selections.is_empty() {
+            if document.metadata.size == rove_buffer::SizeClass::Huge {
+                self.report_basket("contextBasket.selectionRequired", Arc::from([]), cx);
+                return;
+            }
+            let symbol = self
+                .outline
+                .cached(document.id)
+                .filter(|symbols| symbols.version() == text.version())
+                .and_then(|symbols| {
+                    let path = symbols.path_at(cursor);
+                    let node = symbols.node(*path.last()?)?;
+                    Some((
+                        source::selection_lines(node.symbol.range.start(), node.symbol.range.end()),
+                        crate::outline::model::symbol_path_text(symbols, &path, "."),
+                    ))
+                });
+            let (range, name) = if let Some((range, name)) = symbol {
+                (range, Some(name))
+            } else {
+                fallback = true;
+                (LineRange::new(cursor.line.0 + 1, cursor.line.0 + 1), None)
+            };
+            vec![(range, name)]
+        } else {
+            selections
+                .into_iter()
+                .map(|selection| {
+                    (
+                        source::selection_lines(selection.start(), selection.end()),
+                        None,
+                    )
+                })
+                .collect()
+        };
+        let previous = self.basket.contents.clone();
+        let mut ids = BTreeSet::new();
+        for (range, symbol) in entries {
+            let Some(range) = range else {
+                self.basket.contents = previous;
+                self.report_basket("contextBasket.tooLong", Arc::from([]), cx);
+                return;
+            };
+            match self
+                .basket
+                .contents
+                .insert(Entry::new(path.clone(), range, symbol))
+            {
+                Ok(id) => {
+                    ids.insert(id);
+                }
+                Err(_) => {
+                    self.basket.contents = previous;
+                    self.report_basket("contextBasket.tooLong", Arc::from([]), cx);
+                    return;
+                }
+            }
+        }
+        let ranges: Vec<_> = self
+            .basket
+            .contents
+            .items()
+            .iter()
+            .filter(|entry| ids.contains(&entry.id()))
+            .map(|entry| (entry.id(), entry.lines))
+            .collect();
+        self.capture_basket_anchors(ranges, text, cx);
+        self.basket_changed(cx);
+        let key = if fallback {
+            "contextBasket.addedCurrentLine"
+        } else {
+            "contextBasket.added"
+        };
+        self.report_basket(
+            key,
+            Arc::from([(
+                "count".into(),
+                self.basket.contents.items().len().to_string().into(),
+            )]),
+            cx,
+        );
+    }
+
+    fn capture_basket_anchors(
+        &mut self,
+        ranges: Vec<(u64, LineRange)>,
+        text: Arc<dyn rove_buffer::TextSource>,
+        cx: &mut Context<Self>,
+    ) {
+        if ranges.is_empty() {
+            return;
+        }
+        self.basket.next_read += 1;
+        let revision = self.basket.next_read;
+        self.basket
+            .pending_anchors
+            .extend(ranges.iter().map(|(id, _)| (*id, revision)));
+        let task = cx.background_executor().spawn(async move {
+            ranges
+                .into_iter()
+                .map(|(id, range)| {
+                    (
+                        id,
+                        range,
+                        source::capture_source(&*text, range),
+                        BasketPreview::from_text(&*text, range),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let anchors = task.await;
+            let _ = this.update(cx, |view, cx| {
+                let mut changed = false;
+                for (id, range, anchor, preview) in anchors {
+                    if view.basket.pending_anchors.get(&id) != Some(&revision) {
+                        continue;
+                    }
+                    view.basket.pending_anchors.remove(&id);
+                    if let Some(anchor) = anchor {
+                        changed |= view.basket.contents.install_anchor(id, range, anchor);
+                        changed |= view.basket.set_preview(id, preview);
+                    }
+                }
+                if changed {
+                    view.basket_changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn basket_text_edited(
+        &mut self,
+        path: &rove_base::WorkspacePath,
+        edited: &crate::code_view::TextEdited,
+        cx: &mut Context<Self>,
+    ) {
+        let ids: Vec<_> = self
+            .basket
+            .contents
+            .items()
+            .iter()
+            .filter(|entry| {
+                same_path(&entry.path, path) && entry.availability == Availability::Current
+            })
+            .map(|entry| (entry.id(), entry.lines))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let mut updated = Vec::new();
+        for (id, old) in ids {
+            let new = source::map_edited_range(&*edited.before, &*edited.after, &edited.edits, old);
+            self.basket.pending_anchors.remove(&id);
+            self.basket.contents.replace_range(id, new);
+            if let Some(range) = new {
+                updated.push((id, range));
+            }
+        }
+        self.capture_basket_anchors(updated, edited.after.clone(), cx);
+        self.basket_changed(cx);
+    }
+
+    pub(super) fn report_basket(
+        &mut self,
+        key: &'static str,
+        args: Arc<[(Arc<str>, Arc<str>)]>,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = crate::shell::view::report(
+            self,
+            "contextBasket.status",
+            crate::shell::feedback::Reason::Receipt,
+            rove_i18n::Message {
+                key: key.into(),
+                args,
+            },
+            Arc::from([]),
+            cx,
+        );
+    }
+}
+
+impl Workbench {
+    pub(super) fn basket_command(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        use crate::context_basket::registry as reg;
+        match id {
+            reg::ADD => self.add_editor_selection_to_basket(cx),
+            reg::FOCUS => {
+                self.shell.layout.active_container = Some(reg::CONTAINER.into());
+                self.shell.layout.sidebar_visible = true;
+                self.shell.schedule_save(cx);
+                self.basket.focus_requested = true;
+                cx.notify();
+            }
+            reg::COPY_MARKDOWN => self.copy_basket(true, cx),
+            reg::COPY_REFERENCES => self.copy_basket(false, cx),
+            reg::CLEAR if self.basket.loaded => {
+                self.clear_basket(cx);
+                self.report_basket("contextBasket.cleared", Arc::from([]), cx);
+            }
+            reg::CLEAR => self.report_basket("contextBasket.loading", Arc::from([]), cx),
+            _ => return false,
+        }
+        true
+    }
+
+    fn clear_basket(&mut self, cx: &mut Context<Self>) {
+        self.basket.contents.clear();
+        self.basket.pending_anchors.clear();
+        self.basket.previews.clear();
+        self.basket.reselect = None;
+        self.basket_changed(cx);
+    }
+
+    fn copy_basket(&mut self, markdown: bool, cx: &mut Context<Self>) {
+        use crate::context_basket::{export, registry as reg};
+        if self.basket.contents.items().is_empty() {
+            let key = if self.basket.loaded {
+                "contextBasket.noExportableEntries"
+            } else {
+                "contextBasket.loading"
+            };
+            self.report_basket(key, Arc::from([]), cx);
+            return;
+        }
+        let revision = self.basket.revision;
+        let mut contents = self.basket.contents.clone();
+        let mut cached: BTreeMap<_, _> = self
+            .editor
+            .groups
+            .values()
+            .flat_map(|group| group.tabs.iter())
+            .filter_map(|tab| {
+                let rove_base::Resource::Workspace(path) = &tab.resource else {
+                    return None;
+                };
+                let document = &tab.opened()?.document;
+                if !tab.dirty {
+                    return None;
+                }
+                Some((
+                    path.clone(),
+                    Some((document.metadata.language.clone(), document.text.clone())),
+                ))
+            })
+            .collect();
+        let settings = self.settings.clone();
+        let root = self.root.clone();
+        let scope = rove_config::Scope::default();
+        let clear = reg::CLEAR_AFTER_COPY
+            .read(&*settings, &scope)
+            .unwrap_or(false);
+        let task = cx.background_executor().spawn(async move {
+            let policy = rove_buffer::SizePolicy::read(&*settings).unwrap_or_default();
+            let mut excerpts = BTreeMap::new();
+            for entry in contents.items().to_vec() {
+                if entry.availability != Availability::Current {
+                    continue;
+                }
+                let file = cached.entry(entry.path.clone()).or_insert_with(|| {
+                    let path = root.join(entry.path.as_str());
+                    let language =
+                        rove_syntax::highlight::language_for_path(&path, Some(&*settings));
+                    let options = rove_buffer::LoadOptions::new(&language, &*settings);
+                    let file = rove_buffer::open_file(&path, &options, policy).ok()?;
+                    Some((language, file.text.source()))
+                });
+                let verified = file.as_ref().and_then(|(language, text)| {
+                    let previous = entry.anchor?;
+                    let same = source::capture_source(&**text, entry.lines)
+                        .filter(|anchor| anchor == &previous)
+                        .map(|anchor| (entry.lines, anchor));
+                    let location =
+                        same.or_else(|| source::relocate_source(&**text, entry.lines, previous))?;
+                    if markdown {
+                        excerpts.insert(
+                            entry.id(),
+                            export::Excerpt {
+                                language: language.to_string(),
+                                text: source::read_excerpt(&**text, location.0)?,
+                            },
+                        );
+                    }
+                    Some(location)
+                });
+                contents.resolve_external(entry.id(), entry.lines, verified, false);
+            }
+            if markdown {
+                export::markdown(&contents, |entry| excerpts.remove(&entry.id()))
+            } else {
+                let template = reg::REFERENCE_TEMPLATE
+                    .read(&*settings, &scope)
+                    .unwrap_or_else(|_| export::DEFAULT_REFERENCE.to_owned());
+                export::references(&contents, &template)
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |view, cx| {
+                if result.entries == 0 {
+                    view.report_basket("contextBasket.noExportableEntries", Arc::from([]), cx);
+                    return;
+                }
+                let count = result.entries.to_string();
+                let tokens = result.estimated_tokens().to_string();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(result.text));
+                if clear && view.basket.revision == revision {
+                    view.clear_basket(cx);
+                }
+                let key = if result.used_default_template {
+                    "contextBasket.copiedFallback"
+                } else {
+                    "contextBasket.copied"
+                };
+                view.report_basket(
+                    key,
+                    Arc::from([
+                        ("count".into(), count.into()),
+                        ("tokens".into(), tokens.into()),
+                    ]),
+                    cx,
+                );
+            });
+        })
+        .detach();
     }
 }

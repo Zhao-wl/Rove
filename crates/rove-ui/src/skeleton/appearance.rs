@@ -62,6 +62,7 @@ pub fn strings() -> Result<StringTable> {
     // #36：C# 索引状态的文案。
     crate::index_status::register_strings(&mut t)?;
     crate::outline::registry::register_strings(&mut t)?;
+    crate::context_basket::registry::register_strings(&mut t)?;
     crate::find::registry::register_strings(&mut t)?;
     // #24：快速打开、命令面板与转到行的标题和提示。
     crate::quick_access::registry::register_strings(&mut t)?;
@@ -113,6 +114,7 @@ pub fn contributions() -> Result<ContributionRegistry> {
     let mut r = ContributionRegistry::default();
     crate::shell::catalog::register_contributions(&mut r)?;
     crate::outline::registry::register_contributions(&mut r)?;
+    crate::context_basket::registry::register_contributions(&mut r)?;
     // #27：状态栏右侧的六个文件状态条目。
     crate::status_items::registry::register_contributions(&mut r)?;
     // #36：C# 索引状态条目与索引详情面板。

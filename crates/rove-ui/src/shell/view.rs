@@ -77,6 +77,9 @@ pub trait ShellHost: Sized + 'static {
     ) -> Option<AnyElement> {
         None
     }
+    fn activity_badge(&self, _container: &str) -> usize {
+        0
+    }
     /// 当前活动编辑器的文档；提示条与光标提示只显示在它上面。
     fn active_document(&self) -> Option<DocumentId>;
     fn editor_focus(&self) -> FocusHandle;
@@ -1871,6 +1874,7 @@ fn render_activity_bar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElemen
             }
         };
         let glyph = c.icon.as_deref().and_then(icons::codepoint);
+        let badge = host.activity_badge(id);
         items = items.child(
             div()
                 .id(SharedString::from(format!("activity-{id}")))
@@ -1899,6 +1903,22 @@ fn render_activity_bar<T: ShellHost>(host: &T, cx: &mut Context<T>) -> AnyElemen
                 .child(match glyph {
                     Some(g) => icon(g, size),
                     None => div().child(text(host, &c.title)),
+                })
+                .when(badge > 0, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .right(px(5.0))
+                            .bottom(px(5.0))
+                            .px(px(4.0))
+                            .rounded_full()
+                            .text_size(shell.z(10.0))
+                            .bg(p.or("activityBarBadge.background", "progressBar.background"))
+                            .text_color(
+                                p.or("activityBarBadge.foreground", "notifications.foreground"),
+                            )
+                            .child(badge.to_string()),
+                    )
                 })
                 .on_click(cx.listener(move |host: &mut T, _, window, cx| {
                     let shell = host.shell_mut();

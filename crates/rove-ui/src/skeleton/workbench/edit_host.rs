@@ -303,6 +303,9 @@ impl Workbench {
             return;
         };
         let edited = &notice.0;
+        if let Resource::Workspace(path) = &document.resource {
+            self.basket_text_edited(path, edited, cx);
+        }
         let line_endings = self
             .editing
             .saves

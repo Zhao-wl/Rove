@@ -2,7 +2,7 @@
 use super::model::LineRange;
 
 const SEARCH_RADIUS: usize = 64;
-const MAX_LINE_DELTA: i64 = 512;
+const MAX_LINE_DELTA: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Anchor {
@@ -15,12 +15,22 @@ pub struct Anchor {
 }
 
 impl Anchor {
+    #[cfg(test)]
     pub fn capture(rows: &[&str], range: LineRange) -> Option<Self> {
-        let start = usize::try_from(range.first() - 1).ok()?;
-        let end = usize::try_from(range.last()).ok()?;
+        Self::capture_window(rows.len(), 1, rows, range)
+    }
+
+    pub fn capture_window(
+        file_lines: usize,
+        first_row: u64,
+        rows: &[&str],
+        range: LineRange,
+    ) -> Option<Self> {
+        let start = usize::try_from(range.first().checked_sub(first_row)?).ok()?;
+        let end = usize::try_from(range.last().checked_sub(first_row)?).ok()? + 1;
         let selected = rows.get(start..end)?;
         Some(Self {
-            file_lines: rows.len(),
+            file_lines,
             selected: fingerprint(selected),
             first: fingerprint(&[*selected.first()?]),
             last: fingerprint(&[*selected.last()?]),
@@ -31,17 +41,50 @@ impl Anchor {
         })
     }
 
-    /// Match a small edit or find one unambiguous copy of the previous selection nearby.
-    /// A wholesale rewrite, conflicting anchors or ambiguous match needs manual re-selection.
-    pub fn relocate(self, previous: LineRange, rows: &[&str]) -> Option<(LineRange, Self)> {
-        let delta = i64::try_from(rows.len()).ok()? - i64::try_from(self.file_lines).ok()?;
-        if delta.abs() > MAX_LINE_DELTA {
+    fn starts(
+        self,
+        previous: LineRange,
+        file_lines: usize,
+    ) -> Option<(usize, usize, usize, isize)> {
+        let delta = isize::try_from(file_lines).ok()? - isize::try_from(self.file_lines).ok()?;
+        if delta.unsigned_abs() > MAX_LINE_DELTA {
             return None;
         }
         let old = usize::try_from(previous.first() - 1).ok()?;
         let span = usize::try_from(previous.lines()).ok()?;
+        let guess = old.saturating_add_signed(delta);
+        let first = old.min(guess).saturating_sub(SEARCH_RADIUS);
+        let through = old
+            .max(guess)
+            .saturating_add(SEARCH_RADIUS)
+            .min(file_lines.checked_sub(span)?);
+        (first <= through).then_some((first, through, span, delta))
+    }
+
+    /// The bounded set of rows required to test the nearby candidate locations, including
+    /// one row of surrounding context where it exists. Positions here are one-based.
+    pub fn relocation_window(self, previous: LineRange, file_lines: usize) -> Option<(u64, u64)> {
+        let (first, through, span, _) = self.starts(previous, file_lines)?;
+        let first_row = first.saturating_sub(1) + 1;
+        let last_row = through
+            .saturating_add(span)
+            .saturating_add(1)
+            .min(file_lines);
+        Some((first_row as u64, last_row as u64))
+    }
+
+    /// Match a small edit or find one unambiguous copy of the previous selection nearby.
+    /// A wholesale rewrite, conflicting anchors or ambiguous match needs manual re-selection.
+    pub fn relocate_window(
+        self,
+        previous: LineRange,
+        file_lines: usize,
+        first_row: u64,
+        rows: &[&str],
+    ) -> Option<(LineRange, Self)> {
+        let (from, through, span, delta) = self.starts(previous, file_lines)?;
         if delta == 0 {
-            if let Some(current) = Self::capture(rows, previous) {
+            if let Some(current) = Self::capture_window(file_lines, first_row, rows, previous) {
                 let endpoints_same = self.first == current.first && self.last == current.last;
                 let surroundings_same =
                     self.previous == current.previous && self.following == current.following;
@@ -54,28 +97,33 @@ impl Anchor {
                 }
             }
         }
-        let guess = old.saturating_add_signed(delta as isize);
-        let from = old.min(guess).saturating_sub(SEARCH_RADIUS);
-        let through = old
-            .max(guess)
-            .saturating_add(SEARCH_RADIUS)
-            .min(rows.len().checked_sub(span)?);
+        let window_start = usize::try_from(first_row.checked_sub(1)?).ok()?;
         let mut matched = None;
         for start in from..=through {
-            let end = start + span;
-            if fingerprint(&[rows[start]]) != self.first
-                || fingerprint(&[rows[end - 1]]) != self.last
-                || fingerprint(&rows[start..end]) != self.selected
+            let local = start.checked_sub(window_start)?;
+            let end = local.checked_add(span)?;
+            let content = rows.get(local..end)?;
+            if fingerprint(&[*content.first()?]) != self.first
+                || fingerprint(&[*content.last()?]) != self.last
+                || fingerprint(content) != self.selected
             {
                 continue;
             }
             if matched.is_some() {
                 return None;
             }
-            let range = LineRange::new(start as u64 + 1, end as u64)?;
-            matched = Some((range, Self::capture(rows, range)?));
+            let range = LineRange::new(start as u64 + 1, (start + span) as u64)?;
+            matched = Some((
+                range,
+                Self::capture_window(file_lines, first_row, rows, range)?,
+            ));
         }
         matched
+    }
+
+    #[cfg(test)]
+    pub fn relocate(self, previous: LineRange, rows: &[&str]) -> Option<(LineRange, Self)> {
+        self.relocate_window(previous, rows.len(), 1, rows)
     }
 }
 

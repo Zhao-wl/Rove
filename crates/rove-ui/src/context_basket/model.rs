@@ -171,6 +171,7 @@ impl Basket {
         })
     }
 
+    #[cfg(test)]
     pub fn bind_anchor(&mut self, id: u64, rows: &[&str]) -> bool {
         let Some(entry) = self.items.iter_mut().find(|entry| entry.id == id) else {
             return false;
@@ -184,6 +185,34 @@ impl Basket {
         true
     }
 
+    pub fn replace_range(&mut self, id: u64, range: Option<LineRange>) -> bool {
+        let Some(entry) = self.items.iter_mut().find(|entry| entry.id == id) else {
+            return false;
+        };
+        if let Some(range) = range {
+            entry.lines = range;
+            entry.anchor = None;
+            entry.availability = Availability::Current;
+        } else {
+            entry.availability = Availability::Stale;
+        }
+        true
+    }
+
+    pub fn install_anchor(&mut self, id: u64, range: LineRange, anchor: Anchor) -> bool {
+        let Some(entry) = self.items.iter_mut().find(|entry| {
+            entry.id == id && entry.lines == range && entry.availability == Availability::Current
+        }) else {
+            return false;
+        };
+        if entry.anchor == Some(anchor) {
+            return false;
+        }
+        entry.anchor = Some(anchor);
+        true
+    }
+
+    #[cfg(test)]
     pub fn settle_change(&mut self, path: &WorkspacePath, rows: &[&str]) {
         for entry in self
             .items
@@ -271,9 +300,38 @@ impl Basket {
         }
     }
 
+    pub fn resolve_external(
+        &mut self,
+        id: u64,
+        range: LineRange,
+        relocated: Option<(LineRange, Anchor)>,
+        missing: bool,
+    ) -> bool {
+        let Some(entry) = self
+            .items
+            .iter_mut()
+            .find(|entry| entry.id == id && entry.lines == range)
+        else {
+            return false;
+        };
+        let old = (entry.lines, entry.anchor, entry.availability);
+        if let Some((range, anchor)) = relocated {
+            entry.lines = range;
+            entry.anchor = Some(anchor);
+            entry.availability = Availability::Current;
+        } else {
+            entry.availability = if missing {
+                Availability::Missing
+            } else {
+                Availability::Stale
+            };
+        }
+        old != (entry.lines, entry.anchor, entry.availability)
+    }
+
     pub fn mark_removed(&mut self, path: &WorkspacePath) {
         for entry in &mut self.items {
-            if same_path(&entry.path, path) {
+            if at_or_below(&entry.path, path) {
                 entry.availability = Availability::Missing;
             }
         }
@@ -297,8 +355,16 @@ fn append_note(notes: &mut String, next: &str) {
     }
 }
 
-fn same_path(left: &WorkspacePath, right: &WorkspacePath) -> bool {
+pub(crate) fn same_path(left: &WorkspacePath, right: &WorkspacePath) -> bool {
     same_component(left.as_str(), right.as_str())
+}
+
+pub(crate) fn at_or_below(candidate: &WorkspacePath, parent: &WorkspacePath) -> bool {
+    let mut child = candidate.as_str().split('/');
+    parent
+        .as_str()
+        .split('/')
+        .all(|part| child.next().is_some_and(|next| same_component(part, next)))
 }
 
 fn same_component(left: &str, right: &str) -> bool {
