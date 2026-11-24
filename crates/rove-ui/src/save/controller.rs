@@ -855,7 +855,7 @@ fn actions(buttons: &[(&str, &str)]) -> Arc<[FeedbackAction]> {
 }
 
 /// 文档在界面上的名字：文件名或 `Untitled-1`。
-fn relative_path(path: &Path, root: &Path) -> Option<PathBuf> {
+pub(crate) fn relative_path(path: &Path, root: &Path) -> Option<PathBuf> {
     let mut components = path.components();
     for expected in root.components() {
         let found = components.next()?;

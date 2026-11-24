@@ -197,6 +197,8 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("explorer.delete.permanentButton", "永久删除"),
     ("explorer.operation.cancel", "取消"),
     ("explorer.operation.neverAsk", "不再询问"),
+    ("explorer.operation.targetOpen", "目标位置还有打开的标签页。请关闭相关标签页后重试。"),
+    ("explorer.operation.sourceChanged", "源项目在确认期间变更。请重新选择项目后再试。"),
     ("explorer.operation.retry", "重试"),
     ("explorer.operation.failed", "未能完成文件操作。请检查路径、文件占用及权限后重试。"),
     ("explorer.operation.busy", "所选文件的保存正在进行。请等待保存结束后重试。"),

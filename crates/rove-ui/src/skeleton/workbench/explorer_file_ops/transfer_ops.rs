@@ -13,7 +13,9 @@ use rove_i18n::Message;
 use rove_workspace::{
     file_operations::{
         entry_path, recycle,
-        transfer::{inspect_source, next_duplicate_name, Naming, Transfer, TransferOutcome},
+        transfer::{
+            inspect_source, next_duplicate_name, Naming, Transfer, TransferOutcome, TransferSource,
+        },
         OperationError,
     },
     EntryKind, Folder,
@@ -44,12 +46,20 @@ pub(super) struct Batch {
 }
 
 impl Batch {
+    pub(super) fn would_replace_open_path(&self, root: &Path, open: &Path) -> bool {
+        self.entries.iter().any(|item| {
+            item.replace.is_some()
+                && crate::save::controller::relative_path(open, &root.join(item.to.as_str()))
+                    .is_some()
+        })
+    }
+
     pub(super) fn operation_paths(&self, root: &Path, folder: &Folder) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         for item in &self.entries {
             paths.push(root.join(item.to.as_str()));
             if self.transfer == Transfer::Move {
-                paths.push(super::display_path(&item.from, root, folder));
+                paths.push(super::display_path(&item.from.path, root, folder));
             }
         }
         paths
@@ -57,7 +67,7 @@ impl Batch {
 }
 
 struct TransferItem {
-    from: PathBuf,
+    from: TransferSource,
     to: WorkspacePath,
     replace: Option<SelectedEntry>,
 }
@@ -301,20 +311,23 @@ fn prepare(
     let mut observed = BTreeSet::new();
     let mut destinations = BTreeSet::new();
     for original in sources {
-        let (from, kind) = inspect_source(&original)?;
-        if !observed.insert(rove_workspace::fold_key(&from.to_string_lossy())) {
+        let from = inspect_source(&original)?;
+        if !observed.insert(rove_workspace::fold_key(&from.path.to_string_lossy())) {
             continue;
         }
         let mut name = from
+            .path
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(io::ErrorKind::InvalidInput)?
             .to_owned();
-        let directory = matches!(kind, EntryKind::Directory);
+        let directory = matches!(from.kind, EntryKind::Directory);
         loop {
             let to = entry_path(parent, &name, false).map_err(other)?;
             let key = rove_workspace::fold_key(to.as_str());
-            if transfer == Transfer::Move && same_path(&from, &folder.absolute(&to)) {
+            if (transfer == Transfer::Move || naming == Naming::Disabled)
+                && same_path(&from.path, &folder.absolute(&to))
+            {
                 break;
             }
             let occupied = destinations.contains(&key);
@@ -342,6 +355,9 @@ fn prepare(
                 }
                 Err(error) => return Err(other(error)),
             };
+            folder
+                .verify_transfer_tree(&from.path, &to, transfer)
+                .map_err(operation_io)?;
             destinations.insert(key);
             entries.push_back(TransferItem { from, to, replace });
             break;
@@ -366,6 +382,10 @@ fn other(error: impl std::fmt::Debug) -> io::Error {
 pub(super) fn execute(folder: &Folder, root: &Path, mut batch: Batch) -> Outcome {
     let mut result = Outcome::default();
     while let Some(item) = batch.entries.pop_front() {
+        if let Err(error) = item.from.verify() {
+            result.failure = Some(source_failure(error, batch, item));
+            return result;
+        }
         let replaced = match item
             .replace
             .as_ref()
@@ -379,7 +399,13 @@ pub(super) fn execute(folder: &Folder, root: &Path, mut batch: Batch) -> Outcome
                 return result;
             }
         };
-        let operation = folder.transfer_from(&item.from, &item.to, batch.transfer);
+        let verified = item.from.verify();
+        let source_invalid = verified.is_err();
+        let operation = verified.and_then(|()| {
+            folder
+                .transfer_from(&item.from.path, &item.to, batch.transfer)
+                .map_err(operation_io)
+        });
         if let Err(error) = operation {
             if let Some(receipt) = replaced {
                 if let Err(restoration) = folder
@@ -391,44 +417,28 @@ pub(super) fn execute(folder: &Folder, root: &Path, mut batch: Batch) -> Outcome
                     result.undo.push(UndoStep::Trashed(receipt));
                 }
             }
-            batch.entries.push_front(item);
-            result.failure = Some(Failure::io(operation_io(error), Request::Transfer(batch)));
+            result.failure = Some(if source_invalid {
+                source_failure(error, batch, item)
+            } else {
+                batch.entries.push_front(item);
+                Failure::io(error, Request::Transfer(batch))
+            });
             return result;
         }
-        if let Some(receipt) = replaced {
-            result.undo.push(UndoStep::Trashed(receipt));
-        }
-        match operation.as_ref().expect("transfer error handled") {
-            TransferOutcome::Unchanged => {}
-            TransferOutcome::Moved => {
-                result.moves.push((
-                    super::display_path(&item.from, root, folder),
-                    root.join(item.to.as_str()),
-                ));
-                if let Ok(stamp) = folder.entry_stamp(&item.to) {
-                    result.undo.push(UndoStep::Moved {
-                        path: item.to,
-                        original: item.from,
-                        stamp,
-                    });
-                }
-            }
-            TransferOutcome::Copied | TransferOutcome::SourceRetained(_) => {
-                if let Ok(stamp) = folder.entry_stamp(&item.to) {
-                    result.undo.push(UndoStep::Pasted {
-                        path: item.to,
-                        stamp,
-                    });
-                }
-                if let Ok(TransferOutcome::SourceRetained(error)) = operation {
-                    result.failure = Some(Failure {
-                        message: "explorer.operation.sourceRetained",
-                        error,
-                        retry: (!batch.entries.is_empty()).then_some(Request::Transfer(batch)),
-                    });
-                    return result;
-                }
-            }
+        if let Err(error) = record_completion(
+            folder,
+            root,
+            &mut result,
+            item,
+            replaced,
+            operation.expect("transfer error handled"),
+        ) {
+            result.failure = Some(Failure {
+                message: "explorer.operation.sourceRetained",
+                error,
+                retry: (!batch.entries.is_empty()).then_some(Request::Transfer(batch)),
+            });
+            return result;
         }
     }
     if let Some(token) = batch.clear {
@@ -437,6 +447,60 @@ pub(super) fn execute(folder: &Folder, root: &Path, mut batch: Batch) -> Outcome
         }
     }
     result
+}
+
+fn source_failure(error: io::Error, mut batch: Batch, item: TransferItem) -> Failure {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::NotFound
+    ) {
+        return Failure {
+            message: "explorer.operation.sourceChanged",
+            error,
+            retry: None,
+        };
+    }
+    batch.entries.push_front(item);
+    Failure::io(error, Request::Transfer(batch))
+}
+
+fn record_completion(
+    folder: &Folder,
+    root: &Path,
+    result: &mut Outcome,
+    item: TransferItem,
+    replaced: Option<Receipt>,
+    outcome: TransferOutcome,
+) -> io::Result<()> {
+    // After partial source cleanup, the destination may contain the only copy
+    // of some files. It cannot be recycled like an ordinary pasted duplicate.
+    if let TransferOutcome::SourceRetained(error) = outcome {
+        return Err(error);
+    }
+    if let Some(receipt) = replaced {
+        result.undo.push(UndoStep::Trashed(receipt));
+    }
+    if matches!(outcome, TransferOutcome::Moved) {
+        result.moves.push((
+            super::display_path(&item.from.path, root, folder),
+            root.join(item.to.as_str()),
+        ));
+    }
+    if let Ok(stamp) = folder.entry_stamp(&item.to) {
+        match outcome {
+            TransferOutcome::Moved => result.undo.push(UndoStep::Moved {
+                path: item.to,
+                original: item.from.path,
+                stamp,
+            }),
+            TransferOutcome::Copied => result.undo.push(UndoStep::Pasted {
+                path: item.to,
+                stamp,
+            }),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn replace(folder: &Folder, selected: &SelectedEntry) -> io::Result<Receipt> {
@@ -448,4 +512,83 @@ fn replace(folder: &Folder, selected: &SelectedEntry) -> io::Result<Receipt> {
         path: selected.path.clone(),
         item,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacement_protects_open_destination_paths_and_rechecks_cut_source_before_recycling() {
+        let workspace = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let target = root.join("Target");
+        let source = external.path().join("Target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(target.join("Keep.txt"), "old destination").unwrap();
+        std::fs::write(source.join("Other.txt"), "approved source").unwrap();
+        let folder = Folder::scan_root(
+            root,
+            rove_workspace::WorkspaceConfig::default().without_watching(),
+        )
+        .unwrap();
+        let batch = prepare(
+            &folder,
+            vec![source.clone()],
+            None,
+            Transfer::Move,
+            Naming::Disabled,
+            None,
+        )
+        .unwrap();
+        assert!(batch.would_replace_open_path(root, &root.join("TARGET/Keep.txt")));
+        assert!(!batch.would_replace_open_path(root, &root.join("Targeted/Other.txt")));
+
+        std::fs::rename(&source, external.path().join("Original")).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("Unapproved.txt"), "unconfirmed replacement").unwrap();
+        let result = execute(&folder, root, batch);
+        let failure = result.failure.unwrap();
+        assert_eq!(failure.message, "explorer.operation.sourceChanged");
+        assert!(failure.retry.is_none());
+        assert!(result.undo.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(target.join("Keep.txt")).unwrap(),
+            "old destination"
+        );
+        assert_eq!(
+            std::fs::read_to_string(source.join("Unapproved.txt")).unwrap(),
+            "unconfirmed replacement"
+        );
+    }
+
+    #[test]
+    fn partial_cut_keeps_the_destination_out_of_the_paste_undo() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::write(root.join("OnlyCopy.txt"), "original moved bytes").unwrap();
+        let folder = Folder::scan_root(
+            root,
+            rove_workspace::WorkspaceConfig::default().without_watching(),
+        )
+        .unwrap();
+        let source = root.join("Source.txt");
+        std::fs::write(&source, "not the payload").unwrap();
+        let item = TransferItem {
+            from: inspect_source(&source).unwrap(),
+            to: WorkspacePath::new("OnlyCopy.txt").unwrap(),
+            replace: None,
+        };
+        let mut result = Outcome::default();
+        let incomplete = TransferOutcome::SourceRetained(io::ErrorKind::DirectoryNotEmpty.into());
+        assert!(record_completion(&folder, root, &mut result, item, None, incomplete).is_err());
+        assert!(result.undo.is_empty());
+        assert!(result.moves.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(root.join("OnlyCopy.txt")).unwrap(),
+            "original moved bytes"
+        );
+    }
 }
