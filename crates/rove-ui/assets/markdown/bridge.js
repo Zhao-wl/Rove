@@ -429,6 +429,61 @@
     }
   }, true);
 
+  function sourceLinesAt(node, offset) {
+    const element = node.parentElement;
+    if (!element) {
+      return null;
+    }
+    const marker = element.closest('[data-source-code-lines], [data-source-lines]');
+    if (!marker) {
+      const block = element.closest('.code-line[data-line]');
+      const line = block ? Number(block.getAttribute('data-line')) : NaN;
+      return Number.isSafeInteger(line) && line >= 0 ? [line, line] : null;
+    }
+    if (marker.hasAttribute('data-source-code-lines')) {
+      // The highlighter adds nested spans, but keeps the code element and its literal newlines.
+      const before = document.createRange();
+      before.selectNodeContents(marker);
+      before.setEnd(node, offset);
+      const index = before.toString().split('\n').length - 1;
+      const source = marker.getAttribute('data-source-code-lines').split(',')[index];
+      const line = source ? Number(source) : NaN;
+      return Number.isSafeInteger(line) && line >= 0 ? [line, line] : null;
+    }
+    const lines = marker.getAttribute('data-source-lines').split(',').map(Number);
+    return lines.length === 2 && lines.every(Number.isSafeInteger) && lines[0] >= 0 &&
+      lines[1] >= lines[0] ? lines : null;
+  }
+
+  function selectedSourceLines(range) {
+    const common = range.commonAncestorContainer;
+    const walker = document.createTreeWalker(common, NodeFilter.SHOW_TEXT);
+    let first = null;
+    let last = null;
+    for (let node = common.nodeType === Node.TEXT_NODE ? common : walker.nextNode();
+         node; node = walker.nextNode()) {
+      if (range.comparePoint(node, 0) > 0) {
+        break;
+      }
+      if (range.comparePoint(node, node.length) < 0) {
+        continue;
+      }
+      const start = range.startContainer === node ? range.startOffset : 0;
+      const end = range.endContainer === node ? range.endOffset : node.length;
+      if (start >= end || node.data.slice(start, end).trim().length === 0) {
+        continue;
+      }
+      first = first || { node: node, offset: start };
+      last = { node: node, offset: end - 1 };
+    }
+    if (!first) {
+      return null;
+    }
+    const start = sourceLinesAt(first.node, first.offset);
+    const end = sourceLinesAt(last.node, last.offset);
+    return start && end ? [Math.min(start[0], end[0]), Math.max(start[1], end[1])] : null;
+  }
+
   // The preview is a native child window. Publish only a selected range within the rendered content.
   document.addEventListener('contextmenu', function (event) {
     const selected = window.getSelection();
@@ -437,24 +492,14 @@
       return;
     }
     const range = selected.getRangeAt(0);
-    if (!content.contains(range.startContainer) || !content.contains(range.endContainer) ||
-        codeLines().length === 0) {
+    if (!content.contains(range.startContainer) || !content.contains(range.endContainer)) {
       return;
     }
-    const rects = Array.from(range.getClientRects()).filter(function (rect) {
-      return rect.width > 0 && rect.height > 0;
-    });
-    if (rects.length === 0) {
+    const lines = selectedSourceLines(range);
+    if (!lines) {
       return;
     }
-    const viewportLine = function (rect) {
-      return Math.floor(lineForOffset(window.scrollY + rect.top + Math.min(1, rect.height / 2)));
-    };
-    const first = viewportLine(rects[0]);
-    const last = viewportLine(rects[rects.length - 1]);
-    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 0 || last < first) {
-      return;
-    }
+    const [first, last] = lines;
     const x = event.clientX / window.innerWidth;
     const y = event.clientY / window.innerHeight;
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {

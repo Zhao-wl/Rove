@@ -45,6 +45,7 @@ pub(super) struct RenderKey {
 #[derive(Clone, Debug)]
 pub struct MarkdownSourceSelection {
     pub lines: rove_base::LineRange,
+    pub version: Version,
     pub anchor: gpui::Point<Pixels>,
 }
 
@@ -875,6 +876,10 @@ impl Workbench {
             Some("sourceSelection") if self.markdown_context_is_current(document, &message) => {
                 let selection = (|| {
                     let doc = self.open_document(document?)?;
+                    let version = self.markdown.requested?.version;
+                    if doc.text.version() != version {
+                        return None;
+                    }
                     let first = message["first"].as_u64()?;
                     let last = message["last"].as_u64()?;
                     let end = last.checked_add(1)?;
@@ -893,7 +898,11 @@ impl Workbench {
                             .ok()?;
                     let anchor = bounds.origin
                         + gpui::point(bounds.size.width * x as f32, bounds.size.height * y as f32);
-                    Some(MarkdownSourceSelection { lines, anchor })
+                    Some(MarkdownSourceSelection {
+                        lines,
+                        version,
+                        anchor,
+                    })
                 })();
                 if let (Some(handler), Some(document), Some(selection)) = (
                     self.markdown.source_selection_handler,

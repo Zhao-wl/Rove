@@ -17,6 +17,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
+    ops::Range,
     path::{Component, Path, PathBuf, Prefix},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -178,7 +179,27 @@ struct Writer<'o> {
     slugs: BTreeMap<String, usize>,
     /// front matter 的原文。
     metadata: Option<(usize, String)>,
-    code: Option<(usize, String, String)>,
+    code: Option<CodeBlock>,
+}
+
+struct CodeBlock {
+    offset: usize,
+    language: String,
+    text: String,
+    source_lines: Vec<usize>,
+}
+
+impl CodeBlock {
+    fn push(&mut self, first_line: usize, text: &str) {
+        let continued = !self.text.is_empty() && !self.text.ends_with('\n');
+        self.source_lines.extend(
+            text.split_inclusive('\n')
+                .enumerate()
+                .skip(usize::from(continued))
+                .map(|(index, _)| first_line + index),
+        );
+        self.text.push_str(text);
+    }
 }
 
 impl Writer<'_> {
@@ -196,7 +217,13 @@ impl Writer<'_> {
         );
     }
 
-    fn text(&mut self, text: &str) {
+    fn source_span(&mut self, range: &Range<usize>) {
+        let first = self.line(range.start);
+        let last = self.line(range.end.saturating_sub(1).max(range.start));
+        let _ = write!(self.out, "<span data-source-lines=\"{first},{last}\">");
+    }
+
+    fn text(&mut self, text: &str, range: &Range<usize>) {
         if let Some((_, _, _, _, buffer)) = self.heading.as_mut() {
             buffer.push_str(text);
         }
@@ -204,11 +231,13 @@ impl Writer<'_> {
             alt.push_str(text);
             return;
         }
+        self.source_span(range);
         if self.options.linkify && self.no_linkify == 0 {
             linkify(&mut self.out, text);
         } else {
             escape(&mut self.out, text);
         }
+        self.out.push_str("</span>");
     }
 
     fn start(&mut self, tag: Tag, offset: usize) {
@@ -261,7 +290,12 @@ impl Writer<'_> {
                         .to_string(),
                     CodeBlockKind::Indented => String::new(),
                 };
-                self.code = Some((offset, language, String::new()));
+                self.code = Some(CodeBlock {
+                    offset,
+                    language,
+                    text: String::new(),
+                    source_lines: Vec::new(),
+                });
             }
             Tag::HtmlBlock => {}
             Tag::List(Some(start)) => {
@@ -378,13 +412,19 @@ impl Writer<'_> {
             TagEnd::BlockQuote(None) => self.out.push_str("</blockquote>\n"),
             TagEnd::BlockQuote(Some(_)) => self.out.push_str("</div>\n"),
             TagEnd::CodeBlock => {
-                let Some((offset, language, body)) = self.code.take() else {
+                let Some(CodeBlock {
+                    offset,
+                    language,
+                    text,
+                    source_lines,
+                }) = self.code.take()
+                else {
                     return;
                 };
                 if language.eq_ignore_ascii_case("mermaid") {
                     self.open("pre", " mermaid", offset);
                     self.out.push('>');
-                    escape(&mut self.out, &body);
+                    escape(&mut self.out, &text);
                     self.out.push_str("</pre>\n");
                 } else {
                     self.open("pre", "", offset);
@@ -394,8 +434,15 @@ impl Writer<'_> {
                         escape(&mut self.out, &language);
                         self.out.push('"');
                     }
-                    self.out.push('>');
-                    escape(&mut self.out, &body);
+                    self.out.push_str(" data-source-code-lines=\"");
+                    for (index, line) in source_lines.iter().enumerate() {
+                        if index > 0 {
+                            self.out.push(',');
+                        }
+                        let _ = write!(self.out, "{line}");
+                    }
+                    self.out.push_str("\">");
+                    escape(&mut self.out, &text);
                     self.out.push_str("</code></pre>\n");
                 }
             }
@@ -592,9 +639,10 @@ fn to_html(text: &str, options: &RenderOptions) -> String {
     };
     for (event, range) in Parser::new_ext(text, flags).into_offset_iter() {
         let offset = range.start;
-        if let Some((_, _, body)) = writer.code.as_mut() {
-            if let Event::Text(text) = &event {
-                body.push_str(text);
+        if let Event::Text(ref text) = event {
+            let line = writer.line(offset);
+            if let Some(code) = writer.code.as_mut() {
+                code.push(line, text);
                 continue;
             }
         }
@@ -607,17 +655,26 @@ fn to_html(text: &str, options: &RenderOptions) -> String {
         match event {
             Event::Start(tag) => writer.start(tag, offset),
             Event::End(tag) => writer.end(tag),
-            Event::Text(text) => writer.text(&text),
+            Event::Text(text) => writer.text(&text, &range),
             Event::Code(code) => {
                 if let Some((_, _, _, _, buffer)) = writer.heading.as_mut() {
                     buffer.push_str(&code);
                 }
+                writer.source_span(&range);
                 writer.out.push_str("<code>");
                 escape(&mut writer.out, &code);
-                writer.out.push_str("</code>");
+                writer.out.push_str("</code></span>");
             }
-            Event::InlineMath(tex) => math(&mut writer.out, &tex, false),
-            Event::DisplayMath(tex) => math(&mut writer.out, &tex, true),
+            Event::InlineMath(tex) => {
+                writer.source_span(&range);
+                math(&mut writer.out, &tex, false);
+                writer.out.push_str("</span>");
+            }
+            Event::DisplayMath(tex) => {
+                writer.source_span(&range);
+                math(&mut writer.out, &tex, true);
+                writer.out.push_str("</span>");
+            }
             Event::Html(html) | Event::InlineHtml(html) => writer.out.push_str(&html),
             Event::FootnoteReference(name) => {
                 writer
@@ -831,6 +888,8 @@ fn sanitize(
             "tfoot",
         ])
         .add_generic_attributes(["class", "id", "align", "style", "data-line", "dir"])
+        .add_tag_attributes("span", ["data-source-lines"])
+        .add_tag_attributes("code", ["data-source-code-lines"])
         .add_tag_attributes("input", ["type", "checked", "disabled"])
         .add_tag_attributes("img", ["title", "loading"])
         .add_tag_attributes("a", ["title", "name"])
@@ -903,22 +962,39 @@ mod tests {
     fn block_elements_carry_source_lines() {
         let out = html("# 标题\n\n第一段\n\n- a\n- b\n\n```rust\nfn main() {}\n```\n");
         assert!(
-            out.contains("<h1 class=\"code-line\" data-line=\"0\" id=\"标题\">标题</h1>"),
+            out.contains("<h1 class=\"code-line\" data-line=\"0\" id=\"标题\"><span data-source-lines=\"0,0\">标题</span></h1>"),
             "{out}"
         );
         assert!(
-            out.contains("<p class=\"code-line\" data-line=\"2\">第一段</p>"),
+            out.contains("<p class=\"code-line\" data-line=\"2\"><span data-source-lines=\"2,2\">第一段</span></p>"),
             "{out}"
         );
         assert!(
-            out.contains("<li class=\"code-line\" data-line=\"4\">a</li>"),
+            out.contains("<li class=\"code-line\" data-line=\"4\"><span data-source-lines=\"4,4\">a</span></li>"),
             "{out}"
         );
         assert!(
-            out.contains("<li class=\"code-line\" data-line=\"5\">b</li>"),
+            out.contains("<li class=\"code-line\" data-line=\"5\"><span data-source-lines=\"5,5\">b</span></li>"),
             "{out}"
         );
-        assert!(out.contains("<pre class=\"code-line\" data-line=\"7\"><code class=\"language-rust\">fn main() {}\n</code></pre>"), "{out}");
+        assert!(out.contains("<pre class=\"code-line\" data-line=\"7\"><code class=\"language-rust\" data-source-code-lines=\"8\">fn main() {}\n</code></pre>"), "{out}");
+    }
+
+    #[test]
+    fn source_lines_distinguish_wrapped_prose_and_final_fenced_code() {
+        let out = html("first long paragraph line\nsecond source line\n\n> \x60\x60\x60rust\n> let a = 1;\n>\n> let b = 2;\n> \x60\x60\x60\n");
+        assert!(
+            out.contains("data-source-lines=\"0,0\">first long paragraph line</span>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("data-source-lines=\"1,1\">second source line</span>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("data-source-code-lines=\"4,5,6\">let a = 1;\n\nlet b = 2;\n"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -931,11 +1007,15 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("<th style=\"text-align:left\">a</th>"),
+            out.contains(
+                "<th style=\"text-align:left\"><span data-source-lines=\"0,0\">a</span></th>"
+            ),
             "{out}"
         );
         assert!(
-            out.contains("<td style=\"text-align:right\">2</td>"),
+            out.contains(
+                "<td style=\"text-align:right\"><span data-source-lines=\"2,2\">2</span></td>"
+            ),
             "{out}"
         );
         assert!(out.contains("<input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\">"), "{out}");
@@ -1031,7 +1111,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(breaks.html.contains("a<br>\nb"), "{}", breaks.html);
+        assert!(
+            breaks
+                .html
+                .contains("a</span><br>\n<span data-source-lines=\"1,1\">b"),
+            "{}",
+            breaks.html
+        );
         let linkified = html("见 https://example.com/x). 与 www.rove.dev。\n");
         assert!(
             linkified.contains("<a href=\"https://example.com/x\">https://example.com/x</a>)."),
