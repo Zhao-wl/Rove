@@ -42,6 +42,10 @@ fn modules() -> [(&'static str, Register); 13] {
         ("markdown", crate::markdown::registry::register_settings),
         ("workbench", |registry| {
             let consumed = rove_theme::service::THEME_SETTING_KEYS.into_iter().chain([
+                rove_theme::service::AUTO_COLOR_SCHEME.id,
+                rove_theme::service::PREFERRED_DARK_THEME.id,
+                rove_theme::service::PREFERRED_LIGHT_THEME.id,
+                "workbench.iconTheme",
                 crate::welcome::registry::STARTUP_EDITOR,
                 rove_update::mode::SETTING_KEY,
             ]);

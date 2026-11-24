@@ -118,11 +118,7 @@ impl SettingsView {
         let search_events =
             cx.subscribe(&search, |view: &mut Self, _, event: &TextInputEvent, cx| {
                 if let TextInputEvent::Changed { text, .. } = event {
-                    if view.query != *text {
-                        view.query.clone_from(text);
-                        view.history_cursor = None;
-                        view.refresh(cx);
-                    }
+                    view.query_changed(text, cx);
                 }
             });
         let category_events =
@@ -211,9 +207,7 @@ impl SettingsView {
 
     pub fn navigate(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
         match command {
-            reg::CLEAR_SEARCH => {
-                self.search.update(cx, |input, cx| input.set_text("", cx));
-            }
+            reg::CLEAR_SEARCH => self.set_search_query("", cx),
             reg::SEARCH | reg::SEARCH_FROM_ROW => self.focus_search(window, cx),
             reg::LEVEL_UP => {
                 if self.row_editor.take().is_some() {
@@ -262,8 +256,7 @@ impl SettingsView {
                     .saturating_sub(1);
                 if let Some(query) = self.search_history.get(index) {
                     let query = query.clone();
-                    self.search
-                        .update(cx, |input, cx| input.set_text(&query, cx));
+                    self.set_search_query(&query, cx);
                     self.history_cursor = Some(index);
                 }
             }
@@ -271,10 +264,24 @@ impl SettingsView {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_query_for_test(&self, query: &str, cx: &mut Context<Self>) {
+    fn query_changed(&mut self, query: &str, cx: &mut Context<Self>) {
+        if self.query != query {
+            self.query.clear();
+            self.query.push_str(query);
+            self.history_cursor = None;
+            self.refresh(cx);
+        }
+    }
+
+    fn set_search_query(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search
             .update(cx, |input, cx| input.set_text(query, cx));
+        self.query_changed(query, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_query_for_test(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.set_search_query(query, cx);
     }
 
     #[cfg(test)]

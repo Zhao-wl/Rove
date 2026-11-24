@@ -337,6 +337,16 @@ mod tests {
     fn active_catalog_exposes_metadata_and_excludes_registered_placeholders() {
         for (key, label) in [
             ("workbench.colorTheme", "Color Theme"),
+            ("workbench.iconTheme", "Icon Theme"),
+            (
+                "workbench.preferredDarkColorTheme",
+                "Preferred Dark Color Theme",
+            ),
+            (
+                "workbench.preferredLightColorTheme",
+                "Preferred Light Color Theme",
+            ),
+            ("window.autoDetectColorScheme", "Auto Detect Color Scheme"),
             ("workbench.startupEditor", "Startup Editor"),
             ("rove.update.mode", "Update Mode"),
         ] {
