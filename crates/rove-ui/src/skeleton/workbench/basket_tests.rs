@@ -203,6 +203,59 @@ fn context_basket_syncs_same_workspace_windows_and_keeps_other_roots_independent
     assert_eq!(std::fs::read_dir(other_root.path()).unwrap().count(), 0);
 }
 
+#[gpui::test]
+fn context_basket_can_copy_from_another_window_while_anchors_are_prepared(cx: &mut TestAppContext) {
+    use super::basket_host::BasketTestStateRoot;
+    use crate::context_basket::model::Entry;
+
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let content = "first\nselected\nlast\n";
+    std::fs::write(root.path().join("example.txt"), content).unwrap();
+    cx.update(|app| app.set_global(BasketTestStateRoot(state.path().into())));
+    let first = cx
+        .add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx))
+        .0;
+    let second = cx
+        .add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx))
+        .0;
+    cx.run_until_parked();
+    cx.update(|app| {
+        first.update(app, |view, cx| {
+            let range = LineRange::new(2, 2).unwrap();
+            let id = view
+                .basket
+                .contents
+                .insert(Entry::new(
+                    WorkspacePath::new("example.txt").unwrap(),
+                    range,
+                    None,
+                ))
+                .unwrap();
+            assert!(view.basket_changed(cx));
+            view.capture_basket_anchors(
+                vec![(id, range)],
+                Arc::new(rove_buffer::RopeText::from_text(content)),
+                cx,
+            );
+        });
+    });
+    cx.update(|app| {
+        second.update(app, |view, cx| {
+            assert_eq!(view.basket.contents.items().len(), 1);
+            assert!(view.basket.contents.items()[0].anchor.is_none());
+            assert!(view.basket.pending_anchors.is_empty());
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        });
+    });
+    cx.run_until_parked();
+    let copied = cx
+        .update(|app| app.read_from_clipboard().and_then(|item| item.text()))
+        .expect("the pending copy completes when the other window publishes the anchor");
+    assert!(copied.contains("example.txt:2-2"));
+    assert!(copied.contains("\nselected\n"));
+}
+
 pub(super) fn click_basket_menu(cx: &mut gpui::VisualTestContext, index: usize) {
     cx.run_until_parked();
     cx.update(|window, cx| {

@@ -4,7 +4,7 @@ use crate::context_basket::{
     persistence::BasketStore,
     source,
 };
-use gpui::{AppContext, Entity, Global, Subscription, WeakEntity};
+use gpui::{AppContext, AsyncApp, Entity, Global, Subscription, WeakEntity};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -22,7 +22,46 @@ struct BasketSnapshot {
 #[derive(Default)]
 struct WorkspaceBasket {
     snapshot: Option<BasketSnapshot>,
+    pending_anchors: BTreeMap<u64, usize>,
     written: Arc<Mutex<u64>>,
+}
+
+struct SharedAnchorBatch {
+    workspace: Entity<WorkspaceBasket>,
+    ids: Vec<u64>,
+}
+
+impl SharedAnchorBatch {
+    fn begin(
+        workspace: Entity<WorkspaceBasket>,
+        ids: impl Iterator<Item = u64>,
+        cx: &mut Context<Workbench>,
+    ) -> Self {
+        let ids: Vec<_> = ids.collect();
+        workspace.update(cx, |state, _| {
+            for id in &ids {
+                *state.pending_anchors.entry(*id).or_default() += 1;
+            }
+        });
+        Self { workspace, ids }
+    }
+
+    fn completed(self, cx: &mut AsyncApp) {
+        let _ = self.workspace.update(cx, |state, cx| {
+            for id in self.ids {
+                if let std::collections::btree_map::Entry::Occupied(mut entry) =
+                    state.pending_anchors.entry(id)
+                {
+                    if *entry.get() == 1 {
+                        entry.remove();
+                    } else {
+                        *entry.get_mut() -= 1;
+                    }
+                }
+            }
+            cx.notify();
+        });
+    }
 }
 
 #[derive(Default)]
@@ -226,6 +265,7 @@ impl Workbench {
             return;
         };
         if self.basket.loaded && self.basket.revision == snapshot.revision {
+            self.resume_basket_copy(cx);
             return;
         }
         let first_load = !self.basket.loaded && snapshot.revision == 0;
@@ -403,6 +443,10 @@ impl Workbench {
                 .pending_anchors
                 .extend(entries.iter().map(|(id, _, _)| (*id, generation)));
         }
+        let shared_anchors = self.basket.shared.clone().map(|shared| {
+            let ids = paths.values().flatten().map(|(id, _, _)| *id);
+            SharedAnchorBatch::begin(shared, ids, cx)
+        });
         let settings = self.settings.clone();
         let root = self.root.clone();
         let task = cx.background_executor().spawn(async move {
@@ -449,6 +493,9 @@ impl Workbench {
                 }
                 view.resume_basket_copy(cx);
             });
+            if let Some(shared_anchors) = shared_anchors {
+                shared_anchors.completed(cx);
+            }
         })
         .detach();
     }
@@ -611,7 +658,7 @@ impl Workbench {
         );
     }
 
-    fn capture_basket_anchors(
+    pub(super) fn capture_basket_anchors(
         &mut self,
         ranges: Vec<(u64, LineRange)>,
         text: Arc<dyn rove_buffer::TextSource>,
@@ -625,6 +672,10 @@ impl Workbench {
         self.basket
             .pending_anchors
             .extend(ranges.iter().map(|(id, _)| (*id, revision)));
+        let shared_anchors =
+            self.basket.shared.clone().map(|shared| {
+                SharedAnchorBatch::begin(shared, ranges.iter().map(|(id, _)| *id), cx)
+            });
         let task = cx.background_executor().spawn(async move {
             ranges
                 .into_iter()
@@ -657,6 +708,9 @@ impl Workbench {
                 }
                 view.resume_basket_copy(cx);
             });
+            if let Some(shared_anchors) = shared_anchors {
+                shared_anchors.completed(cx);
+            }
         })
         .detach();
     }
@@ -763,7 +817,7 @@ impl Workbench {
             self.report_basket(key, Arc::from([]), cx);
             return;
         }
-        if self.basket_has_pending_anchors() {
+        if self.basket_has_pending_anchors(cx) {
             self.basket.pending_copy = Some(PendingCopy {
                 request,
                 markdown,
@@ -774,15 +828,18 @@ impl Workbench {
         }
     }
 
-    fn basket_has_pending_anchors(&self) -> bool {
+    fn basket_has_pending_anchors(&self, cx: &Context<Self>) -> bool {
+        let workspace = self.basket.shared.as_ref().map(|shared| shared.read(cx));
         self.basket.contents.items().iter().any(|entry| {
             entry.availability == Availability::Current
-                && self.basket.pending_anchors.contains_key(&entry.id())
+                && (self.basket.pending_anchors.contains_key(&entry.id())
+                    || workspace
+                        .is_some_and(|state| state.pending_anchors.contains_key(&entry.id())))
         })
     }
 
     fn resume_basket_copy(&mut self, cx: &mut Context<Self>) {
-        if self.basket.pending_copy.is_none() || self.basket_has_pending_anchors() {
+        if self.basket.pending_copy.is_none() || self.basket_has_pending_anchors(cx) {
             return;
         }
         let copy = self.basket.pending_copy.take().expect("a copy is waiting");
