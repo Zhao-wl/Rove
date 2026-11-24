@@ -224,6 +224,11 @@ pub fn presented_read_only(reasons: &[ReadOnlyReason]) -> Vec<ReadOnlyReason> {
 
 impl EventEmitter<CodeViewEvent> for CodeView {}
 
+/// 正文双击完成鼠标选词后的选区，供嵌入代码视图的宿主订阅。
+pub(crate) struct TextDoubleClicked(pub Selection);
+
+impl EventEmitter<TextDoubleClicked> for CodeView {}
+
 /// 一帧的统计（基准与测试使用）。`cpu` 口径同 M0：prepaint 开始到 paint 结束。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
@@ -2319,6 +2324,9 @@ impl CodeView {
             self.reveal_caret(cx);
         }
         self.selection_changed(SelectionSource::Mouse, cx);
+        if click_count == 2 && self.layout.text.contains(&point) {
+            cx.emit(TextDoubleClicked(sel));
+        }
     }
 
     /// #52：按住多光标修饰键按下（加光标；拖动则添加一段选区）。

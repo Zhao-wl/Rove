@@ -1,4 +1,4 @@
-//! #41 入口集成测试（真实 GPUI 窗口，只通过键位驱动）：`Shift+F12` / `Alt+F12` / `Ctrl+Shift+F12`
+//! #41 入口集成测试（真实 GPUI 窗口，通过键位和鼠标驱动）：`Shift+F12` / `Alt+F12` / `Ctrl+Shift+F12`
 //! 三个入口；分组与计数、展开规则（100 / 101）；`↑↓`、`Enter`、`Ctrl+Enter`、`F4` / `Shift+F4`、
 //! `Ctrl+K F2`、`Esc` 与 `editor.stablePeek`；`editor.peekWidgetDefaultFocus`；嵌套速览逐层返回；
 //! 近似标记；外部符号的保底片段与注册提供方；空结果与实现不可用的光标处提示；`.md` 打开源码；
@@ -9,7 +9,10 @@ use super::*;
 use crate::documents::OpenOptions;
 use crate::lists::ItemId;
 use crate::peek::{model::Node, ExternalSnippet, ExternalSnippetProvider, PeekQueries, PeekWidget};
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, TestAppContext,
+    VisualTestContext,
+};
 use rove_base::{Position, Span, Utf8Column};
 use rove_config::{SettingsOptions, SettingsService};
 use rove_lang_cs::query::{Hover, NavigationKind, Precision, QueryPoint, QueryResult, Target};
@@ -304,6 +307,97 @@ fn preview_focused(w: &Entity<PeekWidget>, cx: &mut VisualTestContext) -> bool {
     cx.update(|window, cx| preview.focus_handle(cx).contains_focused(window, cx))
 }
 
+fn preview_point(
+    widget: &Entity<PeekWidget>,
+    position: Position,
+    cx: &mut VisualTestContext,
+) -> Point<Pixels> {
+    let preview = widget.read_with(cx, |w, _| w.preview().clone());
+    preview.update(cx, |code, _| {
+        let mut point = code.point_for_position(position).expect("预览位置在视口内");
+        point.y += gpui::px(code.line_height() / 2.0);
+        point
+    })
+}
+
+fn double_click_preview(widget: &Entity<PeekWidget>, at: Position, cx: &mut VisualTestContext) {
+    let position = preview_point(widget, at, cx);
+    let button = MouseButton::Left;
+    let modifiers = Modifiers::none();
+    cx.simulate_click(position, modifiers);
+    cx.simulate_event(MouseDownEvent {
+        position,
+        button,
+        modifiers,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position,
+        button,
+        modifiers,
+        click_count: 2,
+    });
+    refresh(cx);
+}
+
+#[gpui::test]
+fn peek_preview_double_click_opens_the_clicked_reference(cx: &mut TestAppContext) {
+    let f = Fixture::new("{}");
+    let (view, cx, _) = f.open(
+        Fake {
+            references: move_references(),
+            ..Default::default()
+        },
+        cx,
+    );
+    caret(&view, pos(3, 22), cx);
+    press("shift-f12", cx);
+    let w = widget(&view, cx);
+    assert_eq!(w.read_with(cx, |w, _| w.current()), Some(2));
+
+    let start = preview_point(&w, pos(3, 20), cx);
+    let end = preview_point(&w, pos(3, 24), cx);
+    let modifiers = Modifiers::none();
+    cx.simulate_click(start, modifiers);
+    assert!(peek(&view, cx).is_some());
+    assert!(preview_focused(&w, cx));
+
+    cx.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    cx.simulate_mouse_move(end, MouseButton::Left, modifiers);
+    cx.simulate_mouse_up(end, MouseButton::Left, modifiers);
+    press("ctrl-c", cx);
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("Move"));
+
+    // 右侧仍选中第一个 Move，左侧双击同文件的第二个 Move。
+    double_click_preview(&w, pos(3, 30), cx);
+    assert!(peek(&view, cx).is_none());
+    assert_eq!(
+        active_tab(&view, cx),
+        (
+            "Assets/Player.cs".to_string(),
+            Some(Span::new(pos(3, 28), pos(3, 32)).unwrap())
+        )
+    );
+
+    press("shift-f12", cx);
+    let w = widget(&view, cx);
+    assert_eq!(w.read_with(cx, |w, _| w.current()), Some(3));
+    // 切换右侧选中项到另一个文件，再双击更新后的左侧预览。
+    press("up up up up", cx);
+    assert_eq!(w.read_with(cx, |w, _| w.current()), Some(0));
+    double_click_preview(&w, pos(4, 12), cx);
+    assert!(peek(&view, cx).is_none());
+    assert_eq!(
+        active_tab(&view, cx),
+        (
+            "Assets/Enemy.cs".to_string(),
+            Some(Span::new(pos(4, 10), pos(4, 14)).unwrap())
+        )
+    );
+}
+
 #[gpui::test]
 fn peek_shift_f12_shows_grouped_references_and_enter_opens_the_location(cx: &mut TestAppContext) {
     let f = Fixture::new("{}");
@@ -484,8 +578,7 @@ fn peek_escape_closes_unless_stable_peek(cx: &mut TestAppContext) {
     assert!(preview_focused(&w, cx));
     press("escape", cx);
     assert!(peek(&view, cx).is_some(), "stablePeek：Esc 不关闭（预览）");
-    w.update(cx, |w, cx| w.double_click_preview(cx));
-    refresh(cx);
+    double_click_preview(&w, pos(3, 22), cx);
     assert!(peek(&view, cx).is_some(), "stablePeek：双击预览不关闭");
     assert_eq!(active_tab(&view, cx).0, "Assets/Player.cs");
 }
@@ -940,9 +1033,7 @@ fn peek_preview_recovers_when_the_next_file_fails_to_open(cx: &mut TestAppContex
         "预览仍是上一个文件的正文：{text}"
     );
     // 双击预览不会打开 A：窗口还在（真打开了会以 `side = false` 关掉整个速览）。
-    w.update(cx, |w, cx| w.double_click_preview(cx));
-    cx.run_until_parked();
-    refresh(cx);
+    double_click_preview(&w, pos(0, 1), cx);
     assert!(peek(&view, cx).is_some(), "双击失败的预览不打开任何文件");
     // 文件回来后再次选中 B：重新尝试打开，预览换成 B。
     f.file("Assets/Enemy.cs", ENEMY);
