@@ -29,7 +29,10 @@ mod tests;
 
 pub use source::LongLineSource;
 
-use crate::code_view::decorations::{DecorationProvider, LineDecorations, Overlay, TextStyle};
+use crate::code_view::{
+    decorations::{DecorationProvider, LineDecorations, Overlay, OverlayAction, TextStyle},
+    CodeView,
+};
 use crate::shell::status::{StatusEntry, StatusKind};
 use rove_base::Result;
 use rove_buffer::{SizeClass, TextSource};
@@ -92,6 +95,14 @@ pub fn allows_replace(size: SizeClass) -> bool {
     size != SizeClass::Huge
 }
 
+/// 可选的第二个截断标记动作，由调用方登记命令和文案。
+#[derive(Clone, Copy)]
+pub struct TruncationAction {
+    pub command: &'static str,
+    pub label_key: &'static str,
+    pub applies: fn(&CodeView) -> bool,
+}
+
 /// 超长行的截断标记提供方（#19 的行内覆盖物接口）。
 ///
 /// 只为**被截断**的行产出一条灰色覆盖物，放在最后一个渲染出来的字符之后；
@@ -102,6 +113,7 @@ pub struct TruncationMarks {
     limit: Option<usize>,
     color: Option<Color>,
     template: String,
+    action: Option<OverlayAction>,
     counts: RefCell<long_line::CharCounts>,
 }
 
@@ -117,8 +129,17 @@ impl TruncationMarks {
             limit,
             color,
             template: label(strings, long_line::MARK_KEY, &[("chars", "{chars}".into())]),
+            action: None,
             counts: RefCell::new(long_line::CharCounts::default()),
         }
+    }
+
+    pub fn with_action(mut self, action: TruncationAction, strings: &dyn Strings) -> Self {
+        self.action = Some(OverlayAction {
+            command: action.command.into(),
+            text: label(strings, action.label_key, &[]).into(),
+        });
+        self
     }
 
     /// 截断点：最后一个会被渲染出来的字符之后的源字节列。
@@ -165,6 +186,7 @@ impl DecorationProvider for TruncationMarks {
                 foreground: self.color,
                 ..Default::default()
             },
+            action: self.action.clone(),
         });
     }
 }

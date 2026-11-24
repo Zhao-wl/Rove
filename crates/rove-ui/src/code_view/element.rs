@@ -171,6 +171,9 @@ impl CodeView {
         cx: &mut gpui::Context<Self>,
     ) -> Frame {
         self.frame_started = Some(Instant::now());
+        if bounds.size.width != self.layout.bounds.size.width {
+            self.overlay_width = 0.0;
+        }
         let focused = self.focus.is_focused(window);
         self.focus_changed(focused, window, cx);
         // #30：跨显示器拖动 / 系统缩放改变时作废整形结果（首帧登记订阅）。
@@ -255,9 +258,9 @@ impl CodeView {
         let (content_width, beyond) = if !horizontal_scroll {
             (0.0, 0.0)
         } else if wrapping {
-            (self.wrap.content_width, beyond)
+            (self.wrap.content_width.max(self.overlay_width), beyond)
         } else {
-            (self.content_width, beyond)
+            (self.content_width.max(self.overlay_width), beyond)
         };
         let show_h = match o.horizontal_scrollbar {
             _ if !horizontal_scroll => false,
@@ -345,6 +348,9 @@ impl CodeView {
         let first_doc = line;
         let mut stats = FrameStats::default();
         let mut wrapped_width = self.wrap.content_width;
+        // Keep the measured extent when the terminal segment scrolls offscreen. A horizontal
+        // scrollbar also reduces the visible height, so clearing here would make it flicker.
+        let mut overlay_width = self.overlay_width;
         let cell = self.font.cell_width;
         while view_line < line_count && y < viewport_h && line < doc_count {
             let entry = match &composed {
@@ -375,6 +381,21 @@ impl CodeView {
                 }
                 _ => (0.0, 0.0, 0..u32::MAX, 1),
             };
+            if seg + 1 == segments {
+                if let Some((entry, overlays)) = entry
+                    .as_ref()
+                    .and_then(|e| e.merged.as_ref().map(|m| (e, &m.overlays)))
+                    .filter(|(_, overlays)| !overlays.is_empty())
+                {
+                    let xs = self.xs_for(entry, shaped.as_deref());
+                    for overlay in overlays {
+                        let x = entry.display.x_for_source(&xs, overlay.column) + shift;
+                        if let Some(last) = self.overlay_parts(overlay, x).last() {
+                            overlay_width = overlay_width.max(f64::from(last.end()));
+                        }
+                    }
+                }
+            }
             let disp = match &entry {
                 Some(e) if range.end != u32::MAX => {
                     e.display.display_for_source(range.start)
@@ -412,9 +433,10 @@ impl CodeView {
             }
         }
         self.commit_wrap();
-        if wrapped_width > self.wrap.content_width {
+        if wrapped_width > self.wrap.content_width || overlay_width > self.overlay_width {
             self.wrap.content_width = wrapped_width;
-            // 视觉行宽来自整形结果，下一帧按已知宽度更新水平条。
+            self.overlay_width = overlay_width;
+            // 视觉行和行尾标记宽度来自整形结果，下一帧按已知宽度更新水平条。
             let view = view.clone();
             window.on_next_frame(move |_, cx| view.update(cx, |_, cx| cx.notify()));
         }
@@ -876,16 +898,21 @@ impl CodeView {
                                 window.paint_quad(fill(r, hsla(color)));
                             }
                         }
-                        // 行内覆盖物。
+                    };
+                    match row {
+                        Some(mask) => window.with_content_mask(Some(mask), draw),
+                        None => draw(window),
+                    }
+                    // 行尾标记只画在末段。它位于正文裁剪之外、文本视口以内。
+                    if !l.continues {
                         if let Some(m) = &entry.merged {
                             for ov in &m.overlays {
-                                let key = self.overlay_key(&ov.text);
-                                if let Some(shaped) = self.shapes.peek(&key).cloned() {
-                                    let x = entry.display.x_for_source(&xs, ov.column);
-                                    let color = ov.style.foreground.unwrap_or(p.foreground);
+                                let x = entry.display.x_for_source(&xs, ov.column);
+                                let color = ov.style.foreground.unwrap_or(p.foreground);
+                                for part in self.overlay_parts(ov, x) {
                                     self.paint_layout(
-                                        &shaped.layout,
-                                        left + px(x),
+                                        &part.shaped.layout,
+                                        left + px(part.x),
                                         y,
                                         hsla(color),
                                         window,
@@ -893,10 +920,6 @@ impl CodeView {
                                 }
                             }
                         }
-                    };
-                    match row {
-                        Some(mask) => window.with_content_mask(Some(mask), draw),
-                        None => draw(window),
                     }
                     // #58：`editor.wordWrapIndicator`——在换行列处画一条细标记。
                     if l.continues && o.wrap.indicator {

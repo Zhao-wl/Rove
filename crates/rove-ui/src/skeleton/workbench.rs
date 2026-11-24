@@ -1210,9 +1210,14 @@ impl Workbench {
             CodeViewEvent::Edited(notice) => {
                 return self.text_edited(group, secondary, notice, cx);
             }
-            // #22：点击超长行的截断标记 → 在只读临时标签中打开这一行。
-            CodeViewEvent::OverlayClicked { line, .. } => {
-                return self.truncation_overlay_clicked(*line, cx);
+            CodeViewEvent::OverlayClicked { line, command, .. } => {
+                return self.truncation_overlay_clicked(
+                    group,
+                    secondary,
+                    *line,
+                    command.as_ref(),
+                    cx,
+                );
             }
             _ => {}
         }
