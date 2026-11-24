@@ -342,7 +342,7 @@ pub(crate) fn parse(events: &[Event]) -> Vec<WatchChange> {
     let mut changes =
         Vec::with_capacity(renames.len() + created.len() + removed.len() + changed.len());
     changes.extend(
-        renames
+        join_case_only_moves(renames)
             .into_iter()
             .map(|(from, to)| WatchChange::Renamed(from, to)),
     );
@@ -350,6 +350,32 @@ pub(crate) fn parse(events: &[Event]) -> Vec<WatchChange> {
     changes.extend(created.into_iter().map(WatchChange::Created));
     changes.extend(changed.into_iter().map(WatchChange::Changed));
     changes
+}
+
+/// A case-only move uses an intermediate name on Windows. By the time
+/// the debounce window closes that name has already vanished. Keep the
+/// starting and final paths together so the next phase sees the live item.
+fn join_case_only_moves(renames: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
+    if !cfg!(windows) {
+        return renames;
+    }
+    let mut arriving = std::collections::BTreeMap::<PathBuf, usize>::new();
+    let mut joined: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(renames.len());
+    for (from, to) in renames {
+        let intermediate = arriving.remove(&from).filter(|index| {
+            let original = joined[*index].0.to_string_lossy();
+            crate::fold_key(&original) == crate::fold_key(&to.to_string_lossy())
+        });
+        if let Some(index) = intermediate {
+            joined[index].1 = to.clone();
+            arriving.insert(to, index);
+        } else {
+            arriving.insert(to.clone(), joined.len());
+            joined.push((from, to));
+        }
+    }
+    joined.retain(|(from, to)| from != to);
+    joined
 }
 
 /// True when this batch has to be answered with a re-scan.
