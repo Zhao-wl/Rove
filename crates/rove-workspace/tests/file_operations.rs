@@ -218,6 +218,42 @@ fn shell_recycles_and_restores_the_exact_temporary_file() {
 
 #[cfg(windows)]
 #[test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn shell_recycles_and_restores_when_called_from_the_mta() {
+    use windows::Win32::{
+        Foundation::S_FALSE,
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
+    };
+
+    struct Mta;
+    impl Drop for Mta {
+        fn drop(&mut self) {
+            // SAFETY: called on the thread that holds the successful COM initialization.
+            unsafe { CoUninitialize() }
+        }
+    }
+
+    std::thread::spawn(|| {
+        // SAFETY: this new worker starts with no COM apartment and balances initialization below.
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+            .ok()
+            .unwrap();
+        let _mta = Mta;
+        shell_recycles_and_restores_the_exact_temporary_file();
+
+        // SAFETY: verify that the caller is still in the MTA without leaking another COM reference.
+        let still_mta = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if still_mta.is_ok() {
+            let _extra = Mta;
+        }
+        assert_eq!(still_mta, S_FALSE);
+    })
+    .join()
+    .unwrap();
+}
+
+#[cfg(windows)]
+#[test]
 fn workspace_events_track_case_only_rename_during_other_disk_changes() {
     use rove_workspace::file_operations::path_after_rename;
     use rove_workspace::{wait_until_complete, FileEvent, Workspace};

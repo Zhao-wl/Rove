@@ -3,11 +3,12 @@
 
 use std::io;
 use std::path::Path;
-use std::{ptr, slice};
+use std::{ptr, slice, thread};
 
 use windows::{
     core::PCWSTR,
     Win32::{
+        Foundation::RPC_E_CHANGED_MODE,
         System::Com::{
             CoInitializeEx, CoTaskMemAlloc, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
         },
@@ -27,11 +28,9 @@ pub struct RecycledItem(Vec<u8>);
 struct Apartment;
 
 impl Apartment {
-    fn initialize() -> io::Result<Self> {
+    fn initialize() -> windows::core::Result<Self> {
         // SAFETY: initialized and uninitialized on the same worker thread.
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
-            .ok()
-            .map_err(io::Error::other)?;
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok()?;
         Ok(Self)
     }
 }
@@ -40,6 +39,26 @@ impl Drop for Apartment {
     fn drop(&mut self) {
         // SAFETY: balances the one successful initialization on this thread.
         unsafe { CoUninitialize() };
+    }
+}
+
+fn in_shell_apartment<T: Send>(operation: impl FnOnce() -> io::Result<T> + Send) -> io::Result<T> {
+    match Apartment::initialize() {
+        Ok(_apartment) => operation(),
+        // Production filesystem workers may already belong to the MTA. Keep the caller's
+        // apartment intact and create all Shell interfaces on a fresh STA thread.
+        Err(error) if error.code() == RPC_E_CHANGED_MODE => thread::scope(|scope| {
+            let worker = thread::Builder::new()
+                .name("rove-shell-recycle".into())
+                .spawn_scoped(scope, move || {
+                    let _apartment = Apartment::initialize().map_err(io::Error::other)?;
+                    operation()
+                })?;
+            worker
+                .join()
+                .map_err(|_| io::Error::other("Shell Recycle Bin worker panicked"))?
+        }),
+        Err(error) => Err(io::Error::other(error)),
     }
 }
 
@@ -127,8 +146,12 @@ pub fn unavailable(error: &io::Error) -> bool {
         })
 }
 
+/// Call from a filesystem worker. Shell calls can block while the file is transferred.
 pub fn recycle(path: &Path) -> io::Result<RecycledItem> {
-    let _apartment = Apartment::initialize()?;
+    in_shell_apartment(|| recycle_item(path))
+}
+
+fn recycle_item(path: &Path) -> io::Result<RecycledItem> {
     let item = shell_item(path)?;
     let result = (|| -> windows::core::Result<RecycledItem> {
         // SAFETY: COM is initialized. All items/handlers are used on this
@@ -153,8 +176,12 @@ pub fn recycle(path: &Path) -> io::Result<RecycledItem> {
     result.map_err(io::Error::other)
 }
 
+/// Call from a filesystem worker. Only the PIDL bytes cross the caller's apartment.
 pub fn restore(recycled: &RecycledItem, path: &Path) -> io::Result<()> {
-    let _apartment = Apartment::initialize()?;
+    in_shell_apartment(|| restore_item(recycled, path))
+}
+
+fn restore_item(recycled: &RecycledItem, path: &Path) -> io::Result<()> {
     let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
     let name = shell_path(Path::new(name));
