@@ -165,6 +165,14 @@ fn yaml_documents_and_xml_ordinals_have_distinct_paths() {
         .unwrap()
         .unwrap();
     assert_eq!(item.value_preview.as_ref(), "name=\"三\" [0]");
+    assert_eq!(
+        xml.node_at(item.symbol.selection.start(), &cancel)
+            .unwrap()
+            .unwrap()
+            .path
+            .as_ref(),
+        "/root/item[3]",
+    );
     let kind = xml
         .node_for_path("/root/item[3]/@name", &cancel)
         .unwrap()

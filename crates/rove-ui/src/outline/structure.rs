@@ -42,6 +42,7 @@ pub const NEXT: &str = "editor.action.marker.next";
 pub const PREVIOUS: &str = "editor.action.marker.prev";
 pub const NEXT_FILES: &str = "editor.action.marker.nextInFiles";
 pub const PREVIOUS_FILES: &str = "editor.action.marker.prevInFiles";
+pub const CLOSE_MARKER: &str = "closeMarkersNavigation";
 pub const COPY_MESSAGE: &str = "problems.action.copyMessage";
 pub const WRAP_MESSAGE: &str = "problems.action.showMultilineMessage";
 pub const TRUNCATE_MESSAGE: &str = "problems.action.showSinglelineMessage";
@@ -85,6 +86,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (NEXT, "structure.next", "转到下一个问题"),
     (PREVIOUS, "structure.previous", "转到上一个问题"),
+    (CLOSE_MARKER, "structure.closeMarker", "关闭问题速览"),
     (
         NEXT_FILES,
         "structure.nextAcrossFiles",

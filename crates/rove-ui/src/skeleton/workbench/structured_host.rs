@@ -847,6 +847,9 @@ impl Workbench {
             s::NEXT | s::PREVIOUS | s::NEXT_FILES | s::PREVIOUS_FILES => {
                 self.navigate_structured_problem(id, cx)
             }
+            s::CLOSE_MARKER => {
+                self.close_structured_marker(cx);
+            }
             _ => return false,
         }
         true
