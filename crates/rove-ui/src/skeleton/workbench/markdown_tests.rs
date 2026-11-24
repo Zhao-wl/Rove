@@ -228,6 +228,14 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
         );
     });
     settle(cx);
+    // 横滚上限来自真实整形宽度。先准备被测长行，避免把空闲切片的进度当作验收条件。
+    cx.update(|window, cx| {
+        code.update(cx, |c, cx| {
+            c.ensure_line_now(body_line, window);
+            cx.notify();
+        });
+    });
+    settle(cx);
     let left = code.update(cx, |c, _| c.point_for_position(first)).unwrap();
     let group = view.read_with(cx, |v, _| v.editor.focused);
     let pane_id = format!("editor-body-{}", group.0);
