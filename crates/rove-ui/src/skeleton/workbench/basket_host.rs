@@ -18,6 +18,7 @@ struct BasketSnapshot {
     previews: BTreeMap<u64, BasketPreview>,
     revision: u64,
     collection_epoch: u64,
+    intent_revision: u64,
 }
 
 #[derive(Default)]
@@ -145,24 +146,7 @@ impl Global for BasketClipboardRequest {}
 struct PendingCopy {
     request: u64,
     markdown: bool,
-    contents: Basket,
-}
-
-impl PendingCopy {
-    fn still_matches(&self, current: &Basket) -> bool {
-        let expected = self.contents.items();
-        let actual = current.items();
-        self.contents.introduction == current.introduction
-            && expected.len() == actual.len()
-            && expected.iter().zip(actual).all(|(old, new)| {
-                old.id() == new.id()
-                    && old.path == new.path
-                    && old.lines == new.lines
-                    && old.note == new.note
-                    && old.symbol == new.symbol
-                    && old.availability == new.availability
-            })
-    }
+    intent_revision: u64,
 }
 
 #[cfg(test)]
@@ -188,6 +172,7 @@ pub(super) struct WindowBasket {
     deferred_disk_checks: BTreeSet<rove_base::WorkspacePath>,
     next_read: u64,
     collection_epoch: u64,
+    intent_revision: u64,
     pending_copy: Option<PendingCopy>,
     written: Arc<Mutex<u64>>,
 }
@@ -233,6 +218,7 @@ impl WindowBasket {
             deferred_disk_checks: BTreeSet::new(),
             next_read: 0,
             collection_epoch: 0,
+            intent_revision: 0,
             pending_copy: None,
             written: Arc::default(),
         }
@@ -393,6 +379,7 @@ impl Workbench {
         self.basket.previews = snapshot.previews.clone();
         self.basket.revision = snapshot.revision;
         self.basket.collection_epoch = snapshot.collection_epoch;
+        self.basket.intent_revision = snapshot.intent_revision;
         self.basket.loaded = true;
         if first_load {
             self.verify_basket_on_disk(&BTreeSet::new(), true, cx);
@@ -404,6 +391,14 @@ impl Workbench {
     }
 
     pub(super) fn basket_changed(&mut self, cx: &mut Context<Self>) -> bool {
+        self.publish_basket_change(self.basket.intent_revision + 1, cx)
+    }
+
+    fn basket_tracking_changed(&mut self, cx: &mut Context<Self>) -> bool {
+        self.publish_basket_change(self.basket.intent_revision, cx)
+    }
+
+    fn publish_basket_change(&mut self, intent_revision: u64, cx: &mut Context<Self>) -> bool {
         self.basket.previews.retain(|id, _| {
             self.basket
                 .contents
@@ -443,6 +438,7 @@ impl Workbench {
                     previews: self.basket.previews.clone(),
                     revision: self.basket.revision + 1,
                     collection_epoch: self.basket.collection_epoch,
+                    intent_revision,
                 });
                 cx.notify();
                 true
@@ -454,6 +450,7 @@ impl Workbench {
             }
         }
         self.basket.revision += 1;
+        self.basket.intent_revision = intent_revision;
         if let Some(write) = self.basket.write_job() {
             let task = cx.background_executor().spawn(async move { write() });
             let shared = self.basket.shared.clone();
@@ -488,8 +485,15 @@ impl Workbench {
             match event {
                 FileEvent::Renamed { from, to } => {
                     self.basket.contents.rename(from, to);
-                    refresh.remove(from);
-                    refresh.insert(to.clone());
+                    refresh.retain(|path| !at_or_below(path, from));
+                    refresh.extend(
+                        self.basket
+                            .contents
+                            .items()
+                            .iter()
+                            .filter(|entry| at_or_below(&entry.path, to))
+                            .map(|entry| entry.path.clone()),
+                    );
                 }
                 FileEvent::Removed(path) => {
                     self.basket.contents.mark_removed(path);
@@ -511,7 +515,7 @@ impl Workbench {
             }
         }
         if self.basket.contents != before {
-            self.basket_changed(cx);
+            self.basket_tracking_changed(cx);
         }
         self.verify_basket_on_disk(&refresh, all, cx);
     }
@@ -618,7 +622,7 @@ impl Workbench {
                     changed |= view.basket.set_preview(id, preview);
                 }
                 if changed {
-                    view.basket_changed(cx);
+                    view.basket_tracking_changed(cx);
                 }
                 view.resume_basket_copy(cx);
             });
@@ -867,7 +871,7 @@ impl Workbench {
                     }
                 }
                 if changed {
-                    view.basket_changed(cx);
+                    view.basket_tracking_changed(cx);
                 }
                 view.resume_basket_copy(cx);
             });
@@ -903,7 +907,7 @@ impl Workbench {
                 updated.push((id, range));
             }
         }
-        if self.basket_changed(cx) {
+        if self.basket_tracking_changed(cx) {
             self.capture_basket_anchors(updated, edited.after.clone(), cx);
         }
     }
@@ -981,7 +985,7 @@ impl Workbench {
             self.basket.pending_copy = Some(PendingCopy {
                 request,
                 markdown,
-                contents: self.basket.contents.clone(),
+                intent_revision: self.basket.intent_revision,
             });
         } else {
             self.start_basket_copy(request, markdown, cx);
@@ -1006,7 +1010,9 @@ impl Workbench {
         let current_request = cx
             .try_global::<BasketClipboardRequest>()
             .map(|latest| latest.0);
-        if current_request == Some(copy.request) && copy.still_matches(&self.basket.contents) {
+        if current_request == Some(copy.request)
+            && copy.intent_revision == self.basket.intent_revision
+        {
             self.start_basket_copy(copy.request, copy.markdown, cx);
         }
     }

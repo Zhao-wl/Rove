@@ -227,7 +227,33 @@ fn context_basket_can_copy_from_another_window_while_anchors_are_prepared(cx: &m
 }
 
 #[gpui::test]
-fn context_basket_rechecks_a_real_disk_change_after_shared_capture(cx: &mut TestAppContext) {
+fn context_basket_explicit_edit_invalidates_a_waiting_copy(cx: &mut TestAppContext) {
+    let fixture = start_shared_capture(cx);
+    cx.update(|app| {
+        app.write_to_clipboard(gpui::ClipboardItem::new_string("existing".into()));
+        fixture.second.update(app, |view, cx| {
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        });
+        fixture.first.update(app, |view, cx| {
+            view.basket.contents.introduction = "new basket description".into();
+            assert!(view.basket_changed(cx));
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|app| {
+        let clipboard = app
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap();
+        assert_eq!(clipboard, "existing");
+        assert!(fixture.second.read(app).basket.contents.items()[0]
+            .anchor
+            .is_some());
+    });
+}
+
+#[gpui::test]
+fn context_basket_relocates_and_copies_after_a_real_disk_change(cx: &mut TestAppContext) {
     let fixture = start_shared_capture(cx);
     let path = WorkspacePath::new("example.txt").unwrap();
     std::fs::write(
@@ -239,6 +265,7 @@ fn context_basket_rechecks_a_real_disk_change_after_shared_capture(cx: &mut Test
         fixture.second.update(app, |view, cx| {
             view.basket_workspace_files_changed(&[super::FileEvent::Changed(path)], cx);
             assert!(view.basket.contents.items()[0].anchor.is_none());
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
         });
     });
     cx.run_until_parked();
@@ -246,6 +273,58 @@ fn context_basket_rechecks_a_real_disk_change_after_shared_capture(cx: &mut Test
         let entry = &fixture.second.read(app).basket.contents.items()[0];
         assert_eq!(entry.availability, Availability::Current);
         assert_eq!(entry.lines, LineRange::new(3, 3).unwrap());
+        let copied = app
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap();
+        assert!(copied.contains("example.txt:3-3"));
+        assert!(copied.contains("\nselected\n"));
+    });
+}
+
+#[gpui::test]
+fn context_basket_follows_consecutive_directory_renames_after_a_change(cx: &mut TestAppContext) {
+    let fixture = start_shared_capture_for(cx, "old/example.txt");
+    let root = fixture.root.path();
+    std::fs::write(
+        root.join("old/example.txt"),
+        "new line\nfirst\nselected\nlast\n",
+    )
+    .unwrap();
+    std::fs::rename(root.join("old"), root.join("intermediate")).unwrap();
+    std::fs::rename(root.join("intermediate"), root.join("renamed")).unwrap();
+    let path = |name| WorkspacePath::new(name).unwrap();
+    cx.update(|app| {
+        fixture.second.update(app, |view, cx| {
+            view.basket_workspace_files_changed(
+                &[
+                    super::FileEvent::Changed(path("old/example.txt")),
+                    super::FileEvent::Renamed {
+                        from: path("old"),
+                        to: path("intermediate"),
+                    },
+                    super::FileEvent::Renamed {
+                        from: path("intermediate"),
+                        to: path("renamed"),
+                    },
+                ],
+                cx,
+            );
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|app| {
+        let entry = &fixture.second.read(app).basket.contents.items()[0];
+        assert_eq!(entry.path, path("renamed/example.txt"));
+        assert_eq!(entry.availability, Availability::Current);
+        assert_eq!(entry.lines, LineRange::new(3, 3).unwrap());
+        let copied = app
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap();
+        assert!(copied.contains("renamed/example.txt:3-3"));
+        assert!(copied.contains("\nselected\n"));
     });
 }
 
@@ -324,13 +403,19 @@ struct SharedCaptureFixture {
 }
 
 fn start_shared_capture(cx: &mut TestAppContext) -> SharedCaptureFixture {
+    start_shared_capture_for(cx, "example.txt")
+}
+
+fn start_shared_capture_for(cx: &mut TestAppContext, relative: &str) -> SharedCaptureFixture {
     use super::basket_host::BasketTestStateRoot;
     use crate::context_basket::model::Entry;
 
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let content = "first\nselected\nlast\n";
-    std::fs::write(root.path().join("example.txt"), content).unwrap();
+    let file = root.path().join(relative);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, content).unwrap();
     cx.update(|app| app.set_global(BasketTestStateRoot(state.path().into())));
     let (first, first_cx) =
         cx.add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx));
@@ -346,7 +431,7 @@ fn start_shared_capture(cx: &mut TestAppContext) -> SharedCaptureFixture {
                 .basket
                 .contents
                 .insert(Entry::new(
-                    WorkspacePath::new("example.txt").unwrap(),
+                    WorkspacePath::new(relative).unwrap(),
                     range,
                     None,
                 ))
