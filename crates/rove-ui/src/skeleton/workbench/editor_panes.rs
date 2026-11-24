@@ -243,7 +243,7 @@ impl Workbench {
             .size_full()
             // #41：代码视图外框挂上速览（上下文键、命令、嵌入区域里的窗口）。
             .children(
-                self.code_viewport(group, false)
+                self.code_viewport(group, false, cx)
                     .map(|d| self.peek_viewport(group, false, d, cx))
                     .map(|d| self.markdown_code_context(group, false, d)),
             );
@@ -258,7 +258,7 @@ impl Workbench {
                 viewports = viewports.flex_col();
             }
             viewports = viewports.children(
-                self.code_viewport(group, true)
+                self.code_viewport(group, true, cx)
                     .map(|d| self.peek_viewport(group, true, d, cx))
                     .map(|d| self.markdown_code_context(group, true, d)),
             );
@@ -792,7 +792,12 @@ impl Workbench {
     }
 
     /// The group's code view (#19), which owns scrolling, selection and painting.
-    fn code_viewport(&self, group: EditorGroupId, secondary: bool) -> Option<Div> {
+    fn code_viewport(
+        &self,
+        group: EditorGroupId,
+        secondary: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         // #21：代码视图由查找条宿主包住（宿主把代码视图作为第一个子元素）。
         let views = self.views.get(&group)?;
         let code = if secondary {
@@ -807,6 +812,14 @@ impl Workbench {
                 .min_w_0()
                 .overflow_hidden()
                 .font_family("Consolas")
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |view, _, _, cx| {
+                        if view.nav.link_menu.is_none() {
+                            view.show_basket_editor_menu(group, secondary, cx);
+                        }
+                    }),
+                )
                 .child(code),
         )
     }

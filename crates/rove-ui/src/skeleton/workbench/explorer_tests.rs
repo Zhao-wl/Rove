@@ -756,3 +756,36 @@ fn files_that_fail_to_open_do_not_break_the_tree(cx: &mut TestAppContext) {
         .all(|e| matches!(e, OpenEvent::Ready { .. } | OpenEvent::Failed { .. })));
     assert!(!rows(&view, cx).is_empty());
 }
+
+#[gpui::test]
+fn context_basket_explorer_context_collects_multiple_entire_files(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}", &["A.cs", "B.cs"]);
+    std::fs::write(fixture.path("A.cs"), "class A {}\n// two").unwrap();
+    std::fs::write(fixture.path("B.cs"), "class B {}\n// two\n// three").unwrap();
+    let (view, cx) = fixture.open(cx);
+    view.update(cx, |view, _| view.basket.use_test_state());
+    let list = list(&view, cx);
+    cx.update(|window, cx| {
+        window.focus(&list.focus_handle(cx));
+        list.update(cx, |view, cx| {
+            view.widget.set_focus(Some(0));
+            view.widget.set_selection(vec![0, 1]);
+            cx.notify();
+        });
+    });
+    cx.simulate_keystrokes("shift-f10");
+    super::basket_tests::click_basket_menu(cx, 0);
+    view.read_with(cx, |view, _| {
+        let [a, b] = view.basket.contents.items() else {
+            panic!("two selected files are expected");
+        };
+        assert_eq!(
+            (a.path.as_str(), a.lines.first(), a.lines.last()),
+            ("A.cs", 1, 2)
+        );
+        assert_eq!(
+            (b.path.as_str(), b.lines.first(), b.lines.last()),
+            ("B.cs", 1, 3)
+        );
+    });
+}

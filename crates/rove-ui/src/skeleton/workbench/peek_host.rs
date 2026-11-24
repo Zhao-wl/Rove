@@ -284,6 +284,7 @@ impl Workbench {
             }
         };
         match event {
+            PeekEvent::ResultContext(targets) => self.show_basket_result_menu(&targets, false, cx),
             PeekEvent::Open {
                 resource,
                 selection,

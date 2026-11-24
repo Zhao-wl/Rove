@@ -155,6 +155,11 @@ mod v01_acceptance_tests;
 #[cfg(test)]
 mod binary_tests;
 // #150：「可交互」冷启动埋点（`cargo xtask startup` 用，默认关闭）。
+mod basket_host;
+mod basket_menu;
+#[cfg(test)]
+mod basket_tests;
+mod basket_view;
 mod link_host;
 mod startup_probe;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -232,6 +237,7 @@ pub struct Workbench {
     explorer_revealed: Option<TabId>,
     editor: EditorService,
     root: PathBuf,
+    basket: basket_host::WindowBasket,
     views: BTreeMap<EditorGroupId, GroupViews>,
     /// The group whose code view last received keyboard focus from the editor area.
     focus_group: Option<EditorGroupId>,
@@ -507,6 +513,7 @@ impl Workbench {
                 wake,
             ),
             root: root.clone(),
+            basket: basket_host::WindowBasket::new(&root),
             views: BTreeMap::new(),
             focus_group: None,
             tab_drop: None,
@@ -617,6 +624,21 @@ impl Workbench {
         // #42：速览预览里的外部符号片段取自元数据视图。
         view.register_metadata_snippets();
         view.sync_views(cx);
+        view.restore_basket(cx);
+        view.register_markdown_context_menu(
+            Self::show_basket_markdown_menu,
+            Self::dismiss_basket_menu,
+        );
+        use crate::context_basket::registry as basket;
+        for id in [
+            basket::ADD,
+            basket::COPY_MARKDOWN,
+            basket::COPY_REFERENCES,
+            basket::CLEAR,
+            basket::FOCUS,
+        ] {
+            view.shell.mark_implemented(id);
+        }
         if view.has_folder {
             view.scan(root, cx);
         } else {
@@ -888,6 +910,7 @@ impl Workbench {
                         // #47：打开中的文档在磁盘上被修改 / 删除。
                         view.note_disk_events(&nav, cx);
                         view.refresh_workspace_images(&nav, cx);
+                        view.basket_workspace_files_changed(&nav, cx);
                         view.nav_files_changed(&nav, cx);
                         if !view.editor.settings.close_on_delete {
                             return;
@@ -985,6 +1008,9 @@ impl Workbench {
         // #27：状态栏条目的选择器命令；`changeEOL` 带参数时直接统一行尾（#49），不带参数时弹选择器。
         if crate::status_items::registry::is_status_command(id) {
             self.status_command(id, &invocation.args, cx);
+            return;
+        }
+        if self.basket_command(id, cx) {
             return;
         }
         if id == crate::image_preview::registry::TOGGLE_ZOOM {
@@ -1811,7 +1837,7 @@ impl Workbench {
 }
 
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 9] = [
+const KNOWN_FACTORIES: [&str; 10] = [
     CONTAINER_FACTORY,
     STATUS_FACTORY,
     FILE_VIEW,
@@ -1823,6 +1849,7 @@ const KNOWN_FACTORIES: [&str; 9] = [
     crate::markdown::registry::TITLE_FACTORY,
     // #60：面板里的「引用」视图。
     crate::references::registry::VIEW,
+    crate::context_basket::registry::SECTION,
 ];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
@@ -1857,11 +1884,12 @@ impl ShellHost for Workbench {
     fn render_view(
         &mut self,
         factory_key: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         match factory_key {
             FILE_VIEW => Some(self.render_file_tree(cx)),
+            crate::context_basket::registry::SECTION => Some(self.render_basket(window, cx)),
             PROBLEMS => Some(shell::view::render_problems_empty(self)),
             crate::index_status::DETAILS_VIEW => Some(self.render_index_details(cx)),
             crate::outline::registry::OUTLINE_VIEW => Some(self.render_outline(cx)),
@@ -1883,6 +1911,14 @@ impl ShellHost for Workbench {
         Some(self.explorer.update(cx, |explorer, cx| {
             explorer.branch_toolbar(&*theme, window, cx)
         }))
+    }
+
+    fn activity_badge(&self, container: &str) -> usize {
+        if container == crate::context_basket::registry::CONTAINER {
+            self.basket.contents.items().len()
+        } else {
+            0
+        }
     }
 
     fn section_title(&self, id: &str) -> Option<String> {
@@ -1978,6 +2014,7 @@ impl Render for Workbench {
         self.sync_welcome(window, cx);
         // #60：引用视图的两个上下文键。
         self.sync_references(cx);
+        self.sync_basket_editor_focus(window, cx);
         if self.focus_group != Some(self.editor.focused) {
             let moved = self.focus_group.is_some();
             self.focus_group = Some(self.editor.focused);
@@ -2022,6 +2059,7 @@ impl Render for Workbench {
         let goto = self.goto_overlay(cx);
         let quick = self.quick_overlay(cx);
         let hover = self.nav_overlay(cx);
+        let basket_menu = self.render_basket_menu(window, cx);
         // #28：颜色主题 / 打开最近的快速选择。
         let welcome = self.welcome_overlay(cx);
         // #76：「关于」浮层（在最上层，命令面板与欢迎页之上）。
@@ -2048,7 +2086,9 @@ impl Render for Workbench {
             }))
             .key_context(context.as_str())
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && view.nav.link_menu.take().is_some() {
+                if event.keystroke.key == "escape"
+                    && (view.dismiss_basket_menu() || view.nav.link_menu.take().is_some())
+                {
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -2162,6 +2202,7 @@ impl Render for Workbench {
             .children(goto)
             .children(quick)
             .children(hover)
+            .children(basket_menu)
             .children(welcome)
     }
 }
@@ -2457,7 +2498,7 @@ mod tests {
     }
     /// #14 entry point: keybindings.json → real GPUI key events → command dispatch. Covers user
     /// overrides of workbench keys (formerly bound by each module), `-command` removal, unknown
-    /// commands, chords with Esc and timeout, and a placeholder command still reporting status.
+    /// commands, chords with Esc and timeout, and a registered command reporting status.
     #[gpui::test]
     fn keybindings_json_keys_dispatch_commands(cx: &mut TestAppContext) {
         let folder = tempfile::tempdir().unwrap();
@@ -2497,7 +2538,7 @@ mod tests {
         let panel = view.read_with(cx, |v, _| v.shell.layout.panel_visible);
         cx.simulate_keystrokes("ctrl-j");
         view.read_with(cx, |v, _| assert_ne!(v.shell.layout.panel_visible, panel));
-        // User chord: pending status, then dispatch of a registered placeholder command.
+        // User chord: pending status, then the basket reports that there is no active file.
         cx.simulate_keystrokes("ctrl-k");
         view.read_with(cx, |v, _| {
             assert_eq!(
@@ -2507,7 +2548,7 @@ mod tests {
         });
         cx.simulate_keystrokes("ctrl-o");
         view.read_with(cx, |v, _| {
-            assert_eq!(v.status(), v.label("command.rove.contextBasket.add", &[]))
+            assert_eq!(v.status(), v.label("contextBasket.noFile", &[]))
         });
         // Escape aborts a pending chord.
         cx.simulate_keystrokes("ctrl-k escape");

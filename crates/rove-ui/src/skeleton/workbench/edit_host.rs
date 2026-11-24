@@ -303,6 +303,9 @@ impl Workbench {
             return;
         };
         let edited = &notice.0;
+        if let Resource::Workspace(path) = &document.resource {
+            self.basket_text_edited(path, edited, cx);
+        }
         let line_endings = self
             .editing
             .saves
@@ -985,6 +988,7 @@ impl Workbench {
     pub(super) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
         let closing = self.window_should_close(cx);
         if closing {
+            self.flush_basket();
             self.mark_hot_exit_clean();
         }
         closing

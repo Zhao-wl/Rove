@@ -292,7 +292,7 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
 }
 
 /// 工作区路径的稳定哈希（Windows 路径大小写不敏感，统一分隔符后取 FNV-1a 64）。
-fn workspace_key(root: &Path) -> String {
+pub(crate) fn workspace_key(root: &Path) -> String {
     let normalized = root
         .to_string_lossy()
         .replace('\\', "/")

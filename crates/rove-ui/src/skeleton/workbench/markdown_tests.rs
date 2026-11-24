@@ -1006,6 +1006,46 @@ fn preview_scale_follows_the_window_and_zoom_is_not_doubled(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn context_basket_collects_source_lines_from_the_markdown_preview(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    let (view, cx) = fixture.open(cx);
+    view.update(cx, |view, _| view.basket.use_test_state());
+    open(&view, "Long.md", explorer(), cx);
+    assert_eq!(active_kind(&view, cx), ("Long.md".to_string(), true));
+    view.update(cx, |view, _| {
+        let snapshot = view.markdown_snapshot();
+        let document = view.markdown.requested.unwrap().document;
+        assert!(snapshot.rendered && snapshot.visible);
+        view.markdown
+            .sender_for_test()
+            .try_send(crate::markdown::backend::BackendEvent::Message(
+                serde_json::json!({
+                    "version": 1, "type": "sourceSelection",
+                    "documentId": document.0, "seq": snapshot.render_sequence,
+                    "first": 4, "last": 6, "x": 0.45, "y": 0.35,
+                }),
+            ))
+            .unwrap();
+    });
+    settle(cx);
+    view.read_with(cx, |view, _| {
+        assert!(view.markdown_snapshot().visible);
+        assert_preview_clipped(view);
+    });
+    super::basket_tests::click_basket_menu(cx, 0);
+    settle(cx);
+    assert_eq!(active_kind(&view, cx), ("Long.md".to_string(), true));
+    view.read_with(cx, |view, _| {
+        assert!(view.markdown_snapshot().visible);
+        assert!(view.markdown.fake.borrow().occlusions.is_empty());
+        let entries = view.basket.contents.items();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path.as_str(), "Long.md");
+        assert_eq!((entries[0].lines.first(), entries[0].lines.last()), (5, 7));
+    });
+}
+
+#[gpui::test]
 fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mut TestAppContext) {
     let fixture = Fixture::new("{}");
     let (view, cx) = fixture.open(cx);

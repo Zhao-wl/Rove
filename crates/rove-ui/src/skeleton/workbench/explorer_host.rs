@@ -108,6 +108,18 @@ impl Workbench {
                 cx.notify();
             }
             ExplorerEvent::Command(command) => self.command(command, cx),
+            ExplorerEvent::FileContext(paths) => {
+                let targets = paths
+                    .iter()
+                    .cloned()
+                    .map(|path| super::basket_host::BasketCapture {
+                        path,
+                        range: crate::context_basket::capture::SourceRange::WholeFile,
+                        symbol: None,
+                    })
+                    .collect();
+                self.show_basket_sources_menu(targets, Vec::new(), cx);
+            }
         }
     }
 
