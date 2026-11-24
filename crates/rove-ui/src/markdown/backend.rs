@@ -49,7 +49,8 @@ pub trait Backend {
     /// 投递一条 JSON 消息给页面（`PostWebMessageAsJson`，非阻塞）。
     fn post(&mut self, message: &serde_json::Value);
     /// 显示在窗口客户区的逻辑坐标 `bounds`（乘 `scale` 得到物理像素），`None` 表示隐藏。
-    fn layout(&mut self, bounds: Option<Bounds<Pixels>>, scale: f32);
+    /// `occlusions` 以客户区逻辑坐标表示浮层遮挡区域，不改变页面布局尺寸。
+    fn layout(&mut self, bounds: Option<Bounds<Pixels>>, scale: f32, occlusions: &[Bounds<Pixels>]);
     /// 网页缩放（跟随 `window.zoomLevel`）。
     fn set_zoom(&mut self, factor: f64);
     /// 把键盘焦点交给网页（`MoveFocus`）；`reverse` 为 Shift+Tab 进入。
@@ -68,6 +69,14 @@ pub trait Backend {
     /// 当前显示的文档是否放行远程资源。
     /// 实例就绪前的底色（跟随编辑器背景，避免白屏闪烁）。
     fn set_background(&mut self, _rgba: (u8, u8, u8, u8)) {}
+    /// 后端是否已创建实际接收鼠标消息的原生子窗口。
+    fn uses_native_child_window(&self) -> bool {
+        false
+    }
+    /// 当前成功应用到可见预览的裁切区域数（真实窗口探针用）。
+    fn occlusion_count(&self) -> usize {
+        0
+    }
     /// 属于该实例的进程 ID（测量用；没有实例时为空）。
     fn process_ids(&self) -> Vec<u32> {
         Vec::new()
@@ -83,6 +92,7 @@ pub struct FakeLog {
     pub posted: Vec<serde_json::Value>,
     pub layout: Option<Option<Bounds<Pixels>>>,
     pub visible_changes: u32,
+    pub occlusions: Vec<Bounds<Pixels>>,
     pub focus_requests: u32,
     pub released: u32,
     pub drives: BTreeSet<char>,
@@ -157,8 +167,14 @@ impl Backend for FakeBackend {
                 })));
         }
     }
-    fn layout(&mut self, bounds: Option<Bounds<Pixels>>, scale: f32) {
+    fn layout(
+        &mut self,
+        bounds: Option<Bounds<Pixels>>,
+        scale: f32,
+        occlusions: &[Bounds<Pixels>],
+    ) {
         let mut log = self.log.borrow_mut();
+        log.occlusions = occlusions.to_vec();
         if self.visible != bounds.is_some() {
             log.visible_changes += 1;
         }
@@ -219,7 +235,7 @@ impl Backend for UnavailableBackend {
             .try_send(BackendEvent::RuntimeMissing("unsupported platform".into()));
     }
     fn post(&mut self, _: &serde_json::Value) {}
-    fn layout(&mut self, _: Option<Bounds<Pixels>>, _: f32) {}
+    fn layout(&mut self, _: Option<Bounds<Pixels>>, _: f32, _: &[Bounds<Pixels>]) {}
     fn set_zoom(&mut self, _: f64) {}
     fn focus(&mut self, _: bool) {}
     fn has_focus(&self) -> bool {

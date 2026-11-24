@@ -15,3 +15,15 @@ pub fn prepare_hwnd_hosting() {
         std::env::set_var(KEY, "1");
     }
 }
+
+/// Records the content area of a GPUI overlay above a native Markdown preview.
+pub(crate) fn occlusion_marker() -> impl gpui::IntoElement {
+    use gpui::Styled as _;
+
+    gpui::canvas(
+        |bounds, window, _| window.insert_native_child_occlusion(bounds),
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}

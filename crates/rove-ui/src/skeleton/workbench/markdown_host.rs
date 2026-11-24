@@ -5,8 +5,8 @@
 //!   提示，单击后接管。
 //! - **生命周期**：预览不可见时隐藏并挂起；所有预览标签都关闭后启动 `rove.markdown.webviewIdleTimeout`
 //!   的定时任务（GPUI 定时器，不依赖渲染帧），到期在前台任务里销毁实例；期间再打开预览则取消定时并复用。
-//! - **遮挡**（#6 报告的 Hwnd + 相交隐藏）：快速打开 / 命令面板、转到符号、菜单、模态框、通知、悬停卡片
-//!   或拖动标签期间隐藏实例，原位置显示骨架；关闭后恢复。
+//! - **遮挡**：快速输入、菜单和 tooltip 裁切与预览相交的区域（#302）。转到符号、模态框、通知、悬停卡片
+//!   或拖动标签期间隐藏实例，关闭后恢复。
 //! - **焦点**：网页获得焦点时 GPUI 焦点移到预览宿主（上下文键 `activeCustomEditorId`）；网页里按下的
 //!   Ctrl/Alt 组合、F 键、Esc 交回键位服务；GPUI 焦点离开预览时把 Win32 焦点还给宿主窗口；
 //!   Tab 走到网页边界时回到宿主。
@@ -50,6 +50,7 @@ pub struct MarkdownSnapshot {
     pub rendered: bool,
     pub render_sequence: u64,
     pub visible: bool,
+    pub occlusions: usize,
     pub stats: Option<Json>,
     pub first_open_ms: Option<f64>,
     pub created_ms: Option<f64>,
@@ -200,6 +201,7 @@ impl Workbench {
             rendered: m.rendered.is_some() && m.rendered == m.requested.map(|_| m.seq),
             render_sequence: m.seq,
             visible: m.visible.get(),
+            occlusions: backend.occlusion_count(),
             stats: m.stats.clone(),
             first_open_ms: m.first_open_ms,
             created_ms: m.created_ms,
@@ -311,7 +313,7 @@ impl Workbench {
         } else {
             self.markdown.visible.set(false);
             let mut backend = self.markdown.backend.borrow_mut();
-            backend.layout(None, window.scale_factor());
+            backend.layout(None, window.scale_factor(), &[]);
             backend.suspend();
             drop(backend);
             if !self.any_preview_tab()
@@ -337,7 +339,7 @@ impl Workbench {
         self.markdown.was_focused = now;
     }
 
-    /// `Render` 末尾：弹出层与预览相交时隐藏实例（#6 报告的 Hwnd + 相交隐藏）。
+    /// `Render` 末尾：需完整遮挡时隐藏实例。局部遮挡在画布绘制时计算。
     pub(super) fn sync_markdown_overlays(
         &mut self,
         overlay: bool,
@@ -346,7 +348,6 @@ impl Workbench {
     ) {
         let shell = &self.shell;
         let covered = overlay
-            || shell.menu_open()
             || shell.feedback.modal().is_some()
             || shell.feedback.toasts().next().is_some()
             || shell.feedback.center_visible()
@@ -356,7 +357,7 @@ impl Workbench {
         let mut backend = self.markdown.backend.borrow_mut();
         backend.set_zoom(self.shell.zoom() as f64);
         if !visible {
-            backend.layout(None, window.scale_factor());
+            backend.layout(None, window.scale_factor(), &[]);
         }
     }
 
@@ -796,6 +797,25 @@ impl Workbench {
                     self.markdown_scroll_editors(document.unwrap(), line, cx);
                 }
             }
+            Some("pointerDown")
+                if document.is_some()
+                    && document == current
+                    && message["seq"].as_u64() == self.markdown.rendered
+                    && self.markdown.rendered == Some(self.markdown.seq)
+                    && self.markdown.visible.get()
+                    && self.markdown.owner.is_some_and(|(group, tab)| {
+                        self.editor
+                            .maximized
+                            .is_none_or(|maximized| maximized == group)
+                            && self
+                                .preview_tab(group)
+                                .is_some_and(|preview| preview.id == tab)
+                    }) =>
+            {
+                if self.shell.dismiss_menu() {
+                    cx.notify();
+                }
+            }
             Some("dblclick") if document.is_some() && document == current => {
                 if self.md_key("markdown.preview.doubleClickToSwitchToEditor", true) {
                     let line = message["line"].as_f64().unwrap_or(0.0).max(0.0) as u32;
@@ -1207,6 +1227,8 @@ impl Workbench {
         }
         let backend = self.markdown.backend.clone();
         let visible = self.markdown.visible.clone();
+        let prepaint_visible = visible.clone();
+        let prepaint_backend = backend.clone();
         let bar = self.ui_color("editorWidget.background");
         let skeleton = (!rendered || !visible.get()).then(|| {
             let line = |w: f32, h: f32| div().h(px(h)).w(relative(w)).rounded_sm().bg(bar);
@@ -1238,13 +1260,28 @@ impl Workbench {
         .child(
             canvas(
                 move |bounds: Bounds<Pixels>, window, _| {
-                    if visible.get() {
-                        backend
-                            .borrow_mut()
-                            .layout(Some(bounds), window.scale_factor());
+                    if prepaint_visible.get()
+                        && prepaint_backend.borrow().uses_native_child_window()
+                    {
+                        window.sync_pointer_over_native_child(bounds);
                     }
                 },
-                |_, _, _, _| {},
+                move |bounds: Bounds<Pixels>, (), window, _| {
+                    if visible.get() {
+                        let occlusions: Vec<_> = window
+                            .native_child_occlusions()
+                            .map(|overlay| overlay.intersect(&bounds))
+                            .filter(|overlay| {
+                                overlay.size.width > px(0.0) && overlay.size.height > px(0.0)
+                            })
+                            .collect();
+                        backend.borrow_mut().layout(
+                            Some(bounds),
+                            window.scale_factor(),
+                            &occlusions,
+                        );
+                    }
+                },
             )
             .absolute()
             .inset_0(),

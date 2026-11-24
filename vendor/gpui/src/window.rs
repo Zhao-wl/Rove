@@ -533,6 +533,7 @@ pub struct Hitbox {
     pub content_mask: ContentMask<Pixels>,
     /// Flags that specify hitbox behavior.
     pub behavior: HitboxBehavior,
+    native_child_occlusion: bool,
 }
 
 impl Hitbox {
@@ -3303,6 +3304,56 @@ impl Window {
     ///
     /// This method should only be called as part of the prepaint phase of element drawing.
     pub fn insert_hitbox(&mut self, bounds: Bounds<Pixels>, behavior: HitboxBehavior) -> Hitbox {
+        self.insert_hitbox_with_native_occlusion(bounds, behavior, false)
+    }
+
+    /// Gets an element's last painted bounds by its debug selector.
+    #[cfg(feature = "test-support")]
+    pub fn debug_painted_bounds(&self, selector: &str) -> Option<Bounds<Pixels>> {
+        self.rendered_frame.debug_bounds.get(selector).copied()
+    }
+
+    /// Gets the last painted tooltip's bounds.
+    #[cfg(feature = "test-support")]
+    pub fn debug_painted_tooltip(&self) -> Option<Bounds<Pixels>> {
+        self.tooltip_bounds.as_ref().map(|tooltip| tooltip.bounds)
+    }
+
+    /// Marks the visible bounds of an overlay above a native child window.
+    /// Call during prepaint. This does not block any GPUI mouse events.
+    pub fn insert_native_child_occlusion(&mut self, bounds: Bounds<Pixels>) {
+        self.insert_hitbox_with_native_occlusion(bounds, HitboxBehavior::Normal, true);
+    }
+
+    /// Keep tooltip hit testing in sync when the native child receives mouse movement.
+    /// Call during prepaint with the bounds of a visible native child window.
+    pub fn sync_pointer_over_native_child(&mut self, bounds: Bounds<Pixels>) {
+        self.invalidator.debug_assert_prepaint();
+        if !self.is_window_hovered() {
+            let position = self.platform_window.mouse_position();
+            if bounds.contains(&position) {
+                self.mouse_position = position;
+            }
+        }
+    }
+
+    /// Returns overlay bounds during paint, after deferred elements and the tooltip are prepainted.
+    pub fn native_child_occlusions(&self) -> impl Iterator<Item = Bounds<Pixels>> + '_ {
+        self.invalidator.debug_assert_paint();
+        self.next_frame
+            .hitboxes
+            .iter()
+            .filter(|hitbox| hitbox.native_child_occlusion)
+            .map(|hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds))
+            .chain(self.tooltip_bounds.as_ref().map(|tooltip| tooltip.bounds))
+    }
+
+    fn insert_hitbox_with_native_occlusion(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        behavior: HitboxBehavior,
+        native_child_occlusion: bool,
+    ) -> Hitbox {
         self.invalidator.debug_assert_prepaint();
 
         let content_mask = self.content_mask();
@@ -3313,6 +3364,7 @@ impl Window {
             bounds,
             content_mask,
             behavior,
+            native_child_occlusion,
         };
         self.next_frame.hitboxes.push(hitbox.clone());
         hitbox

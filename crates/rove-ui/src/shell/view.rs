@@ -508,6 +508,10 @@ impl Shell {
     pub fn menu_open(&self) -> bool {
         self.open_menu.is_some()
     }
+
+    pub(crate) fn dismiss_menu(&mut self) -> bool {
+        self.open_menu.take().is_some()
+    }
     pub fn status_index(&self) -> usize {
         self.status_index
     }
@@ -1799,6 +1803,7 @@ fn render_menu_dropdown<T: ShellHost>(
             list = list.child(
                 div()
                     .id(SharedString::from(id.to_owned()))
+                    .debug_selector(|| format!("menu-command-{}", item.command))
                     .mx(shell.z(4.0))
                     .px(shell.z(12.0))
                     .h(shell.z(24.0))
@@ -1827,7 +1832,9 @@ fn render_menu_dropdown<T: ShellHost>(
             );
         }
     }
-    deferred(list).with_priority(1).into_any_element()
+    deferred(list.child(crate::markdown::occlusion_marker()))
+        .with_priority(1)
+        .into_any_element()
 }
 
 // --------------------------------------------------------------------- 活动栏

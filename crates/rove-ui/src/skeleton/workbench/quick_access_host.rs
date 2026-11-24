@@ -1003,7 +1003,8 @@ impl Workbench {
                         div()
                             .w(px(crate::list_widget::quick_input_view::WIDTH))
                             .occlude()
-                            .child(view.clone()),
+                            .child(view.clone())
+                            .child(crate::markdown::occlusion_marker()),
                     ),
             )
             .with_priority(2)

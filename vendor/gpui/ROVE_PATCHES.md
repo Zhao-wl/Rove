@@ -240,3 +240,12 @@ Recorded for follow-up; **no code is changed for these in this PR**. The first t
 1. 整包替换 `vendor/gpui` 后，在新的 `[dependencies.image]` 下重新加上这两行。
 2. `cargo build -p rove-app`：新版若用了别的 `image::codecs::*`，编译器会直接报未解析的导入，按需把对应格式加回。
 3. 按 release 配置构建后跑 `cargo xtask check-size`。
+
+## #302 — Native child window occlusion bounds
+
+`src/window.rs` lets overlay elements register their painted area during prepaint.
+These marks stay with the hitboxes when cached views reuse their layout. During
+paint the embedding host can read the marked bounds and the positioned tooltip
+to clip a native child window while preserving ordinary GPUI event dispatch.
+Hosts also refresh the pointer position within a visible native child after the
+platform reports mouse leave, so a tooltip can dismiss without a GPUI mouse move.
