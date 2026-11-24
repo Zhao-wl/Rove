@@ -929,6 +929,180 @@ fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut
     );
 }
 
+#[cfg(windows)]
+fn wait_for_structured_problems(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    expected: Option<&Resource>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let problems = view.read_with(cx, |v, cx| v.listed_problem_positions(cx));
+        let ready = match expected {
+            Some(resource) => {
+                !problems.is_empty() && problems.iter().all(|(path, _)| path == resource)
+            }
+            None => problems.is_empty(),
+        };
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected structured problems for {expected:?}, got {problems:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(windows)]
+fn open_structured_fixture(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    path: &WorkspacePath,
+) -> DocumentId {
+    let resource = Resource::Workspace(path.clone());
+    view.update(cx, |v, cx| {
+        v.open_documents()
+            .open(
+                resource.clone(),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    wait_for_structured_problems(view, cx, Some(&resource));
+    view.read_with(cx, |v, _| v.focused_text().unwrap().1.id)
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn explorer_structured_problems_follow_rename_move_and_delete(cx: &mut TestAppContext) {
+    use crate::explorer::decorations::DecorationProvider;
+
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDragAndDrop":false}"#,
+        &["Bad.json", "Target/Seed.txt"],
+    );
+    std::fs::write(fixture.path("Bad.json"), r#"{"value": [ }"#).unwrap();
+    let (view, cx) = fixture.open(cx);
+    let original = WorkspacePath::new("Bad.json").unwrap();
+    let document = open_structured_fixture(&view, cx, &original);
+    let version = view.read_with(cx, |v, _| v.open_document(document).unwrap().text.version());
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row == "Bad.json")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    let renamed = WorkspacePath::new("Renamed.json").unwrap();
+    wait_for_structured_problems(&view, cx, Some(&Resource::Workspace(renamed.clone())));
+    view.read_with(cx, |v, cx| {
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&original, false).is_none());
+        assert!(explorer.problems().decorate(&renamed, false).is_some());
+    });
+
+    let target = WorkspacePath::new("Target").unwrap();
+    let explorer = view.read_with(cx, |v, _| v.explorer.clone());
+    explorer.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::MoveDropped {
+            paths: vec![renamed.clone()],
+            parent: Some(target.clone()),
+        });
+    });
+    let moved = WorkspacePath::new("Target/Renamed.json").unwrap();
+    let resource = Resource::Workspace(moved.clone());
+    wait_for_structured_problems(&view, cx, Some(&resource));
+    assert!(!fixture.path("Renamed.json").exists());
+    assert!(fixture.path("Target/Renamed.json").is_file());
+    view.read_with(cx, |v, cx| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(current.resource, resource);
+        assert_eq!(current.text.version(), version);
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&renamed, false).is_none());
+        assert!(explorer.problems().decorate(&moved, false).is_some());
+        assert!(explorer.problems().decorate(&target, true).is_some());
+    });
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim_end_matches('/') == "Target")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("right");
+    wait_until(&view, cx, "target folder expanded", |rows| {
+        rows.iter().any(|row| row.trim() == "Renamed.json")
+    });
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim() == "Renamed.json")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("shift-delete");
+    cx.run_until_parked();
+    view.update(cx, |v, _| {
+        let modal = v
+            .shell
+            .feedback
+            .modal()
+            .expect("permanent delete confirmation")
+            .key
+            .clone();
+        v.shell
+            .feedback
+            .act(&modal, registry::FILE_OP_CONFIRM)
+            .unwrap();
+    });
+    wait_for_structured_problems(&view, cx, None);
+    assert!(!fixture.path("Target/Renamed.json").exists());
+    view.read_with(cx, |v, cx| {
+        assert!(v.open_document(document).is_none());
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&moved, false).is_none());
+        assert!(explorer.problems().decorate(&target, true).is_none());
+    });
+}
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_structured_problems_clear_on_recycle_and_return_after_undo(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDelete":false,"files.enableTrash":true}"#,
+        &["Bad.json", "Seed.txt"],
+    );
+    std::fs::write(fixture.path("Bad.json"), r#"{"value": [ }"#).unwrap();
+    let (view, cx) = fixture.open(cx);
+    let path = WorkspacePath::new("Bad.json").unwrap();
+    let document = open_structured_fixture(&view, cx, &path);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("delete");
+    wait_for_structured_problems(&view, cx, None);
+    assert!(!fixture.path("Bad.json").exists());
+    view.read_with(cx, |v, _| assert!(v.open_document(document).is_none()));
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(&view, cx, "structured file restored by undo", |rows| {
+        rows.iter().any(|row| row == "Bad.json")
+    });
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Bad.json")).unwrap(),
+        r#"{"value": [ }"#
+    );
+    open_structured_fixture(&view, cx, &path);
+}
+
 #[gpui::test]
 fn explorer_permanent_delete_requires_confirmation_even_when_recycle_prompt_is_off(
     cx: &mut TestAppContext,

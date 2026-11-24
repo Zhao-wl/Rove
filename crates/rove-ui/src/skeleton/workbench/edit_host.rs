@@ -907,6 +907,7 @@ impl Workbench {
             };
             for (original, document) in self.editor.follow_rename(&map) {
                 refreshed = true;
+                self.follow_structured_rename(&original, &document, cx);
                 if let (Some(from), Some(to)) = (
                     self.disk_path(&original),
                     self.disk_path(&document.resource),
