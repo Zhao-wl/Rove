@@ -571,6 +571,7 @@ pub struct CodeView {
     pub(crate) edit_host: Option<Rc<dyn super::edit::EditHost>>,
     /// #47：输入法组合串（不在缓冲区里）。
     pub(crate) composition: Option<super::edit::Composition>,
+    pub(crate) paste_format: Option<rove_base::Cancellation>,
     /// #47：组合行的显示条目缓存（按组合串内容）。
     pub(crate) composition_entry: Option<(super::edit::Composition, Rc<LineEntry>)>,
     /// #47：改写模式。
@@ -851,6 +852,7 @@ impl CodeView {
             link_cursor: false,
             edit_host: None,
             composition: None,
+            paste_format: None,
             composition_entry: None,
             overtype: false,
             selection_anchor: None,
@@ -1431,6 +1433,7 @@ impl CodeView {
             || options.folding != self.options.folding
             || options.folding_strategy != self.options.folding_strategy
             || options.folding_maximum_regions != self.options.folding_maximum_regions
+            || options.json_max_items_computed != self.options.json_max_items_computed
             || options.large_file_optimizations != self.options.large_file_optimizations
             // #55：缩进模型的区间与折叠区间一起在后台算。
             || (options.sticky_scroll && !self.options.sticky_scroll);
@@ -3796,7 +3799,10 @@ impl CodeView {
         let strategy = self.options.folding_strategy;
         let tab = self.options.tab_size as usize;
         let syntax_allowed = self.effective_level() == SizeClass::Normal;
-        let max = self.options.folding_maximum_regions;
+        let mut max = self.options.folding_maximum_regions;
+        if matches!(language.as_deref(), Some("json" | "jsonc")) {
+            max = max.min(self.options.json_max_items_computed);
+        }
         // #55：粘性滚动的缩进模型要的是纯缩进区间（与折叠区间同一份文本，一起算）。
         let sticky = self.sticky_enabled();
         let job = cx.background_executor().spawn(async move {

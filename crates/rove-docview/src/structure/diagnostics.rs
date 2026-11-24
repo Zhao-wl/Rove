@@ -1,4 +1,4 @@
-use super::{model::named_children, ParsedStructure, StructuredLanguage};
+use super::{model::named_children, parse_tree, ParsedStructure, StructuredLanguage};
 use rove_base::{Cancellation, Result, Span, TextRange};
 use std::{collections::HashSet, ops::Range};
 use tree_sitter::Node;
@@ -24,7 +24,15 @@ impl ParsedStructure {
     /// positions; presentation owns the localized explanation.
     pub fn diagnostics(&self, cancel: &Cancellation) -> Result<Vec<SyntaxProblem>> {
         let doc = &self.0;
-        let root = doc.tree.root_node();
+        let parsed;
+        let tree = match &doc.tree {
+            Some(tree) => tree,
+            None => {
+                parsed = parse_tree(doc.language, &doc.text, None, cancel)?;
+                &parsed
+            }
+        };
+        let root = tree.root_node();
         let mut raw = Vec::new();
         let mut stack = vec![root];
         let walk_all = !matches!(

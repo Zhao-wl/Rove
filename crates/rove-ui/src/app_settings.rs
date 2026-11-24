@@ -71,6 +71,12 @@ fn modules() -> &'static [(&'static str, Register)] {
             "settings_ui",
             crate::settings_ui::registry::register_settings,
         ),
+        ("structured_documents", |registry| {
+            register_catalog_keys(
+                registry,
+                crate::outline::structure::SETTING_KEYS.iter().copied(),
+            )
+        }),
     ]
 }
 

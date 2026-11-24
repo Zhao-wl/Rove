@@ -4,7 +4,7 @@ use rove_syntax::{symbols::kinds, Symbol, SymbolKind};
 use std::{collections::HashMap, sync::Arc};
 use tree_sitter::Node;
 
-use super::{LineIndex, StructuredLanguage};
+use super::{LineIndex, Location, StructuredLanguage};
 
 pub(super) struct Model<'a> {
     pub language: StructuredLanguage,
@@ -14,14 +14,15 @@ pub(super) struct Model<'a> {
     pub cancel: &'a Cancellation,
 }
 
-pub(super) struct Entry<'a> {
+pub(super) struct Entry {
     pub symbol: Symbol,
     pub path: Arc<str>,
     pub preview: Arc<str>,
-    pub container: Option<Node<'a>>,
+    pub value: Option<std::ops::Range<usize>>,
+    pub(super) container: Option<Location>,
 }
 
-impl Entry<'_> {
+impl Entry {
     pub fn into_node(self, id: StructureNodeId) -> StructureNode {
         StructureNode {
             id,
@@ -54,10 +55,11 @@ struct Label {
     path: Arc<str>,
     kind: SymbolKind,
     preview: Arc<str>,
+    value: Option<std::ops::Range<usize>>,
 }
 
 impl Model<'_> {
-    pub fn roots<'tree>(&self, root: Node<'tree>) -> Result<Vec<Entry<'tree>>> {
+    pub fn roots<'tree>(&self, root: Node<'tree>) -> Result<Vec<Entry>> {
         let mut out = Vec::new();
         match self.language {
             StructuredLanguage::Json | StructuredLanguage::Jsonc => {
@@ -93,6 +95,7 @@ impl Model<'_> {
                                     path: path.into(),
                                     kind: other(kinds::DOCUMENT),
                                     preview: "".into(),
+                                    value: Some(doc.byte_range()),
                                 },
                                 Some(doc),
                             )?);
@@ -105,7 +108,7 @@ impl Model<'_> {
         Ok(out)
     }
 
-    pub fn children<'tree>(&self, node: Node<'tree>, path: &str) -> Result<Vec<Entry<'tree>>> {
+    pub fn children<'tree>(&self, node: Node<'tree>, path: &str) -> Result<Vec<Entry>> {
         let mut out = Vec::new();
         if self.language == StructuredLanguage::Xml {
             self.xml_children(node, path, &mut out)?;
@@ -119,12 +122,7 @@ impl Model<'_> {
         Ok(out)
     }
 
-    fn data_root<'tree>(
-        &self,
-        node: Node<'tree>,
-        path: &str,
-        out: &mut Vec<Entry<'tree>>,
-    ) -> Result<()> {
+    fn data_root<'tree>(&self, node: Node<'tree>, path: &str, out: &mut Vec<Entry>) -> Result<()> {
         if container_kind(node).is_some() {
             self.data_children(node, path, out)
         } else if node.is_error() {
@@ -142,6 +140,7 @@ impl Model<'_> {
                     path: path.into(),
                     kind,
                     preview: self.scalar(node),
+                    value: Some(node.byte_range()),
                 },
                 None,
             )?);
@@ -155,7 +154,7 @@ impl Model<'_> {
         &self,
         node: Node<'tree>,
         parent: &str,
-        out: &mut Vec<Entry<'tree>>,
+        out: &mut Vec<Entry>,
     ) -> Result<()> {
         let is_object = container_kind(node) == Some(SymbolKind::Object);
         for (i, child) in named_children(node)
@@ -207,6 +206,7 @@ impl Model<'_> {
                     path: path.into(),
                     kind,
                     preview,
+                    value: value.map(|node| node.byte_range()),
                 },
                 container,
             )?);
@@ -231,7 +231,7 @@ impl Model<'_> {
         &self,
         node: Node<'tree>,
         parent: &str,
-        out: &mut Vec<Entry<'tree>>,
+        out: &mut Vec<Entry>,
     ) -> Result<()> {
         if let Some(tag) = xml_tag(node) {
             for attr in named_children(tag)
@@ -249,6 +249,7 @@ impl Model<'_> {
                             path: format!("{parent}/@{name_text}").into(),
                             kind: SymbolKind::Property,
                             preview: value.map_or_else(|| "".into(), |node| self.scalar(node)),
+                            value: value.map(|node| node.byte_range()),
                         },
                         None,
                     )?);
@@ -306,6 +307,7 @@ impl Model<'_> {
                     path: path.into(),
                     kind: SymbolKind::Field,
                     preview: preview.join(" ").into(),
+                    value: Some(element.byte_range()),
                 },
                 (has_attributes || count != 0).then_some(element),
             )?);
@@ -319,7 +321,7 @@ impl Model<'_> {
         selection: std::ops::Range<usize>,
         label: Label,
         container: Option<Node<'tree>>,
-    ) -> Result<Entry<'tree>> {
+    ) -> Result<Entry> {
         self.cancel.check()?;
         let range = full.byte_range();
         Ok(Entry {
@@ -332,22 +334,16 @@ impl Model<'_> {
             },
             path: label.path,
             preview: label.preview,
-            container,
+            value: label.value,
+            container: container.map(|node| Location::Tree {
+                bytes: node.byte_range(),
+                kind: node.kind_id(),
+            }),
         })
     }
 
     fn scalar(&self, node: Node<'_>) -> Arc<str> {
-        let text = self.text[node.byte_range()].trim();
-        let mut end = text.len();
-        if let Some((at, _)) = text.char_indices().nth(64) {
-            end = at;
-        }
-        let compact = text[..end].replace(['\r', '\n', '\t'], " ");
-        if end == text.len() {
-            compact.into()
-        } else {
-            format!("{compact}…").into()
-        }
+        preview(&self.text[node.byte_range()])
     }
 
     fn key(&self, node: Node<'_>) -> String {
@@ -366,7 +362,18 @@ impl Model<'_> {
     }
 }
 
-fn key_path(parent: &str, name: &str) -> String {
+pub(super) fn preview(text: &str) -> Arc<str> {
+    let text = text.trim();
+    let end = text.char_indices().nth(64).map_or(text.len(), |(at, _)| at);
+    let compact = text[..end].replace(['\r', '\n', '\t'], " ");
+    if end == text.len() {
+        compact.into()
+    } else {
+        format!("{compact}…").into()
+    }
+}
+
+pub(super) fn key_path(parent: &str, name: &str) -> String {
     let mut chars = name.chars();
     if chars.next().is_some_and(|c| c == '_' || c.is_alphabetic())
         && chars.all(|c| c == '_' || c.is_alphanumeric())

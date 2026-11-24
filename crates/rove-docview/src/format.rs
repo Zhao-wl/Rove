@@ -37,6 +37,48 @@ pub fn format_text(
     mode: FormatMode,
     cancel: &Cancellation,
 ) -> Result<String> {
+    format_document(language, text, options, mode, None, cancel)
+}
+
+/// Format the selected gaps using the surrounding document's indentation depth.
+/// Bytes before and after the range remain untouched.
+pub fn format_selection(
+    language: StructuredLanguage,
+    text: &str,
+    range: Range<usize>,
+    options: FormatOptions<'_>,
+    cancel: &Cancellation,
+) -> Result<String> {
+    if text.get(range.clone()).is_none() {
+        return Err(Error::OutOfBounds);
+    }
+    let formatted = format_document(
+        language,
+        text,
+        options,
+        FormatMode::Pretty,
+        Some(range.clone()),
+        cancel,
+    )?;
+    let suffix = text.len() - range.end;
+    let end = formatted
+        .len()
+        .checked_sub(suffix)
+        .ok_or(Error::OutOfBounds)?;
+    formatted
+        .get(range.start..end)
+        .map(str::to_owned)
+        .ok_or(Error::OutOfBounds)
+}
+
+fn format_document(
+    language: StructuredLanguage,
+    text: &str,
+    options: FormatOptions<'_>,
+    mode: FormatMode,
+    selection: Option<Range<usize>>,
+    cancel: &Cancellation,
+) -> Result<String> {
     if !matches!(options.newline, "\n" | "\r\n" | "\r")
         || !options
             .indentation
@@ -63,6 +105,7 @@ pub fn format_text(
         options,
         text,
         output: String::with_capacity(text.len()),
+        selection,
         cancel,
     };
     if language == StructuredLanguage::Xml {
@@ -100,10 +143,17 @@ struct Formatter<'a> {
     options: FormatOptions<'a>,
     text: &'a str,
     output: String,
+    selection: Option<Range<usize>>,
     cancel: &'a Cancellation,
 }
 
 impl Formatter<'_> {
+    fn selected(&self, gap: &Range<usize>) -> bool {
+        self.selection
+            .as_ref()
+            .is_none_or(|range| gap.start >= range.start && gap.end <= range.end)
+    }
+
     fn json(&mut self, root: Node<'_>, comments: bool, mode: FormatMode) -> Result<()> {
         let mut cursor = root.walk();
         if root
@@ -125,14 +175,33 @@ impl Formatter<'_> {
                 depth = depth.saturating_sub(1);
             }
             if let Some(prev) = &last {
-                let gap = &self.text[prev.span.end..token.span.start];
-                match mode {
-                    FormatMode::Pretty => self.pretty_gap(prev.kind, token.kind, gap, depth),
-                    FormatMode::Minify if prev.kind == TokenKind::LineComment => {
-                        self.breaks(gap, 0);
+                let span = prev.span.end..token.span.start;
+                let gap = &self.text[span.clone()];
+                if !self.selected(&span) {
+                    self.output.push_str(gap);
+                } else {
+                    let (previous_kind, gap) = if comments {
+                        if let Some(comma) = gap.find(',') {
+                            self.output.push(',');
+                            (TokenKind::Comma, &gap[comma + 1..])
+                        } else {
+                            (prev.kind, gap)
+                        }
+                    } else {
+                        (prev.kind, gap)
+                    };
+                    match mode {
+                        FormatMode::Pretty => {
+                            self.pretty_gap(previous_kind, token.kind, gap, depth)
+                        }
+                        FormatMode::Minify if previous_kind == TokenKind::LineComment => {
+                            self.breaks(gap, 0);
+                        }
+                        FormatMode::Minify => {}
                     }
-                    FormatMode::Minify => {}
                 }
+            } else if self.selection.is_some() {
+                self.output.push_str(&self.text[..token.span.start]);
             }
             self.output.push_str(&self.text[token.span.clone()]);
             if token.kind == TokenKind::Open {
@@ -143,7 +212,9 @@ impl Formatter<'_> {
         if mode == FormatMode::Pretty {
             if let Some(last) = last {
                 let tail = &self.text[last.span.end..];
-                if tail.contains(['\r', '\n']) {
+                if self.selection.is_some() {
+                    self.output.push_str(tail);
+                } else if tail.contains(['\r', '\n']) {
                     self.breaks(tail, 0);
                 }
             }
@@ -264,6 +335,7 @@ impl Formatter<'_> {
                 edits.extend(gaps);
             }
         }
+        edits.retain(|(span, _)| self.selected(span));
         edits.sort_unstable_by_key(|(span, _)| (span.start, span.end));
         let mut last = 0;
         for (gap, depth) in edits {

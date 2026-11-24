@@ -37,6 +37,7 @@ pub mod priority {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextDecoration {
     Color(Color),
+    Wavy(Color),
     Foreground,
     Off,
 }
@@ -44,7 +45,7 @@ pub enum TextDecoration {
 impl TextDecoration {
     pub fn color(self, foreground: Color) -> Option<Color> {
         match self {
-            Self::Color(color) => Some(color),
+            Self::Color(color) | Self::Wavy(color) => Some(color),
             Self::Foreground => Some(foreground),
             Self::Off => None,
         }

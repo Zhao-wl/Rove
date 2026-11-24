@@ -306,6 +306,9 @@ impl Workbench {
         if let Resource::Workspace(path) = &document.resource {
             self.basket_text_edited(path, edited, cx);
         }
+        if let Some(edit) = edited.combined() {
+            self.note_structure_edit(document.id, edit);
+        }
         let line_endings = self
             .editing
             .saves
@@ -553,6 +556,17 @@ impl Workbench {
 
     /// 保存：变换与编码在 UI 线程，冲突检测与原子写入在后台，结果回到窗口。
     pub(super) fn start_save(
+        &mut self,
+        document: DocumentId,
+        request: SaveRequest,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.format_before_save(document, &request, cx) {
+            self.start_save_without_format(document, request, cx);
+        }
+    }
+
+    pub(super) fn start_save_without_format(
         &mut self,
         document: DocumentId,
         request: SaveRequest,

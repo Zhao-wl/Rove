@@ -622,6 +622,7 @@ impl CodeView {
             Instant,
         ) -> rove_base::Result<EditOutcome>,
     ) -> bool {
+        self.cancel_paste_format();
         if self.is_read_only() {
             self.edit_blocked(cx);
             return false;
@@ -1543,7 +1544,9 @@ impl CodeView {
                 let config = reindent.then(|| self.language_config()).flatten();
                 let converter = self.options.indent_converter();
                 let auto_indent = self.options.auto_indent;
-                self.run_edit(w, cx, move |s, snap, now| {
+                let format = self.format_on_paste_language();
+                let mut formatting = None;
+                self.run_edit(w, cx, |s, snap, now| {
                     if overtype && !data.text.contains(['\n', '\r']) {
                         extend_for_overtype(s, &**snap, &data.text)?;
                     }
@@ -1576,11 +1579,38 @@ impl CodeView {
                             }
                         }
                     }
+                    if format.is_some() {
+                        let eol = match s.buffer().line_endings() {
+                            rove_buffer::LineEndings::Uniform(eol)
+                            | rove_buffer::LineEndings::Mixed { preferred: eol } => *eol,
+                        };
+                        let ranges = edits[0]
+                            .inserted_ranges()
+                            .iter()
+                            .filter_map(|range| {
+                                let (start, end) = edits[1..].iter().fold(
+                                    (range.start(), range.end()),
+                                    |(start, end), edit| {
+                                        (
+                                            edit.map_offset(start, ed::Bias::Before),
+                                            edit.map_offset(end, ed::Bias::After),
+                                        )
+                                    },
+                                );
+                                (start < end)
+                                    .then(|| Span::new(start, end).expect("increasing range"))
+                            })
+                            .collect::<Vec<_>>();
+                        formatting = Some((ranges, eol));
+                    }
                     Ok(EditOutcome {
                         edits,
                         selection: None,
                     })
                 });
+                if let (Some(language), Some((ranges, eol))) = (format, formatting) {
+                    self.format_pasted_ranges(language, ranges, eol, cx);
+                }
             }
             "editor.action.toggleOvertypeInsertMode" => {
                 self.overtype = !self.overtype;
@@ -1641,6 +1671,129 @@ impl CodeView {
             _ => return None,
         }
         Some(true)
+    }
+
+    fn format_on_paste_language(&self) -> Option<rove_docview::structure::StructuredLanguage> {
+        use rove_docview::structure::StructuredLanguage;
+        let language = self.language.as_ref()?;
+        let kind = StructuredLanguage::from_id(language)?;
+        let scope = rove_config::Scope {
+            language: Some(language.clone()),
+        };
+        let settings = &*self.services.settings;
+        let enabled = rove_config::Key::<bool>::new("editor.formatOnPaste")
+            .read(settings, &scope)
+            .unwrap_or(false);
+        let json_enabled = rove_config::Key::<bool>::new("json.format.enable")
+            .read(settings, &scope)
+            .unwrap_or(true);
+        match kind {
+            StructuredLanguage::Json | StructuredLanguage::Jsonc if enabled && json_enabled => {
+                Some(kind)
+            }
+            StructuredLanguage::Xml if enabled => Some(kind),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn cancel_paste_format(&mut self) -> bool {
+        if let Some(cancel) = self.paste_format.take() {
+            cancel.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn format_pasted_ranges(
+        &mut self,
+        language: rove_docview::structure::StructuredLanguage,
+        ranges: Vec<ByteRange>,
+        eol: rove_buffer::Eol,
+        cx: &mut Context<Self>,
+    ) {
+        use rove_docview::format::{format_text, FormatMode, FormatOptions};
+        let Some(text) = self.text.clone() else {
+            return;
+        };
+        if ranges.is_empty() {
+            return;
+        }
+        let version = text.version();
+        let expected = text.clone();
+        let scope = rove_config::Scope {
+            language: self.language.clone(),
+        };
+        let keep_lines = rove_config::Key::<bool>::new("json.format.keepLines")
+            .read(&*self.services.settings, &scope)
+            .unwrap_or(false);
+        let indentation = if self.options.insert_spaces {
+            " ".repeat(self.options.tab_size as usize)
+        } else {
+            "\t".to_owned()
+        };
+        let newline = match eol {
+            rove_buffer::Eol::Lf => "\n",
+            rove_buffer::Eol::CrLf => "\r\n",
+            rove_buffer::Eol::Cr => "\r",
+        };
+        let cancel = rove_base::Cancellation::default();
+        let work_cancel = cancel.clone();
+        self.paste_format = Some(cancel.clone());
+        let job = cx.background_executor().spawn(async move {
+            let mut replacements = Vec::new();
+            for range in ranges {
+                work_cancel.check()?;
+                let mut input = String::new();
+                text.visit_chunks(range.clone(), &mut |part| {
+                    if work_cancel.check().is_ok() {
+                        input.push_str(part);
+                    }
+                })?;
+                let options = FormatOptions {
+                    indentation: &indentation,
+                    newline,
+                    keep_lines,
+                };
+                if let Ok(formatted) =
+                    format_text(language, &input, options, FormatMode::Pretty, &work_cancel)
+                {
+                    if input != formatted {
+                        replacements.push(Replacement::new(range, formatted));
+                    }
+                }
+            }
+            work_cancel.check()?;
+            Ok::<_, Error>(replacements)
+        });
+        cx.spawn(async move |view, cx| {
+            let result = job.await;
+            let _ = view.update(cx, |code, cx| {
+                if cancel.check().is_err()
+                    || code
+                        .text
+                        .as_ref()
+                        .is_none_or(|source| !Arc::ptr_eq(source, &expected))
+                {
+                    return;
+                }
+                code.paste_format = None;
+                let Ok(replacements) = result else {
+                    return;
+                };
+                if replacements.is_empty() {
+                    return;
+                }
+                code.run_edit(None, cx, |s, snapshot, now| {
+                    if snapshot.version() != version {
+                        return Err(Error::Stale);
+                    }
+                    let t = Transaction::new(replacements)?.verbatim();
+                    Ok(Some(s.edit_joined(t, now)?).into())
+                });
+            });
+        })
+        .detach();
     }
 
     fn write_clipboard(&self, data: &ClipboardData, cx: &mut Context<Self>) {

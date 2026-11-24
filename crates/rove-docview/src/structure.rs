@@ -1,5 +1,6 @@
 //! Versioned, lazily materialized structure of JSON, JSONC, YAML, and XML.
 mod diagnostics;
+mod json_index;
 mod model;
 
 pub use diagnostics::{ProblemKind, SyntaxProblem};
@@ -52,31 +53,54 @@ struct Document {
     language: StructuredLanguage,
     version: Version,
     text: Arc<str>,
-    tree: Tree,
+    tree: Option<Tree>,
     lines: LineIndex,
     limit: usize,
     roots: Arc<[StructureNode]>,
     cache: Mutex<Vec<CachedNode>>,
+    reusable: Mutex<Reusable>,
 }
 
 struct CachedNode {
     container: Option<Location>,
     path: Arc<str>,
+    value: Option<Range<usize>>,
     children: Option<Arc<[StructureNode]>>,
+    complete: bool,
 }
 
-struct Location {
-    bytes: Range<usize>,
-    kind: u16,
+type Reusable = std::collections::HashMap<(Location, Arc<str>), Vec<Entry>>;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Location {
+    Tree { bytes: Range<usize>, kind: u16 },
+    Json(Range<usize>),
 }
 
 impl Location {
+    fn bytes(&self) -> &Range<usize> {
+        match self {
+            Self::Tree { bytes, .. } | Self::Json(bytes) => bytes,
+        }
+    }
+
+    fn shifted(&self, offset: impl Fn(usize) -> usize) -> Self {
+        let bytes = offset(self.bytes().start)..offset(self.bytes().end);
+        match self {
+            Self::Tree { kind, .. } => Self::Tree { bytes, kind: *kind },
+            Self::Json(_) => Self::Json(bytes),
+        }
+    }
+
     fn node<'tree>(&self, tree: &'tree Tree) -> Option<Node<'tree>> {
+        let Self::Tree { bytes, kind } = self else {
+            return None;
+        };
         let mut node = tree
             .root_node()
-            .descendant_for_byte_range(self.bytes.start, self.bytes.end)?;
+            .descendant_for_byte_range(bytes.start, bytes.end)?;
         loop {
-            if node.byte_range() == self.bytes && node.kind_id() == self.kind {
+            if node.byte_range() == *bytes && node.kind_id() == *kind {
                 return Some(node);
             }
             node = node.parent()?;
@@ -103,6 +127,10 @@ impl LineIndex {
         Ok(Self(starts))
     }
 
+    fn offset(&self, position: Position) -> usize {
+        self.0[position.line.0 as usize] + position.column.0 as usize
+    }
+
     fn at(&self, offset: usize) -> Position {
         let line = self.0.partition_point(|start| *start <= offset) - 1;
         Position {
@@ -127,7 +155,15 @@ impl ParsedStructure {
         max_items: usize,
         cancel: &Cancellation,
     ) -> Result<Self> {
-        let tree = parse_tree(language, &text, None, cancel)?;
+        let large = matches!(
+            language,
+            StructuredLanguage::Json | StructuredLanguage::Jsonc
+        ) && text.len() >= json_index::LARGE_JSON_BYTES;
+        let tree = if large {
+            None
+        } else {
+            Some(parse_tree(language, &text, None, cancel)?)
+        };
         Self::from_tree(language, version, text, tree, max_items, cancel)
     }
 
@@ -135,7 +171,7 @@ impl ParsedStructure {
         language: StructuredLanguage,
         version: Version,
         text: Arc<str>,
-        tree: Tree,
+        tree: Option<Tree>,
         limit: usize,
         cancel: &Cancellation,
     ) -> Result<Self> {
@@ -148,7 +184,11 @@ impl ParsedStructure {
             cancel,
         };
         let mut cache = Vec::new();
-        let roots = cache_entries(&mut cache, model.roots(tree.root_node())?);
+        let entries = match &tree {
+            Some(tree) => model.roots(tree.root_node())?,
+            None => json_index::roots(&model)?,
+        };
+        let roots = cache_entries(&mut cache, entries);
         Ok(Self(Arc::new(Document {
             language,
             version,
@@ -158,6 +198,7 @@ impl ParsedStructure {
             limit,
             roots,
             cache: Mutex::new(cache),
+            reusable: Mutex::new(Reusable::new()),
         })))
     }
 
@@ -183,7 +224,23 @@ impl ParsedStructure {
         text.push_str(inserted);
         text.push_str(suffix);
         let end_after = start + inserted.len();
-        let mut old_tree = self.0.tree.clone();
+        let Some(mut old_tree) = self.0.tree.clone() else {
+            let snapshot =
+                Self::parse(self.0.language, version, text.into(), self.0.limit, cancel)?;
+            let edited = start..end;
+            snapshot.reuse_children(
+                self,
+                &edited,
+                end_after,
+                std::slice::from_ref(&(start..end_after)),
+                cancel,
+            )?;
+            let changed = vec![Span::new(
+                snapshot.0.lines.at(start),
+                snapshot.0.lines.at(end_after),
+            )?];
+            return Ok(StructureUpdate { snapshot, changed });
+        };
         old_tree.edit(&InputEdit {
             start_byte: start,
             old_end_byte: end,
@@ -192,7 +249,16 @@ impl ParsedStructure {
             old_end_position: point_at(before, end),
             new_end_position: point_at(&text, end_after),
         });
-        let tree = parse_tree(self.0.language, &text, Some(&old_tree), cancel)?;
+        let mask_happened = self.0.language == StructuredLanguage::Jsonc
+            && (matches!(
+                json_index::jsonc_source(before, cancel)?,
+                std::borrow::Cow::Owned(_)
+            ) || matches!(
+                json_index::jsonc_source(&text, cancel)?,
+                std::borrow::Cow::Owned(_)
+            ));
+        let incremental = (!mask_happened).then_some(&old_tree);
+        let tree = parse_tree(self.0.language, &text, incremental, cancel)?;
         let mut changed: Vec<_> = old_tree
             .changed_ranges(&tree)
             .map(|change| change.start_byte..change.end_byte)
@@ -204,7 +270,7 @@ impl ParsedStructure {
             self.0.language,
             version,
             text.into(),
-            tree,
+            Some(tree),
             self.0.limit,
             cancel,
         )?;
@@ -216,11 +282,77 @@ impl ParsedStructure {
                 combined.push(change);
             }
         }
+        snapshot.reuse_children(self, &(start..end), end_after, &combined, cancel)?;
         let changed = combined
             .into_iter()
             .map(|r| Span::new(snapshot.0.lines.at(r.start), snapshot.0.lines.at(r.end)))
             .collect::<Result<_>>()?;
         Ok(StructureUpdate { snapshot, changed })
+    }
+
+    fn reuse_children(
+        &self,
+        old: &Self,
+        edited: &Range<usize>,
+        new_end: usize,
+        changed: &[Range<usize>],
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        let cache = old.0.cache.lock().expect("private structure cache");
+        let mut reusable = self.0.reusable.lock().expect("private structure cache");
+        for parent in cache.iter() {
+            cancel.check()?;
+            let (Some(container), Some(children)) = (&parent.container, &parent.children) else {
+                continue;
+            };
+            if !parent.complete || children.is_empty() {
+                continue;
+            }
+            let unchanged_before = container.bytes().end <= edited.start;
+            if !unchanged_before && container.bytes().start < edited.end {
+                continue;
+            }
+            let shifted = |offset: usize| {
+                if unchanged_before {
+                    offset
+                } else {
+                    offset - edited.end + new_end
+                }
+            };
+            let container = container.shifted(shifted);
+            let bytes = container.bytes();
+            if changed
+                .iter()
+                .any(|delta| bytes.start <= delta.end && delta.start <= bytes.end)
+            {
+                continue;
+            }
+            let span = |range: TextRange| {
+                Span::new(
+                    self.0.lines.at(shifted(old.0.lines.offset(range.start()))),
+                    self.0.lines.at(shifted(old.0.lines.offset(range.end()))),
+                )
+            };
+            let mut entries = Vec::with_capacity(children.len());
+            for child in children.iter() {
+                let info = &cache[child.id.0 as usize];
+                let mut symbol = child.symbol.clone();
+                symbol.range = span(symbol.range)?;
+                symbol.selection = span(symbol.selection)?;
+                entries.push(Entry {
+                    symbol,
+                    path: child.path.clone(),
+                    preview: child.value_preview.clone(),
+                    value: info.value.clone().map(|r| shifted(r.start)..shifted(r.end)),
+                    container: info
+                        .container
+                        .as_ref()
+                        .map(|location| location.shifted(shifted)),
+                });
+            }
+            reusable.insert((container, parent.path.clone()), entries);
+        }
+        Ok(())
     }
 
     /// Find the most specific structural node at this position. Only ancestor lists are loaded.
@@ -275,6 +407,16 @@ impl ParsedStructure {
         Ok(None)
     }
 
+    /// Get the exact decoded source value for a materialized node.
+    pub fn value(&self, node: StructureNodeId) -> Result<&str> {
+        let cache = self.0.cache.lock().expect("private structure cache");
+        let index = usize::try_from(node.0).map_err(|_| Error::NotFound)?;
+        let value = &cache.get(index).ok_or(Error::NotFound)?.value;
+        Ok(value
+            .as_ref()
+            .map_or("", |range| &self.0.text[range.clone()]))
+    }
+
     fn load(&self, node: StructureNodeId, cancel: &Cancellation) -> Result<Arc<[StructureNode]>> {
         cancel.check()?;
         let mut cache = self
@@ -290,7 +432,6 @@ impl ParsedStructure {
         let Some(container) = &known.container else {
             return Ok(Arc::from([]));
         };
-        let container = container.node(&self.0.tree).ok_or(Error::NotFound)?;
         let model = Model {
             language: self.0.language,
             text: &self.0.text,
@@ -298,10 +439,34 @@ impl ParsedStructure {
             limit: self.0.limit.saturating_sub(cache.len()),
             cancel,
         };
-        let entries = model.children(container, &known.path)?;
+        let reused = self
+            .0
+            .reusable
+            .lock()
+            .expect("private structure cache")
+            .remove(&(container.clone(), known.path.clone()));
+        let entries = if let Some(mut entries) = reused {
+            entries.truncate(model.limit);
+            entries
+        } else {
+            match container {
+                Location::Tree { .. } => {
+                    let node = self
+                        .0
+                        .tree
+                        .as_ref()
+                        .and_then(|tree| container.node(tree))
+                        .ok_or(Error::NotFound)?;
+                    model.children(node, &known.path)?
+                }
+                Location::Json(range) => json_index::children(&model, range.clone(), &known.path)?,
+            }
+        };
         cancel.check()?;
+        let complete = entries.len() < model.limit;
         let children = cache_entries(&mut cache, entries);
         cache[index].children = Some(children.clone());
+        cache[index].complete = complete;
         Ok(children)
     }
 }
@@ -332,18 +497,17 @@ impl Structure for ParsedStructure {
     }
 }
 
-fn cache_entries(cache: &mut Vec<CachedNode>, entries: Vec<Entry<'_>>) -> Arc<[StructureNode]> {
+fn cache_entries(cache: &mut Vec<CachedNode>, entries: Vec<Entry>) -> Arc<[StructureNode]> {
     entries
         .into_iter()
         .map(|entry| {
             let id = StructureNodeId(cache.len() as u64);
             cache.push(CachedNode {
                 path: Arc::clone(&entry.path),
-                container: entry.container.map(|node| Location {
-                    bytes: node.byte_range(),
-                    kind: node.kind_id(),
-                }),
+                value: entry.value.clone(),
+                container: entry.container.clone(),
                 children: None,
+                complete: false,
             });
             entry.into_node(id)
         })
@@ -363,8 +527,16 @@ pub(crate) fn parse_tree(
         .expect("bundled grammar agrees with tree-sitter");
     let mut stop = |_: &_| cancel.check().is_err();
     let options = ParseOptions::new().progress_callback(&mut stop);
+    let source = if language == StructuredLanguage::Jsonc {
+        json_index::jsonc_source(text, cancel)?
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    // Trailing punctuation may appear or disappear outside the edited span when a
+    // sibling is inserted or removed. Reuse the strict grammar baseline only if
+    // the caller knows the previous and current inputs were not masked.
     let tree = parser.parse_with_options(
-        &mut |offset, _| text.as_bytes().get(offset..).unwrap_or_default(),
+        &mut |offset, _| source.as_bytes().get(offset..).unwrap_or_default(),
         old,
         Some(options),
     );

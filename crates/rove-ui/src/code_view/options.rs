@@ -393,6 +393,7 @@ pub struct EditorOptions {
     pub folding: bool,
     pub folding_strategy: super::folding::FoldingStrategy,
     pub folding_maximum_regions: usize,
+    pub json_max_items_computed: usize,
     pub show_folding_controls: FoldingControls,
     pub folding_highlight: bool,
     pub unfold_on_click_after_end_of_line: bool,
@@ -488,6 +489,7 @@ pub(crate) fn number_limits(key: &str) -> Option<(f64, f64)> {
         "editor.occurrencesHighlightDelay" => (0.0, 2000.0),
         "editor.selectionHighlightMaxLength" => (0.0, 1e9),
         "editor.foldingMaximumRegions" => (10.0, 65000.0),
+        JSON_ITEM_LIMIT => JSON_ITEM_LIMIT_RANGE,
         "editor.stickyScroll.maxLineCount" => (1.0, super::sticky::MAX_LINE_COUNT as f64),
         _ => return None,
     })
@@ -644,6 +646,30 @@ fn parse_weight(s: &str) -> f32 {
         "bold" => 700.0,
         n => n.parse::<f32>().map_or(400.0, |w| w.clamp(1.0, 1000.0)),
     }
+}
+
+const JSON_ITEM_LIMIT: &str = "json.maxItemsComputed";
+const JSON_ITEM_LIMIT_RANGE: (f64, f64) = (1.0, 250_000.0);
+
+pub(crate) fn json_item_limit(settings: &dyn Settings) -> usize {
+    let value = match settings.read(JSON_ITEM_LIMIT, &Scope::default()) {
+        Ok(Value::Number(value)) => Some(value),
+        Ok(Value::String(value)) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+    .unwrap_or_else(|| {
+        let catalog = rove_config::catalog::catalog();
+        let Some(Value::Number(default)) = catalog
+            .get(JSON_ITEM_LIMIT)
+            .map(|entry| &entry.setting.default)
+        else {
+            unreachable!("JSON item limit has a numeric catalog default");
+        };
+        *default
+    });
+    let (minimum, maximum) = JSON_ITEM_LIMIT_RANGE;
+    value.clamp(minimum, maximum) as usize
 }
 
 impl EditorOptions {
@@ -858,6 +884,7 @@ impl EditorOptions {
                 super::folding::FoldingStrategy::Auto
             },
             folding_maximum_regions: r.num("editor.foldingMaximumRegions") as usize,
+            json_max_items_computed: json_item_limit(settings),
             show_folding_controls: match r.str("editor.showFoldingControls").as_str() {
                 "always" => FoldingControls::Always,
                 "never" => FoldingControls::Never,
@@ -987,6 +1014,22 @@ mod tests {
         assert_eq!(o.stop_rendering_line_after, Some(10000));
         assert!(o.scroll_beyond_last_line && o.glyph_margin && o.empty_selection_clipboard);
         assert_eq!(o.caret_width(), 2.0);
+    }
+
+    #[test]
+    fn json_item_limit_has_one_default_and_valid_range() {
+        assert_eq!(EditorOptions::default().json_max_items_computed, 5_000);
+        for (value, limit) in [
+            (Value::String("NaN".into()), 5_000),
+            (Value::Number(-1.0), 1),
+            (Value::String("9".into()), 9),
+            (Value::Number(999_999.0), 250_000),
+        ] {
+            assert_eq!(
+                with(vec![("json.maxItemsComputed", value)]).json_max_items_computed,
+                limit
+            );
+        }
     }
 
     #[test]

@@ -65,6 +65,20 @@ impl Fixture {
     }
 }
 
+#[gpui::test]
+fn structured_problems_follow_the_settings_view_service(cx: &mut TestAppContext) {
+    let fx = Fixture::new(r#"{"editor.tabSize": 4}"#);
+    cx.update(|cx| crate::settings_ui::SharedSettings::install(fx.service.clone(), cx));
+    let (view, cx) = fx.open(cx);
+    view.read_with(cx, |v, _| assert_eq!(v.settings_error_counts(), (0, 0)));
+
+    fx.change(r#"{"editor.tabSize": }"#, cx);
+    view.read_with(cx, |v, _| assert_eq!(v.settings_error_counts(), (1, 0)));
+
+    fx.change(r#"{"editor.tabSize": 2}"#, cx);
+    view.read_with(cx, |v, _| assert_eq!(v.settings_error_counts(), (0, 0)));
+}
+
 fn refresh(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.refresh();
@@ -424,4 +438,156 @@ fn context_basket_editor_caret_collects_method_class_and_plain_line(cx: &mut Tes
             assert_eq!(item.symbol.is_none(), path == "notes.txt");
         });
     }
+}
+
+#[gpui::test]
+fn structured_outline_loads_values_and_expands_on_demand(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    std::fs::write(
+        fx.folder.path().join("config.json"),
+        r#"{"items":[{"name":"alpha"}],"count":3}"#,
+    )
+    .unwrap();
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "config.json", Some(pos(0, 6)), cx);
+    refresh(cx);
+    let items = view.read_with(cx, |v, cx| {
+        assert_eq!(v.outline.status, Status::Ready);
+        let w = &v.outline.list.read(cx).widget;
+        let rows = w.display_rows(0..w.len());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label.as_ref(), "items");
+        assert_eq!(rows[0].detail.as_deref(), Some("[1]"));
+        assert!(rows[0].expandable);
+        rows[0].id.clone()
+    });
+    view.update(cx, |v, cx| {
+        v.outline.list.update(cx, |list, _| {
+            assert!(list.widget.expand_id(&items, true).unwrap());
+        });
+        v.structured_outline_event(
+            &crate::list_widget::widget::ListEvent::Expanded {
+                id: items,
+                expanded: true,
+            },
+            cx,
+        );
+    });
+    refresh(cx);
+    view.read_with(cx, |v, cx| {
+        let w = &v.outline.list.read(cx).widget;
+        let rows = w.display_rows(0..w.len());
+        assert_eq!(rows[0].label.as_ref(), "items");
+        assert_eq!(rows[1].label.as_ref(), "0");
+        assert_eq!(rows[1].depth, 1);
+        assert!(rows[1].expandable);
+    });
+}
+
+#[gpui::test]
+fn structured_json_errors_are_published_on_the_document(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    std::fs::write(fx.folder.path().join("bad.json"), "{\"value\": [ }").unwrap();
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "bad.json", None, cx);
+    refresh(cx);
+    view.read_with(cx, |v, cx| {
+        let (group, doc, _) = v.focused_text().unwrap();
+        let entry = v.structured.documents.get(&doc.id).unwrap();
+        assert!(!entry.problems.is_empty());
+        let location = entry.problems[0].range.start();
+        assert_eq!(location.line, Line(0));
+        assert!(v
+            .listed_problem_positions(cx)
+            .contains(&(doc.resource.clone(), location)));
+        let slot = &v.views[&group].primary;
+        assert_eq!(
+            slot.structured_mark.map(|(d, revision, _)| (d, revision)),
+            Some((doc.id, doc.text.version()))
+        );
+        let decorated = slot
+            .code
+            .read(cx)
+            .merged_decorations(location.line.0)
+            .unwrap();
+        assert!(decorated.runs.iter().any(|run| matches!(
+            run.style.underline,
+            Some(crate::code_view::decorations::TextDecoration::Wavy(_))
+        )));
+    });
+    cx.simulate_keystrokes("ctrl-shift-m");
+    refresh(cx);
+    view.read_with(cx, |v, _| assert!(v.shell.layout.panel_visible));
+}
+
+#[gpui::test]
+fn structured_format_command_creates_one_undo_step(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let original = r#"{"x":[1,2]}"#;
+    std::fs::write(fx.folder.path().join("format.json"), original).unwrap();
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "format.json", None, cx);
+    refresh(cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_keystrokes("shift-alt-f");
+    refresh(cx);
+    let read = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            let (_, doc, _) = v.focused_text().unwrap();
+            let mut text = String::new();
+            doc.text
+                .visit_chunks(
+                    rove_base::ByteRange::new(
+                        rove_base::ByteOffset(0),
+                        rove_base::ByteOffset(doc.text.byte_len()),
+                    )
+                    .unwrap(),
+                    &mut |part| text.push_str(part),
+                )
+                .unwrap();
+            text
+        })
+    };
+    assert!(read(cx).contains('\n'));
+    cx.simulate_keystrokes("ctrl-z");
+    refresh(cx);
+    assert_eq!(read(cx), original);
+}
+
+#[gpui::test]
+fn structured_format_on_save_preserves_utf16_bom_and_existing_line_endings(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new(r#"{"editor.formatOnSave":true,"files.insertFinalNewline":false}"#);
+    let disk = fx.folder.path().join("encoded.json");
+    let source = "{\r\n  \"中\":1,\n  \"array\":[1,2]\r}\r\n";
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend(source.encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(&disk, &bytes).unwrap();
+    let (view, cx) = fx.open(cx);
+    open_file(&view, "encoded.json", Some(pos(1, 9)), cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input("0");
+    refresh(cx);
+    view.update(cx, |v, cx| {
+        let (_, document, _) = v.focused_text().unwrap();
+        v.start_save(document.id, rove_buffer::save::SaveRequest::default(), cx);
+    });
+    refresh(cx);
+    refresh(cx);
+    let after = std::fs::read(&disk).unwrap();
+    assert_ne!(after, bytes);
+    assert_eq!(&after[..2], &[0xFF, 0xFE]);
+    let after = String::from_utf16(
+        &after[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert!(after.starts_with("{\r\n"));
+    assert!(after.contains("\"中\": 10,\n"), "{after:?}");
+    assert!(after.ends_with("]\r}\r\n"), "{after:?}");
 }

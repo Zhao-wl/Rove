@@ -113,6 +113,7 @@ pub struct Outline {
     pub goto: Option<Goto>,
     pub service: SymbolService,
     pub label: Labeler,
+    pub(crate) structure_style: Rc<RefCell<super::structure::RowsStyle>>,
     /// 与 `outline.collapseItems` 默认状态相反的节点（用户手动展开/折叠过），按文档保存。
     toggled: HashMap<DocumentId, HashSet<Arc<str>>>,
     cache: Vec<(DocumentId, Arc<DocumentSymbols>)>,
@@ -179,7 +180,13 @@ impl Outline {
         let label = labeler(strings.clone());
         let options = list_options(list_base);
         let outline = OutlineSettings::read(settings);
-        let renderer = symbol_row(current.clone(), theme.clone(), outline.icons);
+        let structure_style = Rc::new(RefCell::new(super::structure::RowsStyle::default()));
+        let renderer = symbol_row(
+            current.clone(),
+            structure_style.clone(),
+            theme.clone(),
+            outline.icons,
+        );
         let list = cx.new(|cx| {
             let widget = ListWidget::tree(
                 TreeModel::new(Arc::new(NoSymbols)),
@@ -208,6 +215,7 @@ impl Outline {
             goto: None,
             service: SymbolService,
             label,
+            structure_style,
             toggled: HashMap::new(),
             cache: Vec::new(),
             current,
@@ -298,8 +306,9 @@ impl Outline {
 
     /// 清空列表（切到无法提供大纲的编辑器）。
     pub fn clear(&mut self, status: Status, cx: &mut App) {
+        let had_rows = self.status == Status::Ready;
         self.status = status;
-        if self.shown.take().is_some() {
+        if self.shown.take().is_some() || had_rows {
             *self.current.borrow_mut() = None;
             self.list.update(cx, |view, cx| {
                 view.widget
@@ -376,7 +385,12 @@ impl Outline {
         if outline != self.settings {
             let icons = outline.icons;
             self.settings = outline;
-            let renderer = symbol_row(self.current.clone(), theme, icons);
+            let renderer = symbol_row(
+                self.current.clone(),
+                self.structure_style.clone(),
+                theme,
+                icons,
+            );
             self.list.update(cx, |v, _| v.set_renderer(renderer));
             if let Some((document, symbols)) = self.shown.take() {
                 self.show(document, symbols, cx);
@@ -408,6 +422,7 @@ pub fn kind_icon(theme: &dyn Theme, symbol: &Symbol, size: Pixels) -> Div {
 /// 大纲行：twistie + 种类图标 + 带匹配高亮的名称。
 fn symbol_row(
     current: Rc<RefCell<Option<Arc<DocumentSymbols>>>>,
+    structure_style: Rc<RefCell<super::structure::RowsStyle>>,
     theme: Arc<dyn Theme>,
     icons: bool,
 ) -> RowRenderer {
@@ -439,16 +454,48 @@ fn symbol_row(
                     .font_family(icons::FONT_FAMILY)
                     .child(SharedString::from(twistie)),
             );
+        let structure = structure_style.borrow();
+        let structured =
+            super::structure::node_id(&ctx.row.id).and_then(|id| structure.symbols.get(&id.0));
         if icons {
             let symbols = current.borrow();
-            let node = symbols
+            let regular = symbols
                 .as_ref()
-                .and_then(|s| s.find_key(&ctx.row.id.0).and_then(|id| s.node(id)));
-            if let Some(node) = node {
-                el = el.child(kind_icon(theme.as_ref(), &node.symbol, px(14.)));
+                .and_then(|s| s.find_key(&ctx.row.id.0).and_then(|id| s.node(id)))
+                .map(|node| &node.symbol);
+            if let Some(symbol) = structured.or(regular) {
+                el = el.child(kind_icon(theme.as_ref(), symbol, px(14.)));
             }
         }
+        let errors = structured.map_or(0, |symbol| structure.count(symbol));
+        let error_color = theme
+            .color("problemsErrorIcon.foreground")
+            .ok()
+            .flatten()
+            .map(hsla);
+        if errors != 0 && structure.colors {
+            el = el.when_some(error_color, |element, color| element.text_color(color));
+        }
+        if errors != 0 && structure.badges {
+            el = el.child(
+                div()
+                    .flex_shrink_0()
+                    .child(codicon("error", px(14.), error_color))
+                    .child(errors.to_string()),
+            );
+        }
         el.child(div().flex_shrink_0().child(highlighted_label(ctx)))
+            .when_some(ctx.row.detail.as_ref(), |el, detail| {
+                el.child(
+                    div()
+                        .text_color(
+                            ctx.colors
+                                .deemphasized_fg
+                                .unwrap_or(gpui::transparent_black()),
+                        )
+                        .child(SharedString::from(detail.to_string())),
+                )
+            })
             .into_any_element()
     })
 }

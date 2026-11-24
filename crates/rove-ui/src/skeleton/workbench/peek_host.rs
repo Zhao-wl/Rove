@@ -127,6 +127,7 @@ impl Workbench {
                 v.peek_command(group, secondary, a.0, window, cx)
             }))
             .children(overlay)
+            .children(self.structured_marker_overlay(self.slot_code(group, secondary), cx))
     }
 
     fn peek_command(

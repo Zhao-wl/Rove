@@ -138,6 +138,7 @@ pub struct Shell {
     menubar_revealed: bool,
     drag: Option<Sash>,
     problems: (u32, u32),
+    pub(crate) current_problem: Option<Message>,
     implemented: BTreeSet<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -245,6 +246,7 @@ impl Shell {
             menubar_revealed: false,
             drag: None,
             problems: (0, 0),
+            current_problem: None,
             implemented: BTreeSet::new(),
             _subscriptions: Vec::new(),
         };
@@ -2458,15 +2460,20 @@ pub fn status_message_text<T: ShellHost>(host: &T) -> Option<String> {
 
 fn update_builtin_status_items<T: ShellHost>(host: &mut T) {
     let (errors, warnings) = host.shell().problems;
+    let counts = label(
+        host,
+        "status.problems.text",
+        &[
+            ("errors", errors.to_string()),
+            ("warnings", warnings.to_string()),
+        ],
+    );
+    let summary = host.shell().current_problem.as_ref().map_or_else(
+        || counts.clone(),
+        |problem| format!("{counts} {}", text(host, problem)),
+    );
     let problems = StatusEntry {
-        text: label(
-            host,
-            "status.problems.text",
-            &[
-                ("errors", errors.to_string()),
-                ("warnings", warnings.to_string()),
-            ],
-        ),
+        text: summary,
         tooltip: Some(if errors + warnings == 0 {
             label(host, "status.problems.none", &[])
         } else {

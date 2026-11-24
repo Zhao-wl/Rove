@@ -18,6 +18,7 @@
 pub mod goto;
 pub mod model;
 pub mod registry;
+pub(crate) mod structure;
 pub mod view;
 
 #[cfg(test)]

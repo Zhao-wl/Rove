@@ -87,6 +87,7 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::editors::actions::register(&mut registry)?;
     crate::list_widget::registry::register_commands(&mut registry)?;
     crate::outline::registry::register_commands(&mut registry)?;
+    crate::outline::structure::register_commands(&mut registry)?;
     crate::find::registry::register_commands(&mut registry)?;
     // #24：快速打开、命令面板、转到行。
     crate::quick_access::registry::register_commands(&mut registry)?;
