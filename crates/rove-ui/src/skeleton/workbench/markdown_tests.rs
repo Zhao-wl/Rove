@@ -444,7 +444,7 @@ fn legacy_remote_setting_keeps_preview_offline(cx: &mut TestAppContext) {
     });
 }
 
-/// 主题切换只推变量；弹出层打开时隐藏实例。
+/// 主题切换只推变量；命令面板只遮盖与预览相交的部分。
 #[gpui::test]
 fn theme_and_overlay_keep_preview_instance(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}");
@@ -483,7 +483,7 @@ fn theme_and_overlay_keep_preview_instance(cx: &mut TestAppContext) {
             .unwrap();
         assert_eq!(last_theme["kind"], "vscode-light");
     });
-    // 命令面板打开：实例隐藏；关闭后恢复。
+    // 命令面板打开：只裁切相交部分；关闭后恢复。
     cx.update(|window, cx| {
         let focus = view.read(cx).markdown.focus.clone().unwrap();
         window.focus(&focus);
@@ -492,15 +492,174 @@ fn theme_and_overlay_keep_preview_instance(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-shift-p");
     settle(cx);
     view.read_with(cx, |v, _| {
-        assert!(!v.markdown_snapshot().visible);
-        assert_eq!(v.markdown.fake.borrow().layout, Some(None));
+        assert_preview_clipped(v);
     });
     cx.simulate_keystrokes("escape");
     settle(cx);
     view.read_with(cx, |v, _| {
         assert!(v.markdown_snapshot().visible);
-        assert!(v.markdown.fake.borrow().layout.flatten().is_some());
+        let log = v.markdown.fake.borrow();
+        assert!(log.layout.flatten().is_some());
+        assert!(log.occlusions.is_empty());
     });
+}
+
+fn assert_preview_clipped(view: &Workbench) {
+    let log = view.markdown.fake.borrow();
+    let preview = log.layout.flatten().unwrap();
+    assert!(!log.occlusions.is_empty());
+    for cut in &log.occlusions {
+        assert_eq!(cut.intersect(&preview), *cut);
+        assert_ne!(*cut, preview, "浮层不能遮盖整个预览");
+    }
+}
+
+#[gpui::test]
+fn markdown_preview_is_clipped_only_under_workbench_overlays(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    open(&view, "Long.md", explorer(), cx);
+    cx.update(|window, cx| {
+        let focus = view.read(cx).markdown.focus.clone().unwrap();
+        window.focus(&focus);
+    });
+    settle(cx);
+    let (before, suspended) = view.read_with(cx, |v, _| {
+        (v.markdown_snapshot(), v.markdown.fake.borrow().suspended)
+    });
+
+    cx.simulate_keystrokes("ctrl-p");
+    settle(cx);
+    view.read_with(cx, |v, _| assert_preview_clipped(v));
+    cx.simulate_keystrokes("escape ctrl-b");
+    settle(cx);
+
+    // 收起侧栏后，设置菜单实际跨入预览。
+    let gear = cx.debug_bounds("activity-manage").unwrap();
+    cx.simulate_click(gear.center(), Modifiers::default());
+    settle(cx);
+    assert!(cx.debug_bounds("menu-dropdown").is_some());
+    view.read_with(cx, |v, _| assert_preview_clipped(v));
+
+    // 模拟原生正文收到按下时的页面消息，旧渲染代次不得关闭菜单。
+    let (sender, document, seq) = view.read_with(cx, |v, _| {
+        (
+            v.markdown.sender_for_test(),
+            v.markdown.requested.unwrap().document.0,
+            v.markdown_snapshot().render_sequence,
+        )
+    });
+    let pointer_down = |seq| {
+        sender
+            .try_send(crate::markdown::backend::BackendEvent::Message(
+                serde_json::json!({
+                    "version": 1, "type": "pointerDown", "documentId": document, "seq": seq,
+                }),
+            ))
+            .unwrap();
+    };
+    pointer_down(seq - 1);
+    settle(cx);
+    view.read_with(cx, |v, _| assert!(v.shell.menu_open()));
+    pointer_down(seq);
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        assert!(!v.shell.menu_open());
+        assert!(v.markdown.fake.borrow().occlusions.is_empty());
+    });
+
+    // 悬停在按钮底部，让提示实际跨入编辑器正文。
+    let group = view.read_with(cx, |v, _| v.editor.focused.0);
+    let selector = Box::leak(format!("editor-title-max-{group}").into_boxed_str());
+    let max = cx.debug_bounds(selector).unwrap();
+    cx.simulate_mouse_move(
+        point(max.center().x, max.bottom() - px(2.0)),
+        None,
+        Modifiers::default(),
+    );
+    cx.executor().advance_clock(Duration::from_secs(1));
+    settle(cx);
+    view.read_with(cx, |v, _| assert_preview_clipped(v));
+    cx.simulate_mouse_move(gear.center(), None, Modifiers::default());
+    settle(cx);
+
+    view.read_with(cx, |v, _| {
+        let after = v.markdown_snapshot();
+        assert_eq!(after.owner, before.owner);
+        assert_eq!(after.render_sequence, before.render_sequence);
+        let log = v.markdown.fake.borrow();
+        assert_eq!(log.created, 1);
+        assert_eq!(log.suspended, suspended);
+        assert!(log.occlusions.is_empty());
+    });
+}
+
+#[gpui::test]
+fn markdown_native_child_pointer_exits_the_cached_toolbar_tooltip(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+
+    struct Fixture {
+        track_native: bool,
+        has_tooltip: Rc<Cell<bool>>,
+    }
+
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let track_native = self.track_native;
+            let has_tooltip = self.has_tooltip.clone();
+            let color = gpui::rgb(0x101010).into();
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("native-tooltip-trigger")
+                        .absolute()
+                        .top(px(40.0))
+                        .left(px(40.0))
+                        .w(px(100.0))
+                        .h(px(20.0))
+                        .tooltip(crate::metadata::tooltip::tab_tooltip(
+                            "Tooltip".to_owned(),
+                            color,
+                            color,
+                            color,
+                        )),
+                )
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, _| {
+                            if track_native {
+                                // 平台测试窗始终报告原点，模拟鼠标离开 GPUI 后位于原生子区。
+                                window.sync_pointer_over_native_child(bounds);
+                            }
+                        },
+                        move |_, (), window, _| {
+                            has_tooltip.set(window.native_child_occlusions().next().is_some());
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+        }
+    }
+
+    let has_tooltip = Rc::new(Cell::new(false));
+    let (view, cx) = cx.add_window_view(|_, _| Fixture {
+        track_native: false,
+        has_tooltip: has_tooltip.clone(),
+    });
+    settle(cx);
+    cx.simulate_mouse_move(point(px(60.0), px(50.0)), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_secs(1));
+    settle(cx);
+    assert!(has_tooltip.get());
+
+    view.update(cx, |view, cx| {
+        view.track_native = true;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(!has_tooltip.get(), "原生子窗口接过鼠标后不再裁切旧提示");
 }
 
 /// 所有预览关闭后经过 `rove.markdown.webviewIdleTimeout` 销毁实例；超时前重新打开则复用。

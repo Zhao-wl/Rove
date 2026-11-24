@@ -1,5 +1,5 @@
 //! WebView2 后端（#29），按 #6 报告（`docs/M0_WEBVIEW_SPIKE_REPORT.md`）推荐的方案实现：
-//! GPUI 拥有顶层 HWND，每个窗口一个 controller（Hwnd 模式），弹出层与预览相交时由宿主隐藏实例。
+//! GPUI 拥有顶层 HWND，每个窗口一个 controller（Hwnd 模式）。Rove 自有的子窗口按浮层区域裁切。
 //!
 //! 相对原型补上了报告 §5.1 列出的缺口：
 //! - 运行时联网：环境参数关闭后台网络、组件更新、SmartScreen 等；设置里关闭信誉检查、自动填充；
@@ -23,6 +23,10 @@ use windows::{
     core::{Interface, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::{HWND, RECT, RPC_E_CHANGED_MODE},
+        Graphics::Gdi::{
+            CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF,
+            RGN_ERROR,
+        },
         Storage::FileSystem::GetDriveTypeW,
         System::{
             Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
@@ -31,6 +35,11 @@ use windows::{
         UI::{
             Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_MENU, VK_SHIFT},
             Shell::SHCreateMemStream,
+            WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, SetWindowPos, ShowWindow, SWP_NOACTIVATE,
+                SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE, WS_CHILD, WS_CLIPCHILDREN,
+                WS_CLIPSIBLINGS,
+            },
         },
     },
 };
@@ -69,11 +78,154 @@ struct Inner {
     nonce: String,
 }
 
+/// Rove 自己持有 controller 的父窗口。区域裁切不改变 WebView2 视口尺寸或鼠标坐标。
+struct PreviewWindow {
+    hwnd: HWND,
+    bounds: RECT,
+    holes: Vec<RECT>,
+    clip_size: (i32, i32),
+}
+
+impl PreviewWindow {
+    fn new(parent: HWND) -> windows::core::Result<Self> {
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                windows::core::w!("Static"),
+                PCWSTR::null(),
+                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                0,
+                0,
+                0,
+                0,
+                Some(parent),
+                None,
+                None,
+                None,
+            )?
+        };
+        Ok(Self {
+            hwnd,
+            bounds: RECT::default(),
+            holes: Vec::new(),
+            clip_size: (0, 0),
+        })
+    }
+
+    fn layout(&mut self, bounds: RECT, occlusions: &[Bounds<Pixels>], scale: f32) -> Option<RECT> {
+        let width = bounds.right - bounds.left;
+        let height = bounds.bottom - bounds.top;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let holes: Vec<_> = occlusions
+            .iter()
+            .filter_map(|overlay| {
+                let left = (f32::from(overlay.left()) * scale).floor() as i32 - bounds.left;
+                let top = (f32::from(overlay.top()) * scale).floor() as i32 - bounds.top;
+                let right = (f32::from(overlay.right()) * scale).ceil() as i32 - bounds.left;
+                let bottom = (f32::from(overlay.bottom()) * scale).ceil() as i32 - bounds.top;
+                let rect = RECT {
+                    left: left.max(0),
+                    top: top.max(0),
+                    right: right.min(width),
+                    bottom: bottom.min(height),
+                };
+                (rect.left < rect.right && rect.top < rect.bottom).then_some(rect)
+            })
+            .collect();
+        if self.holes != holes || (!holes.is_empty() && self.clip_size != (width, height)) {
+            if !self.apply_region(width, height, &holes) {
+                // 当前帧隐藏窗口以免挡住浮层，下次绘制重试。
+                return None;
+            }
+            self.holes = holes;
+            self.clip_size = (width, height);
+        }
+        if self.bounds != bounds {
+            unsafe {
+                SetWindowPos(
+                    self.hwnd,
+                    None,
+                    bounds.left,
+                    bounds.top,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )
+                .ok()?;
+            }
+            self.bounds = bounds;
+        }
+        Some(RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        })
+    }
+
+    fn apply_region(&self, width: i32, height: i32, holes: &[RECT]) -> bool {
+        if holes.is_empty() {
+            return unsafe { SetWindowRgn(self.hwnd, None, true) } != 0;
+        }
+        let Some(region) = Region::new(0, 0, width, height) else {
+            return false;
+        };
+        for hole in holes {
+            let Some(cut) = Region::new(hole.left, hole.top, hole.right, hole.bottom) else {
+                return false;
+            };
+            let result =
+                unsafe { CombineRgn(Some(region.0), Some(region.0), Some(cut.0), RGN_DIFF) };
+            if result == RGN_ERROR {
+                return false;
+            }
+        }
+        if unsafe { SetWindowRgn(self.hwnd, Some(region.0), true) } == 0 {
+            return false;
+        }
+        // 成功后区域句柄由系统接管。失败时由 Region 释放。
+        std::mem::forget(region);
+        true
+    }
+}
+
+impl Drop for PreviewWindow {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
+struct Region(HRGN);
+
+impl Region {
+    fn new(left: i32, top: i32, right: i32, bottom: i32) -> Option<Self> {
+        let handle = unsafe { CreateRectRgn(left, top, right, bottom) };
+        if handle.is_invalid() {
+            None
+        } else {
+            Some(Self(handle))
+        }
+    }
+}
+
+impl Drop for Region {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ((self.0).0));
+        }
+    }
+}
+
 /// 窗口拥有的 WebView2 实例。
 pub struct WebView2Backend {
     inner: Rc<RefCell<Inner>>,
     events: EventSender,
     hwnd: Option<HWND>,
+    preview_window: Option<PreviewWindow>,
 }
 
 impl WebView2Backend {
@@ -86,6 +238,7 @@ impl WebView2Backend {
             })),
             events,
             hwnd: None,
+            preview_window: None,
         }
     }
 
@@ -172,6 +325,16 @@ impl Backend for WebView2Backend {
             send(&self.events, BackendEvent::RuntimeMissing(error));
             return;
         }
+        if self.preview_window.is_none() {
+            match PreviewWindow::new(hwnd) {
+                Ok(preview) => self.preview_window = Some(preview),
+                Err(error) => {
+                    send(&self.events, BackendEvent::Failed(error.to_string()));
+                    return;
+                }
+            }
+        }
+        let hwnd = self.preview_window.as_ref().unwrap().hwnd;
         let generation = {
             let mut inner = self.inner.borrow_mut();
             inner.creating = true;
@@ -257,19 +420,30 @@ impl Backend for WebView2Backend {
         }
     }
 
-    fn layout(&mut self, bounds: Option<Bounds<Pixels>>, scale: f32) {
-        let (controller, webview, rect, visible_changed, scale_changed, resume) = {
-            let mut inner = self.inner.borrow_mut();
-            let Some(controller) = inner.controller.clone() else {
-                return;
+    fn layout(
+        &mut self,
+        bounds: Option<Bounds<Pixels>>,
+        scale: f32,
+        occlusions: &[Bounds<Pixels>],
+    ) {
+        let Some(controller) = self.inner.borrow().controller.clone() else {
+            return;
+        };
+        let Some(preview) = self.preview_window.as_mut() else {
+            return;
+        };
+        let rect = bounds.and_then(|bounds| {
+            let rect = RECT {
+                left: (f32::from(bounds.left()) * scale).round() as i32,
+                top: (f32::from(bounds.top()) * scale).round() as i32,
+                right: (f32::from(bounds.right()) * scale).round() as i32,
+                bottom: (f32::from(bounds.bottom()) * scale).round() as i32,
             };
-            let rect = bounds.map(|b| RECT {
-                left: (f32::from(b.origin.x) * scale).round() as i32,
-                top: (f32::from(b.origin.y) * scale).round() as i32,
-                right: (f32::from(b.origin.x + b.size.width) * scale).round() as i32,
-                bottom: (f32::from(b.origin.y + b.size.height) * scale).round() as i32,
-            });
-            let visible = rect.is_some();
+            preview.layout(rect, occlusions, scale)
+        });
+        let visible = rect.is_some();
+        let (webview, rect, visible_changed, scale_changed, resume) = {
+            let mut inner = self.inner.borrow_mut();
             let visible_changed = inner.visible != visible;
             inner.visible = visible;
             let scale_changed = (inner.scale - scale as f64).abs() > f64::EPSILON;
@@ -283,7 +457,6 @@ impl Backend for WebView2Backend {
                 inner.suspended = false;
             }
             (
-                controller,
                 inner.webview.clone(),
                 rect,
                 visible_changed,
@@ -306,9 +479,10 @@ impl Backend for WebView2Backend {
                         let _ = w3.Resume();
                     }
                 }
-                let _ = controller.SetIsVisible(bounds.is_some());
+                let _ = controller.SetIsVisible(visible);
+                let _ = ShowWindow(preview.hwnd, if visible { SW_SHOWNA } else { SW_HIDE });
             }
-            if bounds.is_some() {
+            if visible {
                 // 父窗口移动不一定改变客户区尺寸（报告 §9）。
                 let _ = controller.NotifyParentWindowPositionChanged();
             }
@@ -394,6 +568,8 @@ impl Backend for WebView2Backend {
                 let _ = controller.Close();
             }
         }
+        // 先关闭 controller，再销毁父窗口。迟到的回调由 generation 拒绝。
+        self.preview_window = None;
         // 释放 environment：最后一个引用释放后浏览器进程退出，内存回落到基础阅读器的量级。
         drop(environment);
     }
@@ -423,6 +599,19 @@ impl Backend for WebView2Backend {
                 let _ = c2.SetDefaultBackgroundColor(color);
             }
         }
+    }
+
+    fn uses_native_child_window(&self) -> bool {
+        self.preview_window.is_some() && self.inner.borrow().controller.is_some()
+    }
+
+    fn occlusion_count(&self) -> usize {
+        if !self.inner.borrow().visible {
+            return 0;
+        }
+        self.preview_window
+            .as_ref()
+            .map_or(0, |preview| preview.holes.len())
     }
 
     fn process_ids(&self) -> Vec<u32> {
@@ -802,9 +991,17 @@ unsafe fn configure(
 
     // 页面消息：只接受预览页来源、≤ 64 KiB 以外的渲染消息不限（正文 HTML 只从宿主发往页面）。
     let message_events = events.clone();
+    let message_inner = Rc::downgrade(inner);
+    let generation = inner.borrow().generation;
     web.add_WebMessageReceived(
         &WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else { return Ok(()) };
+            if message_inner
+                .upgrade()
+                .is_none_or(|state| state.borrow().generation != generation)
+            {
+                return Ok(());
+            }
             let source = uri_of(|p| args.Source(p));
             if source != page::INDEX_URL {
                 return Ok(());
@@ -995,6 +1192,62 @@ mod tests {
         assert!(forwarded_key(0x28, Modifiers::default()).is_none());
         assert!(forwarded_key(0x22, ctrl()).is_none());
         assert!(forwarded_key(0x10, ctrl()).is_none());
+    }
+
+    #[test]
+    fn native_preview_region_excludes_only_overlays_and_can_be_reset() {
+        use windows::Win32::{
+            Graphics::Gdi::{GetWindowRgn, PtInRegion},
+            UI::WindowsAndMessaging::WS_POPUP,
+        };
+
+        // 标准隐藏窗口，无需 COM 和 WebView2，不抢平台焦点。
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                windows::core::w!("Static"),
+                PCWSTR::null(),
+                WS_POPUP,
+                0,
+                0,
+                300,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let parent = PreviewWindow {
+            hwnd,
+            bounds: RECT::default(),
+            holes: Vec::new(),
+            clip_size: (0, 0),
+        };
+        let mut preview = PreviewWindow::new(parent.hwnd).unwrap();
+        let bounds = RECT {
+            left: 100,
+            top: 50,
+            right: 300,
+            bottom: 250,
+        };
+        let overlay = Bounds::new(
+            gpui::point(gpui::px(100.0), gpui::px(50.0)),
+            gpui::size(gpui::px(40.0), gpui::px(24.0)),
+        );
+        let viewport = preview.layout(bounds, &[overlay], 1.25).unwrap();
+        assert_eq!((viewport.right, viewport.bottom), (200, 200));
+        let region = Region::new(0, 0, 0, 0).unwrap();
+        unsafe {
+            assert_ne!(GetWindowRgn(preview.hwnd, region.0), RGN_ERROR);
+            assert!(!PtInRegion(region.0, 50, 20).as_bool());
+            assert!(PtInRegion(region.0, 150, 20).as_bool());
+        }
+        assert_eq!(preview.layout(bounds, &[], 1.25), Some(viewport));
+        unsafe {
+            assert_eq!(GetWindowRgn(preview.hwnd, region.0), RGN_ERROR);
+        }
     }
 
     #[test]

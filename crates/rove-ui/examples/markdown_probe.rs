@@ -11,6 +11,12 @@
 //! 每个阶段记录宿主进程与 WebView2 子进程树的工作集 / 私有提交（`Win32_Process`）。
 //! 运行：`cargo run -p rove-ui --release --example markdown_probe`，报告写到
 //! `target/markdown-probe/report.json`。**注明机器负载**：开着 Unity 等程序时数字只作参考。
+//! #302：设置 `ROVE_MARKDOWN_OVERLAY_PROBE=1` 后打开长文档的真实预览并保持两分钟。
+//! 在预览内向下滚动，依次测试 Ctrl+P（输入后 Escape）、Ctrl+B 后打开齿轮菜单
+//! （直接点击未被菜单遮挡的预览正文关闭），再悬停编辑器组最大化按钮（提示出现后直接把鼠标
+//! 移入未被遮挡的预览正文，确认提示立即消失）。截取各入口开启与关闭后的窗口，
+//! 检查浮层清晰可操作、未遮挡正文仍显示、关闭后预览滚动位置一致。控制台记录成功应用的裁切
+//! 数及预览顶部源码行。不要将计数单独视为截图或原生鼠标路由证据。
 use gpui::{prelude::*, px, size, App, Application, Bounds, WindowBounds, WindowOptions};
 use rove_config::{SettingsOptions, SettingsService};
 use rove_ui::{shell::layout::LayoutStore, skeleton::Workbench};
@@ -158,9 +164,72 @@ fn connections(pids: &BTreeSet<u32>) -> Vec<String> {
         .collect()
 }
 
+#[cfg(windows)]
+fn hosted_overlay_layout(
+    snapshot: &rove_ui::skeleton::MarkdownSnapshot,
+    window: &gpui::Window,
+) -> Value {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let hwnd = HasWindowHandle::window_handle(window)
+        .ok()
+        .and_then(|handle| match handle.as_raw() {
+            RawWindowHandle::Win32(raw) => Some(raw.hwnd.get()),
+            _ => None,
+        });
+    let rect = |bounds: Bounds<gpui::Pixels>| {
+        [
+            f32::from(bounds.left()),
+            f32::from(bounds.top()),
+            f32::from(bounds.right()),
+            f32::from(bounds.bottom()),
+        ]
+    };
+    let gear = window.debug_painted_bounds("activity-manage").map(rect);
+    let preview = snapshot.owner.and_then(|(group, _)| {
+        window
+            .debug_painted_bounds(&format!("editor-body-{}", group.0))
+            .map(rect)
+    });
+    let maximize = snapshot.owner.and_then(|(group, _)| {
+        window
+            .debug_painted_bounds(&format!("editor-title-max-{}", group.0))
+            .map(rect)
+    });
+    json!({
+        "hwnd": hwnd,
+        "scale": window.scale_factor(),
+        "gear": gear,
+        "preview": preview,
+        "maximize": maximize,
+        "quick": window.debug_painted_bounds("quick-input").map(rect),
+        "menu": window.debug_painted_bounds("menu-dropdown").map(rect),
+        "menu_command": window
+            .debug_painted_bounds("menu-command-workbench.action.showCommands")
+            .map(rect),
+        "tooltip": window.debug_painted_tooltip().map(rect),
+    })
+}
+
 fn main() {
     let root = std::env::temp_dir().join(format!("rove-markdown-probe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
+    #[cfg(windows)]
+    let hosted_overlay = std::env::var_os("ROVE_MARKDOWN_HOSTED_OVERLAY_PROBE").is_some();
+    #[cfg(not(windows))]
+    let hosted_overlay = false;
+    #[cfg(windows)]
+    if hosted_overlay {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        assert_eq!(
+            std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+            Ok("github-hosted")
+        );
+        let runtime = rove_ui::markdown::webview::WebView2Backend::runtime_version()
+            .unwrap_or_else(|error| panic!("Microsoft Edge WebView2 Runtime unavailable: {error}"));
+        println!("MARKDOWN_WEBVIEW2_RUNTIME {runtime}");
+        std::env::set_var("ROVE_WEBVIEW_USER_DATA", root.join("browser"));
+    }
     std::fs::create_dir_all(root.join("images")).unwrap();
     std::fs::write(root.join("images/dot.png"), PNG).unwrap();
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -229,7 +298,11 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
-                        size(px(1400.0), px(900.0)),
+                        if hosted_overlay {
+                            size(px(960.0), px(650.0))
+                        } else {
+                            size(px(1400.0), px(900.0))
+                        },
                         cx,
                     ))),
                     ..Default::default()
@@ -299,6 +372,51 @@ fn main() {
                     .unwrap();
             };
             sleep(2000).await;
+            if hosted_overlay || std::env::var_os("ROVE_MARKDOWN_OVERLAY_PROBE").is_some() {
+                open(cx, "Long.md", false);
+                let until = Instant::now() + Duration::from_secs(120);
+                let mut previous = None;
+                let mut sample_id = 0_u64;
+                println!("MARKDOWN_OVERLAY_PROBE_READY");
+                while Instant::now() < until {
+                    let Ok(()) = window.update(cx, |v: &mut Workbench, _, _| {
+                        v.markdown_probe("where", 0.0);
+                    }) else {
+                        break;
+                    };
+                    sleep(250).await;
+                    let Ok((snap, layout)) = window.update(cx, |v, window, _| {
+                        let snap = v.markdown_snapshot();
+                        #[cfg(windows)]
+                        let layout = hosted_overlay.then(|| hosted_overlay_layout(&snap, window));
+                        #[cfg(not(windows))]
+                        let layout: Option<Value> = None;
+                        (snap, layout)
+                    }) else {
+                        break;
+                    };
+                    let sample = (snap.occlusions, snap.position, snap.visible, snap.rendered);
+                    if hosted_overlay || previous != Some(sample) {
+                        sample_id += 1;
+                        println!(
+                            "MARKDOWN_OVERLAY {}",
+                            json!({
+                                "sample": sample_id,
+                                "occlusions": sample.0,
+                                "position": sample.1,
+                                "visible": sample.2,
+                                "rendered": sample.3,
+                                "pid": snap.process_ids.first(),
+                                "layout": layout,
+                            })
+                        );
+                        previous = Some(sample);
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&root);
+                cx.update(|cx| cx.quit()).ok();
+                return;
+            }
             let before = phase("before_preview", json!({}));
             assert!(before.is_empty(), "打开预览前不应有 WebView2 进程");
 

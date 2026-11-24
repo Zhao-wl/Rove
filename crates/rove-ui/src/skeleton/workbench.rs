@@ -2023,9 +2023,9 @@ impl Render for Workbench {
         let welcome = self.welcome_overlay(cx);
         // #76：「关于」浮层（在最上层，命令面板与欢迎页之上）。
         let about = self.about_overlay(cx);
-        // #29：弹出层打开时隐藏 WebView2（#6 报告的相交隐藏）。
+        // #302：快速输入、菜单及 tooltip 按实际相交区域裁切。
         self.sync_markdown_overlays(
-            goto.is_some() || quick.is_some() || hover.is_some() || welcome.is_some(),
+            goto.is_some() || hover.is_some() || welcome.is_some(),
             window,
             cx,
         );

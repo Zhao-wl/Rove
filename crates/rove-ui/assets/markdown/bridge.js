@@ -3,7 +3,7 @@
 //
 // 协议 {version:1, type, ...}：
 //   宿主 → 页面：render、theme、scrollTo、selection、fragment
-//   页面 → 宿主：ready、rendered、scroll、dblclick、link、focusExit
+//   页面 → 宿主：ready、rendered、scroll、pointerDown、dblclick、link、focusExit
 (function () {
   'use strict';
   const VERSION = 1;
@@ -422,6 +422,12 @@
   });
 
   // ------------------------------------------------------------------ 交互
+
+  document.addEventListener('pointerdown', function (event) {
+    if (event.isTrusted && documentId !== null) {
+      post({ type: 'pointerDown', documentId: documentId, seq: seq });
+    }
+  }, true);
 
   document.addEventListener('dblclick', function (event) {
     if (documentId === null) {
