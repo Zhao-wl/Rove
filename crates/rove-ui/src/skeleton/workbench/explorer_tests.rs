@@ -955,3 +955,65 @@ fn explorer_create_rename_recycle_then_undo_through_the_workbench(cx: &mut TestA
     });
     assert!(fixture.path("Renamed.txt").is_file());
 }
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_batch_recycle_persists_the_confirmation_choice_without_reformatting(
+    cx: &mut TestAppContext,
+) {
+    let settings = r#"{
+    // Keep my existing comment and indentation.
+    "explorer.confirmDelete": true,
+    "files.enableTrash": true
+}"#;
+    let fixture = Fixture::new(settings, &["First.txt", "Second.txt", "Untouched.txt"]);
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    list(&view, cx).update(cx, |list, cx| {
+        list.widget.set_selection(vec![0, 1]);
+        cx.notify();
+    });
+    cx.simulate_keystrokes("delete");
+    cx.run_until_parked();
+
+    let key = view.read_with(cx, |v, _| {
+        let modal = v
+            .shell
+            .feedback
+            .modal()
+            .expect("single recycle confirmation");
+        assert_eq!(modal.message.key.as_ref(), "explorer.delete.recycle");
+        assert!(modal
+            .message
+            .args
+            .iter()
+            .any(|(key, count)| { key.as_ref() == "count" && count.as_ref() == "2" }));
+        assert!(modal.checkbox.is_some());
+        modal.key.clone()
+    });
+    assert!(fixture.path("First.txt").exists());
+    assert!(fixture.path("Second.txt").exists());
+    view.update(cx, |v, _| {
+        v.shell.feedback.toggle_modal_checkbox(&key);
+        v.shell
+            .feedback
+            .act(&key, registry::FILE_OP_CONFIRM)
+            .unwrap();
+    });
+    wait_until(&view, cx, "both items reach the recycle bin", |rows| {
+        rows == ["Untouched.txt"]
+    });
+    view.read_with(cx, |v, _| assert!(v.shell.feedback.modal().is_none()));
+    let stored = std::fs::read_to_string(fixture.user.path().join("settings.json")).unwrap();
+    assert_eq!(
+        stored,
+        settings.replace("Delete\": true", "Delete\": false")
+    );
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(&view, cx, "one undo restores both items", |rows| {
+        rows == ["First.txt", "Second.txt", "Untouched.txt"]
+    });
+}
