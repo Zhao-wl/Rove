@@ -647,7 +647,7 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
 ) {
     use crate::settings_ui::{registry as settings, SharedSettings};
 
-    let source = "{\n  // preserve this comment\n  \"editor.fontSize\": 15,\n  \"editor.wordWrap\": \"off\"\n}\n";
+    let source = "{\n  // preserve this comment\n\n  \"editor.fontSize\": 15,\n  \"editor.wordWrap\": \"off\",\n  \"editor.minimap.enabled\": false\n}\n";
     let fx = Fixture::new(source);
     let (workbench, cx) = fx.open(cx);
     let service = fx.service.clone();
@@ -674,6 +674,17 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     editor.update(cx, |view, cx| {
         view.set_query_for_test("font size @modified", cx)
     });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::LIST_FROM_SEARCH_ENTER, window, cx);
+        view.settings_command(settings::CLEAR_SEARCH, window, cx);
+    });
+    cx.run_until_parked();
+    editor.update(cx, |view, cx| {
+        assert!(view.select_result_for_test("editor.wordWrap", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::PREVIOUS_SEARCH, window, cx);
+    });
     cx.run_until_parked();
     editor.update(cx, |view, cx| {
         assert!(!view.select_result_for_test("editor.wordWrap", cx));
@@ -689,21 +700,57 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     editor.update_in(cx, |view, window, cx| {
         view.edit_text_for_test("16", window, cx)
     });
-    let expected = source.replace(": 15,", ": 16,");
-    for _ in 0..200 {
-        cx.run_until_parked();
-        if fx.settings_text() == expected {
-            break;
+    let wait_for_text = |cx: &mut VisualTestContext, expected: &str| {
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if fx.settings_text() == expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(fx.settings_text(), expected);
+        assert_eq!(fx.settings_text(), expected);
+    };
+    let after_number = source.replace(": 15,", ": 16,");
+    wait_for_text(cx, &after_number);
     assert_eq!(
         fx.service
             .read("editor.fontSize", &Scope::default())
             .unwrap(),
         Value::Number(16.0)
     );
+
+    editor.update(cx, |view, cx| {
+        view.set_query_for_test("editor.wordWrap", cx);
+        assert!(view.select_result_for_test("editor.wordWrap", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::FOCUS_CONTROL, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("down enter");
+    let after_enum = after_number.replace("\"off\"", "\"on\"");
+    wait_for_text(cx, &after_enum);
+
+    editor.update(cx, |view, cx| {
+        view.set_query_for_test("editor.minimap.enabled", cx);
+        assert!(view.select_result_for_test("editor.minimap.enabled", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::FOCUS_CONTROL, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("space");
+    let after_bool = after_enum.replace(": false", ": true");
+    wait_for_text(cx, &after_bool);
+
+    let backups: Vec<_> = std::fs::read_dir(fx._app_data.path().join("backup"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    for prior in [source, after_number.as_str(), after_enum.as_str()] {
+        assert!(backups.iter().any(|backup| backup == prior));
+    }
+
     workbench.update_in(cx, |view, window, cx| {
         view.settings_command(settings::OPEN_JSON, window, cx)
     });

@@ -2300,7 +2300,13 @@ pub fn launch_with_settings(
     started: Instant,
     extensions: Option<PathBuf>,
 ) {
-    launch_internal(startup, settings.clone(), Some(settings), started, extensions);
+    launch_internal(
+        startup,
+        settings.clone(),
+        Some(settings),
+        started,
+        extensions,
+    );
 }
 
 fn launch_internal(
