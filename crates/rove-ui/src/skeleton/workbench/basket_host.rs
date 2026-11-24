@@ -244,7 +244,7 @@ impl Workbench {
         cx.notify();
     }
 
-    pub(super) fn basket_changed(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn basket_changed(&mut self, cx: &mut Context<Self>) -> bool {
         self.basket.previews.retain(|id, _| {
             self.basket
                 .contents
@@ -273,7 +273,7 @@ impl Workbench {
             if !accepted {
                 self.sync_basket_snapshot(&shared, cx);
                 self.report_basket("contextBasket.changedInOtherWindow", Arc::from([]), cx);
-                return;
+                return false;
             }
         }
         self.basket.revision += 1;
@@ -287,6 +287,7 @@ impl Workbench {
             .detach();
         }
         cx.notify();
+        true
     }
 
     pub(super) fn flush_basket(&self) {
@@ -566,7 +567,9 @@ impl Workbench {
             .map(|entry| (entry.id(), entry.lines))
             .collect();
         self.capture_basket_anchors(ranges, text, cx);
-        self.basket_changed(cx);
+        if !self.basket_changed(cx) {
+            return;
+        }
         let key = if fallback {
             "contextBasket.addedCurrentLine"
         } else {
@@ -698,8 +701,9 @@ impl Workbench {
             reg::COPY_MARKDOWN => self.copy_basket(true, cx),
             reg::COPY_REFERENCES => self.copy_basket(false, cx),
             reg::CLEAR if self.basket.loaded => {
-                self.clear_basket(cx);
-                self.report_basket("contextBasket.cleared", Arc::from([]), cx);
+                if self.clear_basket(cx) {
+                    self.report_basket("contextBasket.cleared", Arc::from([]), cx);
+                }
             }
             reg::CLEAR => self.report_basket("contextBasket.loading", Arc::from([]), cx),
             _ => return false,
@@ -707,13 +711,13 @@ impl Workbench {
         true
     }
 
-    fn clear_basket(&mut self, cx: &mut Context<Self>) {
+    fn clear_basket(&mut self, cx: &mut Context<Self>) -> bool {
         self.basket.collection_epoch += 1;
         self.basket.contents.clear();
         self.basket.pending_anchors.clear();
         self.basket.previews.clear();
         self.basket.reselect = None;
-        self.basket_changed(cx);
+        self.basket_changed(cx)
     }
 
     fn copy_basket(&mut self, markdown: bool, cx: &mut Context<Self>) {
@@ -815,7 +819,15 @@ impl Workbench {
         result: crate::context_basket::export::Export,
         cx: &mut Context<Self>,
     ) {
+        let shared_is_current = self.basket.shared.as_ref().is_none_or(|shared| {
+            shared
+                .read(cx)
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.revision == revision)
+        });
         if self.basket.revision != revision
+            || !shared_is_current
             || cx
                 .try_global::<BasketClipboardRequest>()
                 .is_none_or(|latest| latest.0 != request)
@@ -979,7 +991,9 @@ impl Workbench {
                 for (id, range, text) in ranges {
                     view.capture_basket_anchors(vec![(id, range)], text, cx);
                 }
-                view.basket_changed(cx);
+                if !view.basket_changed(cx) {
+                    return;
+                }
                 view.report_basket(
                     "contextBasket.added",
                     Arc::from([(

@@ -175,6 +175,22 @@ fn context_basket_syncs_same_workspace_windows_and_keeps_other_roots_independent
     let store = BasketStore::with_base(Some(app_data.path().into()), root.path());
     assert_eq!(store.load().items().len(), 2);
 
+    // Deliver two operations before either workbench receives the observer notification.
+    cx.update(|app| {
+        first.update(app, |view, cx| {
+            view.basket.contents.introduction = "updated".into();
+            assert!(view.basket_changed(cx));
+        });
+        second.update(app, |view, cx| {
+            assert!(view.basket_command(reg::CLEAR, cx));
+            assert_eq!(
+                view.status(),
+                view.label("contextBasket.changedInOtherWindow", &[])
+            );
+        });
+    });
+    assert_eq!(names(&second, cx), ["one.cs", "two.cs"]);
+
     cx.update(|app| {
         first.update(app, |view, cx| assert!(view.basket_command(reg::CLEAR, cx)));
     });
