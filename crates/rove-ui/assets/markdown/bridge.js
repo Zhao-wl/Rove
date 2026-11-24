@@ -3,7 +3,7 @@
 //
 // 协议 {version:1, type, ...}：
 //   宿主 → 页面：render、theme、scrollTo、selection、fragment
-//   页面 → 宿主：ready、rendered、scroll、pointerDown、dblclick、link、focusExit
+//   页面 → 宿主：ready、rendered、scroll、pointerDown、dblclick、link、focusExit、sourceSelection
 (function () {
   'use strict';
   const VERSION = 1;
@@ -428,6 +428,35 @@
       post({ type: 'pointerDown', documentId: documentId, seq: seq });
     }
   }, true);
+
+  // The preview is a native child window. Publish only a selected range within the rendered content.
+  document.addEventListener('contextmenu', function (event) {
+    const selected = window.getSelection();
+    if (!event.isTrusted || documentId === null || !content.contains(event.target) ||
+        !selected || selected.isCollapsed || selected.rangeCount !== 1) {
+      return;
+    }
+    const range = selected.getRangeAt(0);
+    if (!content.contains(range.startContainer) || !content.contains(range.endContainer) ||
+        codeLines().length === 0) {
+      return;
+    }
+    const rects = Array.from(range.getClientRects()).filter(function (rect) {
+      return rect.width > 0 && rect.height > 0;
+    });
+    if (rects.length === 0) {
+      return;
+    }
+    const viewportLine = function (rect) {
+      return Math.floor(lineForOffset(window.scrollY + rect.top + Math.min(1, rect.height / 2)));
+    };
+    const first = viewportLine(rects[0]);
+    const last = viewportLine(rects[rects.length - 1]);
+    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 0 || last < first) {
+      return;
+    }
+    post({ type: 'sourceSelection', documentId: documentId, seq: seq, first: first, last: last });
+  });
 
   document.addEventListener('dblclick', function (event) {
     if (documentId === null) {

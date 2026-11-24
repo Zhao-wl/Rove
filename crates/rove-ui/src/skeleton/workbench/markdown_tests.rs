@@ -1004,3 +1004,51 @@ fn preview_scale_follows_the_window_and_zoom_is_not_doubled(cx: &mut TestAppCont
         "网页缩放应当是 1.2^2，实际 {zoom}"
     );
 }
+
+#[gpui::test]
+fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    let (view, cx) = fixture.open(cx);
+    open(&view, "Long.md", explorer(), cx);
+    let (document, sequence) = view.read_with(cx, |view, _| {
+        let snapshot = view.markdown_snapshot();
+        assert!(snapshot.rendered && snapshot.visible);
+        (
+            view.markdown.requested.unwrap().document,
+            snapshot.render_sequence,
+        )
+    });
+    let send =
+        |cx: &mut VisualTestContext, document: DocumentId, seq: u64, first: u64, last: u64| {
+            view.update(cx, |view, _| {
+                view.markdown
+                    .sender_for_test()
+                    .try_send(crate::markdown::backend::BackendEvent::Message(
+                        serde_json::json!({
+                            "version": 1, "type": "sourceSelection",
+                            "documentId": document.0, "seq": seq, "first": first, "last": last,
+                        }),
+                    ))
+                    .unwrap();
+            });
+            settle(cx);
+        };
+    let selected = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |view, _| {
+            view.markdown_snapshot()
+                .source_selection
+                .map(|range| (range.start().0, range.end().0))
+        })
+    };
+    send(cx, document, sequence + 1, 5, 7);
+    assert_eq!(selected(cx), None);
+    send(cx, DocumentId(document.0 + 1), sequence, 5, 7);
+    assert_eq!(selected(cx), None);
+    send(cx, document, sequence, 5, 7);
+    assert_eq!(selected(cx), Some((5, 8)));
+    send(cx, document, sequence, 3, u64::MAX);
+    assert_eq!(selected(cx), None);
+    send(cx, document, sequence, 5, 7);
+    open(&view, "Other.md", explorer(), cx);
+    assert_eq!(selected(cx), None);
+}

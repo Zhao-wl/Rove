@@ -60,6 +60,8 @@ pub struct MarkdownSnapshot {
     pub process_ids: Vec<u32>,
     /// 最近一次 [`Workbench::markdown_probe`] 读回的预览顶部源码行。
     pub position: Option<f64>,
+    /// Source lines (zero-based, half-open) from the current preview's last context request.
+    pub source_selection: Option<rove_base::LineRange>,
 }
 
 pub(super) struct MarkdownPreview {
@@ -95,6 +97,7 @@ pub(super) struct MarkdownPreview {
     created_ms: Option<f64>,
     external: Option<String>,
     position: Option<f64>,
+    source_selection: Option<rove_base::LineRange>,
     trace: bool,
     #[cfg(test)]
     pub(super) fake: Rc<RefCell<crate::markdown::backend::FakeLog>>,
@@ -160,6 +163,7 @@ impl Default for MarkdownPreview {
             created_ms: None,
             external: None,
             position: None,
+            source_selection: None,
             trace: std::env::var_os("ROVE_MARKDOWN_TRACE").is_some(),
             #[cfg(test)]
             fake,
@@ -215,6 +219,11 @@ impl Workbench {
             idle_pending: m.idle_pending,
             process_ids: backend.process_ids(),
             position: m.position,
+            source_selection: (m.visible.get()
+                && m.rendered.is_some()
+                && m.rendered == m.requested.map(|_| m.seq))
+            .then(|| m.source_selection.clone())
+            .flatten(),
         }
     }
 
@@ -545,6 +554,7 @@ impl Workbench {
             .requested
             .is_some_and(|old| old.document == key.document && old.tab == key.tab);
         self.markdown.requested = Some(key);
+        self.markdown.source_selection = None;
         self.markdown.seq += 1;
         let seq = self.markdown.seq;
         let base = self
@@ -777,6 +787,22 @@ impl Workbench {
         );
     }
 
+    fn markdown_context_is_current(&self, document: Option<DocumentId>, message: &Json) -> bool {
+        document.is_some()
+            && document == self.markdown.requested.map(|key| key.document)
+            && message["seq"].as_u64() == self.markdown.rendered
+            && self.markdown.rendered == Some(self.markdown.seq)
+            && self.markdown.visible.get()
+            && self.markdown.owner.is_some_and(|(group, tab)| {
+                self.editor
+                    .maximized
+                    .is_none_or(|maximized| maximized == group)
+                    && self
+                        .preview_tab(group)
+                        .is_some_and(|preview| preview.id == tab)
+            })
+    }
+
     fn markdown_message(&mut self, message: Json, window: &mut Window, cx: &mut Context<Self>) {
         let document = message["documentId"].as_u64().map(DocumentId);
         let current = self.markdown.requested.map(|k| k.document);
@@ -826,21 +852,20 @@ impl Workbench {
                     self.markdown_scroll_editors(document.unwrap(), line, cx);
                 }
             }
-            Some("pointerDown")
-                if document.is_some()
-                    && document == current
-                    && message["seq"].as_u64() == self.markdown.rendered
-                    && self.markdown.rendered == Some(self.markdown.seq)
-                    && self.markdown.visible.get()
-                    && self.markdown.owner.is_some_and(|(group, tab)| {
-                        self.editor
-                            .maximized
-                            .is_none_or(|maximized| maximized == group)
-                            && self
-                                .preview_tab(group)
-                                .is_some_and(|preview| preview.id == tab)
-                    }) =>
-            {
+            Some("sourceSelection") if self.markdown_context_is_current(document, &message) => {
+                self.markdown.source_selection = (|| {
+                    let doc = self.open_document(document?)?;
+                    let first = message["first"].as_u64()?;
+                    let last = message["last"].as_u64()?;
+                    let end = last.checked_add(1)?;
+                    if end > doc.text.lines().known || first > last {
+                        return None;
+                    }
+                    rove_base::LineRange::new(rove_base::Line(first), rove_base::Line(end)).ok()
+                })();
+                cx.notify();
+            }
+            Some("pointerDown") if self.markdown_context_is_current(document, &message) => {
                 if self.shell.dismiss_menu() {
                     cx.notify();
                 }
