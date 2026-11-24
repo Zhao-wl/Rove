@@ -70,6 +70,7 @@ pub(super) struct MarkdownPreview {
     feedback: Option<rove_base::Subscription>,
     pub(super) focus: Option<FocusHandle>,
     was_focused: bool,
+    source_focus: Option<EditorGroupId>,
     pub(super) owner: Option<(EditorGroupId, TabId)>,
     ready: bool,
     pending: Vec<Json>,
@@ -136,6 +137,7 @@ impl Default for MarkdownPreview {
             feedback: None,
             focus: None,
             was_focused: false,
+            source_focus: None,
             owner: None,
             ready: false,
             pending: Vec::new(),
@@ -324,6 +326,15 @@ impl Workbench {
             }
         }
         // 焦点：GPUI 焦点刚进入预览 → 把 Win32 焦点交给网页；刚离开 → 还给宿主窗口。
+        if self.markdown.source_focus.take() == Some(self.editor.focused)
+            && self
+                .editor
+                .active()
+                .current()
+                .is_some_and(|tab| tab.kind == EditorKind::Text)
+        {
+            self.focus_group_code(self.editor.focused, window, cx);
+        }
         let now = focus.is_focused(window);
         if now && !self.markdown.was_focused && owner.is_some() {
             let mut backend = self.markdown.backend.borrow_mut();
@@ -646,7 +657,7 @@ impl Workbench {
                 }
             }
             BackendEvent::RuntimeMissing(error) => {
-                self.markdown_unavailable(&error, true, cx);
+                self.markdown_unavailable(&error, true, window, cx);
             }
             BackendEvent::Failed(error) => {
                 let created = self.markdown.created_ms.is_some();
@@ -654,7 +665,7 @@ impl Workbench {
                 self.markdown.ready = false;
                 self.markdown.requested = None;
                 if !created {
-                    self.markdown_unavailable(&error, false, cx);
+                    self.markdown_unavailable(&error, false, window, cx);
                 }
             }
             BackendEvent::Message(message) => self.markdown_message(message, window, cx),
@@ -697,7 +708,13 @@ impl Workbench {
 
     /// 没有 WebView2 运行时（或创建失败）：所有预览改为源码，以后 `.md` 也以源码打开；只通知一次，
     /// 附微软官方下载页（只在用户点击时交给系统浏览器打开，Rove 不下载任何东西）。
-    fn markdown_unavailable(&mut self, error: &str, missing: bool, cx: &mut Context<Self>) {
+    fn markdown_unavailable(
+        &mut self,
+        error: &str,
+        missing: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.markdown.runtime_missing = true;
         self.editor.settings.editors.set_preview_available(false);
         let tabs: Vec<(EditorGroupId, TabId)> = self
@@ -712,11 +729,20 @@ impl Workbench {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let focused = self.editor.focused;
-        for (group, tab) in tabs {
-            self.editor.reopen_as(group, tab, EditorKind::Text, None);
+        if self
+            .markdown
+            .focus
+            .as_ref()
+            .is_some_and(|focus| focus.is_focused(window))
+        {
+            self.markdown.backend.borrow_mut().release_focus();
+            self.markdown.source_focus = Some(self.editor.focused);
         }
-        self.editor.focus(focused);
+        for (group, tab) in tabs {
+            self.editor
+                .reopen_as(group, tab, EditorKind::Text, None, false);
+        }
+        self.sync_views(cx);
         if self.markdown.notified {
             return;
         }
@@ -825,7 +851,7 @@ impl Workbench {
                     if let Some((group, tab)) = self.markdown.owner {
                         self.markdown.backend.borrow_mut().release_focus();
                         self.editor
-                            .reopen_as(group, tab, EditorKind::Text, Some(line));
+                            .reopen_as(group, tab, EditorKind::Text, Some(line), true);
                         self.sync_views(cx);
                         self.focus_group_code(group, window, cx);
                     }
@@ -1014,7 +1040,9 @@ impl Workbench {
             md::TOGGLE_PREVIEW if preview => {
                 let line = self.markdown.lines.get(&tab_id).map(|l| l.max(0.0) as u32);
                 self.markdown.backend.borrow_mut().release_focus();
-                self.editor.reopen_as(group, tab_id, EditorKind::Text, line);
+                self.editor
+                    .reopen_as(group, tab_id, EditorKind::Text, line, true);
+                self.markdown.source_focus = Some(group);
             }
             md::TOGGLE_PREVIEW if markdown_source => {
                 if !self.editor.settings.editors.preview_available() {
@@ -1024,7 +1052,7 @@ impl Workbench {
                     self.markdown.lines.insert(tab_id, top);
                 }
                 self.editor
-                    .reopen_as(group, tab_id, markdown_preview(), None);
+                    .reopen_as(group, tab_id, markdown_preview(), None, true);
             }
             md::SHOW_PREVIEW | md::SHOW_PREVIEW_TO_SIDE if markdown_source => {
                 let beside = id == md::SHOW_PREVIEW_TO_SIDE;
