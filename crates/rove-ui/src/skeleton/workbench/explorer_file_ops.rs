@@ -107,6 +107,8 @@ impl FileOperations {
 
 impl Request {
     fn paths(&self, root: &Path, folder: &Folder) -> Vec<PathBuf> {
+        #[cfg(not(windows))]
+        let _ = folder;
         let absolute = |path: &WorkspacePath| root.join(path.as_str());
         match self {
             Self::Delete(plan) => plan

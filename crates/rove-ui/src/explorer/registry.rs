@@ -203,7 +203,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("explorer.operation.locked", "项目正被其他程序占用。请关闭占用它的程序后重试。"),
     ("explorer.operation.long", "项目的路径太长。请缩短名称或移动到更短的路径后重试。"),
     ("explorer.operation.denied", "没有权限更改所选项目。请检查访问权限后重试。"),
-    ("explorer.operation.sourceRetained", "项目已复制，但未能移除源项目。源文件仍保留在原位置。"),
+    ("explorer.operation.sourceRetained", "项目已复制。原位置还有未能移除的项目，请检查剩余内容。"),
     ("explorer.undo.restore", "撤销上一次资源管理器文件操作吗？"),
     ("explorer.undo.restoreButton", "还原"),
     ("explorer.name.empty", "请输入文件或文件夹名称。"),

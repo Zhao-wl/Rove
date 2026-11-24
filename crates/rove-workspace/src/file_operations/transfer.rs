@@ -230,25 +230,47 @@ fn transfer_between(
         return Ok(TransferOutcome::Copied);
     }
     let result = (|| {
-        for (path, before) in observed {
-            let current = EntryStamp::read(&path, &check_entry(&path)?)?;
-            if current != before {
+        for (path, before) in &observed {
+            let current = EntryStamp::read(path, &check_entry(path)?)?;
+            if current != *before {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "source changed during move",
                 ));
             }
         }
-        if source_meta.is_dir() {
-            fs::remove_dir_all(source)
-        } else {
-            fs::remove_file(source)
-        }
+        remove_copied_entries(observed)
     })();
     match result {
         Ok(()) => Ok(TransferOutcome::Moved),
         Err(error) => Ok(TransferOutcome::SourceRetained(error)),
     }
+}
+
+fn remove_copied_entries(observed: Vec<(PathBuf, EntryStamp)>) -> io::Result<()> {
+    // Only remove items in the copy manifest. Removing a directory recursively
+    // could discard new files that arrived after the copy and validation.
+    for (path, before) in observed.into_iter().rev() {
+        let current = EntryStamp::read(&path, &check_entry(&path)?)?;
+        if before.directory {
+            if !current.same_object(&before) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "source directory was replaced",
+                ));
+            }
+            fs::remove_dir(path)?;
+        } else {
+            if current != before {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "source file changed during move",
+                ));
+            }
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_to_staging(
@@ -275,4 +297,31 @@ fn copy_to_staging(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_cleanup_preserves_files_created_after_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let target = directory.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("copied.txt"), "first").unwrap();
+        let mut observed = Vec::new();
+        copy_to_staging(&source, &target, Transfer::Move, &mut observed).unwrap();
+
+        fs::write(source.join("arrived-later.txt"), "keep me").unwrap();
+        assert!(remove_copied_entries(observed).is_err());
+        assert_eq!(
+            fs::read_to_string(target.join("copied.txt")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(source.join("arrived-later.txt")).unwrap(),
+            "keep me"
+        );
+    }
 }

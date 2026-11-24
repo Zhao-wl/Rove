@@ -338,7 +338,11 @@ fn incremental_paste_names_preserve_extensions_and_padding() {
 fn stages_copies_and_moves_without_replacing_destinations() {
     use rove_workspace::file_operations::transfer::{Transfer, TransferOutcome};
     let temp = tempfile::tempdir().unwrap();
-    let external = tempfile::tempdir().unwrap();
+    // Pass a directory on another volume to exercise the real cross-volume
+    // path with exactly the same no-overwrite, move and restore assertions.
+    let external = std::env::var_os("ROVE_TEST_FILE_OPERATIONS_VOLUME")
+        .map_or_else(tempfile::tempdir, tempfile::tempdir_in)
+        .unwrap();
     let project = temp.path();
     let source = external.path().join("From Explorer");
     fs::create_dir_all(source.join("Nested")).unwrap();
