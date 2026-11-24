@@ -69,3 +69,6 @@ pub mod dpi;
 mod image_preview;
 
 mod file_icons;
+
+// #66: context basket model, tracking, export and persistence.
+pub(crate) mod context_basket;

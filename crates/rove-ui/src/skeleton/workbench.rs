@@ -155,6 +155,7 @@ mod v01_acceptance_tests;
 #[cfg(test)]
 mod binary_tests;
 // #150：「可交互」冷启动埋点（`cargo xtask startup` 用，默认关闭）。
+mod basket_host;
 mod link_host;
 mod startup_probe;
 // 代码视图（#19）的字号与行高来自 editor.fontSize / editor.lineHeight，
@@ -232,6 +233,7 @@ pub struct Workbench {
     explorer_revealed: Option<TabId>,
     editor: EditorService,
     root: PathBuf,
+    basket: basket_host::WindowBasket,
     views: BTreeMap<EditorGroupId, GroupViews>,
     /// The group whose code view last received keyboard focus from the editor area.
     focus_group: Option<EditorGroupId>,
@@ -507,6 +509,7 @@ impl Workbench {
                 wake,
             ),
             root: root.clone(),
+            basket: basket_host::WindowBasket::new(&root),
             views: BTreeMap::new(),
             focus_group: None,
             tab_drop: None,
@@ -617,6 +620,7 @@ impl Workbench {
         // #42：速览预览里的外部符号片段取自元数据视图。
         view.register_metadata_snippets();
         view.sync_views(cx);
+        view.restore_basket(cx);
         if view.has_folder {
             view.scan(root, cx);
         } else {
@@ -888,6 +892,7 @@ impl Workbench {
                         // #47：打开中的文档在磁盘上被修改 / 删除。
                         view.note_disk_events(&nav, cx);
                         view.refresh_workspace_images(&nav, cx);
+                        view.basket_workspace_files_changed(&nav, cx);
                         view.nav_files_changed(&nav, cx);
                         if !view.editor.settings.close_on_delete {
                             return;
