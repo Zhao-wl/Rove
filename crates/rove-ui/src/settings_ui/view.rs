@@ -19,7 +19,10 @@ use rove_theme::Theme;
 use std::{collections::BTreeSet, sync::Arc};
 
 const ALL: &str = "rove-settings:all";
-const SETTING_HEIGHT: f32 = 82.0;
+const SETTING_HEIGHT: f32 = 120.0;
+const SETTING_BADGE_HEIGHT: f32 = 21.0;
+const SETTING_LINE_HEIGHT: f32 = 18.0;
+const SETTING_CONTROL_HEIGHT: f32 = 22.0;
 const CATEGORY_HEIGHT: f32 = 28.0;
 
 struct EmptyCategories;
@@ -104,8 +107,12 @@ impl SettingsView {
             let list = ListWidget::new(
                 Arc::new(EmptyList),
                 RowHeight::PerRow(Arc::new(|row| {
-                    let extra = usize::from(row.detail.as_deref() == Some("badges"));
-                    SETTING_HEIGHT + 26.0 * extra as f32
+                    let badges = match row.detail.as_deref() {
+                        Some("one-badge") => 1.0,
+                        Some("two-badges") => 2.0,
+                        _ => 0.0,
+                    };
+                    SETTING_HEIGHT + SETTING_BADGE_HEIGHT * badges
                 })),
                 options,
             );
@@ -471,16 +478,23 @@ impl SettingsView {
         let overrides = self.language_overrides.clone();
         let list_rows: Vec<_> = rows
             .iter()
-            .map(|entry| Row {
-                id: ItemId(entry.row.key.as_str().into()),
-                label: entry.row.title.as_str().into(),
-                detail: (entry.row.rove_default.is_some()
-                    || (entry.row.language_overridable && overrides.contains(&entry.row.key)))
-                .then(|| Arc::<str>::from("badges")),
-                depth: 0,
-                expandable: false,
-                expanded: false,
-                disabled: false,
+            .map(|entry| {
+                let default = entry.row.rove_default.is_some();
+                let language = entry.row.language_overridable && overrides.contains(&entry.row.key);
+                let detail = match (default, language) {
+                    (true, true) => Some("two-badges".into()),
+                    (true, false) | (false, true) => Some("one-badge".into()),
+                    (false, false) => None,
+                };
+                Row {
+                    id: ItemId(entry.row.key.as_str().into()),
+                    label: entry.row.title.as_str().into(),
+                    detail,
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
+                    disabled: false,
+                }
             })
             .collect();
         let theme = self.theme.clone();
@@ -507,27 +521,47 @@ impl SettingsView {
                     .size_full()
                     .flex()
                     .flex_col()
-                    .justify_center()
                     .px(px(10.))
+                    .py(px(8.))
                     .gap(px(3.))
+                    .line_height(px(SETTING_LINE_HEIGHT))
                     .text_color(foreground)
-                    .child(styled(&entry.row.title, &entry.title, highlight))
-                    .child(div().text_size(px(11.)).child(styled(
-                        &entry.row.key,
-                        &entry.key,
-                        highlight,
-                    )))
-                    .child(div().text_size(px(12.)).child(styled(
-                        &entry.row.description,
-                        &entry.description,
-                        highlight,
-                    )));
+                    .child(
+                        div()
+                            .h(px(SETTING_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .pr(px(24.))
+                            .truncate()
+                            .child(styled(&entry.row.title, &entry.title, highlight)),
+                    )
+                    .child(
+                        div()
+                            .h(px(SETTING_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .text_size(px(11.))
+                            .truncate()
+                            .child(styled(&entry.row.key, &entry.key, highlight)),
+                    )
+                    .child(
+                        div()
+                            .h(px(2.0 * SETTING_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .text_size(px(12.))
+                            .line_clamp(2)
+                            .child(styled(
+                                &entry.row.description,
+                                &entry.description,
+                                highlight,
+                            )),
+                    );
                 if let Some(default) = &entry.row.rove_default {
                     let label = strings
                         .text(&Message::key("settings.roveDefault"))
                         .unwrap_or_default();
                     row = row.child(
                         div()
+                            .h(px(SETTING_LINE_HEIGHT))
+                            .flex_shrink_0()
                             .text_size(px(11.))
                             .truncate()
                             .child(format!("{label} {default}")),
@@ -543,6 +577,8 @@ impl SettingsView {
                                 "settings-language-{}",
                                 entry.row.key
                             )))
+                            .h(px(SETTING_LINE_HEIGHT))
+                            .flex_shrink_0()
                             .text_size(px(11.))
                             .cursor_pointer()
                             .child(
@@ -574,6 +610,7 @@ impl SettingsView {
                                 entry.row.key
                             )))
                             .size(px(18.))
+                            .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
@@ -607,6 +644,8 @@ impl SettingsView {
                                     "settings-json-{}",
                                     entry.row.key
                                 )))
+                                .h(px(SETTING_CONTROL_HEIGHT))
+                                .flex_shrink_0()
                                 .cursor_pointer()
                                 .child(
                                     strings
@@ -639,6 +678,10 @@ impl SettingsView {
                                 "settings-value-{}",
                                 entry.row.key
                             )))
+                            .h(px(SETTING_CONTROL_HEIGHT))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
                             .px(px(6.))
                             .text_size(px(12.))
                             .border_1()
@@ -751,6 +794,7 @@ impl Render for SettingsView {
             .child(
                 div()
                     .id("settings-json")
+                    .debug_selector(|| "settings-json".to_owned())
                     .px(px(8.))
                     .cursor_pointer()
                     .child(self.label("settings.openJSON"))

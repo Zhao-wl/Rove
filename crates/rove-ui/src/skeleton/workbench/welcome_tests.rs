@@ -642,6 +642,79 @@ fn the_gear_menu_lists_every_usable_item(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn graphical_settings_blocks_invalid_writes_and_reveals_the_json_error(cx: &mut TestAppContext) {
+    use crate::settings_ui::{registry as settings, SharedSettings};
+
+    let fx = Fixture::new("{\n  \"editor.fontSize\": 15\n}\n");
+    let (workbench, cx) = fx.open(cx);
+    let service = fx.service.clone();
+    workbench.update_in(cx, |view, window, cx| {
+        cx.set_global(SharedSettings(service));
+        window.focus(&view.focus);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-,");
+    let settings_view = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
+
+    let path = fx.user.join("settings.json");
+    let broken = "{\n  \"editor.fontSize\": 15,\n  \"syntax.error\": !\n}\n";
+    std::fs::write(&path, broken).unwrap();
+    fx.service.reload();
+    cx.run_until_parked();
+    let problems = fx.service.problems();
+    let error = problems.iter().find(|problem| problem.is_error()).unwrap();
+    assert_eq!(error.line, 3);
+    assert_eq!(error.column, 19);
+    assert_eq!(
+        fx.service
+            .read("editor.fontSize", &Scope::default())
+            .unwrap(),
+        Value::Number(15.0)
+    );
+    settings_view.update(cx, |view, cx| {
+        view.write_value("editor.fontSize".into(), Value::Number(21.0), cx);
+        view.toggle_checkbox("editor.minimap.enabled".into(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(fx.settings_text(), broken);
+
+    let jump = cx
+        .debug_bounds("settings-json")
+        .expect("settings JSON link");
+    cx.simulate_click(jump.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    workbench.read_with(cx, |view, _| {
+        let tab = view.editor.active().current().unwrap();
+        assert_eq!(tab.resource, Resource::File(path.clone()));
+        assert_eq!(
+            tab.view.cursor,
+            rove_base::Position {
+                line: rove_base::Line(2),
+                column: rove_base::Utf8Column(18),
+            }
+        );
+    });
+
+    let json_mode = "{\n  \"workbench.settings.editor\": \"json\"\n}\n";
+    std::fs::write(&path, json_mode).unwrap();
+    fx.service.reload();
+    cx.run_until_parked();
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::OPEN_UI, window, cx)
+    });
+    cx.run_until_parked();
+    workbench.read_with(cx, |view, _| {
+        assert_eq!(
+            view.editor.active().current().unwrap().resource,
+            Resource::Virtual(settings::RESOURCE.into())
+        );
+    });
+    cx.simulate_keystrokes("ctrl-,");
+    assert_editable_shared_file(&workbench, cx, path);
+    assert_eq!(fx.settings_text(), json_mode);
+}
+
+#[gpui::test]
 fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_file(
     cx: &mut TestAppContext,
 ) {

@@ -493,10 +493,14 @@ impl Workbench {
         };
         // #42：元数据视图的标签标题是 `Transform [元数据]`，悬停显示 DLL 完整路径。
         // #28：欢迎页的标签标题是「欢迎使用」。
-        let name = self
-            .welcome_tab_title(&tab.resource)
-            .or_else(|| self.metadata_tab_title(&tab.resource))
-            .unwrap_or_else(|| settings.tab_label(&tab.resource));
+        let settings_tab = crate::editors::settings::is_settings_resource(&tab.resource);
+        let name = if settings_tab {
+            self.label(crate::settings_ui::registry::TAB_TITLE, &[])
+        } else {
+            self.welcome_tab_title(&tab.resource)
+                .or_else(|| self.metadata_tab_title(&tab.resource))
+                .unwrap_or_else(|| settings.tab_label(&tab.resource))
+        };
         let tooltip = self.metadata_tab_tooltip(&tab.resource);
         let drag = TabDrag {
             group,
@@ -683,7 +687,7 @@ impl Workbench {
             );
         }
         // #20：只读文档的标签（单标签模式下即编辑器标题）显示锁形图标（UX_SPEC §3.4）。
-        if self.tab_read_only(tab) {
+        if !settings_tab && self.tab_read_only(tab) {
             header = header.child(
                 div()
                     .id(id("tab-lock", group, tab_id))
