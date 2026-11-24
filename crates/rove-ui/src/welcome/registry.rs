@@ -87,6 +87,7 @@ pub const STRINGS: &[(&str, &str)] = &[
         "此文件与 VS Code 共用。Rove 专有的设置放在 `rove.*` 下。",
     ),
     ("welcome.theme.placeholder", "选择颜色主题（上下键预览）"),
+    ("welcome.theme.fromExtensions", "来自扩展"),
     ("welcome.iconTheme.placeholder", "选择文件图标主题"),
     ("welcome.iconTheme.none", "无文件图标"),
     ("welcome.iconTheme.seti", "Seti（Visual Studio Code）"),

@@ -4,7 +4,7 @@ use gpui::{App, Context, Global, Window, WindowAppearance};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rove_base::Value;
 use rove_config::{Scope, Settings};
-use rove_theme::extensions::{scan_extensions, ExtensionThemes};
+use rove_theme::extensions::{ExtensionScanner, ExtensionThemes};
 use rove_theme::file_icons;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,14 +67,15 @@ pub(super) fn start(override_root: Option<PathBuf>, settings: Arc<dyn Settings>,
             .await;
         let _settings_subscription = subscription;
         let mut scan = Arc::new(ExtensionThemes::default());
+        let mut scanner = ExtensionScanner::default();
         loop {
             if refresh.swap(false, Ordering::AcqRel) {
                 if let Some(root) = &root {
                     let path = root.clone();
-                    scan = background
+                    (scanner, scan) = background
                         .spawn(async move {
                             let start = Instant::now();
-                            let scan = scan_extensions(&path);
+                            let scan = scanner.scan(&path);
                             for diagnostic in &scan.diagnostics {
                                 eprintln!("rove-theme: {diagnostic}");
                             }
@@ -82,7 +83,7 @@ pub(super) fn start(override_root: Option<PathBuf>, settings: Arc<dyn Settings>,
                                 "rove-theme: extensions scanned in {} ms",
                                 start.elapsed().as_millis()
                             );
-                            Arc::new(scan)
+                            (scanner, Arc::new(scan))
                         })
                         .await;
                 }

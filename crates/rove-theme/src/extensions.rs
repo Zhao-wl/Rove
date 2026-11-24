@@ -10,6 +10,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 const MAX_THEME_JSON: u64 = 8 * 1024 * 1024;
 
@@ -111,14 +112,8 @@ pub fn is_local_directory(root: &Path) -> bool {
 
 fn validate_local_root(root: &Path) -> Result<()> {
     #[cfg(windows)]
-    {
-        use std::path::Prefix;
-        if !matches!(
-            root.components().next(),
-            Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
-        ) {
-            return Err(Error::InvalidInput);
-        }
+    if !windows_local_drive(root) {
+        return Err(Error::InvalidInput);
     }
     if !root.is_absolute() {
         return Err(Error::InvalidInput);
@@ -135,6 +130,49 @@ fn validate_local_root(root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_local_drive(path: &Path) -> bool {
+    use std::path::Prefix;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return false;
+    };
+    let letter = match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
+        _ => return false,
+    };
+    let drive = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
+    // A mapped network drive also has a drive letter. Classify its root before any path access.
+    // SAFETY: drive is a live, NUL-terminated UTF-16 drive root with a trailing backslash.
+    local_drive_type(unsafe { GetDriveTypeW(drive.as_ptr()) })
+}
+
+#[cfg(windows)]
+fn local_drive_type(kind: u32) -> bool {
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE,
+    };
+
+    matches!(
+        kind,
+        DRIVE_CDROM | DRIVE_FIXED | DRIVE_RAMDISK | DRIVE_REMOVABLE
+    )
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_extension_roots_require_a_known_local_drive() {
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_FIXED, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_UNKNOWN,
+    };
+
+    assert!(local_drive_type(DRIVE_FIXED));
+    assert!(!local_drive_type(DRIVE_REMOTE));
+    assert!(!local_drive_type(DRIVE_NO_ROOT_DIR));
+    assert!(!local_drive_type(DRIVE_UNKNOWN));
 }
 
 fn is_redirect(metadata: &fs::Metadata) -> bool {
@@ -195,9 +233,28 @@ impl ExtensionVersion {
 }
 
 struct Extension {
-    manifest: Value,
+    colors: Vec<Value>,
+    icons: Vec<Value>,
     files: Arc<ExtensionFiles>,
     version: Option<ExtensionVersion>,
+}
+
+#[derive(PartialEq, Eq)]
+struct ManifestRevision {
+    directory: SystemTime,
+    file: SystemTime,
+    bytes: u64,
+}
+
+struct CachedManifest {
+    revision: ManifestRevision,
+    key: String,
+    extension: Arc<Extension>,
+}
+
+#[derive(Default)]
+pub struct ExtensionScanner {
+    manifests: BTreeMap<PathBuf, CachedManifest>,
 }
 
 impl ExtensionThemes {
@@ -209,21 +266,9 @@ impl ExtensionThemes {
         });
     }
 
-    fn add(&mut self, extension: Extension) {
-        let Extension {
-            manifest, files, ..
-        } = extension;
-        let Some(contributes) = manifest.get("contributes") else {
-            return;
-        };
-        let entries = |key: &str| {
-            contributes
-                .get(key)
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        };
-        for theme in entries("themes") {
+    fn add(&mut self, extension: &Extension) {
+        let files = &extension.files;
+        for theme in &extension.colors {
             let (Some(label), Some(path), Some(kind)) = (
                 required(theme, "label"),
                 required(theme, "path"),
@@ -248,7 +293,7 @@ impl ExtensionThemes {
                 source: files.clone(),
             });
         }
-        for theme in entries("iconThemes") {
+        for theme in &extension.icons {
             let (Some(id), Some(path)) = (required(theme, "id"), required(theme, "path")) else {
                 self.diagnose(&files.0, "contributes.iconThemes", "缺少图标主题 ID 或路径");
                 continue;
@@ -274,81 +319,137 @@ fn required<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 fn read_manifest(path: PathBuf) -> Result<(String, Extension)> {
     let files = Arc::new(ExtensionFiles(path));
     let text = files.read_json("package.json")?;
-    let manifest: Value = jsonc_parser::parse_to_serde_value(&text, &Default::default())
+    let mut manifest: Value = jsonc_parser::parse_to_serde_value(&text, &Default::default())
         .map_err(|_| Error::InvalidInput)?;
     let publisher = required(&manifest, "publisher").ok_or(Error::InvalidInput)?;
     let name = required(&manifest, "name").ok_or(Error::InvalidInput)?;
     let key = format!("{publisher}.{name}").to_ascii_lowercase();
     let version = required(&manifest, "version").and_then(ExtensionVersion::parse);
+    let mut themes = |path| match manifest.pointer_mut(path).map(std::mem::take) {
+        Some(Value::Array(themes)) => themes,
+        _ => Vec::new(),
+    };
     Ok((
         key,
         Extension {
-            manifest,
+            colors: themes("/contributes/themes"),
+            icons: themes("/contributes/iconThemes"),
             files,
             version,
         },
     ))
 }
 
-/// Scans manifests only. Callers run this on a background executor and publish the result.
+/// Performs a one-time scan with no preceding manifest cache.
 pub fn scan_extensions(root: &Path) -> ExtensionThemes {
-    let mut result = ExtensionThemes::default();
-    if let Err(err) = validate_local_root(root) {
-        if matches!(
-            &err,
-            Error::Io {
-                kind: std::io::ErrorKind::NotFound,
-                ..
-            }
-        ) {
-            return result;
-        }
-        result.diagnose(root, "", format!("扩展目录不可用：{err}"));
-        return result;
+    ExtensionScanner::default().scan(root)
+}
+
+fn manifest_revision(path: &Path) -> Result<Option<ManifestRevision>> {
+    let directory = fs::symlink_metadata(path)?;
+    if !directory.is_dir() || is_redirect(&directory) {
+        return Err(Error::InvalidInput);
     }
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(err) => {
-            result.diagnose(root, "", format!("无法枚举扩展目录：{err}"));
-            return result;
+    let file = fs::symlink_metadata(path.join("package.json"))?;
+    if !file.is_file() || is_redirect(&file) {
+        return Err(Error::InvalidInput);
+    }
+    Ok(directory
+        .modified()
+        .ok()
+        .zip(file.modified().ok())
+        .map(|(directory, modified)| ManifestRevision {
+            directory,
+            file: modified,
+            bytes: file.len(),
+        }))
+}
+
+impl ExtensionScanner {
+    fn manifest(&mut self, path: &Path) -> Result<(String, Arc<Extension>)> {
+        let revision = manifest_revision(path)?;
+        if let Some(cached) = self
+            .manifests
+            .get(path)
+            .filter(|cached| Some(&cached.revision) == revision.as_ref())
+        {
+            return Ok((cached.key.clone(), cached.extension.clone()));
         }
-    };
-    let mut paths = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry)
-                if !entry.file_name().eq_ignore_ascii_case("node_modules")
-                    && entry.file_type().is_ok_and(|kind| kind.is_dir()) =>
-            {
-                let path = entry.path();
-                // Directory junctions may report is_dir on Windows.
-                if fs::symlink_metadata(&path).is_ok_and(|meta| !is_redirect(&meta)) {
-                    paths.push(path);
+        self.manifests.remove(path);
+        let (key, extension) = read_manifest(path.to_path_buf())?;
+        let extension = Arc::new(extension);
+        if let Some(revision) = revision {
+            self.manifests.insert(
+                path.to_path_buf(),
+                CachedManifest {
+                    revision,
+                    key: key.clone(),
+                    extension: extension.clone(),
+                },
+            );
+        }
+        Ok((key, extension))
+    }
+
+    /// Re-enumerates the root on the background executor. Stable package manifests are reused;
+    /// contributed theme paths are checked again so independent theme-file changes still reload.
+    pub fn scan(&mut self, root: &Path) -> ExtensionThemes {
+        let mut result = ExtensionThemes::default();
+        if let Err(err) = validate_local_root(root) {
+            if matches!(
+                &err,
+                Error::Io {
+                    kind: std::io::ErrorKind::NotFound,
+                    ..
                 }
+            ) {
+                return result;
             }
-            Ok(_) => {}
-            Err(err) => result.diagnose(root, "", format!("无法枚举扩展条目：{err}")),
+            result.diagnose(root, "", format!("扩展目录不可用：{err}"));
+            return result;
         }
-    }
-    paths.sort_unstable();
-    let mut latest = BTreeMap::<String, Extension>::new();
-    for path in paths {
-        match read_manifest(path.clone()) {
-            Ok((key, extension))
-                if latest
-                    .get(&key)
-                    .is_none_or(|current| extension.version > current.version) =>
-            {
-                latest.insert(key, extension);
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(err) => {
+                result.diagnose(root, "", format!("无法枚举扩展目录：{err}"));
+                return result;
             }
-            Ok(_) => {}
-            Err(err) => result.diagnose(&path, "package.json", format!("无法读取清单：{err}")),
+        };
+        let mut paths = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry)
+                    if !entry.file_name().eq_ignore_ascii_case("node_modules")
+                        && entry.file_type().is_ok_and(|kind| kind.is_dir()) =>
+                {
+                    paths.push(entry.path());
+                }
+                Ok(_) => {}
+                Err(err) => result.diagnose(root, "", format!("无法枚举扩展条目：{err}")),
+            }
         }
+        paths.sort_unstable();
+        self.manifests
+            .retain(|path, _| paths.binary_search(path).is_ok());
+        let mut latest = BTreeMap::<String, Arc<Extension>>::new();
+        for path in paths {
+            match self.manifest(&path) {
+                Ok((key, extension))
+                    if latest
+                        .get(&key)
+                        .is_none_or(|current| extension.version > current.version) =>
+                {
+                    latest.insert(key, extension);
+                }
+                Ok(_) => {}
+                Err(err) => result.diagnose(&path, "package.json", format!("无法读取清单：{err}")),
+            }
+        }
+        for extension in latest.into_values() {
+            result.add(&extension);
+        }
+        result
     }
-    for extension in latest.into_values() {
-        result.add(extension);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -381,6 +482,40 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn caches_stable_manifest_and_reloads_theme_files_and_manifest_changes() {
+        let root = Fixture::new();
+        let path = root.0.join("extension");
+        let manifest = r#"{"publisher":"sample","name":"themes","version":"1.0.0","contributes":{
+            "themes":[{"id":"theme-id","label":"Before","path":"main.json","uiTheme":"vs-dark"}]}}"#;
+        root.write("extension/package.json", manifest);
+        root.write("extension/main.json", "{}");
+        let mut scanner = ExtensionScanner::default();
+        let first = scanner.scan(&root.0);
+        assert_eq!(first.colors[0].label.as_ref(), "Before");
+        let cached = scanner.manifests[&path].extension.clone();
+        scanner.scan(&root.0);
+        assert!(Arc::ptr_eq(&cached, &scanner.manifests[&path].extension));
+        root.write(
+            "extension/main.json",
+            r##"{"colors":{"editor.background":"#005599"}}"##,
+        );
+        let updated = scanner.scan(&root.0);
+        assert!(updated.colors[0]
+            .source
+            .read("main.json")
+            .unwrap()
+            .contains("#005599"));
+        let cached = scanner.manifests[&path].extension.clone();
+        root.write(
+            "extension/package.json",
+            &manifest.replace("Before", "After Manifest Edit"),
+        );
+        let updated = scanner.scan(&root.0);
+        assert_eq!(updated.colors[0].label.as_ref(), "After Manifest Edit");
+        assert!(!Arc::ptr_eq(&cached, &scanner.manifests[&path].extension));
     }
 
     #[test]

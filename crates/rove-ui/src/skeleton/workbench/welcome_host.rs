@@ -548,13 +548,18 @@ impl Workbench {
 
     fn show_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.theme_service.current().id().to_string();
-        let picker = ThemePicker::new(&self.theme_service.available_catalog(), &current);
+        let picker = ThemePicker::new(
+            &self.theme_service.available_catalog(),
+            self.theme_service.catalog(),
+            &current,
+        );
         let rows = picker
             .items
             .iter()
             .map(|item| row(&item.id, &item.label, None))
             .collect();
         let focus = picker.initial_index();
+        let extension_group = picker.items.iter().position(|item| item.from_extension);
         self.welcome.theme = Some(picker);
         self.show_pick(
             PickMode::Theme,
@@ -565,6 +570,17 @@ impl Workbench {
             window,
             cx,
         );
+        if let Some(index) = extension_group {
+            let group = self.label("welcome.theme.fromExtensions", &[]);
+            self.ensure_pick_view(cx).update(cx, |picker, cx| {
+                if let Some(active) = picker.service.active_mut() {
+                    active
+                        .list
+                        .set_separators(vec![(index, Some(group.into()))]);
+                    cx.notify();
+                }
+            });
+        }
     }
 
     fn show_icon_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
