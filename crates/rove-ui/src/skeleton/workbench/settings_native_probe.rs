@@ -32,7 +32,7 @@ fn settings_open_in_a_native_window() {
     let elapsed = Arc::new(Mutex::new(None));
     let measured = elapsed.clone();
     Application::new().run(move |cx: &mut App| {
-        cx.set_global(SharedSettings(service.clone()));
+        SharedSettings::install(service.clone(), cx);
         cx.text_system()
             .add_fonts(vec![Cow::Borrowed(crate::shell::icons::FONT)])
             .expect("codicon font");

@@ -106,29 +106,33 @@ pub fn search<'a>(
     let mut modified_only = false;
     let words = query
         .split_whitespace()
-        .filter(|part| {
+        .filter_map(|part| {
             if part.eq_ignore_ascii_case("@modified") {
                 modified_only = true;
-                false
-            } else {
-                true
+                return None;
             }
+            let pattern: Vec<u16> = part.encode_utf16().collect();
+            let lower_pattern: Vec<u16> = part.to_lowercase().encode_utf16().collect();
+            Some((part, pattern, lower_pattern))
         })
         .collect::<Vec<_>>();
-    let mut matches = rows
+    let candidates = rows
         .iter()
         .filter(|row| !modified_only || is_modified(&row.key))
-        .filter_map(|row| {
-            let mut result = RowMatch {
-                row,
-                key: Vec::new(),
-                title: Vec::new(),
-                description: Vec::new(),
-            };
+        .map(|row| RowMatch {
+            row,
+            key: Vec::new(),
+            title: Vec::new(),
+            description: Vec::new(),
+        });
+    if words.is_empty() {
+        return candidates.collect();
+    }
+    let mut matches = candidates
+        .filter_map(|mut result| {
+            let row = result.row;
             let mut total = 0;
-            for word in &words {
-                let pattern: Vec<u16> = word.encode_utf16().collect();
-                let lower_pattern: Vec<u16> = word.to_lowercase().encode_utf16().collect();
+            for (word, pattern, lower_pattern) in &words {
                 let fields = [
                     (&row.key, &mut result.key, 3),
                     (&row.title, &mut result.title, 2),
@@ -136,8 +140,7 @@ pub fn search<'a>(
                 ];
                 let mut best = None;
                 for (text, highlights, priority) in fields {
-                    if let Some((score, ranges)) = score_field(word, &pattern, &lower_pattern, text)
-                    {
+                    if let Some((score, ranges)) = score_field(word, pattern, lower_pattern, text) {
                         highlights.extend(ranges);
                         best = Some(best.unwrap_or(i32::MIN).max(score + priority));
                     }

@@ -2335,7 +2335,7 @@ fn launch_internal(
     application.run(move |cx: &mut App| {
         theme_host::start(extensions, settings.clone(), cx);
         if let Some(shared) = shared {
-            cx.set_global(crate::settings_ui::SharedSettings(shared));
+            crate::settings_ui::SharedSettings::install(shared, cx);
         }
         if let Err(e) = cx
             .text_system()
