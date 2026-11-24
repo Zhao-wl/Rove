@@ -4457,8 +4457,14 @@ dependencies = [
 name = "rove-docview"
 version = "0.2.1"
 dependencies = [
+ "memchr",
  "rove-base",
  "rove-syntax",
+ "serde_json",
+ "tree-sitter",
+ "tree-sitter-json",
+ "tree-sitter-xml",
+ "tree-sitter-yaml",
 ]
 
 [[package]]

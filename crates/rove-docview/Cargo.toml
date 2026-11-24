@@ -7,3 +7,9 @@ license.workspace = true
 [dependencies]
 rove-base.workspace = true
 rove-syntax.workspace = true
+memchr.workspace = true
+serde_json.workspace = true
+tree-sitter.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-yaml.workspace = true
+tree-sitter-xml.workspace = true
