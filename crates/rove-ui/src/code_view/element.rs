@@ -11,6 +11,7 @@ use super::scroll::{self, Metrics, ScrollPosition};
 use super::view::{
     hsla, CodeView, CodeViewEvent, Drag, FrameLayout, FrameStats, LineEntry, Shaped, Viewport,
 };
+use super::wrap::WordWrap;
 use crate::dpi;
 use gpui::{
     fill, outline, point, px, quad, size, App, BorderStyle, Bounds, ContentMask,
@@ -244,17 +245,25 @@ impl CodeView {
             vs.max(overview_w)
         };
         let text_w_guess = (width - gutter_w - vertical_w - minimap_w).max(0.0) as f64;
-        // #58：软换行开着时不需要横向滚动（照搬 VS Code 隐藏水平滚动条），
-        // 并且固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
+        // 软换行固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
         let wrapping = self.word_wrap_enabled();
+        let fixed_wrap = self.word_wrap() == WordWrap::Column;
         self.sync_wrap(text_w_guess);
         let line_count = self.line_count();
         let o = &self.options;
+        let horizontal_scroll = self.horizontal_scroll_allowed(text_w_guess);
+        let (content_width, beyond) = if !horizontal_scroll {
+            (0.0, 0.0)
+        } else if wrapping {
+            (self.wrap.content_width, beyond)
+        } else {
+            (self.content_width, beyond)
+        };
         let show_h = match o.horizontal_scrollbar {
-            _ if wrapping => false,
+            _ if !horizontal_scroll => false,
             ScrollbarVisibility::Visible => true,
             ScrollbarVisibility::Hidden => false,
-            ScrollbarVisibility::Auto => self.content_width + beyond > text_w_guess,
+            ScrollbarVisibility::Auto => content_width + beyond > text_w_guess,
         };
         let hbar_h = if show_h { hs } else { 0.0 };
         let viewport_h = if o.ignore_horizontal_scrollbar_in_content_height {
@@ -270,7 +279,7 @@ impl CodeView {
             padding_top: o.padding_top + self.top_inset as f64,
             padding_bottom: o.padding_bottom,
             scroll_beyond_last_line: o.scroll_beyond_last_line,
-            content_width: self.content_width,
+            content_width,
             beyond_last_column: beyond,
             // #55：本帧的粘性区高度在算出粘性行之后填（见下面的 `update_sticky`）。
             sticky_height: 0.0,
@@ -335,6 +344,7 @@ impl CodeView {
         let (mut line, mut seg) = self.wrap.map.to_doc(first);
         let first_doc = line;
         let mut stats = FrameStats::default();
+        let mut wrapped_width = self.wrap.content_width;
         let cell = self.font.cell_width;
         while view_line < line_count && y < viewport_h && line < doc_count {
             let entry = match &composed {
@@ -357,6 +367,10 @@ impl CodeView {
                     let r = w.segment_range(seg, e.display.source_len);
                     let x0 = e.display.x_for_source(&xs, r.start);
                     let indent = w.indent_columns(seg) as f32 * cell;
+                    if fixed_wrap && shaped.is_some() {
+                        let x1 = e.display.x_for_source(&xs, r.end);
+                        wrapped_width = wrapped_width.max(f64::from(x1 - x0 + indent));
+                    }
                     (indent, indent - x0, r, w.count())
                 }
                 _ => (0.0, 0.0, 0..u32::MAX, 1),
@@ -398,6 +412,12 @@ impl CodeView {
             }
         }
         self.commit_wrap();
+        if wrapped_width > self.wrap.content_width {
+            self.wrap.content_width = wrapped_width;
+            // 视觉行宽来自整形结果，下一帧按已知宽度更新水平条。
+            let view = view.clone();
+            window.on_next_frame(move |_, cx| view.update(cx, |_, cx| cx.notify()));
+        }
         self.wrap.rows = lines.iter().map(|l| (l.line, l.seg)).collect();
         // #55：粘性行复用正文的行缓存与整形缓存（同一行在正文与粘性区颜色一致）。
         let sticky_lines: Vec<u64> = self.sticky.lines().iter().map(|s| s.line).collect();
@@ -537,22 +557,31 @@ impl CodeView {
         Some(self.xs_for(entry, l.shaped.as_deref()))
     }
 
-    /// #58：一条视觉行的裁剪区。软换行开着时把这一行限制在
-    /// `[续行缩进, 换行列]` 之间，别的段的内容不会溢到这一行上。
+    /// #58：一条视觉行的裁剪区。固定列可以横滚时，使用本段实际的显示范围。
     fn row_mask(
         &self,
         l: &PaintLine,
         text: Bounds<Pixels>,
         y: Pixels,
+        entry: &LineEntry,
+        xs: &[f32],
     ) -> Option<ContentMask<Pixels>> {
         if self.wrap.columns == 0 {
             return None;
         }
-        let right = (self.wrap.width as f32).min(f32::from(text.size.width));
-        let w = (right - l.indent).max(0.0);
+        let text_width = f32::from(text.size.width);
+        let (indent, right) = if self.horizontal_scroll_allowed(f64::from(text_width)) {
+            // 只画本视觉行的源区间。横滚后，后续段不能从右侧露到当前行。
+            let scroll = self.scroll.x as f32;
+            let end = entry.display.x_for_source(xs, l.range.end) + l.shift - scroll;
+            ((l.indent - scroll).max(0.0), end.min(text_width))
+        } else {
+            (l.indent, (self.wrap.width as f32).min(text_width))
+        };
+        let w = (right - indent).max(0.0);
         Some(ContentMask {
             bounds: Bounds::new(
-                point(text.origin.x + px(l.indent), y),
+                point(text.origin.x + px(indent), y),
                 size(px(w), px(self.font.line_height)),
             ),
         })
@@ -650,7 +679,7 @@ impl CodeView {
                     // #58：续行整体左移到自己那一段的起点，再按视觉行裁剪，于是同一条缓冲行的
                     // 每一段都用同一份整形结果与同一张 x 表绘制，不另算一套几何。
                     let left = left + px(l.shift);
-                    let row = self.row_mask(l, text, y);
+                    let row = self.row_mask(l, text, y, entry, &xs);
                     let mut draw = |window: &mut Window| {
                         // 整行装饰。
                         if let Some(m) = &entry.merged {
@@ -1328,13 +1357,22 @@ impl CodeView {
         let text = self.layout.text;
         let min_x = f32::from(text.origin.x - left) - self.font.cell_width * 4.0;
         // #58：软换行时这一行只画到换行列为止，后面的字形属于下一条视觉行。
-        let width = if self.wrap.columns > 0 {
-            px((self.wrap.width as f32).min(f32::from(text.size.width)))
-        } else {
-            text.size.width
-        };
+        let width =
+            if self.wrap.columns > 0 && !self.horizontal_scroll_allowed(text.size.width.to_f64()) {
+                px((self.wrap.width as f32).min(f32::from(text.size.width)))
+            } else {
+                text.size.width
+            };
         let max_x = f32::from(text.origin.x + width - left);
         let spacing = self.font.letter_spacing;
+        let (raw_min_x, raw_max_x) = if spacing == 0.0 {
+            (min_x, max_x)
+        } else {
+            // 先按原始字形位置缩小区间，再逐个用加过字距的坐标裁剪。
+            // 两个坐标系的排序可能不同，不能按调整后的坐标二分。
+            let extent = spacing * entry.display.stops().len().saturating_sub(1) as f32;
+            (min_x - extent.max(0.0), max_x - extent.min(0.0))
+        };
         let sel = self.cursor.selection;
         let sel_disp = (p.selection_foreground.is_some()
             && !sel.is_empty()
@@ -1374,14 +1412,24 @@ impl CodeView {
         for run in &s.layout.runs {
             let start = run
                 .glyphs
-                .partition_point(|g| f32::from(g.position.x) < min_x);
+                .partition_point(|g| f32::from(g.position.x) < raw_min_x);
             let mut ri = 0usize;
             for g in &run.glyphs[start..] {
-                let gx = f32::from(g.position.x);
-                if gx > max_x {
+                let raw_x = f32::from(g.position.x);
+                if raw_x > raw_max_x {
                     break;
                 }
                 let idx = g.index as u32;
+                let gx = if spacing == 0.0 {
+                    raw_x
+                } else {
+                    let stop = entry.display.stop_index_for_display(idx);
+                    let adjusted = raw_x + spacing * stop as f32;
+                    if !(min_x..=max_x).contains(&adjusted) {
+                        continue;
+                    }
+                    adjusted
+                };
                 // 空格（含 Tab 展开出的空格）没有可见字形，跳过以省下 GPUI 的逐字形开销。
                 if bytes.get(g.index) == Some(&b' ') {
                     continue;
@@ -1399,13 +1447,8 @@ impl CodeView {
                     }
                 }
                 color = fade(color);
-                let dx = if spacing != 0.0 {
-                    spacing * entry.display.stop_index_for_display(idx) as f32
-                } else {
-                    0.0
-                };
                 self.glyphs_painted.set(self.glyphs_painted.get() + 1);
-                let origin = point(left + px(gx + dx), baseline + g.position.y);
+                let origin = point(left + px(gx), baseline + g.position.y);
                 if memo.0 != color {
                     memo = (color, hsla(color));
                 }

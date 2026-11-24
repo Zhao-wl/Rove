@@ -9,8 +9,8 @@
 //! `crates/rove-ui/src/code_view/wrap.rs` 的 `tests` 里。
 
 use gpui::{
-    point, px, Context, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, TestAppContext,
-    VisualTestContext, Window,
+    point, px, size, Context, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent,
+    ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, Window,
 };
 use rove_base::*;
 use rove_buffer::{RopeText, SizeClass, TextSource};
@@ -417,6 +417,77 @@ fn scroll_model_counts_visual_lines(cx: &mut TestAppContext) {
     });
     settle(cx);
     assert_eq!(view.read_with(cx, |v, _| v.scroll_position().x), 0.0);
+}
+
+/// 固定换行列比窗格宽时仍可滚到这条视觉行的结尾。
+#[gpui::test]
+fn fixed_wrap_column_wider_than_the_viewport_can_scroll_to_the_row_end(cx: &mut TestAppContext) {
+    let text = "x".repeat(500);
+    let mut options = wrap_column(300);
+    options.extend([
+        ("editor.letterSpacing", Value::Number(3.0)),
+        ("editor.scrollBeyondLastColumn", Value::Number(0.0)),
+    ]);
+    let (view, cx) = open(cx, &text, options);
+    assert!(span(&view, cx, 0) > 1);
+    let first = pos(0, 0);
+    let first_row_end = pos(0, u64::from(breaks(&view, cx, 0)[0] - 1));
+    let left = view.update(cx, |v, _| v.point_for_position(first)).unwrap();
+    let right_edge = left.x + px(view.read_with(cx, |v, _| v.viewport().unwrap().width));
+    let end_before = view
+        .update(cx, |v, _| v.point_for_position(first_row_end))
+        .unwrap();
+    assert!(end_before.x > right_edge);
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(left.x + px(12.0), left.y + px(4.0)),
+        delta: ScrollDelta::Pixels(point(px(-10_000.0), px(0.0))),
+        modifiers: Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+    settle(cx);
+    let end_after = view
+        .update(cx, |v, _| v.point_for_position(first_row_end))
+        .unwrap();
+    assert!(view.read_with(cx, |v, _| v.scroll_position().x) > 0.0);
+    assert!(end_after.x > left.x && end_after.x <= right_edge);
+    let hit = point(end_after.x, end_after.y + px(1.0));
+    let actual = view.update(cx, |v, _| v.position_for_point(hit));
+    assert_eq!(actual, Some(first_row_end));
+}
+
+/// 字距累计量超过视口宽度时，滚到行尾仍要提交实际可见的字形。
+#[gpui::test]
+fn horizontal_glyph_culling_uses_letter_spacing_at_the_row_end(cx: &mut TestAppContext) {
+    let text = "x".repeat(300);
+    let mut options = wrap_column(300);
+    options.extend([
+        ("editor.letterSpacing", Value::Number(3.0)),
+        ("editor.scrollBeyondLastColumn", Value::Number(0.0)),
+    ]);
+    let (view, cx) = open(cx, &text, options);
+    cx.simulate_resize(size(px(480.0), px(240.0)));
+    settle(cx);
+    assert_eq!(span(&view, cx, 0), 1);
+
+    view.update(cx, |v, cx| {
+        v.set_scroll_position(
+            ScrollPosition {
+                top: 0.0,
+                x: 10_000.0,
+            },
+            false,
+            cx,
+        );
+    });
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        let viewport = v.viewport().unwrap();
+        assert!(viewport.scroll_x > 0.0);
+        let frame = v.last_frame();
+        assert_eq!(frame.shaped, 1);
+        assert!(frame.glyphs > 0, "行尾至少应绘制一个字形：{frame:?}");
+    });
 }
 
 // ------------------------------------------------------------------ 光标移动

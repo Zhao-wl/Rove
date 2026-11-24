@@ -388,6 +388,8 @@ pub(crate) struct WrapState {
     pub columns: u32,
     /// 当前的换行宽度（像素，`advanced` 用）。
     pub width: f64,
+    /// 固定换行列下，已经整形并显示过的最长视觉行宽度。
+    pub content_width: f64,
     /// 换行缓存代次：视口宽度 / 字体 / 字号 / DPI / 换行设置任一变化就 +1。
     pub generation: u64,
     /// 生效中的换行参数（列上限 + 设置 + 字体代次）；与新值不同就整体重算。
@@ -446,6 +448,7 @@ impl Default for WrapState {
             map: VisualMap::default(),
             columns: 0,
             width: 0.0,
+            content_width: 0.0,
             generation: 1,
             applied: None,
             session: None,
@@ -890,6 +893,7 @@ impl CodeView {
         self.links.reset();
         self.lines.clear();
         self.content_width = 0.0;
+        self.wrap.content_width = 0.0;
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
         self.column_select = None;
@@ -1045,6 +1049,19 @@ impl CodeView {
         cx.notify();
     }
 
+    /// 固定换行列超出文本区时，该列内的内容仍需要水平滚动。
+    pub(crate) fn horizontal_scroll_allowed(&self, viewport_width: f64) -> bool {
+        match self.word_wrap() {
+            WordWrap::Off => true,
+            WordWrap::Column => {
+                let cell = (self.font.cell_width as f64).max(1.0);
+                let column_width = self.options.wrap.column.max(1) as f64 * cell;
+                column_width.max(self.wrap.content_width) > viewport_width
+            }
+            WordWrap::On | WordWrap::Bounded => false,
+        }
+    }
+
     /// 上一帧的文本区宽度（切换换行时还没有新布局，先用它）。
     fn wrap_width_hint(&self) -> f64 {
         self.layout
@@ -1068,10 +1085,10 @@ impl CodeView {
         self.animation = None;
         self.scroll = ScrollPosition {
             top,
-            x: if self.word_wrap_enabled() {
-                0.0
-            } else {
+            x: if self.horizontal_scroll_allowed(m.viewport_width) {
                 self.scroll.x
+            } else {
+                0.0
             },
         }
         .clamped(&m, &self.zones);
@@ -1110,13 +1127,15 @@ impl CodeView {
                     self.wrap.generation += 1;
                     self.wrap.columns = columns;
                     self.wrap.width = columns as f64 * cell;
+                    self.wrap.content_width = 0.0;
                     self.wrap.map.enable_wrap(doc_lines);
                     self.wrap.pending.clear();
                     self.wrap.pending.mark(0..doc_lines);
                     self.wrap.pass = Some((Instant::now(), doc_lines));
                     self.wrap.changed = None;
-                    // 软换行下没有横向滚动。
-                    self.scroll.x = 0.0;
+                    if !self.horizontal_scroll_allowed(text_width) {
+                        self.scroll.x = 0.0;
+                    }
                     self.restore_anchor(anchor);
                     self.wrap.anchor = anchor.map(|(d, y)| (d, y, self.scroll.top));
                 }
@@ -1904,13 +1923,17 @@ impl CodeView {
         animate: bool,
         cx: &mut Context<Self>,
     ) {
-        let target = match self.metrics() {
+        let mut target = match self.metrics() {
             Some(m) => p.clamped(&m, &self.zones),
             None => ScrollPosition {
                 top: p.top.max(0.0),
                 x: p.x.max(0.0),
             },
         };
+        // 能放进视口的换行行不能被滚轮或定位请求推离左缘。
+        if !self.horizontal_scroll_allowed(self.wrap_width_hint()) {
+            target.x = 0.0;
+        }
         if animate && self.options.smooth_scrolling && (target.top - self.scroll.top).abs() > 1e-9 {
             self.animation = Some(Animation {
                 from: self.current_top(),

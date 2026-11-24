@@ -4,8 +4,9 @@
 //! 搜索结果打开源码；没有运行时；远程资源始终拦截；主题切换不重建；弹出层隐藏；空闲回收；双击定位；
 //! 双向滚动同步。
 use super::*;
+use crate::code_view::{selection::pos, ScrollPosition};
 use crate::editors::settings::is_markdown_preview;
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
 use rove_config::{SettingsOptions, SettingsService};
 
 const DOC: &str = "# 标题\n\n第一段。\n\n![远程](https://example.com/a.png)\n\n```mermaid\ngraph TD; A-->B\n```\n\n$E=mc^2$\n";
@@ -184,6 +185,118 @@ fn opening_markdown_shows_preview_and_toggles_to_source(cx: &mut TestAppContext)
     settle(cx);
     assert_eq!(active_kind(&view, cx), ("README.md".into(), true));
     view.read_with(cx, |v, _| assert_eq!(v.markdown.fake.borrow().created, 1));
+}
+
+#[gpui::test]
+fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAppContext) {
+    let fx = Fixture::new(
+        r#"{
+            "workbench.editorAssociations": { "*.md": "default" },
+            "[markdown]": { "editor.wordWrap": "off" },
+            "editor.wrappingIndent": "none",
+            "editor.stickyScroll.enabled": true,
+            "editor.stickyScroll.scrollWithEditor": true,
+            "editor.scrollBeyondLastColumn": 0
+        }"#,
+    );
+    let body = "正文 English ".repeat(80);
+    let text = format!(
+        "# 顶层 {}\n\n## 子节 {}\n\n{}{body}\n",
+        "Heading 标题 ".repeat(20),
+        "Section 小节 ".repeat(20),
+        "短段落 Paragraph.\n\n".repeat(15),
+    );
+    let body_line = text.lines().count() as u64 - 1;
+    std::fs::write(fx.folder.path().join("Mixed.md"), &text).unwrap();
+    let (view, cx) = fx.open(cx);
+    cx.simulate_resize(gpui::size(px(960.0), px(540.0)));
+    open(&view, "Mixed.md", explorer(), cx);
+    assert_eq!(active_kind(&view, cx), ("Mixed.md".into(), false));
+    focus_editor(&view, cx);
+
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    let first = pos(body_line, 0);
+    let end = pos(body_line, body.len() as u64);
+    code.update(cx, |c, cx| {
+        c.set_scroll_position(
+            ScrollPosition {
+                top: (body_line - 4) as f64,
+                x: 0.0,
+            },
+            false,
+            cx,
+        );
+    });
+    settle(cx);
+    let left = code.update(cx, |c, _| c.point_for_position(first)).unwrap();
+    let group = view.read_with(cx, |v, _| v.editor.focused);
+    let pane_id = format!("editor-body-{}", group.0);
+    let pane_selector: &'static str = Box::leak(pane_id.into_boxed_str());
+    let wheel = |cx: &mut VisualTestContext, dx| {
+        let pane = cx.debug_bounds(pane_selector).unwrap();
+        cx.simulate_event(ScrollWheelEvent {
+            position: pane.center(),
+            delta: ScrollDelta::Pixels(point(px(dx), px(0.0))),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        settle(cx);
+    };
+    code.read_with(cx, |c, _| {
+        let headers: Vec<_> = c.sticky_lines().iter().map(|header| header.line).collect();
+        assert_eq!(headers, [0, 2], "两级标题都应当固定在正文上方");
+        assert_eq!(c.sticky_content_offset(), 0.0);
+        assert!(!c.word_wrap_enabled());
+        let metrics = c.metrics().unwrap();
+        assert!(metrics.max_x() > 0.0, "无水平滚动范围：{metrics:?}");
+    });
+
+    // 不换行时，可以从行首横向滚到行尾，再回到同一个行首。
+    wheel(cx, -10_000.0);
+    let right = code.update(cx, |c, _| c.point_for_position(end)).unwrap();
+    code.read_with(cx, |c, _| {
+        let x = c.scroll_position().x;
+        let viewport = c.viewport().unwrap();
+        assert!(x > 0.0, "正文内的滚轮须横滚：{viewport:?}");
+        assert_eq!(c.sticky_content_offset(), x as f32);
+        let text_right = left.x + px(viewport.width);
+        assert!(right.x > left.x && right.x <= text_right + px(1.0));
+    });
+    wheel(cx, 10_000.0);
+    assert_eq!(
+        code.update(cx, |c, _| c.point_for_position(first)),
+        Some(left)
+    );
+    code.read_with(cx, |c, _| assert_eq!(c.sticky_content_offset(), 0.0));
+
+    // 从横滚后的状态切换软换行。换行后再次横滚，正文和标题都应该保持在左缘。
+    wheel(cx, -10_000.0);
+    cx.simulate_keystrokes("alt-z");
+    settle(cx);
+    assert!(code.read_with(cx, |c, _| c.word_wrap_enabled()));
+    let (start, continuation, after_wrap) = code.update(cx, |c, _| {
+        let breaks = c.line_breaks(body_line);
+        let continuation = pos(body_line, u64::from(breaks[0]));
+        (
+            c.point_for_position(first).unwrap(),
+            continuation,
+            c.point_for_position(continuation).unwrap(),
+        )
+    });
+    assert_eq!(start.x, left.x);
+    assert_eq!(after_wrap.x, left.x);
+    assert!(after_wrap.y > start.y);
+    wheel(cx, -10_000.0);
+    code.update(cx, |c, _| {
+        assert_eq!(c.scroll_position().x, 0.0);
+        assert_eq!(c.sticky_content_offset(), 0.0);
+        assert_eq!(c.point_for_position(first), Some(start));
+        assert_eq!(c.point_for_position(continuation), Some(after_wrap));
+        assert_eq!(
+            c.position_for_point(point(after_wrap.x, after_wrap.y + px(1.0))),
+            Some(continuation)
+        );
+    });
 }
 
 /// `ctrl+k v`：源码旁边并排打开预览；标题栏按钮切换。
