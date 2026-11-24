@@ -33,6 +33,14 @@ impl Fixture {
         &self,
         cx: &'a mut TestAppContext,
     ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+        self.open_at(self.folder.path(), cx)
+    }
+
+    fn open_at<'a>(
+        &self,
+        root: &std::path::Path,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
         let mut options = SettingsOptions::new(self.user.path(), self.user.path().join("backup"));
         options.watch = None;
         let settings = Arc::new(SettingsService::open(
@@ -41,7 +49,7 @@ impl Fixture {
         ));
         let (view, cx) = cx.add_window_view(|_, cx| {
             Workbench::with_settings(
-                self.folder.path().to_owned(),
+                root.to_owned(),
                 Instant::now(),
                 LayoutStore::disabled(),
                 settings,
@@ -61,7 +69,17 @@ fn wait(
     cx: &mut VisualTestContext,
     ready: impl Fn(&Workbench, &App) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    wait_for(view, cx, Duration::from_secs(20), ready);
+}
+
+#[track_caller]
+fn wait_for(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    timeout: Duration,
+    ready: impl Fn(&Workbench, &App) -> bool,
+) {
+    let deadline = Instant::now() + timeout;
     while Instant::now() <= deadline {
         cx.run_until_parked();
         if view.read_with(cx, |wb, cx| ready(wb, cx)) {
@@ -74,6 +92,16 @@ fn wait(
 }
 
 fn prepare(view: &Entity<Workbench>, cx: &mut VisualTestContext, query: &str, replacement: &str) {
+    prepare_for(view, cx, query, replacement, Duration::from_secs(20));
+}
+
+fn prepare_for(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    query: &str,
+    replacement: &str,
+    timeout: Duration,
+) {
     cx.simulate_keystrokes("ctrl-shift-h");
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -92,7 +120,7 @@ fn prepare(view: &Entity<Workbench>, cx: &mut VisualTestContext, query: &str, re
         });
         window.refresh();
     });
-    wait(view, cx, |wb, cx| {
+    wait_for(view, cx, timeout, |wb, cx| {
         wb.search.read(cx).replacement_test_state().1
     });
 }
@@ -123,13 +151,23 @@ fn open_file(
     cx: &mut VisualTestContext,
     name: &str,
 ) -> DocumentId {
-    let path = fixture.folder.path().join(name);
+    open_file_at(fixture.folder.path(), view, cx, name)
+}
+
+fn open_file_at(
+    root: &std::path::Path,
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    name: &str,
+) -> DocumentId {
+    let path = root.join(name);
     view.update(cx, |wb, cx| {
         wb.open_documents()
             .open(
                 Resource::Workspace(WorkspacePath::new(name).unwrap()),
                 OpenOptions {
                     preview_tab: false,
+                    presentation: crate::documents::Presentation::Source,
                     ..OpenOptions::default()
                 },
                 Cancellation::default(),
@@ -1030,6 +1068,231 @@ fn replace_workspace_refuses_all_when_search_results_are_truncated(cx: &mut Test
     assert!(!view.read_with(cx, |wb, cx| wb.search.read(cx).replacement_test_state().3));
 }
 
+fn scroll_replacement_results(view: &Entity<Workbench>, cx: &mut VisualTestContext) -> Duration {
+    let scroll_top = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |wb, cx| {
+            wb.search.read(cx).list.read(cx).widget.scroll_top()
+        })
+    };
+    let initial = scroll_top(cx);
+    let scroll_start = Instant::now();
+    for _ in 0..5 {
+        cx.update(|window, cx| {
+            let list = view.read(cx).search.read(cx).list.clone();
+            list.update(cx, |list, cx| {
+                list.widget.scroll_by(320.0);
+                cx.notify();
+            });
+            window.refresh();
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+    }
+    let scroll_elapsed = scroll_start.elapsed();
+    assert!(scroll_top(cx) > initial, "五次滚动必须移动已经渲染的结果树");
+    scroll_elapsed
+}
+
+#[gpui::test]
+fn replace_workspace_large_unity_reads_the_original_workspace_for_preview(cx: &mut TestAppContext) {
+    use rove_test_support::UnityProject;
+
+    const READ_ONLY_PROBE: &str = "ROVE_TEST_REPLACE_UNITY_WORKSPACE";
+    if std::env::var_os(READ_ONLY_PROBE).as_deref() != Some(std::ffi::OsStr::new("1")) {
+        eprintln!("已跳过：在隔离用户目录的进程设置 {READ_ONLY_PROBE}=1 后运行原工作区只读预览");
+        return;
+    }
+    let root = rove_test_support::require_unity_project!(UnityProject::Large);
+    let fixture = Fixture::new(r#"{"search.maxResults":0,"files.readonlyInclude":{"**":true}}"#);
+    let (view, cx) = fixture.open_at(&root, cx);
+    let preview_start = Instant::now();
+    prepare_for(
+        &view,
+        cx,
+        "GetComponent",
+        "rove_read_only_preview",
+        Duration::from_secs(90),
+    );
+    let preview_elapsed = preview_start.elapsed();
+    let summary = view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        let crate::search::view::State::Done(summary) = search.state() else {
+            panic!("原项目查询没有完整结束");
+        };
+        assert!(search.results().files().iter().any(|f| {
+            search
+                .replacement_test_comparison(&f.path)
+                .is_some_and(|(old, new)| old == "GetComponent" && new == "rove_read_only_preview")
+        }));
+        summary.clone()
+    });
+    assert!(
+        !summary.limit_hit,
+        "原项目只读查询必须遍历全部符合范围的文件"
+    );
+    assert!(
+        summary.files_searched > 1500 && summary.matches > 30,
+        "{summary:?}"
+    );
+    let scroll_elapsed = scroll_replacement_results(&view, cx);
+    eprintln!(
+        "全局替换原大型 Unity 工作区只读预览：扫描 {} 文件，{} 个文件内 {} 处匹配，{} 跳过，截断={}；预览 {:?}，五次滚动 {:?}",
+        summary.files_searched,
+        summary.files_with_matches,
+        summary.matches,
+        summary.skipped,
+        summary.limit_hit,
+        preview_elapsed,
+        scroll_elapsed,
+    );
+}
+
+fn cancel_large_replacement(
+    root: &std::path::Path,
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> (Duration, WorkspacePath) {
+    let first = view.read_with(cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_writable_files()
+            .into_iter()
+            .next()
+            .expect("预览必须产生至少一个可应用的文件")
+    });
+    let document = open_file_at(root, view, cx, first.as_str());
+    command(view, cx, commands::REPLACE_IN_FILES);
+    wait_for(view, cx, Duration::from_secs(90), |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+    let first_remains_writable = view.read_with(cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_writable_files().first() == Some(&first)
+    });
+    assert!(
+        first_remains_writable,
+        "打开文件后实际应用队列的首个可写文件必须一致"
+    );
+    let observation = view.update(cx, |_, cx| {
+        cx.observe_self(move |wb, cx| {
+            if wb
+                .editing
+                .saves
+                .borrow()
+                .file(document)
+                .is_some_and(|file| file.is_dirty())
+            {
+                wb.search
+                    .update(cx, |search, cx| search.cancel_replacement(cx));
+            }
+        })
+    });
+    let apply_start = Instant::now();
+    command(view, cx, commands::REPLACE_ALL);
+    wait(view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                report.cancelled && report.applied.len() == 1 && report.applied.contains_key(&first)
+            })
+    });
+    let cancel_elapsed = apply_start.elapsed();
+    drop(observation);
+    command(view, cx, commands::UNDO_REPLACE);
+    wait(view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+    });
+    assert!(!view.read_with(cx, |wb, _| wb.editing.saves.borrow().is_dirty(document)));
+    (cancel_elapsed, first)
+}
+
+#[gpui::test]
+fn replace_workspace_large_unity_writes_only_the_independent_full_copy(cx: &mut TestAppContext) {
+    use rove_test_support::UnityProject;
+
+    const TEST_COPY: &str = "ROVE_TEST_REPLACE_UNITY_COPY";
+    let Some(copy) = std::env::var_os(TEST_COPY) else {
+        eprintln!("已跳过：{TEST_COPY} 没有指定已验证的独立大型 Unity 副本");
+        return;
+    };
+    let original = rove_test_support::require_unity_project!(UnityProject::Large);
+    let original = original.canonicalize().unwrap();
+    let copy = std::path::PathBuf::from(copy).canonicalize().unwrap();
+    assert!(
+        copy.is_dir() && !copy.starts_with(&original) && !original.starts_with(&copy),
+        "写入测试副本必须独立于原大型 Unity 项目"
+    );
+    let fixture = Fixture::new(r#"{"search.maxResults":0}"#);
+    let (view, cx) = fixture.open_at(&copy, cx);
+    let query = "GetComponent";
+    let replacement = "rove_full_copy_replacement";
+    let timeout = Duration::from_secs(90);
+    let preview_start = Instant::now();
+    prepare_for(&view, cx, query, replacement, timeout);
+    let preview_elapsed = preview_start.elapsed();
+    let summary = view.read_with(cx, |wb, cx| {
+        let crate::search::view::State::Done(summary) = wb.search.read(cx).state() else {
+            panic!("完整副本查询没有完成");
+        };
+        summary.clone()
+    });
+    assert!(
+        !summary.limit_hit && summary.files_searched > 1500,
+        "{summary:?}"
+    );
+    let scroll_elapsed = scroll_replacement_results(&view, cx);
+    let (cancel_elapsed, opened) = cancel_large_replacement(&copy, &view, cx);
+
+    prepare_for(&view, cx, query, replacement, timeout);
+    let candidates = view.read_with(cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_writable_files()
+    });
+    let (path, file, original_bytes) = candidates
+        .into_iter()
+        .filter(|candidate| *candidate != opened && candidate.as_str().ends_with(".cs"))
+        .find_map(|path| {
+            let file = copy.join(path.as_str());
+            let bytes = std::fs::read(&file).ok()?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            if !text.contains(query) || text.contains(replacement) {
+                return None;
+            }
+            Some((path, file, bytes))
+        })
+        .expect("完整副本应有尚未打开的 UTF-8 C# 匹配文件");
+
+    focus_file(&view, cx, &path);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| report.applied.contains_key(&path))
+    });
+    let written = std::fs::read(&file).unwrap();
+    assert_ne!(written, original_bytes);
+    assert!(std::str::from_utf8(&written).unwrap().contains(replacement));
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+    });
+    let restored = std::fs::read(&file).unwrap();
+    assert_eq!(restored, original_bytes);
+    let content_hash = rove_buffer::save::content_hash;
+    eprintln!(
+        "完整 Unity 副本写盘与撤销：{}，FNV-1a {:016x} → {:016x} → {:016x}",
+        path.as_str(),
+        content_hash(&original_bytes),
+        content_hash(&written),
+        content_hash(&restored)
+    );
+    eprintln!(
+        "全局替换完整 Unity 副本：扫描 {} 文件，{} 个文件内 {} 处匹配，{} 跳过，截断={}；预览 {:?}，五次滚动 {:?}，首个文件完成后取消 {:?}，独立磁盘文件逐字节撤销通过",
+        summary.files_searched, summary.files_with_matches, summary.matches, summary.skipped,
+        summary.limit_hit, preview_elapsed, scroll_elapsed, cancel_elapsed,
+    );
+}
+
 #[gpui::test]
 fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut TestAppContext) {
     use rove_test_support::UnityProject;
@@ -1081,65 +1344,8 @@ fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut Te
     let preview_elapsed = preview_start.elapsed();
     let matches = view.read_with(cx, |wb, cx| wb.search.read(cx).results().match_count());
     assert!(matches > 100, "真实样本匹配过少：{matches}");
-    let scroll_start = Instant::now();
-    for _ in 0..5 {
-        cx.update(|window, cx| {
-            let list = view.read(cx).search.read(cx).list.clone();
-            list.update(cx, |list, cx| {
-                list.widget.scroll_by(320.0);
-                cx.notify();
-            });
-            window.refresh();
-            cx.refresh_windows();
-        });
-        cx.run_until_parked();
-    }
-    let scroll_elapsed = scroll_start.elapsed();
-    let first = view.read_with(cx, |wb, cx| {
-        wb.search
-            .read(cx)
-            .results()
-            .files()
-            .iter()
-            .map(|file| file.path.clone())
-            .min()
-            .unwrap()
-    });
-    let document = open_file(&fixture, &view, cx, first.as_str());
-    command(&view, cx, commands::REPLACE_IN_FILES);
-    wait(&view, cx, |wb, cx| {
-        wb.search.read(cx).replacement_test_state().1
-    });
-    let observation = view.update(cx, |_, cx| {
-        cx.observe_self(move |wb, cx| {
-            if wb
-                .editing
-                .saves
-                .borrow()
-                .file(document)
-                .is_some_and(|file| file.is_dirty())
-            {
-                wb.search
-                    .update(cx, |search, cx| search.cancel_replacement(cx));
-            }
-        })
-    });
-    let apply_start = Instant::now();
-    command(&view, cx, commands::REPLACE_ALL);
-    wait(&view, cx, |wb, cx| {
-        wb.search
-            .read(cx)
-            .replacement_test_report()
-            .is_some_and(|report| {
-                report.cancelled && report.applied.len() == 1 && report.applied.contains_key(&first)
-            })
-    });
-    let cancel_elapsed = apply_start.elapsed();
-    drop(observation);
-    command(&view, cx, commands::UNDO_REPLACE);
-    wait(&view, cx, |wb, cx| {
-        !wb.search.read(cx).replacement_test_state().3
-    });
+    let scroll_elapsed = scroll_replacement_results(&view, cx);
+    let (cancel_elapsed, _) = cancel_large_replacement(fixture.folder.path(), &view, cx);
     eprintln!(
         "全局替换真实 Unity 源码副本：{file_count} 文件 / {total_bytes} B / {matches} 处；预览 {preview_elapsed:?}，五次滚动 {scroll_elapsed:?}，取消 {cancel_elapsed:?}"
     );

@@ -224,6 +224,27 @@ impl SearchView {
     }
 
     #[cfg(test)]
+    pub(crate) fn replacement_test_writable_files(&self) -> Vec<WorkspacePath> {
+        self.replace
+            .plans
+            .iter()
+            .flat_map(|preview| preview.iter())
+            .filter_map(|(path, file)| match file {
+                PreviewFile::Planned(plan)
+                    if !plan.read_only
+                        && plan
+                            .changes
+                            .iter()
+                            .any(|change| change.old.as_ref() != change.edit.text.as_ref()) =>
+                {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn replacement_test_comparison(
         &self,
         path: &WorkspacePath,
