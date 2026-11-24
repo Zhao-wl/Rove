@@ -1366,6 +1366,14 @@ impl CodeView {
         };
         let max_x = f32::from(text.origin.x + width - left);
         let spacing = self.font.letter_spacing;
+        let (raw_min_x, raw_max_x) = if spacing == 0.0 {
+            (min_x, max_x)
+        } else {
+            // 先按原始字形位置缩小区间，再逐个用加过字距的坐标裁剪。
+            // 两个坐标系的排序可能不同，不能按调整后的坐标二分。
+            let extent = spacing * entry.display.stops().len().saturating_sub(1) as f32;
+            (min_x - extent.max(0.0), max_x - extent.min(0.0))
+        };
         let sel = self.cursor.selection;
         let sel_disp = (p.selection_foreground.is_some()
             && !sel.is_empty()
@@ -1405,14 +1413,24 @@ impl CodeView {
         for run in &s.layout.runs {
             let start = run
                 .glyphs
-                .partition_point(|g| f32::from(g.position.x) < min_x);
+                .partition_point(|g| f32::from(g.position.x) < raw_min_x);
             let mut ri = 0usize;
             for g in &run.glyphs[start..] {
-                let gx = f32::from(g.position.x);
-                if gx > max_x {
+                let raw_x = f32::from(g.position.x);
+                if raw_x > raw_max_x {
                     break;
                 }
                 let idx = g.index as u32;
+                let gx = if spacing == 0.0 {
+                    raw_x
+                } else {
+                    let stop = entry.display.stop_index_for_display(idx);
+                    let adjusted = raw_x + spacing * stop as f32;
+                    if !(min_x..=max_x).contains(&adjusted) {
+                        continue;
+                    }
+                    adjusted
+                };
                 // 空格（含 Tab 展开出的空格）没有可见字形，跳过以省下 GPUI 的逐字形开销。
                 if bytes.get(g.index) == Some(&b' ') {
                     continue;
@@ -1430,13 +1448,8 @@ impl CodeView {
                     }
                 }
                 color = fade(color);
-                let dx = if spacing != 0.0 {
-                    spacing * entry.display.stop_index_for_display(idx) as f32
-                } else {
-                    0.0
-                };
                 self.glyphs_painted.set(self.glyphs_painted.get() + 1);
-                let origin = point(left + px(gx + dx), baseline + g.position.y);
+                let origin = point(left + px(gx), baseline + g.position.y);
                 if memo.0 != color {
                     memo = (color, hsla(color));
                 }
