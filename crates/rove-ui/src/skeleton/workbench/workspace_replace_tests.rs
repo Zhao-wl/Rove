@@ -550,6 +550,71 @@ fn replace_workspace_selection_file_folder_and_cancel_widget(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn replace_workspace_application_and_undo_move_the_context_basket(cx: &mut TestAppContext) {
+    use crate::context_basket::model::{Entry, LineRange};
+
+    let fixture = Fixture::new("{}");
+    fixture.file("tracked.txt", b"needle\ntracked line\n");
+    let (view, cx) = fixture.open(cx);
+    let document = open_file(&fixture, &view, cx, "tracked.txt");
+    view.update(cx, |wb, cx| {
+        wb.basket.use_test_state();
+        wb.basket
+            .contents
+            .insert(Entry::new(
+                WorkspacePath::new("tracked.txt").unwrap(),
+                LineRange::new(2, 2).unwrap(),
+                None,
+            ))
+            .unwrap();
+        assert!(wb.basket_changed(cx));
+        wb.search
+            .update(cx, |search, _| search.toggles.regex = true);
+    });
+    prepare(&view, cx, "needle", r"NEW\nextra");
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    view.read_with(cx, |wb, _| {
+        assert_eq!(
+            wb.basket.contents.items()[0].lines,
+            LineRange::new(3, 3).unwrap()
+        );
+        assert_eq!(
+            wb.editing
+                .saves
+                .borrow()
+                .file(document)
+                .unwrap()
+                .session()
+                .contents(),
+            "NEW\nextra\ntracked line\n",
+        );
+    });
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+    });
+    view.read_with(cx, |wb, _| {
+        assert_eq!(
+            wb.basket.contents.items()[0].lines,
+            LineRange::new(2, 2).unwrap()
+        );
+        assert_eq!(
+            wb.editing
+                .saves
+                .borrow()
+                .file(document)
+                .unwrap()
+                .session()
+                .contents(),
+            "needle\ntracked line\n",
+        );
+    });
+}
+
+#[gpui::test]
 fn replace_workspace_continues_partial_replacement_before_and_after_saving_an_open_file(
     cx: &mut TestAppContext,
 ) {

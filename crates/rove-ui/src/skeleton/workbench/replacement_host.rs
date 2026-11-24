@@ -1,6 +1,7 @@
 //! #62 在工作台分发编辑器缓冲区事务和关闭文件的后台原子写入。
 use super::*;
 use crate::{
+    code_view::TextEdited,
     feedback::{Feedback, FeedbackService, Severity},
     search::{
         replace::{
@@ -212,7 +213,7 @@ impl Workbench {
                                             wb.apply_open_replacement(&plan.path, (document, version), tx, backup, cx)
                                         }).unwrap_or(Err(Failure::Changed));
                                         match updated {
-                                            Ok((open, applied)) => {
+                                            Ok((open, edits)) => {
                                                 let remaining = std::mem::take(&mut plan.remaining);
                                                 let refresh = if remaining.is_empty() {
                                                     None
@@ -230,7 +231,7 @@ impl Workbench {
                                                         let lines = replace::remaining_lines(
                                                             &mut matcher,
                                                             after.as_ref(),
-                                                            &applied,
+                                                            edits.first()?,
                                                             &remaining,
                                                         ).ok()?;
                                                         Some(RemainingLines {
@@ -377,8 +378,8 @@ impl Workbench {
         transaction: Transaction,
         disk: OpenDiskUndo,
         cx: &mut Context<Self>,
-    ) -> Result<(OpenUndo, AppliedEdit), Failure> {
-        let (result, before, after, edit, applied) = {
+    ) -> Result<(OpenUndo, Arc<[AppliedEdit]>), Failure> {
+        let (result, edited) = {
             let mut saves = self.editing.saves.borrow_mut();
             let file = saves.file_mut(document).ok_or(Failure::Changed)?;
             if file.path() != Some(disk.path.as_path()) || file.snapshot().version() != version {
@@ -393,14 +394,6 @@ impl Workbench {
             let applied = session.edit(transaction, Instant::now())?;
             session.push_undo_stop();
             let after = session.snapshot();
-            let spans = applied.input_edits.iter().map(|edit| {
-                (
-                    edit.start_byte.0 as i64,
-                    edit.old_end_byte.0 as i64,
-                    edit.new_end_byte.0 as i64,
-                )
-            });
-            let combined = crate::code_view::edit::coalesce_spans(spans, applied.before);
             (
                 OpenUndo {
                     document,
@@ -409,24 +402,34 @@ impl Workbench {
                     after: after.clone(),
                     disk,
                 },
-                before,
-                after,
-                combined,
-                applied,
+                replacement_notice(before, after, Arc::from([applied])),
             )
         };
+        let edits = edited.edits.clone();
+        self.sync_replacement_edit(path, document, edited, cx);
+        Ok((result, edits))
+    }
+
+    fn sync_replacement_edit(
+        &mut self,
+        path: &WorkspacePath,
+        document: DocumentId,
+        edited: TextEdited,
+        cx: &mut Context<Self>,
+    ) {
+        self.basket_text_edited(path, &edited, cx);
         self.sync_document_from_session(document, cx);
-        if let Some(edit) = edit {
+        if let Some(edit) = edited.combined {
             let states = self.nav.router.buffers();
-            let version = after.version();
+            let version = edited.after.version();
             if states
                 .edited_from_snapshot(
                     path,
-                    before.as_ref(),
+                    edited.before.as_ref(),
                     edit.before,
                     &edit.old,
                     &edit.new,
-                    after,
+                    edited.after,
                 )
                 .is_ok()
             {
@@ -435,7 +438,6 @@ impl Workbench {
         }
         self.note_hot_exit_edit(document, cx);
         cx.notify();
-        Ok((result, applied))
     }
 
     fn undo_replacements(&mut self, cx: &mut Context<Self>) {
@@ -470,7 +472,7 @@ impl Workbench {
                                 if wb.root != root {
                                     return Err(Failure::Changed);
                                 }
-                                match wb.try_undo_open(&open, cx)? {
+                                match wb.try_undo_open(&path, &open, cx)? {
                                     true => Ok(true),
                                     false if wb.path_has_unpersisted_edits(&open.disk.path) => {
                                         Err(Failure::Changed)
@@ -547,8 +549,13 @@ impl Workbench {
     }
 
     /// true 由原编辑会话撤销，false 表示已关闭该会话，由独立记录接手。
-    fn try_undo_open(&mut self, open: &OpenUndo, cx: &mut Context<Self>) -> Result<bool, Failure> {
-        {
+    fn try_undo_open(
+        &mut self,
+        path: &WorkspacePath,
+        open: &OpenUndo,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, Failure> {
+        let edited = {
             let mut saves = self.editing.saves.borrow_mut();
             let Some(file) = saves.file_mut(open.document) else {
                 return Ok(false);
@@ -569,12 +576,14 @@ impl Workbench {
                     Ok(false)
                 };
             }
-            if file.session_mut().undo()?.is_empty() {
+            let before = file.snapshot();
+            let edits = file.session_mut().undo()?;
+            if edits.is_empty() {
                 return Err(Failure::Changed);
             }
-        }
-        self.sync_document_from_session(open.document, cx);
-        self.note_hot_exit_edit(open.document, cx);
+            replacement_notice(before, file.snapshot(), edits.into())
+        };
+        self.sync_replacement_edit(path, open.document, edited, cx);
         Ok(true)
     }
 
@@ -622,5 +631,28 @@ impl Workbench {
             },
             actions: Arc::from([]),
         });
+    }
+}
+
+fn replacement_notice(
+    before: Arc<dyn TextSource>,
+    after: Arc<dyn TextSource>,
+    edits: Arc<[AppliedEdit]>,
+) -> TextEdited {
+    let spans = edits.iter().flat_map(|applied| {
+        applied.input_edits.iter().map(|edit| {
+            (
+                edit.start_byte.0 as i64,
+                edit.old_end_byte.0 as i64,
+                edit.new_end_byte.0 as i64,
+            )
+        })
+    });
+    let combined = crate::code_view::edit::coalesce_spans(spans, before.version());
+    TextEdited {
+        before,
+        after,
+        edits,
+        combined,
     }
 }
