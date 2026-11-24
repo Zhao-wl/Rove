@@ -2,17 +2,17 @@
 //! thread, while the workspace and Shell operations run in the background.
 
 use super::Workbench;
-use crate::context_basket::model::at_or_below;
+use crate::context_basket::model::{at_or_below, same_path};
 use crate::explorer::{registry, view::ExplorerUndo};
 use crate::feedback::FeedbackAction;
 use crate::save::controller::relative_path;
 use crate::shell::feedback::{Reason, Severity};
 use gpui::Context;
-use rove_base::{Value, WorkspacePath};
+use rove_base::{Resource, Value, WorkspacePath};
 use rove_config::{Key, Scope};
 use rove_i18n::Message;
 use rove_workspace::{
-    file_operations::{path_after_rename, EntryStamp, OperationError},
+    file_operations::{EntryStamp, OperationError},
     FileEvent, Folder,
 };
 use std::{
@@ -84,10 +84,35 @@ pub(super) struct FileOperations {
     undo: Vec<Vec<UndoStep>>,
     watched_paths: Vec<WorkspacePath>,
     deferred_events: Vec<FileEvent>,
-    // Only the last completed move batch. A delayed watcher event can describe its old state.
-    completed_moves: Vec<(WorkspacePath, WorkspacePath)>,
+    // Keep the newest moves and unrelated receipts for paths still in use.
+    completed_moves: Vec<WorkspaceMove>,
     #[cfg(windows)]
     clipboard: Option<transfer_ops::ClipboardToken>,
+}
+
+struct FileMove {
+    from: PathBuf,
+    to: PathBuf,
+    stamp: Option<EntryStamp>,
+}
+
+struct WorkspaceMove {
+    from: WorkspacePath,
+    to: WorkspacePath,
+    stamp: Option<EntryStamp>,
+}
+
+impl WorkspaceMove {
+    fn covers(&self, path: &WorkspacePath) -> bool {
+        at_or_below(path, &self.from) || at_or_below(path, &self.to)
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        self.covers(&other.from)
+            || self.covers(&other.to)
+            || other.covers(&self.from)
+            || other.covers(&self.to)
+    }
 }
 
 impl FileOperations {
@@ -147,7 +172,7 @@ impl Workbench {
         events.retain_mut(|event| match event {
             FileEvent::Removed(path) => {
                 // The old occupant may have been recycled before a replacement was installed.
-                if moves.iter().any(|(_, target)| at_or_below(path, target))
+                if moves.iter().any(|movement| at_or_below(path, &movement.to))
                     && matches!(exists(path), Ok(true))
                 {
                     *event = FileEvent::Changed(path.clone());
@@ -155,13 +180,27 @@ impl Workbench {
                 true
             }
             FileEvent::Renamed { from, to } => {
-                // An older forward notification may arrive after we have already undone the move.
-                // The same pair is valid again once it describes a real movement on disk.
-                let reverse_of_completed = moves
-                    .iter()
-                    .any(|(old, new)| path_after_rename(from, new, old).as_ref() == Some(to));
-                !reverse_of_completed
-                    || !matches!((exists(from), exists(to)), (Ok(true), Ok(false)))
+                // Only suppress an inverse notification if the restored object is still at
+                // the source. A newly created file there can be part of a real rename chain.
+                !moves.iter().any(|movement| {
+                    if movement.to != *from || movement.from != *to {
+                        return false;
+                    }
+                    let source = self.root.join(from.as_str());
+                    let same_object = movement
+                        .stamp
+                        .as_ref()
+                        .is_some_and(|stamp| matches!(stamp.matches_path(&source), Ok(true)));
+                    same_object
+                        && if same_path(from, to) {
+                            // Windows looks up both spellings in a case-only move.
+                            source
+                                .canonicalize()
+                                .is_ok_and(|path| path.ends_with(from.as_str()))
+                        } else {
+                            matches!(exists(to), Ok(false))
+                        }
+                })
             }
             _ => true,
         });
@@ -190,26 +229,24 @@ impl Workbench {
         }
     }
 
-    fn finish_explorer_workspace_files(
-        &mut self,
-        moves: &[(PathBuf, PathBuf)],
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_explorer_workspace_files(&mut self, moves: &[FileMove], cx: &mut Context<Self>) {
         self.file_operations.watched_paths.clear();
         let mut logical = Vec::new();
         let mut completed = Vec::new();
-        for (source, destination) in moves {
+        for movement in moves {
             if let (Some(from), Some(to)) = (
-                workspace_path(&self.root, source),
-                workspace_path(&self.root, destination),
+                workspace_path(&self.root, &movement.from),
+                workspace_path(&self.root, &movement.to),
             ) {
-                completed.push((from.clone(), to.clone()));
+                completed.push(WorkspaceMove {
+                    from: from.clone(),
+                    to: to.clone(),
+                    stamp: movement.stamp.clone(),
+                });
                 logical.push(FileEvent::Renamed { from, to });
             }
         }
-        if !completed.is_empty() {
-            self.file_operations.completed_moves = completed;
-        }
+        self.remember_workspace_moves(completed);
         // A native cross-directory move can arrive as removal and creation.
         // Apply the confirmed mapping before anything can close the source tab.
         let mut deferred = std::mem::take(&mut self.file_operations.deferred_events);
@@ -224,6 +261,35 @@ impl Workbench {
         });
         logical.append(&mut deferred);
         self.apply_explorer_document_changes(logical, cx);
+    }
+
+    fn remember_workspace_moves(&mut self, moves: Vec<WorkspaceMove>) {
+        if moves.is_empty() {
+            return;
+        }
+        let paths: Vec<_> = self
+            .editor
+            .groups
+            .values()
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| match &tab.resource {
+                Resource::Workspace(path) => Some(path.clone()),
+                Resource::File(path) => workspace_path(&self.root, path),
+                Resource::Virtual(_) => None,
+            })
+            .chain(
+                self.basket
+                    .contents
+                    .items()
+                    .iter()
+                    .map(|entry| entry.path.clone()),
+            )
+            .collect();
+        self.file_operations.completed_moves.retain(|previous| {
+            !moves.iter().any(|movement| previous.overlaps(movement))
+                && paths.iter().any(|path| previous.covers(path))
+        });
+        self.file_operations.completed_moves.extend(moves);
     }
 }
 
@@ -520,10 +586,15 @@ impl Workbench {
             let result = worker.await;
             let _ = this.update(cx, |view, cx| {
                 view.file_operations.busy = false;
+                let save_moves: Vec<_> = result
+                    .moves
+                    .iter()
+                    .map(|movement| (movement.from.clone(), movement.to.clone()))
+                    .collect();
                 view.editing
                     .saves
                     .borrow_mut()
-                    .complete_file_operation(ticket, &result.moves);
+                    .complete_file_operation(ticket, &save_moves);
                 view.finish_explorer_workspace_files(&result.moves, cx);
                 if !result.undo.is_empty()
                     && ENABLE_UNDO
@@ -590,7 +661,7 @@ fn button(id: &'static str, label: &'static str) -> FeedbackAction {
 #[derive(Default)]
 struct Outcome {
     undo: Vec<UndoStep>,
-    moves: Vec<(PathBuf, PathBuf)>,
+    moves: Vec<FileMove>,
     fallback: Option<Deletion>,
     failure: Option<Failure>,
 }
@@ -720,17 +791,28 @@ fn restore(folder: &Folder, root: &Path, mut items: Vec<UndoStep>) -> Outcome {
             return outcome;
         }
         match step {
-            UndoStep::Explorer(ExplorerUndo::Renamed { source, target, .. }) => {
-                outcome
-                    .moves
-                    .push((root.join(target.as_str()), root.join(source.as_str())));
+            UndoStep::Explorer(ExplorerUndo::Renamed {
+                source,
+                target,
+                stamp,
+            }) => {
+                outcome.moves.push(FileMove {
+                    from: root.join(target.as_str()),
+                    to: root.join(source.as_str()),
+                    stamp: Some(stamp.clone()),
+                });
             }
             #[cfg(windows)]
-            UndoStep::Moved { path, original, .. } => {
-                outcome.moves.push((
-                    root.join(path.as_str()),
-                    display_path(original, root, folder),
-                ));
+            UndoStep::Moved {
+                path,
+                original,
+                stamp,
+            } => {
+                outcome.moves.push(FileMove {
+                    from: root.join(path.as_str()),
+                    to: display_path(original, root, folder),
+                    stamp: Some(stamp.clone()),
+                });
             }
             _ => {}
         }

@@ -480,13 +480,15 @@ fn record_completion(
     if let Some(receipt) = replaced {
         result.undo.push(UndoStep::Trashed(receipt));
     }
+    let stamp = folder.entry_stamp(&item.to).ok();
     if matches!(outcome, TransferOutcome::Moved) {
-        result.moves.push((
-            super::display_path(&item.from.path, root, folder),
-            root.join(item.to.as_str()),
-        ));
+        result.moves.push(super::FileMove {
+            from: super::display_path(&item.from.path, root, folder),
+            to: root.join(item.to.as_str()),
+            stamp: stamp.clone(),
+        });
     }
-    if let Ok(stamp) = folder.entry_stamp(&item.to) {
+    if let Some(stamp) = stamp {
         match outcome {
             TransferOutcome::Moved => result.undo.push(UndoStep::Moved {
                 path: item.to,

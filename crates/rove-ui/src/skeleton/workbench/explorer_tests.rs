@@ -985,7 +985,12 @@ fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut Test
 
     let fixture = Fixture::new(
         r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDragAndDrop":false}"#,
-        &["Bad.json", "Target/Seed.txt"],
+        &[
+            "Bad.json",
+            "Target/Seed.txt",
+            "Other.txt",
+            "OtherTarget/Seed.txt",
+        ],
     );
     std::fs::write(fixture.path("Bad.json"), r#"{"value": [ }"#).unwrap();
     let (view, cx) = fixture.open(cx);
@@ -1059,6 +1064,39 @@ fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut Test
         assert!(explorer.problems().decorate(&renamed, false).is_some());
     });
 
+    // Complete a real, unrelated operation before the old notification arrives.
+    let other = WorkspacePath::new("Other.txt").unwrap();
+    view.update(cx, |v, cx| {
+        v.open_documents()
+            .open(
+                Resource::Workspace(other.clone()),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    explorer.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::MoveDropped {
+            paths: vec![other],
+            parent: Some(WorkspacePath::new("OtherTarget").unwrap()),
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if tabs(&view, cx)
+            .iter()
+            .any(|(path, _, _)| path == "OtherTarget/Other.txt")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "unrelated move did not finish");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(fixture.path("OtherTarget/Other.txt").is_file());
+
     let forward = FileEvent::Renamed {
         from: renamed.clone(),
         to: moved.clone(),
@@ -1076,19 +1114,31 @@ fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut Test
     });
     wait_for_structured_problems(&view, cx, Some(&restored));
 
-    // The same ordered event remains valid once an external operation really moves the file.
+    // An actual series of renames can leave the same path pair and existence pattern.
+    // The replacement at the original path is a different filesystem object.
+    let next = WorkspacePath::new("Target/Next.json").unwrap();
     view.update(cx, |v, cx| {
-        std::fs::rename(
-            fixture.path("Renamed.json"),
-            fixture.path("Target/Renamed.json"),
-        )
-        .unwrap();
-        v.apply_explorer_workspace_events(vec![forward], cx);
+        let source = fixture.path("Renamed.json");
+        let intermediate = fixture.path("Target/Renamed.json");
+        std::fs::rename(&source, &intermediate).unwrap();
+        std::fs::rename(&intermediate, fixture.path("Target/Next.json")).unwrap();
+        std::fs::write(source, "{}").unwrap();
+        v.apply_explorer_workspace_events(
+            vec![
+                forward,
+                FileEvent::Renamed {
+                    from: moved.clone(),
+                    to: next.clone(),
+                },
+            ],
+            cx,
+        );
     });
-    wait_for_structured_problems(&view, cx, Some(&resource));
+    let recent = Resource::Workspace(next.clone());
+    wait_for_structured_problems(&view, cx, Some(&recent));
     view.read_with(cx, |v, _| {
         let current = v.open_document(document).unwrap();
-        assert_eq!(current.resource, resource);
+        assert_eq!(current.resource, recent);
         assert_eq!(current.text.version(), version);
     });
     std::fs::write(fixture.path("Unrelated.txt"), "external").unwrap();
@@ -1098,13 +1148,13 @@ fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut Test
         "unrelated external creation is visible",
         |rows| rows.iter().any(|row| row == "Unrelated.txt"),
     );
-    std::fs::remove_file(fixture.path("Target/Renamed.json")).unwrap();
+    std::fs::remove_file(fixture.path("Target/Next.json")).unwrap();
     wait_for_structured_problems(&view, cx, None);
-    assert!(!fixture.path("Target/Renamed.json").exists());
+    assert!(!fixture.path("Target/Next.json").exists());
     view.read_with(cx, |v, cx| {
         assert!(v.open_document(document).is_none());
         let explorer = v.explorer.read(cx);
-        assert!(explorer.problems().decorate(&moved, false).is_none());
+        assert!(explorer.problems().decorate(&next, false).is_none());
         assert!(explorer.problems().decorate(&target, true).is_none());
     });
 }

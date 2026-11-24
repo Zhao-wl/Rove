@@ -58,6 +58,12 @@ pub struct EntryStamp {
 }
 
 impl EntryStamp {
+    /// Check whether the same filesystem object is still present at a known path.
+    pub fn matches_path(&self, path: &Path) -> io::Result<bool> {
+        let actual = Self::read(path, &check_entry(path)?)?;
+        Ok(self.same_object(&actual))
+    }
+
     fn same_object(&self, other: &Self) -> bool {
         #[cfg(windows)]
         {
