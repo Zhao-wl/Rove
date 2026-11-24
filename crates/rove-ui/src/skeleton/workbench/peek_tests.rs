@@ -1233,3 +1233,29 @@ fn peek_uses_the_nav_router_and_maps_unsaved_edits(cx: &mut TestAppContext) {
         "精确结果无标记"
     );
 }
+
+#[gpui::test]
+fn context_basket_peek_menu_uses_the_configured_surrounding_lines(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"rove.contextBasket.contextLines": 1}"#);
+    let (view, cx, _) = fixture.open(
+        Fake {
+            references: move_references(),
+            ..Default::default()
+        },
+        cx,
+    );
+    view.update(cx, |view, _| view.basket.use_test_state());
+    caret(&view, pos(3, 22), cx);
+    press("shift-f12", cx);
+    assert!(list_focused(&widget(&view, cx), cx));
+    cx.simulate_keystrokes("shift-f10");
+    super::basket_tests::click_basket_menu(cx, 0);
+    view.read_with(cx, |view, _| {
+        let [item] = view.basket.contents.items() else {
+            panic!("one reference is expected");
+        };
+        assert_eq!(item.path.as_str(), "Assets/Player.cs");
+        assert_eq!((item.lines.first(), item.lines.last()), (3, 5));
+    });
+    assert!(list_focused(&widget(&view, cx), cx));
+}

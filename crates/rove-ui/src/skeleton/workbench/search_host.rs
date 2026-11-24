@@ -88,6 +88,9 @@ impl Workbench {
 
     fn search_event(&mut self, event: &SearchViewEvent, cx: &mut Context<Self>) {
         match event {
+            SearchViewEvent::ResultContext(targets) => {
+                self.show_basket_result_menu(targets, true, cx);
+            }
             SearchViewEvent::Open(request) => self.open_search_result(request, cx),
             // #52：打开文件后把每一处匹配变成一个光标。
             SearchViewEvent::AddCursors(request) => self.add_cursors_at_results(request, cx),

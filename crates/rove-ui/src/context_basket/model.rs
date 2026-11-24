@@ -337,6 +337,7 @@ impl Basket {
         }
     }
 
+    #[cfg(test)]
     pub fn mark_modified(&mut self, path: &WorkspacePath) {
         for entry in &mut self.items {
             if same_path(&entry.path, path) {

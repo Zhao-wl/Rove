@@ -156,6 +156,7 @@ mod v01_acceptance_tests;
 mod binary_tests;
 // #150：「可交互」冷启动埋点（`cargo xtask startup` 用，默认关闭）。
 mod basket_host;
+mod basket_menu;
 #[cfg(test)]
 mod basket_tests;
 mod basket_view;
@@ -2054,13 +2055,14 @@ impl Render for Workbench {
         let goto = self.goto_overlay(cx);
         let quick = self.quick_overlay(cx);
         let hover = self.nav_overlay(cx);
+        let basket_menu = self.render_basket_menu(window, cx);
         // #28：颜色主题 / 打开最近的快速选择。
         let welcome = self.welcome_overlay(cx);
         // #76：「关于」浮层（在最上层，命令面板与欢迎页之上）。
         let about = self.about_overlay(cx);
         // #302：快速输入、菜单及 tooltip 按实际相交区域裁切。
         self.sync_markdown_overlays(
-            goto.is_some() || hover.is_some() || welcome.is_some(),
+            goto.is_some() || hover.is_some() || welcome.is_some() || basket_menu.is_some(),
             window,
             cx,
         );
@@ -2080,7 +2082,9 @@ impl Render for Workbench {
             }))
             .key_context(context.as_str())
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && view.nav.link_menu.take().is_some() {
+                if event.keystroke.key == "escape"
+                    && (view.dismiss_basket_menu() || view.nav.link_menu.take().is_some())
+                {
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -2194,6 +2198,7 @@ impl Render for Workbench {
             .children(goto)
             .children(quick)
             .children(hover)
+            .children(basket_menu)
             .children(welcome)
     }
 }

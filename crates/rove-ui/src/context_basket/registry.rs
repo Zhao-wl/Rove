@@ -10,6 +10,8 @@ pub const COPY_MARKDOWN: &str = "rove.contextBasket.copyAsMarkdown";
 pub const COPY_REFERENCES: &str = "rove.contextBasket.copyAsReferences";
 pub const CLEAR: &str = "rove.contextBasket.clear";
 
+pub const CONTEXT_LINES: rove_config::Key<f64> =
+    rove_config::Key::new("rove.contextBasket.contextLines");
 pub const CLEAR_AFTER_COPY: rove_config::Key<bool> =
     rove_config::Key::new("rove.contextBasket.clearAfterCopy");
 pub const REFERENCE_TEMPLATE: rove_config::Key<String> =
@@ -38,6 +40,11 @@ pub fn register_strings(table: &mut StringTable) -> Result<()> {
         ("contextBasket.clear", "清空"),
         ("contextBasket.loading", "正在恢复上下文篮子。"),
         ("contextBasket.noFile", "请先打开工作区里的文本文件。"),
+        (
+            "contextBasket.sourceUnavailable",
+            "无法读取所选文件或代码范围。",
+        ),
+        ("contextBasket.addWholeFile", "将整个文件加入上下文篮子"),
         (
             "contextBasket.selectionRequired",
             "超大文件只能加入选中的代码。",

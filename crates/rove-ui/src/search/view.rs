@@ -57,6 +57,8 @@ pub enum SearchViewEvent {
     OpenSettings,
     /// #52：在结果处添加光标。
     AddCursors(AddCursorsRequest),
+    /// Paths and one-based matching lines for the selected result rows.
+    ResultContext(Vec<(WorkspacePath, Option<u64>)>),
 }
 
 /// 视图的搜索状态。
@@ -558,6 +560,20 @@ impl SearchView {
     }
 
     fn list_event(&mut self, event: &ListEvent, cx: &mut Context<Self>) {
+        if let ListEvent::ContextMenu(ids) = event {
+            let targets = ids
+                .iter()
+                .filter_map(parse_id)
+                .filter_map(|target| match &target {
+                    Target::File(path) => Some((path.clone(), None)),
+                    Target::Match(..) => self
+                        .match_selection(&target)
+                        .map(|(path, selection)| (path, Some(selection.start().line.0 + 1))),
+                })
+                .collect();
+            cx.emit(SearchViewEvent::ResultContext(targets));
+            return;
+        }
         if let ListEvent::Open {
             ids,
             preserve_focus,

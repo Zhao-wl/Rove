@@ -107,6 +107,8 @@ pub enum PeekEvent {
     Hint(Message),
     /// 用户拖动了底边：新的高度（像素）。
     Resized(f32),
+    /// One-based lines in the workspace files addressed by the result rows.
+    ResultContext(Vec<(rove_base::WorkspacePath, Option<u64>)>),
 }
 
 /// 主题适配：结果树用 `peekViewResult.*`、预览用 `peekViewEditor*`（VS Code 同样这样映射）。
@@ -800,6 +802,24 @@ impl PeekWidget {
 
     fn list_event(&mut self, event: &ListEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            ListEvent::ContextMenu(ids) => {
+                let Some(results) = &self.results else {
+                    return;
+                };
+                let targets = ids
+                    .iter()
+                    .filter_map(|id| {
+                        let item = results.items.get(self.item_of(id)?)?;
+                        let Resource::Workspace(path) =
+                            &results.files.get(item.file as usize)?.resource
+                        else {
+                            return None;
+                        };
+                        Some((path.clone(), Some(item.range.start().line.0 + 1)))
+                    })
+                    .collect();
+                cx.emit(PeekEvent::ResultContext(targets));
+            }
             ListEvent::FocusChanged(Some(id)) => match Node::parse(&id.0) {
                 Some(Node::Item(k)) => self.show(k, window, cx),
                 // 选中文件节点：预览定位到该文件的第一条结果。

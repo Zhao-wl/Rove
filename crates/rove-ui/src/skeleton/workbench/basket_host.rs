@@ -12,6 +12,7 @@ use std::{
 
 pub(super) struct WindowBasket {
     store: Option<BasketStore>,
+    pub(super) menu: Option<super::basket_menu::BasketMenu>,
     pub(super) contents: Basket,
     pub(super) loaded: bool,
     pub(super) panel: Option<super::basket_view::BasketPanel>,
@@ -57,6 +58,7 @@ impl WindowBasket {
             reselect: None,
             previews: BTreeMap::new(),
             store,
+            menu: None,
             contents: Basket::default(),
             revision: 0,
             pending_anchors: BTreeMap::new(),
@@ -294,9 +296,18 @@ impl Workbench {
     }
 
     pub(super) fn add_editor_selection_to_basket(&mut self, cx: &mut Context<Self>) {
+        self.add_basket_editor_pane(self.editor.focused, self.basket.secondary_pane, cx);
+    }
+
+    pub(super) fn add_basket_editor_pane(
+        &mut self,
+        group: crate::documents::EditorGroupId,
+        secondary: bool,
+        cx: &mut Context<Self>,
+    ) {
         use crate::context_basket::model::Entry;
 
-        let Some((group, document, _)) = self.focused_text() else {
+        let Some(document) = self.shown_document(group, secondary) else {
             self.report_basket("contextBasket.noFile", Arc::from([]), cx);
             return;
         };
@@ -308,10 +319,10 @@ impl Workbench {
             self.report_basket("contextBasket.loading", Arc::from([]), cx);
             return;
         }
-        let editor = self
-            .group_code(group, self.basket.secondary_pane)
-            .unwrap_or_else(|| self.code_view())
-            .read(cx);
+        let Some(editor) = self.group_code(group, secondary) else {
+            return;
+        };
+        let editor = editor.read(cx);
         let cursor = editor.selection().active;
         let Some(text) = editor.text().cloned() else {
             return;
@@ -664,6 +675,128 @@ impl Workbench {
                         ("count".into(), count.into()),
                         ("tokens".into(), tokens.into()),
                     ]),
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+}
+
+pub(super) struct BasketCapture {
+    pub path: rove_base::WorkspacePath,
+    pub range: crate::context_basket::capture::SourceRange,
+    pub symbol: Option<String>,
+}
+
+impl Workbench {
+    pub(super) fn add_basket_sources(
+        &mut self,
+        requests: Vec<BasketCapture>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::context_basket::{
+            capture::{allowed_range, RangeFailure},
+            model::Entry,
+        };
+        if !self.basket.loaded {
+            self.report_basket("contextBasket.loading", Arc::from([]), cx);
+            return;
+        }
+        if requests.is_empty() {
+            return;
+        }
+        let mut opened = BTreeMap::new();
+        for request in &requests {
+            for tab in self.editor.groups.values().flat_map(|group| &group.tabs) {
+                let rove_base::Resource::Workspace(path) = &tab.resource else {
+                    continue;
+                };
+                if same_path(path, &request.path) && tab.kind == super::EditorKind::Text {
+                    if let Some(opened_tab) = tab.opened() {
+                        let doc = &opened_tab.document;
+                        opened.insert(request.path.clone(), (doc.text.clone(), doc.metadata.size));
+                        break;
+                    }
+                }
+            }
+        }
+        let settings = self.settings.clone();
+        let root = self.root.clone();
+        let task = cx.background_executor().spawn(async move {
+            let policy = rove_buffer::SizePolicy::read(&*settings).unwrap_or_default();
+            let mut prepared = Vec::with_capacity(requests.len());
+            for request in requests {
+                let (text, size) = match opened.entry(request.path.clone()) {
+                    std::collections::btree_map::Entry::Occupied(value) => value.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(value) => {
+                        let path = root.join(request.path.as_str());
+                        let language =
+                            rove_syntax::highlight::language_for_path(&path, Some(&*settings));
+                        let options = rove_buffer::LoadOptions::new(&language, &*settings);
+                        let loaded = rove_buffer::open_file(&path, &options, policy)
+                            .map_err(|_| "contextBasket.sourceUnavailable")?;
+                        value.insert((loaded.text.source(), loaded.metadata.size))
+                    }
+                };
+                let lines = allowed_range(
+                    request.range,
+                    text.lines().known,
+                    *size == rove_buffer::SizeClass::Huge,
+                )
+                .map_err(|error| match error {
+                    RangeFailure::TooLong => "contextBasket.tooLong",
+                    RangeFailure::SelectionRequired => "contextBasket.selectionRequired",
+                    RangeFailure::NoSuchLine => "contextBasket.sourceUnavailable",
+                })?;
+                prepared.push((
+                    Entry::new(request.path, lines, request.symbol),
+                    text.clone(),
+                ));
+            }
+            Ok::<_, &'static str>(prepared)
+        });
+        cx.spawn(async move |this, cx| {
+            let prepared = task.await;
+            let _ = this.update(cx, |view, cx| {
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(key) => {
+                        view.report_basket(key, Arc::from([]), cx);
+                        return;
+                    }
+                };
+                let mut next = view.basket.contents.clone();
+                let mut sources = BTreeMap::new();
+                for (entry, text) in prepared {
+                    match next.insert(entry) {
+                        Ok(id) => {
+                            sources.insert(id, text);
+                        }
+                        Err(_) => {
+                            view.report_basket("contextBasket.tooLong", Arc::from([]), cx);
+                            return;
+                        }
+                    }
+                }
+                let ranges: Vec<_> = next
+                    .items()
+                    .iter()
+                    .filter_map(|entry| {
+                        Some((entry.id(), entry.lines, sources.remove(&entry.id())?))
+                    })
+                    .collect();
+                view.basket.contents = next;
+                for (id, range, text) in ranges {
+                    view.capture_basket_anchors(vec![(id, range)], text, cx);
+                }
+                view.basket_changed(cx);
+                view.report_basket(
+                    "contextBasket.added",
+                    Arc::from([(
+                        "count".into(),
+                        view.basket.contents.items().len().to_string().into(),
+                    )]),
                     cx,
                 );
             });

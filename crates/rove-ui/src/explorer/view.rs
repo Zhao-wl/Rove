@@ -60,6 +60,7 @@ pub enum ExplorerEvent {
     },
     /// 空状态按钮的命令 ID（`workbench.action.files.openFolder`）。
     Command(Arc<str>),
+    FileContext(Vec<WorkspacePath>),
 }
 
 /// 没有打开文件夹时的空树。
@@ -670,6 +671,24 @@ impl ExplorerView {
 
     fn list_event(&mut self, event: &ListEvent, cx: &mut Context<Self>) {
         match event {
+            ListEvent::ContextMenu(ids) => {
+                let list = &self.list.read(cx).widget;
+                let focus = list.focus();
+                let indices = if focus.is_some_and(|index| list.is_selected(index)) {
+                    list.selection_indices()
+                } else {
+                    focus.as_slice()
+                };
+                let paths = indices
+                    .iter()
+                    .filter_map(|&index| list.row(index))
+                    .filter(|row| {
+                        !row.expandable && ids.contains(&row.id) && !is_error_id(&row.id.0)
+                    })
+                    .filter_map(|row| WorkspacePath::new(&row.id.0).ok())
+                    .collect();
+                cx.emit(ExplorerEvent::FileContext(paths));
+            }
             ListEvent::Open {
                 ids,
                 preserve_focus,

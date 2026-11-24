@@ -284,6 +284,8 @@ impl Workbench {
             .strings
             .text(&Message::key("editor.link.copyLabel"))
             .ok()?;
+        let can_collect = matches!(menu.origin.document.resource, Resource::Workspace(_));
+        let collect = self.label("command.rove.contextBasket.add", &[]);
         let style = &self.nav.colors;
         let card = div()
             .id("editor-link-menu")
@@ -325,7 +327,28 @@ impl Workbench {
                         }
                         cx.notify();
                     })),
-            );
+            )
+            .when(can_collect, |card| {
+                card.child(
+                    div()
+                        .id("editor-link-add-to-basket")
+                        .px_2()
+                        .py_1()
+                        .child(collect)
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            if let Some(menu) = view.nav.link_menu.take() {
+                                if view.link_origin_current(&menu.origin) {
+                                    view.add_basket_editor_pane(
+                                        menu.origin.group,
+                                        menu.origin.secondary,
+                                        cx,
+                                    );
+                                }
+                            }
+                            cx.notify();
+                        })),
+                )
+            });
         Some(
             deferred(
                 anchored()

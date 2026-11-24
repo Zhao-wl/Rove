@@ -336,3 +336,39 @@ fn long_match_lines_stay_on_a_single_row(cx: &mut TestAppContext) {
         bounds.size.height
     );
 }
+
+#[gpui::test]
+fn context_basket_search_menu_offers_match_context_and_whole_file(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (view, cx) = fixture.open(cx);
+    view.update(cx, |view, _| view.basket.use_test_state());
+    find_in_files(&view, "Move(speed)", cx);
+    let click_match = |cx: &mut VisualTestContext| {
+        let bounds = cx
+            .debug_bounds("search-match-preview-1")
+            .expect("one visible result");
+        cx.simulate_mouse_down(
+            bounds.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+    };
+    click_match(cx);
+    super::basket_tests::click_basket_menu(cx, 0);
+    view.read_with(cx, |view, _| {
+        let [item] = view.basket.contents.items() else {
+            panic!("one result is expected");
+        };
+        assert_eq!(item.path.as_str(), "src/Player.cs");
+        assert_eq!((item.lines.first(), item.lines.last()), (6, 12));
+    });
+    click_match(cx);
+    super::basket_tests::click_basket_menu(cx, 1);
+    view.read_with(cx, |view, _| {
+        let [item] = view.basket.contents.items() else {
+            panic!("whole file merges with the existing range");
+        };
+        assert_eq!((item.lines.first(), item.lines.last()), (1, 12));
+    });
+}

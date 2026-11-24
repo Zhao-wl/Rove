@@ -373,3 +373,55 @@ fn outline_and_breadcrumb_settings_reload(cx: &mut TestAppContext) {
         ["Game", "  Player", "    Update()", "    Move(float)"]
     );
 }
+
+#[gpui::test]
+fn context_basket_outline_menu_collects_the_entire_method(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "src/Player.cs", Some(pos(9, 8)), cx);
+    view.update_in(cx, |view, window, cx| {
+        view.basket.use_test_state();
+        view.outline_command(reg::OUTLINE_FOCUS, window, cx);
+    });
+    refresh(cx);
+    cx.simulate_keystrokes("home down down down shift-f10");
+    super::basket_tests::click_basket_menu(cx, 0);
+    view.read_with(cx, |view, _| {
+        let [item] = view.basket.contents.items() else {
+            panic!("one method is expected");
+        };
+        assert_eq!(item.path.as_str(), "src/Player.cs");
+        assert_eq!((item.lines.first(), item.lines.last()), (9, 11));
+        assert!(item
+            .symbol
+            .as_deref()
+            .is_some_and(|name| name.starts_with("Move")));
+    });
+}
+
+#[gpui::test]
+fn context_basket_editor_caret_collects_method_class_and_plain_line(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    let (view, cx) = fixture.open(cx);
+    view.update(cx, |view, _| view.basket.use_test_state());
+    for (path, position, expected) in [
+        ("src/Player.cs", pos(9, 8), (9, 11)),
+        ("src/Player.cs", pos(2, 19), (3, 12)),
+        ("notes.txt", pos(0, 0), (1, 1)),
+    ] {
+        open_file(&view, path, Some(position), cx);
+        view.update(cx, |view, cx| {
+            view.command(crate::context_basket::registry::CLEAR, cx);
+            view.command(crate::context_basket::registry::ADD, cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            let [item] = view.basket.contents.items() else {
+                panic!("one entry is expected");
+            };
+            assert_eq!(item.path.as_str(), path);
+            assert_eq!((item.lines.first(), item.lines.last()), expected);
+            assert_eq!(item.symbol.is_none(), path == "notes.txt");
+        });
+    }
+}

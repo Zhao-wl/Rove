@@ -87,3 +87,21 @@ fn context_basket_editor_collects_two_ranges_and_copies_after_verification(
     assert!(clipboard.contains("\nfour\n"));
     assert!(!clipboard.contains("ignore"));
 }
+
+pub(super) fn click_basket_menu(cx: &mut gpui::VisualTestContext, index: usize) {
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.refresh();
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    let selector = [
+        "context-basket-source-action-0",
+        "context-basket-source-action-1",
+    ][index];
+    let bounds = cx
+        .debug_bounds(selector)
+        .expect("basket menu action is visible");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+}

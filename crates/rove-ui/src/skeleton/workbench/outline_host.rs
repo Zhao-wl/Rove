@@ -294,6 +294,7 @@ impl Workbench {
             return;
         };
         match event {
+            ListEvent::ContextMenu(ids) => self.show_basket_outline_menu(document, ids, cx),
             ListEvent::Expanded { id, expanded } => {
                 self.outline
                     .note_expanded(document, id.0.clone(), *expanded)
