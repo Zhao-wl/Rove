@@ -1,6 +1,7 @@
 //! #62 搜索替换控件：预览生成与写入代次互相独立，后台结果只更新自己的代次。
 use super::*;
 use crate::search::replace::{ApplyRequest, PlannedMatch, Preview, PreviewFile, PreviewRequest};
+use rove_base::DocumentId;
 use rove_config::{Key, Scope};
 use std::collections::BTreeMap;
 
@@ -30,11 +31,16 @@ pub(super) struct ReplacementState {
 #[derive(Default)]
 pub(crate) struct Report {
     pub applied: BTreeMap<WorkspacePath, Vec<PlannedMatch>>,
-    pub remaining_lines: BTreeMap<WorkspacePath, Vec<rove_search::LineMatch>>,
+    pub remaining_lines: BTreeMap<WorkspacePath, RemainingLines>,
     pub skipped: Vec<WorkspacePath>,
     pub failed: Vec<WorkspacePath>,
     pub cancelled: bool,
     pub undone: bool,
+}
+
+pub(crate) struct RemainingLines {
+    pub lines: Vec<rove_search::LineMatch>,
+    pub open_result: Option<DocumentId>,
 }
 
 impl SearchView {
@@ -126,13 +132,16 @@ impl SearchView {
                 let Some(file) = self.results.file(path).cloned() else {
                     continue;
                 };
-                if let Some(lines) = report.remaining_lines.get(path) {
+                if let Some(remaining) = report.remaining_lines.get(path) {
                     self.results.remove(&Target::File(path.clone()));
-                    if !lines.is_empty() {
-                        self.results.add(rove_search::FileMatches {
-                            path: path.clone(),
-                            lines: lines.clone(),
-                        });
+                    if !remaining.lines.is_empty() {
+                        self.results.add_with_origin(
+                            rove_search::FileMatches {
+                                path: path.clone(),
+                                lines: remaining.lines.clone(),
+                            },
+                            remaining.open_result,
+                        );
                     }
                     continue;
                 }

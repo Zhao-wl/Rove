@@ -7,11 +7,11 @@ use crate::{
             self, ApplyRequest, DiskUndo, Failure, OpenDiskBaseline, OpenDiskUndo, OpenFile,
             OpenRecovery, Origin, PreviewRequest, SourceFormat,
         },
-        view::{ReplacementEvent, Report},
+        view::{RemainingLines, ReplacementEvent, Report},
     },
 };
 use rove_buffer::{
-    edit::Transaction,
+    edit::{AppliedEdit, Transaction},
     save::{WriteError, WriteOptions},
     TextSource,
 };
@@ -204,21 +204,46 @@ impl Workbench {
                                     Ok(_) if request.cancel.check().is_err() => {
                                         Err(Failure::Cancelled)
                                     }
-                                    Ok(backup) => this
-                                        .update(cx, |wb, cx| {
+                                    Ok(backup) => {
+                                        let updated = this.update(cx, |wb, cx| {
                                             if wb.root != root {
                                                 return Err(Failure::Changed);
                                             }
-                                            wb.apply_open_replacement(
-                                                &plan.path,
-                                                (document, version),
-                                                tx,
-                                                backup,
-                                                cx,
-                                            )
-                                        })
-                                        .unwrap_or(Err(Failure::Changed))
-                                        .map(|undo| (undo, None)),
+                                            wb.apply_open_replacement(&plan.path, (document, version), tx, backup, cx)
+                                        }).unwrap_or(Err(Failure::Changed));
+                                        match updated {
+                                            Ok((open, applied)) => {
+                                                let remaining = std::mem::take(&mut plan.remaining);
+                                                let refresh = if remaining.is_empty() {
+                                                    None
+                                                } else {
+                                                    let after = open.after.clone();
+                                                    let query = request.query.clone();
+                                                    let settings = settings.clone();
+                                                    cx.background_executor().spawn(async move {
+                                                        let config = rove_search::SearchConfig::from_settings(settings);
+                                                        let mut matcher = rove_search::engine::ReplacementMatcher::new(
+                                                            &query,
+                                                            &config,
+                                                            Cancellation::default(),
+                                                        ).ok()?;
+                                                        let lines = replace::remaining_lines(
+                                                            &mut matcher,
+                                                            after.as_ref(),
+                                                            &applied,
+                                                            &remaining,
+                                                        ).ok()?;
+                                                        Some(RemainingLines {
+                                                            lines,
+                                                            open_result: Some(document),
+                                                        })
+                                                    }).await
+                                                };
+                                                Ok((Undo::Open(open), refresh))
+                                            }
+                                            Err(error) => Err(error),
+                                        }
+                                    },
                                     Err(error) => Err(error),
                                 }
                             }
@@ -250,7 +275,13 @@ impl Workbench {
                                         &WriteOptions::default(),
                                         &cancel,
                                     )
-                                    .map(|(undo, remaining)| (Undo::Disk(undo), remaining))
+                                    .map(|(undo, remaining)| {
+                                        let remaining = remaining.map(|lines| RemainingLines {
+                                            lines,
+                                            open_result: None,
+                                        });
+                                        (Undo::Disk(undo), remaining)
+                                    })
                                 })
                                 .await
                         } else {
@@ -346,8 +377,8 @@ impl Workbench {
         transaction: Transaction,
         disk: OpenDiskUndo,
         cx: &mut Context<Self>,
-    ) -> Result<Undo, Failure> {
-        let (result, before, after, edit) = {
+    ) -> Result<(OpenUndo, AppliedEdit), Failure> {
+        let (result, before, after, edit, applied) = {
             let mut saves = self.editing.saves.borrow_mut();
             let file = saves.file_mut(document).ok_or(Failure::Changed)?;
             if file.path() != Some(disk.path.as_path()) || file.snapshot().version() != version {
@@ -371,16 +402,17 @@ impl Workbench {
             });
             let combined = crate::code_view::edit::coalesce_spans(spans, applied.before);
             (
-                Undo::Open(OpenUndo {
+                OpenUndo {
                     document,
                     marker: session.history_marker(),
                     version: session.buffer().version(),
                     after: after.clone(),
                     disk,
-                }),
+                },
                 before,
                 after,
                 combined,
+                applied,
             )
         };
         self.sync_document_from_session(document, cx);
@@ -403,7 +435,7 @@ impl Workbench {
         }
         self.note_hot_exit_edit(document, cx);
         cx.notify();
-        Ok(result)
+        Ok((result, applied))
     }
 
     fn undo_replacements(&mut self, cx: &mut Context<Self>) {
@@ -524,12 +556,20 @@ impl Workbench {
             if file.path() != Some(open.disk.path.as_path()) {
                 return Err(Failure::Changed);
             }
-            let session = file.session_mut();
-            if !session.buffer().read_only().is_empty()
-                || session.history_marker() != open.marker
-                || session.buffer().version() != open.version
-                || session.undo()?.is_empty()
+            let session = file.session();
+            if !session.buffer().read_only().is_empty() {
+                return Err(Failure::Skipped);
+            }
+            if session.history_marker() != open.marker || session.buffer().version() != open.version
             {
+                // 同一路径重开后，文档服务可以复用 ID，但编辑历史是新的。干净会话可由磁盘记录核对。
+                return if file.is_dirty() {
+                    Err(Failure::Changed)
+                } else {
+                    Ok(false)
+                };
+            }
+            if file.session_mut().undo()?.is_empty() {
                 return Err(Failure::Changed);
             }
         }

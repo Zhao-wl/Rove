@@ -396,7 +396,7 @@ impl DiskUndo {
 }
 
 /// 只更新原结果树中还保留的匹配；替换引入的新匹配和用户之前剔除的项不会出现。
-fn remaining_lines(
+pub(crate) fn remaining_lines(
     matcher: &mut ReplacementMatcher,
     text: &dyn TextSource,
     applied: &AppliedEdit,
@@ -710,7 +710,9 @@ pub(crate) fn prepare_preview(
         };
         let result = match loaded.and_then(|(text, origin, open_read_only, eol)| {
             let open = opened.get(path);
-            let mut changes = if let Some(open) = open.filter(|open| open.dirty) {
+            let mut changes = if let Some(open) =
+                open.filter(|open| open.dirty && file.open_result != Some(open.id))
+            {
                 let recovery = open.recovery.as_ref().ok_or(Failure::Changed)?;
                 let original = DiskSnapshot::read(&request.root.join(path.as_str()), huge_size)?;
                 if !original.matches(&recovery.disk) {

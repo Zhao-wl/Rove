@@ -154,7 +154,7 @@ impl Colors {
 
 mod replace_view;
 use replace_view::ReplacementState;
-pub(crate) use replace_view::{ReplacementEvent, Report};
+pub(crate) use replace_view::{RemainingLines, ReplacementEvent, Report};
 
 fn paint(c: Option<Hsla>) -> Hsla {
     c.unwrap_or_else(gpui::transparent_black)

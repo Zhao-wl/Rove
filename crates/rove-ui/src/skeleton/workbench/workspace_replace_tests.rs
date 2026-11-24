@@ -128,7 +128,10 @@ fn open_file(
         wb.open_documents()
             .open(
                 Resource::Workspace(WorkspacePath::new(name).unwrap()),
-                OpenOptions::default(),
+                OpenOptions {
+                    preview_tab: false,
+                    ..OpenOptions::default()
+                },
                 Cancellation::default(),
             )
             .unwrap();
@@ -544,6 +547,70 @@ fn replace_workspace_selection_file_folder_and_cancel_widget(cx: &mut TestAppCon
         fixture.read("folder/second.txt") == b"NEW"
     });
     assert_eq!(fixture.read("other.txt"), b"needle");
+}
+
+#[gpui::test]
+fn replace_workspace_continues_partial_replacement_before_and_after_saving_an_open_file(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new("{}");
+    fixture.file("opened.txt", b"needle needle needle needle");
+    let (view, cx) = fixture.open(cx);
+    let document = open_file(&fixture, &view, cx, "opened.txt");
+    prepare(&view, cx, "needle", "NEW");
+    let path = WorkspacePath::new("opened.txt").unwrap();
+    let focus_match = |cx: &mut VisualTestContext, ordinal| {
+        cx.update(|_, cx| {
+            let search = view.read(cx).search.read(cx);
+            let row = search.rows().file_row(&path).unwrap() + ordinal;
+            search.list.clone().update(cx, |list, cx| {
+                list.widget.set_focus(Some(row));
+                cx.notify();
+            });
+        });
+    };
+    focus_match(cx, 4);
+    command(&view, cx, commands::REMOVE);
+    wait(&view, cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        search.replacement_test_state().1 && search.results().file(&path).unwrap().count() == 3
+    });
+    for expected in ["NEW needle needle needle", "NEW NEW needle needle"] {
+        focus_match(cx, 1);
+        command(&view, cx, commands::REPLACE_MATCH);
+        wait(&view, cx, |wb, cx| {
+            wb.search.read(cx).replacement_test_state().1
+                && wb
+                    .editing
+                    .saves
+                    .borrow()
+                    .file(document)
+                    .unwrap()
+                    .session()
+                    .contents()
+                    == expected
+        });
+    }
+    assert_eq!(fixture.read("opened.txt"), b"needle needle needle needle");
+    view.update(cx, |wb, cx| {
+        wb.start_save(document, rove_buffer::save::SaveRequest::default(), cx);
+    });
+    wait(&view, cx, |wb, _| {
+        !wb.editing.saves.borrow().is_dirty(document)
+    });
+    assert_eq!(fixture.read("opened.txt"), b"NEW NEW needle needle");
+    focus_file(&view, cx, &path);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |wb, _| {
+        wb.editing
+            .saves
+            .borrow()
+            .file(document)
+            .unwrap()
+            .session()
+            .contents()
+            == "NEW NEW NEW needle"
+    });
 }
 
 #[cfg(windows)]
