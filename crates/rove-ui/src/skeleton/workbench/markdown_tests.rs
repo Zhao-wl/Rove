@@ -192,7 +192,7 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
     let fx = Fixture::new(
         r#"{
             "workbench.editorAssociations": { "*.md": "default" },
-            "editor.wordWrap": "off",
+            "[markdown]": { "editor.wordWrap": "off" },
             "editor.wrappingIndent": "none",
             "editor.stickyScroll.enabled": true,
             "editor.stickyScroll.scrollWithEditor": true,
@@ -209,6 +209,7 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
     let body_line = text.lines().count() as u64 - 1;
     std::fs::write(fx.folder.path().join("Mixed.md"), &text).unwrap();
     let (view, cx) = fx.open(cx);
+    cx.simulate_resize(gpui::size(px(960.0), px(540.0)));
     open(&view, "Mixed.md", explorer(), cx);
     assert_eq!(active_kind(&view, cx), ("Mixed.md".into(), false));
     focus_editor(&view, cx);
@@ -228,10 +229,13 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
     });
     settle(cx);
     let left = code.update(cx, |c, _| c.point_for_position(first)).unwrap();
-    let wheel_at = point(left.x + px(12.0), left.y + px(4.0));
+    let group = view.read_with(cx, |v, _| v.editor.focused);
+    let pane_id = format!("editor-body-{}", group.0);
+    let pane_selector: &'static str = Box::leak(pane_id.into_boxed_str());
     let wheel = |cx: &mut VisualTestContext, dx| {
+        let pane = cx.debug_bounds(pane_selector).unwrap();
         cx.simulate_event(ScrollWheelEvent {
-            position: wheel_at,
+            position: pane.center(),
             delta: ScrollDelta::Pixels(point(px(dx), px(0.0))),
             modifiers: Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
@@ -242,6 +246,9 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
         let headers: Vec<_> = c.sticky_lines().iter().map(|header| header.line).collect();
         assert_eq!(headers, [0, 2], "两级标题都应当固定在正文上方");
         assert_eq!(c.sticky_content_offset(), 0.0);
+        assert!(!c.word_wrap_enabled());
+        let metrics = c.metrics().unwrap();
+        assert!(metrics.max_x() > 0.0, "无水平滚动范围：{metrics:?}");
     });
 
     // 不换行时，可以从行首横向滚到行尾，再回到同一个行首。
@@ -249,9 +256,10 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
     let right = code.update(cx, |c, _| c.point_for_position(end)).unwrap();
     code.read_with(cx, |c, _| {
         let x = c.scroll_position().x;
-        assert!(x > 0.0);
+        let viewport = c.viewport().unwrap();
+        assert!(x > 0.0, "正文内的滚轮须横滚：{viewport:?}");
         assert_eq!(c.sticky_content_offset(), x as f32);
-        let text_right = left.x + px(c.viewport().unwrap().width);
+        let text_right = left.x + px(viewport.width);
         assert!(right.x > left.x && right.x <= text_right + px(1.0));
     });
     wheel(cx, 10_000.0);
