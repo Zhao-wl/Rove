@@ -184,7 +184,11 @@ fn ctrl_f_opens_with_seed_and_escape_clears(cx: &mut TestAppContext) {
 fn long_find_query_scrolls_without_covering_controls_in_a_narrow_split(cx: &mut TestAppContext) {
     let fx = Fixture::new(r#"{"editor.find.addExtraSpaceOnTop":true}"#);
     let query = format!("{}Z", "W".repeat(80));
-    std::fs::write(fx.folder.path().join("notes.txt"), format!("{query}\n").repeat(6)).unwrap();
+    std::fs::write(
+        fx.folder.path().join("notes.txt"),
+        format!("{query}\n").repeat(6),
+    )
+    .unwrap();
     let (view, cx) = fx.open(cx);
     let editor = cx.debug_bounds("editor").unwrap();
     let viewport = cx.update(|window, _| window.viewport_size());
@@ -202,13 +206,19 @@ fn long_find_query_scrolls_without_covering_controls_in_a_narrow_split(cx: &mut 
         let selector = Box::leak(format!("editor-body-{}", active.0).into_boxed_str());
         let pane = cx.debug_bounds(selector).unwrap();
         let width = f32::from(pane.size.width);
-        assert!((min_width..=max_width).contains(&width), "窗格宽度为 {width}");
+        assert!(
+            (min_width..=max_width).contains(&width),
+            "窗格宽度为 {width}"
+        );
 
         press("ctrl-f", cx);
         press("ctrl-a", cx);
         type_text(&query, cx);
         assert_eq!(input(&view, cx), query);
-        assert!(matches!(label(&view, cx), CountLabel::Matches { total: 6, .. }));
+        assert!(matches!(
+            label(&view, cx),
+            CountLabel::Matches { total: 6, .. }
+        ));
 
         let widget = cx.debug_bounds("find-widget").unwrap();
         let field = cx.debug_bounds("findInputFocussed").unwrap();
@@ -259,7 +269,10 @@ fn long_find_query_scrolls_without_covering_controls_in_a_narrow_split(cx: &mut 
             Modifiers::none(),
         );
         type_text("H", cx);
-        assert_eq!(input(&view, cx), format!("H{}", query.trim_end_matches('Z')));
+        assert_eq!(
+            input(&view, cx),
+            format!("H{}", query.trim_end_matches('Z'))
+        );
 
         let close = cx.debug_bounds("find-close").unwrap();
         cx.simulate_click(close.center(), Modifiers::none());

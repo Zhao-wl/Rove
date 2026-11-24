@@ -867,8 +867,7 @@ impl FindHost {
 
     fn clear_unused_top_inset(&self, cx: &mut Context<Self>) {
         if !self.visible || !self.cfg.add_extra_space_on_top {
-            self.code
-                .update(cx, |code, cx| code.set_top_inset(0.0, cx));
+            self.code.update(cx, |code, cx| code.set_top_inset(0.0, cx));
         }
     }
 
