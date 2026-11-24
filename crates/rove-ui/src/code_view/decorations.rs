@@ -109,6 +109,13 @@ pub struct LineStyle {
     pub opacity: Option<u8>,
 }
 
+/// 一个放在行内标记右侧、独立命中的动作。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayAction {
+    pub command: Arc<str>,
+    pub text: Arc<str>,
+}
+
 /// 行内覆盖物：在 `column` 处叠画一段文字（不参与本行整形与列换算），
 /// 例如 #22 的超长行截断标记。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +123,7 @@ pub struct Overlay {
     pub column: u32,
     pub text: Arc<str>,
     pub style: TextStyle,
+    pub action: Option<OverlayAction>,
 }
 
 /// 提供方为一行产出的全部装饰。

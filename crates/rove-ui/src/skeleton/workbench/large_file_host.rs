@@ -21,7 +21,7 @@ use crate::large_file::{
     long_line::{self, OPEN_LONG_LINE},
     notice,
     progress::IndexProgress,
-    registry as lf, LongLineSource, TruncationMarks,
+    registry as lf, LongLineSource, TruncationAction, TruncationMarks,
 };
 use crate::{
     code_view::{priority, LayerId},
@@ -31,6 +31,14 @@ use std::{collections::BTreeSet, rc::Rc};
 
 /// 后台等待“转到行”的兜底上限：索引线程异常退出时不至于永远挂着。
 const GOTO_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[derive(Eq, PartialEq)]
+struct MarkAttachment {
+    document: DocumentId,
+    version: Version,
+    limit: Option<usize>,
+    has_action: bool,
+}
 
 /// 窗口里的 #22 状态。
 pub(super) struct LargeFiles {
@@ -46,9 +54,9 @@ pub(super) struct LargeFiles {
     goto_progress: Option<IndexProgress>,
     /// 每个文档上一次看到的已知行数：变多了就让查找条重新搜索。
     last_known: BTreeMap<DocumentId, u64>,
-    /// 每个代码视图上一次挂截断标记时的 (文档, 快照, 渲染上限)：换文档、换快照或
-    /// `editor.stopRenderingLineAfter` 改了都要重挂（标记文字与列都随之变化）。
-    attached: BTreeMap<(EditorGroupId, bool), (DocumentId, Version, Option<usize>)>,
+    /// 截断标记取决于该窗格的文档、渲染上限和动作适用条件。
+    attached: BTreeMap<(EditorGroupId, bool), MarkAttachment>,
+    action: Option<TruncationAction>,
 }
 
 impl LargeFiles {
@@ -61,6 +69,7 @@ impl LargeFiles {
             goto_progress: None,
             last_known: BTreeMap::new(),
             attached: BTreeMap::new(),
+            action: None,
         }
     }
 }
@@ -72,6 +81,13 @@ impl Workbench {
     /// 超长行临时标签的内容来源（测试用）。
     pub fn long_line_source(&self) -> &Arc<LongLineSource> {
         &self.large_files.long_lines
+    }
+
+    /// 为适用的代码视图登记截断标记旁的一个动作。
+    pub fn register_truncation_action(&mut self, action: TruncationAction, cx: &mut Context<Self>) {
+        self.large_files.action = Some(action);
+        self.large_files.attached.clear();
+        cx.notify();
     }
 
     /// 每帧调用：提示条、状态栏、滚动估计、流式查找与截断标记。
@@ -127,13 +143,22 @@ impl Workbench {
             find.update(cx, |find, cx| {
                 find.set_document_size(document.metadata.size, cx)
             });
-            let limit = code.read(cx).render_limit();
-            let key = (document.id, document.text.version(), limit);
+            let view = code.read(cx);
+            let action = self
+                .large_files
+                .action
+                .filter(|action| (action.applies)(view));
+            let key = MarkAttachment {
+                document: document.id,
+                version: document.text.version(),
+                limit: view.render_limit(),
+                has_action: action.is_some(),
+            };
             if self.large_files.attached.get(&(group, secondary)) == Some(&key) {
                 continue;
             }
             self.large_files.attached.insert((group, secondary), key);
-            self.attach_truncation_marks(&code, cx);
+            self.attach_truncation_marks(&code, action, cx);
         }
     }
 
@@ -376,9 +401,10 @@ impl Workbench {
     // ---------------------------------------------------------------- 超长行
 
     /// 给一个代码视图挂上截断标记装饰层（切换文档或换快照后重挂）。
-    pub(super) fn attach_truncation_marks(
+    fn attach_truncation_marks(
         &mut self,
         code: &Entity<CodeView>,
+        action: Option<TruncationAction>,
         cx: &mut Context<Self>,
     ) {
         // 颜色只用 `THEME_COLORS` 里已有的 `descriptionForeground`（不新造颜色键）。
@@ -401,10 +427,14 @@ impl Workbench {
             });
             return;
         };
-        let marks = Rc::new(TruncationMarks::new(text, limit, color, &self.strings));
+        let mut marks = TruncationMarks::new(text, limit, color, &self.strings);
+        if let Some(action) = action {
+            marks = marks.with_action(action, &self.strings);
+        }
         code.update(cx, |code, cx| {
+            code.overlay_width = 0.0;
             code.remove_decorations(&LayerId(MARKS_LAYER.into()), cx);
-            let _ = code.add_decorations(MARKS_LAYER, priority::FIND_MATCH + 1, marks, cx);
+            let _ = code.add_decorations(MARKS_LAYER, priority::FIND_MATCH + 1, Rc::new(marks), cx);
         });
     }
 
@@ -416,7 +446,17 @@ impl Workbench {
     }
 
     pub(super) fn open_long_line_at(&mut self, line: u64, cx: &mut Context<Self>) {
-        let Some(document) = self.active_large_file_document() else {
+        self.open_long_line_in(self.editor.focused, false, line, cx);
+    }
+
+    fn open_long_line_in(
+        &mut self,
+        group: EditorGroupId,
+        secondary: bool,
+        line: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(document) = self.shown_document(group, secondary) else {
             return;
         };
         // 已经在临时标签里了：不再嵌套打开（VS Code 的临时编辑器也不会套娃）。
@@ -425,13 +465,12 @@ impl Workbench {
         {
             return;
         }
-        let truncated = self
-            .code_view()
-            .read(cx)
-            .is_line_truncated(line)
-            .unwrap_or(false);
-        if !truncated {
-            let position = self.code_view().read(cx).selection().active;
+        let Some(code) = self.group_code(group, secondary) else {
+            return;
+        };
+        let view = code.read(cx);
+        if view.is_line_truncated(line) != Some(true) {
+            let position = view.selection().active;
             let _ = shell::view::report(
                 self,
                 "largeFile.longLine.none",
@@ -464,6 +503,7 @@ impl Workbench {
             preserve_focus: false,
             ..Default::default()
         };
+        self.editor.focus(group);
         if let Err(e) =
             self.open_documents()
                 .open(Resource::Virtual(name), options, Cancellation::default())
@@ -473,9 +513,36 @@ impl Workbench {
         cx.notify();
     }
 
-    /// 代码视图报告点击了行内覆盖物：是截断标记就打开这一行。
-    pub(super) fn truncation_overlay_clicked(&mut self, line: u64, cx: &mut Context<Self>) {
-        self.open_long_line_at(line, cx);
+    /// 原标记打开源行。相邻动作沿用既有命令分发，并传递源窗格的文档与行。
+    pub(super) fn truncation_overlay_clicked(
+        &mut self,
+        group: EditorGroupId,
+        secondary: bool,
+        line: u64,
+        command: Option<&Arc<str>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(command) = command else {
+            self.open_long_line_in(group, secondary, line, cx);
+            return;
+        };
+        let Some(document) = self.shown_document(group, secondary) else {
+            return;
+        };
+        self.editor.focus(group);
+        self.run_invocation(
+            Invocation {
+                id: command.clone(),
+                args: Value::Object(Arc::new(BTreeMap::from([
+                    (
+                        "documentId".into(),
+                        Value::String(document.id.0.to_string().into()),
+                    ),
+                    ("line".into(), Value::Number(line as f64)),
+                ]))),
+            },
+            cx,
+        );
     }
 
     /// 本 issue 负责的命令（`rove.editor.openLongLine`）。

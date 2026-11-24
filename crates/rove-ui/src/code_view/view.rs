@@ -15,7 +15,7 @@ use super::columns::{
 };
 use super::decorations::{
     priority, DecorationProvider, DecorationStore, InlineDecoration, LayerId, LineDecorations,
-    MergedLine, TextStyle,
+    MergedLine, Overlay, TextStyle,
 };
 use super::folding::{FoldMap, FoldRange, Folding};
 use super::guides::GUIDE_SEARCH;
@@ -133,10 +133,11 @@ pub enum CodeViewEvent {
     /// #47：本视图里的一次编辑（或撤销 / 重做）已经写进会话；宿主据此同步同一文档的其他视图、
     /// 语法增量解析、`BufferStates` 与标签脏标记。
     Edited(super::edit::EditNotice),
-    /// #22：点击了行内覆盖物（超长行的截断标记）。`text` 是覆盖物的文字，宿主据此分辨是谁的。
+    /// #22：点击了原标记或它右侧的可选动作。命令 ID 与显示语言无关。
     OverlayClicked {
         line: u64,
         text: Arc<str>,
+        command: Option<Arc<str>>,
     },
 }
 
@@ -308,6 +309,27 @@ impl Hash for ShapeKey {
 pub(crate) struct Shaped {
     pub layout: Arc<LineLayout>,
     pub glyphs: Vec<(u32, f32)>,
+}
+
+const OVERLAY_ACTION_GAP: f32 = 8.0;
+
+pub(crate) struct OverlayPart<'a> {
+    pub(crate) x: f32,
+    pub(crate) shaped: &'a Shaped,
+    text: &'a Arc<str>,
+    command: Option<&'a Arc<str>>,
+}
+
+impl OverlayPart<'_> {
+    pub(crate) fn end(&self) -> f32 {
+        self.x + f32::from(self.shaped.layout.width)
+    }
+}
+
+struct OverlayHit {
+    line: u64,
+    text: Arc<str>,
+    command: Option<Arc<str>>,
 }
 
 /// 行号用的数字字形（每次字体变化整形一次 "0123456789"）。
@@ -539,6 +561,8 @@ pub struct CodeView {
     /// #22：行索引未建完时滚动条使用的总行数估计（未索引部分按平均行长外推）。
     scroll_line_estimate: Option<u64>,
     pub(crate) content_width: f64,
+    /// 已测量标记的最右边界，换行时使用最后视觉段的坐标。
+    pub(crate) overlay_width: f64,
     pub(crate) visible: Range<u64>,
     last_top: f64,
     pub(crate) direction: i8,
@@ -827,6 +851,7 @@ impl CodeView {
             render_limit_override: None,
             scroll_line_estimate: None,
             content_width: 0.0,
+            overlay_width: 0.0,
             visible: 0..0,
             last_top: 0.0,
             direction: 1,
@@ -895,6 +920,7 @@ impl CodeView {
         self.links.reset();
         self.lines.clear();
         self.content_width = 0.0;
+        self.overlay_width = 0.0;
         self.wrap.content_width = 0.0;
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
@@ -1045,6 +1071,7 @@ impl CodeView {
         let on = !self.word_wrap_enabled();
         // 与设置本身一致时清掉覆盖，这样之后改设置还能生效。
         self.wrap.session = (on != (self.options.wrap.mode != WordWrap::Off)).then_some(on);
+        self.overlay_width = 0.0;
         self.wrap.applied = None;
         // `sync_wrap` 自己会记下锚点，重算期间视口一直停在同一条缓冲行上。
         self.sync_wrap(self.wrap_width_hint());
@@ -1058,9 +1085,12 @@ impl CodeView {
             WordWrap::Column => {
                 let cell = (self.font.cell_width as f64).max(1.0);
                 let column_width = self.options.wrap.column.max(1) as f64 * cell;
-                column_width.max(self.wrap.content_width) > viewport_width
+                column_width
+                    .max(self.wrap.content_width)
+                    .max(self.overlay_width)
+                    > viewport_width
             }
-            WordWrap::On | WordWrap::Bounded => false,
+            WordWrap::On | WordWrap::Bounded => self.overlay_width > viewport_width,
         }
     }
 
@@ -1462,6 +1492,9 @@ impl CodeView {
             || options.word_separators != self.options.word_separators;
         let links_changed = options.links != self.options.links
             || options.stop_rendering_line_after != self.options.stop_rendering_line_after;
+        if options.wrap != self.options.wrap {
+            self.overlay_width = 0.0;
+        }
         self.options = options;
         if links_changed {
             self.links.reset();
@@ -1554,6 +1587,7 @@ impl CodeView {
         self.font.digits = None;
         self.shapes.clear();
         self.content_width = 0.0;
+        self.overlay_width = 0.0;
     }
 
     /// 当前缩放级别（VS Code `EditorZoom`，-5..=20，每级 10%）。
@@ -1715,23 +1749,44 @@ impl CodeView {
 
     /// 点落在某行的行内覆盖物上时返回 (行号, 覆盖物文字)（#22 的截断标记可点击）。
     pub fn overlay_at_point(&mut self, point: Point<Pixels>) -> Option<(u64, Arc<str>)> {
+        self.overlay_hit(point).map(|hit| (hit.line, hit.text))
+    }
+
+    fn overlay_hit(&mut self, point: Point<Pixels>) -> Option<OverlayHit> {
         let m = self.metrics()?;
-        let origin = self.layout.text.origin;
+        let text = self.layout.text;
+        if !text.contains(&point) {
+            return None;
+        }
+        let origin = text.origin;
         let y = (point.y - origin.y).to_f64();
         let coord = self.current_top() + y / m.line_height;
-        let line = self.doc_line(line_at_coord(coord, &m, &self.zones));
+        let visual = line_at_coord(coord, &m, &self.zones);
+        let top = m.line_top(visual, &self.zones);
+        if !(top..top + 1.0).contains(&coord) {
+            return None;
+        }
+        let (line, segment) = self.wrap.map.to_doc(visual);
+        if segment + 1 < self.wrap.map.span(line) {
+            return None;
+        }
         let x = (point.x - origin.x).to_f64() + self.scroll.x;
         let (entry, shaped) = self.line_geometry(line)?;
         let xs = self.xs_for(&entry, shaped.as_deref());
-        let merged = entry.merged.clone()?;
+        let shift = self
+            .segment_geometry(line, &entry, &xs, segment)
+            .map_or(0.0, |(shift, _)| shift as f32);
+        let merged = entry.merged.as_ref()?;
         for overlay in &merged.overlays {
-            let start = entry.display.x_for_source(&xs, overlay.column) as f64;
-            let width = self
-                .shapes
-                .peek(&self.overlay_key(&overlay.text))
-                .map_or(0.0, |s| f32::from(s.layout.width) as f64);
-            if x >= start && x <= start + width {
-                return Some((line, overlay.text.clone()));
+            let start = entry.display.x_for_source(&xs, overlay.column) + shift;
+            for part in self.overlay_parts(overlay, start) {
+                if x >= f64::from(part.x) && x < f64::from(part.end()) {
+                    return Some(OverlayHit {
+                        line,
+                        text: part.text.clone(),
+                        command: part.command.cloned(),
+                    });
+                }
             }
         }
         None
@@ -1739,10 +1794,19 @@ impl CodeView {
 
     /// 点击落在行内覆盖物上时发事件并返回真（插入符不动）。
     pub(crate) fn overlay_clicked(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) -> bool {
-        let Some((line, text)) = self.overlay_at_point(point) else {
+        let Some(OverlayHit {
+            line,
+            text,
+            command,
+        }) = self.overlay_hit(point)
+        else {
             return false;
         };
-        cx.emit(CodeViewEvent::OverlayClicked { line, text });
+        cx.emit(CodeViewEvent::OverlayClicked {
+            line,
+            text,
+            command,
+        });
         true
     }
 
@@ -2976,7 +3040,7 @@ impl CodeView {
         };
         let key = self.shape_key(&entry);
         if self.shapes.contains(&key) {
-            return false;
+            return self.prepare_overlays(&entry, window);
         }
         let shaped = self.shape(&entry, window);
         let cost = shaped
@@ -2992,10 +3056,60 @@ impl CodeView {
         let xs = self.xs_for(&entry, Some(&shaped));
         self.content_width = self.content_width.max(*xs.last().unwrap_or(&0.0) as f64);
         self.shapes.insert(key, Rc::new(shaped), cost);
-        for o in &entry.merged.as_ref().map_or(vec![], |m| m.overlays.clone()) {
-            self.ensure_overlay_shaped(&o.text, window);
-        }
+        self.prepare_overlays(&entry, window);
         true
+    }
+
+    fn prepare_overlays(&mut self, entry: &LineEntry, window: &mut Window) -> bool {
+        let Some(merged) = &entry.merged else {
+            return false;
+        };
+        let mut changed = false;
+        for overlay in &merged.overlays {
+            changed |= self.ensure_overlay_shaped(&overlay.text, window);
+            if let Some(action) = &overlay.action {
+                changed |= self.ensure_overlay_shaped(&action.text, window);
+            }
+        }
+        changed
+    }
+
+    fn overlays_need_shape(&self, entry: &LineEntry) -> bool {
+        entry.merged.as_ref().is_some_and(|merged| {
+            merged.overlays.iter().any(|overlay| {
+                !self.shapes.contains(&self.overlay_key(&overlay.text))
+                    || overlay.action.as_ref().is_some_and(|action| {
+                        !self.shapes.contains(&self.overlay_key(&action.text))
+                    })
+            })
+        })
+    }
+
+    pub(crate) fn overlay_parts<'a>(
+        &'a self,
+        overlay: &'a Overlay,
+        start: f32,
+    ) -> impl Iterator<Item = OverlayPart<'a>> {
+        let primary = self
+            .shapes
+            .peek(&self.overlay_key(&overlay.text))
+            .map(|shaped| OverlayPart {
+                x: start,
+                shaped: shaped.as_ref(),
+                text: &overlay.text,
+                command: None,
+            });
+        let secondary = primary.as_ref().and_then(|primary| {
+            let action = overlay.action.as_ref()?;
+            let shaped = self.shapes.peek(&self.overlay_key(&action.text))?;
+            Some(OverlayPart {
+                x: primary.end() + OVERLAY_ACTION_GAP,
+                shaped: shaped.as_ref(),
+                text: &action.text,
+                command: Some(&action.command),
+            })
+        });
+        [primary, secondary].into_iter().flatten()
     }
 
     pub(crate) fn overlay_key(&self, text: &Arc<str>) -> ShapeKey {
@@ -3007,10 +3121,10 @@ impl CodeView {
         }
     }
 
-    fn ensure_overlay_shaped(&mut self, text: &Arc<str>, window: &mut Window) {
+    fn ensure_overlay_shaped(&mut self, text: &Arc<str>, window: &mut Window) -> bool {
         let key = self.overlay_key(text);
         if self.shapes.contains(&key) {
-            return;
+            return false;
         }
         let runs = [TextRun {
             len: text.len(),
@@ -3029,6 +3143,7 @@ impl CodeView {
         };
         self.shapes
             .insert(key, Rc::new(shaped), text.len() * 48 + 96);
+        true
     }
 
     pub(crate) fn shape(&self, entry: &LineEntry, window: &mut Window) -> Shaped {
@@ -3144,7 +3259,11 @@ impl CodeView {
             .filter(move |l| *l < known)
             .filter(move |l| match self.lines.peek(l) {
                 None => true,
-                Some(e) => self.decorations.needs(*l) || !self.shapes.contains(&self.shape_key(e)),
+                Some(e) => {
+                    self.decorations.needs(*l)
+                        || !self.shapes.contains(&self.shape_key(e))
+                        || self.overlays_need_shape(e)
+                }
             })
     }
 

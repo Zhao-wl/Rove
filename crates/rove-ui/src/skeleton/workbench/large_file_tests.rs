@@ -491,6 +491,201 @@ fn long_lines_are_truncated_and_open_in_a_read_only_tab(cx: &mut TestAppContext)
     );
 }
 
+fn install_truncation_test_action(view: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    view.update(cx, |v, cx| {
+        v.register_truncation_action(
+            crate::large_file::TruncationAction {
+                command: "workbench.action.pinEditor",
+                label_key: "editors.command.pinEditor",
+                applies: |code| code.language.as_deref() == Some("json"),
+            },
+            cx,
+        );
+    });
+    settle(cx);
+}
+
+fn truncation_points(
+    code: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> ([gpui::Point<gpui::Pixels>; 2], f64) {
+    code.update(cx, |code, cx| {
+        let mut p = code.scroll_position();
+        p.x = f64::MAX;
+        code.set_scroll_position(p, false, cx);
+    });
+    settle(cx);
+    code.update(cx, |code, _| {
+        let (entry, shaped) = code.line_geometry(0).unwrap();
+        let marker = &entry.merged.as_ref().unwrap().overlays[0];
+        let xs = code.xs_for(&entry, shaped.as_deref());
+        let segment = code.visual_map().span(0) - 1;
+        let shift = code
+            .segment_geometry(0, &entry, &xs, segment)
+            .map_or(0.0, |(shift, _)| shift as f32);
+        let start = entry.display.x_for_source(&xs, marker.column) + shift;
+        let origin = code.layout.text.origin;
+        let metrics = code.metrics().unwrap();
+        let scroll = code.scroll_position();
+        let y = origin.y
+            + gpui::px(
+                ((f64::from(segment) - scroll.top + 0.5) * metrics.line_height
+                    + metrics.padding_top) as f32,
+            );
+        let points: Vec<_> = code
+            .overlay_parts(marker, start)
+            .map(|part| {
+                gpui::point(
+                    origin.x
+                        + gpui::px(
+                            part.x + f32::from(part.shaped.layout.width) / 2.0 - scroll.x as f32,
+                        ),
+                    y,
+                )
+            })
+            .collect();
+        assert_eq!(points.len(), 2, "both runs must be shaped");
+        assert!(points.iter().all(|point| code.layout.text.contains(point)));
+        assert!(points[0].x < points[1].x);
+        assert_eq!(
+            code.overlay_at_point(points[0]),
+            Some((0, marker.text.clone()))
+        );
+        assert_eq!(
+            code.overlay_at_point(points[1]),
+            Some((0, marker.action.as_ref().unwrap().text.clone()))
+        );
+        if segment > 0 {
+            let first_row = gpui::point(
+                points[1].x,
+                y - gpui::px((f64::from(segment) * metrics.line_height) as f32),
+            );
+            assert_eq!(code.overlay_at_point(first_row), None);
+        }
+        ([points[0], points[1]], scroll.x)
+    })
+}
+
+#[gpui::test]
+fn adjacent_truncation_action_is_reachable_and_preserves_the_source_group(cx: &mut TestAppContext) {
+    let f = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "editor.stopRenderingLineAfter": 400 }"#,
+    );
+    std::fs::write(f.folder.path().join("long.txt"), "x".repeat(20_000)).unwrap();
+    let (view, cx) = f.open(cx);
+    open_file(&view, "min.json", cx);
+    let source = document(&view, cx);
+    let (source_group, code) = view.read_with(cx, |v, _| (v.editor.focused, v.code_view().clone()));
+    code.read_with(cx, |code, _| {
+        assert_eq!(code.is_line_truncated(0), Some(true))
+    });
+    install_truncation_test_action(&view, cx);
+
+    let ([_, action_point], scroll) = truncation_points(&code, cx);
+    assert!(
+        scroll > 0.0,
+        "both actions are reachable by horizontal scrolling"
+    );
+    let blank = code.update(cx, |code, _| {
+        let blank = gpui::point(
+            action_point.x,
+            action_point.y + gpui::px((code.metrics().unwrap().line_height * 3.0) as f32),
+        );
+        assert!(code.layout.text.contains(&blank));
+        assert_eq!(code.overlay_at_point(blank), None);
+        blank
+    });
+    cx.simulate_click(blank, gpui::Modifiers::default());
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        assert!(!v.editor.active().current().unwrap().pinned)
+    });
+    cx.simulate_click(action_point, gpui::Modifiers::default());
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        assert!(v.editor.active().current().unwrap().pinned)
+    });
+    assert_eq!(document(&view, cx).id, source.id);
+
+    let other = view.update(cx, |v, cx| {
+        let group = v.editor.split(crate::editors::Direction::Right).unwrap();
+        v.editor.focus(group);
+        cx.notify();
+        group
+    });
+    settle(cx);
+    open_file(&view, "long.txt", cx);
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.editor.focused, other);
+        let overlays = &v
+            .code_view()
+            .read(cx)
+            .merged_decorations(0)
+            .unwrap()
+            .overlays;
+        assert_eq!(overlays.len(), 1);
+        assert!(overlays[0].action.is_none());
+    });
+
+    let ([marker_point, _], _) = truncation_points(&code, cx);
+    cx.simulate_click(marker_point, gpui::Modifiers::default());
+    settle(cx);
+    view.read_with(cx, |v, _| assert_eq!(v.editor.focused, source_group));
+    let target = document(&view, cx);
+    assert!(matches!(&target.resource, Resource::Virtual(name)
+        if long_line::parse_resource(name) == Some((source.id.0, 0))));
+    assert!(!target.metadata.read_only.is_empty());
+}
+
+#[gpui::test]
+fn adjacent_truncation_action_hits_only_the_last_wrapped_segment(cx: &mut TestAppContext) {
+    for mode in ["on", "wordWrapColumn"] {
+        let f = Fixture::new(&format!(
+            r#"{{ "editor.stopRenderingLineAfter": 360, "editor.wordWrap": "{mode}", "editor.wordWrapColumn": 65 }}"#
+        ));
+        std::fs::write(
+            f.folder.path().join("min.json"),
+            format!(
+                "{{\"value\":\"{}\",\n\"after\":[\n{}0\n]}}",
+                "x".repeat(4_000),
+                "0,\n".repeat(64)
+            ),
+        )
+        .unwrap();
+        let (view, cx) = f.open(cx);
+        open_file(&view, "min.json", cx);
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
+        code.read_with(cx, |code, _| {
+            assert!(code.visual_map().span(0) > 1, "{mode}")
+        });
+        install_truncation_test_action(&view, cx);
+        let ([_, action_point], _) = truncation_points(&code, cx);
+        cx.simulate_click(action_point, gpui::Modifiers::default());
+        settle(cx);
+        view.read_with(cx, |v, _| {
+            assert!(v.editor.active().current().unwrap().pinned, "{mode}")
+        });
+
+        let measured = code.read_with(cx, |c, _| c.overlay_width);
+        assert!(measured > 0.0);
+        code.update(cx, |c, cx| {
+            let mut scroll = c.scroll_position();
+            scroll.top = 30.0;
+            c.set_scroll_position(scroll, false, cx);
+        });
+        settle(cx);
+        code.read_with(cx, |c, _| {
+            assert!(c.viewport().unwrap().first_line > 0);
+            assert_eq!(
+                c.overlay_width, measured,
+                "scrolling must not clear the measured extent"
+            );
+        });
+        open_file(&view, "small.txt", cx);
+        code.read_with(cx, |c, _| assert_eq!(c.overlay_width, 0.0));
+    }
+}
+
 /// `editor.stopRenderingLineAfter` 改成别的值后截断位置随之变化。
 #[gpui::test]
 fn the_render_limit_setting_moves_the_truncation_point(cx: &mut TestAppContext) {
