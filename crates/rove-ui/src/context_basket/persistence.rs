@@ -95,6 +95,7 @@ pub fn to_json(basket: &Basket) -> Value {
                     "last": anchor.last,
                     "previous": anchor.previous,
                     "following": anchor.following,
+                    "interior": anchor.interior,
                 })
             });
             json!({
@@ -162,6 +163,10 @@ fn optional_hash(value: &Value) -> Option<Option<u64>> {
 }
 
 fn parse_anchor(value: &Value) -> Option<Anchor> {
+    let interior = match value.get("interior") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(serde_json::from_value(value.clone()).ok()?),
+    };
     Some(Anchor {
         file_lines: usize::try_from(value.get("fileLines")?.as_u64()?).ok()?,
         selected: value.get("selected")?.as_u64()?,
@@ -169,6 +174,7 @@ fn parse_anchor(value: &Value) -> Option<Anchor> {
         last: value.get("last")?.as_u64()?,
         previous: optional_hash(value.get("previous")?)?,
         following: optional_hash(value.get("following")?)?,
+        interior,
     })
 }
 

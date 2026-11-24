@@ -12,6 +12,7 @@ pub struct Anchor {
     pub last: u64,
     pub previous: Option<u64>,
     pub following: Option<u64>,
+    pub interior: Option<[u64; 4]>,
 }
 
 impl Anchor {
@@ -38,6 +39,12 @@ impl Anchor {
                 .checked_sub(1)
                 .map(|index| fingerprint(&[rows[index]])),
             following: rows.get(end).map(|row| fingerprint(&[*row])),
+            interior: (selected.len() >= 5).then(|| {
+                let inside = &selected[1..selected.len() - 1];
+                std::array::from_fn(|index| {
+                    fingerprint(&inside[index * inside.len() / 4..(index + 1) * inside.len() / 4])
+                })
+            }),
         })
     }
 
@@ -88,7 +95,20 @@ impl Anchor {
                 let endpoints_same = self.first == current.first && self.last == current.last;
                 let surroundings_same =
                     self.previous == current.previous && self.following == current.following;
+                let bounded_inside_change = span < 5
+                    || self
+                        .interior
+                        .zip(current.interior)
+                        .is_some_and(|(before, after)| {
+                            before
+                                .into_iter()
+                                .zip(after)
+                                .filter(|(old, new)| old == new)
+                                .count()
+                                >= 2
+                        });
                 let stable_inside_edit = span >= 3
+                    && bounded_inside_change
                     && self.previous.is_some()
                     && self.following.is_some()
                     && endpoints_same;
@@ -167,6 +187,22 @@ mod tests {
         let (retained, refreshed) = anchor.relocate(range, &edited).unwrap();
         assert_eq!(retained, range);
         assert_ne!(refreshed.selected, anchor.selected);
+    }
+
+    #[test]
+    fn rewriting_the_interior_cannot_reuse_the_unchanged_boundaries() {
+        let rows = [
+            "before", "start", "first", "second", "third", "fourth", "fifth", "sixth", "end",
+            "after",
+        ];
+        let range = LineRange::new(2, 9).unwrap();
+        let anchor = Anchor::capture(&rows, range).unwrap();
+        let mut small = rows;
+        small[4] = "updated third";
+        assert_eq!(anchor.relocate(range, &small).unwrap().0, range);
+        let mut rewritten = rows;
+        rewritten[2..8].copy_from_slice(&["new 1", "new 2", "new 3", "new 4", "new 5", "new 6"]);
+        assert!(anchor.relocate(range, &rewritten).is_none());
     }
 
     #[test]
