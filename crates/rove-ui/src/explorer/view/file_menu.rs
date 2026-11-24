@@ -35,7 +35,7 @@ impl ExplorerView {
         let has_items = !self.operation_targets(false, cx).is_empty();
         let writable = !self.operation_targets(true, cx).is_empty();
         let can_create = self.creation_parent(cx).is_some();
-        for (id, expected) in registry::FILE_CONTEXT_MENU {
+        for &(id, expected) in registry::FILE_CONTEXT_MENU {
             use registry::MenuWhen::*;
             let enabled = match expected {
                 Create => can_create,
@@ -43,31 +43,43 @@ impl ExplorerView {
                 Writable => writable,
                 Recycle => writable && self.files_enable_trash && cfg!(windows),
                 Permanent => writable && (!self.files_enable_trash || !cfg!(windows)),
+                Basket => !self.menu_basket_paths.is_empty(),
             };
             if !enabled {
                 continue;
             }
-            let Some((_, title, _)) = registry::COMMANDS.iter().find(|(cmd, _, _)| cmd == id)
-            else {
-                continue;
+            let title = if matches!(expected, Basket) {
+                "command.rove.contextBasket.add"
+            } else {
+                let Some((_, title, _)) = registry::COMMANDS.iter().find(|(cmd, _, _)| *cmd == id)
+                else {
+                    continue;
+                };
+                *title
             };
-            let label = self.strings.text(&Message::key(*title)).unwrap_or_default();
+            let label = self.strings.text(&Message::key(title)).unwrap_or_default();
             menu = menu.child(
                 div()
-                    .id(*id)
+                    .id(id)
+                    .debug_selector(|| id.to_owned())
                     .px(px(10.0))
                     .py(px(4.0))
                     .cursor_pointer()
                     .hover(|style| style.bg(hover))
                     .child(SharedString::from(label))
                     .on_click(cx.listener(move |view, _, window, cx| {
-                        view.dismiss_file_menu(cx);
-                        // The key listener updates Explorer again. Dispatch only
-                        // after the menu's entity update has returned.
-                        let id = *id;
-                        window.defer(cx, move |window, cx| {
-                            window.dispatch_action(Box::new(ExplorerAction(id)), cx);
-                        });
+                        if matches!(expected, Basket) {
+                            let paths = std::mem::take(&mut view.menu_basket_paths);
+                            view.dismiss_file_menu(cx);
+                            cx.emit(ExplorerEvent::AddToBasket(paths));
+                        } else {
+                            view.dismiss_file_menu(cx);
+                            // The key listener updates Explorer again. Dispatch only
+                            // after the menu's entity update has returned.
+                            window.defer(cx, move |window, cx| {
+                                window.dispatch_action(Box::new(ExplorerAction(id)), cx);
+                            });
+                        }
                     })),
             );
         }
@@ -87,13 +99,19 @@ impl ExplorerView {
     pub(super) fn dismiss_file_menu(&mut self, cx: &mut Context<Self>) {
         self.menu_open = false;
         self.menu_anchor = None;
+        self.menu_basket_paths.clear();
         cx.notify();
     }
 
-    pub(super) fn open_file_menu(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_file_menu(
+        &mut self,
+        basket_paths: Vec<WorkspacePath>,
+        cx: &mut Context<Self>,
+    ) {
         if self.workspace.is_some() && self.render.borrow().name_edit.is_none() {
             self.menu_open = true;
             self.menu_anchor = None;
+            self.menu_basket_paths = basket_paths;
             cx.notify();
         }
     }

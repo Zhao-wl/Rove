@@ -134,7 +134,7 @@ impl Workbench {
                 self.remember_explorer_operation(steps);
             }
             ExplorerEvent::Command(command) => self.command(command, cx),
-            ExplorerEvent::FileContext(paths) => {
+            ExplorerEvent::AddToBasket(paths) => {
                 let targets = paths
                     .iter()
                     .cloned()
@@ -144,7 +144,7 @@ impl Workbench {
                         symbol: None,
                     })
                     .collect();
-                self.show_basket_sources_menu(targets, Vec::new(), cx);
+                self.add_basket_sources(targets, None, cx);
             }
         }
     }

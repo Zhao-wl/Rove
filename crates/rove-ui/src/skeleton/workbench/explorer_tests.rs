@@ -758,36 +758,87 @@ fn files_that_fail_to_open_do_not_break_the_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn context_basket_explorer_context_collects_multiple_entire_files(cx: &mut TestAppContext) {
-    let fixture = Fixture::new("{}", &["A.cs", "B.cs"]);
-    std::fs::write(fixture.path("A.cs"), "class A {}\n// two").unwrap();
+fn context_basket_explorer_menu_preserves_selected_files_and_follows_a_rename(
+    cx: &mut TestAppContext,
+) {
+    use crate::context_basket::registry as basket;
+
+    let fixture = Fixture::new("{}", &["Folder/A.cs", "B.cs"]);
+    std::fs::write(fixture.path("Folder/A.cs"), "class A {}\n// two").unwrap();
     std::fs::write(fixture.path("B.cs"), "class B {}\n// two\n// three").unwrap();
     let (view, cx) = fixture.open(cx);
     view.update(cx, |view, _| view.basket.use_test_state());
-    let list = list(&view, cx);
-    cx.update(|window, cx| {
-        window.focus(&list.focus_handle(cx));
-        list.update(cx, |view, cx| {
-            view.widget.set_focus(Some(0));
-            view.widget.set_selection(vec![0, 1]);
-            cx.notify();
-        });
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("right");
+    wait_until(&view, cx, "expanded fixture folder", |rows| {
+        rows == ["Folder/", "  A.cs", "B.cs"]
     });
+    let list = list(&view, cx);
+    list.update(cx, |view, cx| {
+        view.widget.set_focus(Some(0));
+        view.widget.set_selection(vec![0, 1, 2]);
+        cx.notify();
+    });
+
     cx.simulate_keystrokes("shift-f10");
-    super::basket_tests::click_basket_menu(cx, 0);
+    assert!(cx.debug_bounds(registry::NEW_FILE).is_some());
+    assert!(cx.debug_bounds(registry::RENAME_FILE).is_some());
+    let add = cx
+        .debug_bounds(basket::ADD)
+        .expect("basket entry in Explorer menu");
+    cx.simulate_click(add.center(), Modifiers::default());
+    cx.run_until_parked();
     view.read_with(cx, |view, _| {
         let [a, b] = view.basket.contents.items() else {
-            panic!("two selected files are expected");
+            panic!("the selected descendant and the sibling file must both be collected");
         };
         assert_eq!(
             (a.path.as_str(), a.lines.first(), a.lines.last()),
-            ("A.cs", 1, 2)
+            ("Folder/A.cs", 1, 2)
         );
         assert_eq!(
             (b.path.as_str(), b.lines.first(), b.lines.last()),
             ("B.cs", 1, 3)
         );
     });
+
+    focus_row(&view, 1, cx);
+    cx.simulate_keystrokes("shift-f10");
+    assert!(cx.debug_bounds(basket::ADD).is_some());
+    let rename = cx
+        .debug_bounds(registry::RENAME_FILE)
+        .expect("rename entry in the same Explorer menu");
+    cx.simulate_click(rename.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "rename from the shared context menu", |rows| {
+        rows == ["Folder/", "  Renamed.cs", "B.cs"]
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        let moved = view.read_with(cx, |view, _| {
+            view.basket.contents.items().first().is_some_and(|item| {
+                item.path.as_str() == "Folder/Renamed.cs"
+                    && item.availability == crate::context_basket::model::Availability::Current
+                    && item.lines.first() == 1
+                    && item.lines.last() == 2
+            })
+        });
+        if moved {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the basket did not follow the file rename"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!fixture.path("Folder/A.cs").exists());
+    assert!(fixture.path("Folder/Renamed.cs").is_file());
 }
 
 #[cfg(windows)]

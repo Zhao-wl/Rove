@@ -76,7 +76,7 @@ pub enum ExplorerEvent {
     },
     /// 空状态按钮的命令 ID（`workbench.action.files.openFolder`）。
     Command(Arc<str>),
-    FileContext(Vec<WorkspacePath>),
+    AddToBasket(Vec<WorkspacePath>),
     UndoRecorded(Vec<ExplorerUndo>),
     MoveDropped {
         paths: Vec<WorkspacePath>,
@@ -118,6 +118,7 @@ pub struct ExplorerView {
     auto_open_dropped: bool,
     menu_open: bool,
     menu_anchor: Option<gpui::Point<gpui::Pixels>>,
+    menu_basket_paths: Vec<WorkspacePath>,
     theme_for_name_edit: Arc<dyn Theme>,
     rename_or_create_reveal: Option<WorkspacePath>,
     list: Entity<ListView>,
@@ -409,6 +410,7 @@ impl ExplorerView {
             auto_open_dropped,
             menu_open: false,
             menu_anchor: None,
+            menu_basket_paths: Vec::new(),
             rename_or_create_reveal: None,
             list,
             render,
@@ -773,7 +775,7 @@ impl ExplorerView {
                     })
                     .filter_map(|row| WorkspacePath::new(&row.id.0).ok())
                     .collect();
-                cx.emit(ExplorerEvent::FileContext(paths));
+                self.open_file_menu(paths, cx);
             }
             ListEvent::Open {
                 ids,
@@ -796,7 +798,6 @@ impl ExplorerView {
                     }
                 }
             }
-            ListEvent::ContextMenu(_) => self.open_file_menu(cx),
             // 焦点换到另一行：紧凑文件夹从最后一段开始（与 VS Code 一致）。
             ListEvent::FocusChanged(_) => {
                 self.segment = None;

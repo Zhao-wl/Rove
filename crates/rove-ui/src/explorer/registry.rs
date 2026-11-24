@@ -69,6 +69,7 @@ pub enum MenuWhen {
     Writable,
     Recycle,
     Permanent,
+    Basket,
 }
 
 pub const FILE_CONTEXT_MENU: &[(&str, MenuWhen)] = &[
@@ -86,6 +87,7 @@ pub const FILE_CONTEXT_MENU: &[(&str, MenuWhen)] = &[
     (COPY_PATH, MenuWhen::Item),
     (COPY_RELATIVE_PATH, MenuWhen::Item),
     (REVEAL_PATH, MenuWhen::Item),
+    (crate::context_basket::registry::ADD, MenuWhen::Basket),
 ];
 
 /// VS Code 上下文键（默认键位的 when 子句用到）。
