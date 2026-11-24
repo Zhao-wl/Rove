@@ -348,7 +348,7 @@ impl Workbench {
                 .groups
                 .values()
                 .flat_map(|pane| &pane.tabs)
-                .filter_map(|tab| self.resource_path(&tab.resource))
+                .filter_map(|tab| self.disk_path(&tab.resource))
                 .any(|path| batch.would_replace_open_path(&root, &path));
             if target_is_open {
                 self.report_file_failure(
