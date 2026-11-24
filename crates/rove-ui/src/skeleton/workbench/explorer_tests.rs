@@ -1196,6 +1196,116 @@ fn explorer_structured_problems_clear_on_recycle_and_return_after_undo(cx: &mut 
     open_structured_fixture(&view, cx, &path);
 }
 
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_structured_problems_ignore_echo_after_undoing_an_overwrite(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDragAndDrop":false,"explorer.confirmUndo":"light"}"#,
+        &["Bad.json", "Target/Bad.json"],
+    );
+    let payload = r#"{"value": [ }"#;
+    let old_target = r#"{"old":true}"#;
+    std::fs::write(fixture.path("Bad.json"), payload).unwrap();
+    std::fs::write(fixture.path("Target/Bad.json"), old_target).unwrap();
+
+    let (view, cx) = fixture.open(cx);
+    let source = WorkspacePath::new("Bad.json").unwrap();
+    let target = WorkspacePath::new("Target/Bad.json").unwrap();
+    let document = open_structured_fixture(&view, cx, &source);
+    let (version, original_source, original_target) = view.read_with(cx, |v, cx| {
+        let explorer = v.explorer.read(cx);
+        let folder = explorer.operations_folder().unwrap();
+        (
+            v.open_document(document).unwrap().text.version(),
+            folder.entry_stamp(&source).unwrap(),
+            folder.entry_stamp(&target).unwrap(),
+        )
+    });
+
+    let explorer = view.read_with(cx, |v, _| v.explorer.clone());
+    explorer.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::MoveDropped {
+            paths: vec![source.clone()],
+            parent: Some(WorkspacePath::new("Target").unwrap()),
+        });
+    });
+    cx.run_until_parked();
+    let confirm = view.read_with(cx, |v, _| {
+        let modal = v.shell.feedback.modal().expect("replace confirmation");
+        assert_eq!(modal.message.key.as_ref(), "explorer.paste.replace");
+        modal.key.clone()
+    });
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Bad.json")).unwrap(),
+        payload
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Target/Bad.json")).unwrap(),
+        old_target
+    );
+    view.update(cx, |v, _| {
+        v.shell
+            .feedback
+            .act(&confirm, registry::FILE_OP_CONFIRM)
+            .unwrap()
+    });
+    wait_for_structured_problems(&view, cx, Some(&Resource::Workspace(target.clone())));
+    assert!(!fixture.path("Bad.json").exists());
+    assert!(original_source
+        .matches_path(&fixture.path("Target/Bad.json"))
+        .unwrap());
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim_end_matches('/') == "Target")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    let restored = Resource::Workspace(source.clone());
+    wait_for_structured_problems(&view, cx, Some(&restored));
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Bad.json")).unwrap(),
+        payload
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Target/Bad.json")).unwrap(),
+        old_target
+    );
+    assert!(original_source
+        .matches_path(&fixture.path("Bad.json"))
+        .unwrap());
+    assert!(original_target
+        .matches_path(&fixture.path("Target/Bad.json"))
+        .unwrap());
+
+    view.update(cx, |v, cx| {
+        v.apply_explorer_workspace_events(
+            vec![FileEvent::Renamed {
+                from: source,
+                to: target,
+            }],
+            cx,
+        );
+    });
+    view.read_with(cx, |v, cx| {
+        use crate::explorer::decorations::DecorationProvider;
+
+        let document = v.open_document(document).unwrap();
+        assert_eq!(document.resource, restored);
+        assert_eq!(document.text.version(), version);
+        let explorer = v.explorer.read(cx);
+        assert!(explorer
+            .problems()
+            .decorate(&WorkspacePath::new("Bad.json").unwrap(), false)
+            .is_some());
+        assert!(explorer
+            .problems()
+            .decorate(&WorkspacePath::new("Target/Bad.json").unwrap(), false)
+            .is_none());
+    });
+}
+
 #[gpui::test]
 fn explorer_permanent_delete_requires_confirmation_even_when_recycle_prompt_is_off(
     cx: &mut TestAppContext,

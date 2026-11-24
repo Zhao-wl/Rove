@@ -187,19 +187,25 @@ impl Workbench {
                         return false;
                     }
                     let source = self.root.join(from.as_str());
-                    let same_object = movement
-                        .stamp
-                        .as_ref()
-                        .is_some_and(|stamp| matches!(stamp.matches_path(&source), Ok(true)));
-                    same_object
-                        && if same_path(from, to) {
-                            // Windows looks up both spellings in a case-only move.
-                            source
-                                .canonicalize()
-                                .is_ok_and(|path| path.ends_with(from.as_str()))
-                        } else {
-                            matches!(exists(to), Ok(false))
-                        }
+                    let Some(stamp) = movement.stamp.as_ref() else {
+                        return false;
+                    };
+                    if !matches!(stamp.matches_path(&source), Ok(true)) {
+                        return false;
+                    }
+                    if same_path(from, to) {
+                        // Windows looks up both spellings in a case-only move.
+                        return source
+                            .canonicalize()
+                            .is_ok_and(|path| path.ends_with(from.as_str()));
+                    }
+                    // Undo can put the displaced previous occupant back at the old destination.
+                    // An unrelated object there confirms the old move no longer describes disk.
+                    let target = self.root.join(to.as_str());
+                    match stamp.matches_path(&target) {
+                        Ok(same) => !same,
+                        Err(error) => error.kind() == io::ErrorKind::NotFound,
+                    }
                 })
             }
             _ => true,
