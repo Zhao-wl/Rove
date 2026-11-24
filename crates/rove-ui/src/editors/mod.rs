@@ -13,6 +13,7 @@ use rove_syntax::{highlight::DocumentHighlighter, SyntaxSnapshot, SyntaxUpdate};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 
 pub(crate) type TabId = u64;
+type OpenPreparation = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 const HISTORY_LIMIT: usize = 100;
 
 #[derive(Clone)]
@@ -87,6 +88,7 @@ pub(crate) struct Tab {
     pub(crate) reveal: bool,
     pub(crate) content: Content,
     options: OpenOptions,
+    prepare: Option<OpenPreparation>,
     request: Option<Request>,
     used: u64,
 }
@@ -411,6 +413,7 @@ impl EditorService {
                 secondary: tab.secondary.clone(),
                 content: tab.content.clone(),
                 options: tab.options.clone(),
+                prepare: tab.prepare.clone(),
                 request: None,
                 used: id,
                 reveal: false,
@@ -420,11 +423,12 @@ impl EditorService {
                 options.target = OpenTarget::Group(target);
                 options.preview_tab = false;
                 options.preserve_focus = false;
-                let _ = self.request_open(
+                let _ = self.request_open_with(
                     copy.resource.clone(),
                     options,
                     Cancellation::default(),
                     false,
+                    copy.prepare.clone(),
                 );
             } else {
                 self.count_up(&copy);
@@ -786,6 +790,7 @@ impl EditorService {
             }),
             request: None,
             options: OpenOptions::default(),
+            prepare: None,
             used: id,
             reveal: false,
         };
@@ -973,11 +978,12 @@ impl EditorService {
             let mut options = tab.options.clone();
             options.target = OpenTarget::Group(group);
             options.force_open |= force_open;
-            let _ = self.request_open(
+            let _ = self.request_open_with(
                 tab.resource.clone(),
                 options,
                 Cancellation::default(),
                 false,
+                tab.prepare.clone(),
             );
         }
     }
@@ -1093,12 +1099,39 @@ impl EditorService {
         }
     }
 
+    /// Prepare a file on the document loader's background task, after resolving the editor group.
+    pub(crate) fn open_prepared(
+        &mut self,
+        resource: Resource,
+        options: OpenOptions,
+        prepare: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<OpenRequestId> {
+        self.request_open_with(
+            resource,
+            options,
+            Cancellation::default(),
+            true,
+            Some(Arc::new(prepare)),
+        )
+    }
+
     fn request_open(
         &mut self,
         resource: Resource,
         options: OpenOptions,
         cancel: Cancellation,
         history: bool,
+    ) -> Result<OpenRequestId> {
+        self.request_open_with(resource, options, cancel, history, None)
+    }
+
+    fn request_open_with(
+        &mut self,
+        resource: Resource,
+        options: OpenOptions,
+        cancel: Cancellation,
+        history: bool,
+        prepare: Option<OpenPreparation>,
     ) -> Result<OpenRequestId> {
         cancel.check()?;
         let from = self.location();
@@ -1203,6 +1236,7 @@ impl EditorService {
                     content: Content::Loading,
                     request: None,
                     options: options.clone(),
+                    prepare: None,
                     used: id.0,
                     reveal: false,
                 },
@@ -1220,6 +1254,8 @@ impl EditorService {
             .tab_mut(tab_id)
             .unwrap();
         tab.options = options.clone();
+        let prepare = prepare.or_else(|| tab.prepare.clone());
+        tab.prepare = prepare.clone();
         tab.request = Some(Request {
             id,
             cancel: cancel.clone(),
@@ -1271,6 +1307,9 @@ impl EditorService {
                     Some(opened) => opened.document.clone(),
                     // #209：「仍然打开」经 #1 的 `OpenRequest` 传到加载器；普通打开是默认值。
                     None => {
+                        if let Some(prepare) = prepare {
+                            prepare()?;
+                        }
                         let request = rove_buffer::OpenRequest {
                             force_open: options.force_open,
                         };
