@@ -92,7 +92,7 @@ ISSUES = [
     ("nonet", "M4", 3, "ui", "精简 GPUI 的网络依赖", ["gpui"]),
     ("integ-m4", "M4", 3, "infra", "【集成验收】M4：FEATURES 中全部 P1 功能的端到端验收与性能回归检查",
      ["multicursor", "autoedit", "smartselect", "sticky", "minimap", "brackets", "wrap", "semantic", "nav-extra", "structure",
-      "replace-all", "fileops", "image", "langs-extra", "basket", "tail", "i18n", "ext-themes", "zen",
+      "replace-all", "fileops", "image", "langs-extra", "basket", "tail", "ext-themes", "zen",
       "settings-ui", "links", "langdetect", "nonet", "integ-m1", "integ-m2", "integ-m3"]),
     # 注：v0.1 首发时 R77（integ-v01，M5）实际先于本条完成；骨架不允许依赖更晚的里程碑，所以这里不列它，见正文的范围调整说明。
     # ───────────── M5 发布 ─────────────

@@ -149,7 +149,7 @@ Rove = **VS Code 的阅读与轻编辑体验，去掉一切重度能力，并用
 | 设置界面（preferences） | 改造 | P1 | 首版只提供 JSON 编辑（打开 `settings.json`），图形化的设置界面以后再做 |
 | 键位（keybindings） | 照搬 | P0 | 默认键位与 VS Code（Windows）一致；**与 VS Code 共用 `keybindings.json`**（D4），支持 `when` 子句的一个子集。为此，Rove 的 action ID 直接采用 VS Code 的命令 ID（如 `editor.action.revealDefinition`），用户的自定义键位才能原样生效 |
 | 键位编辑器 | 改造 | P2 | 首版只提供 JSON 编辑 |
-| 界面语言（localization） | 改造 | P1 | 内置中文和英文，不使用语言包扩展 |
+| 界面语言（localization） | 改造 | P2 | 英文界面与语言切换延后至 v0.3.0 之后，见 [#68](https://github.com/Zhao-wl/Rove/issues/68)。计划内置中文和英文，沿用内置字符串表 |
 | 设置同步、配置文件（profiles） | 不做 | — | 需要账号或网络 |
 | 自动更新（update） | 改造 | P0 | D11：从 GitHub Releases 检查并下载更新，校验签名后在重启时安装；`rove.update.mode`（`none` / `manual` / `start` / `default`，默认 `default`）。键名加 `rove.` 前缀，避免与共用 settings.json 中 VS Code 自己的 `update.mode` 冲突。这是全程序唯一的网络出口（`PROJECT_CHARTER` §2.1） |
 

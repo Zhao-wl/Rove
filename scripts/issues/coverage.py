@@ -83,7 +83,6 @@ MAP = [
     ("设置界面（preferences）", ["settings-ui"]),
     ("键位（keybindings）", ["keys"]),
     ("自动更新（update）", ["updater"]),
-    ("界面语言（localization）", ["i18n", "contracts"]),
     ("Markdown 预览", ["markdown"]),
     ("Markdown 大纲、链接跳转", ["outline", "links", "markdown"]),
     ("JSON/YAML/XML 结构树视图", ["structure"]),
