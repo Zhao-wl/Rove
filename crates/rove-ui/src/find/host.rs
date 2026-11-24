@@ -1778,7 +1778,9 @@ impl FindHost {
             let fg = paint(c.widget_foreground);
             let mut el = div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .justify_center()
                 .w(px(20.0))
@@ -1817,6 +1819,7 @@ impl FindHost {
                 .flex()
                 .items_center()
                 .justify_center()
+                .flex_shrink_0()
                 .w(px(22.0))
                 .h(px(22.0))
                 .rounded(px(5.0))
@@ -1841,6 +1844,7 @@ impl FindHost {
         let tip = |this: &Self, key: &str, command: &str, cx: &App| this.tooltip(key, command, cx);
         let toggles = div()
             .flex()
+            .flex_shrink_0()
             .items_center()
             .gap(px(1.0))
             .pr(px(2.0))
@@ -1878,6 +1882,7 @@ impl FindHost {
                 .flex_1()
                 .min_w_0()
                 .key_context(context)
+                .debug_selector(move || context_key.into())
                 .child(child)
         };
         let boxed = |children: gpui::Div, error: bool| {
@@ -1905,6 +1910,7 @@ impl FindHost {
             ))
             .child(toggles);
         let count = div()
+            .debug_selector(|| "find-count".into())
             .flex_shrink_0()
             .min_w(px(69.0))
             .px(px(4.0))
@@ -2051,12 +2057,11 @@ impl FindHost {
         context.add(reg::context::WIDGET_VISIBLE);
         let mut widget = div()
             .id("find-widget")
+            .debug_selector(|| "find-widget".into())
             .occlude()
             .key_context(context)
-            .absolute()
-            .top(px(0.0))
-            .right(px(18.0))
-            .w(px(WIDTH))
+            .w_full()
+            .max_w(px(WIDTH))
             .flex()
             .flex_col()
             .p(px(4.0))
@@ -2080,7 +2085,15 @@ impl FindHost {
                     .child(message),
             );
         }
-        widget
+        // 两侧锚定外层，使查找条能随编辑器组缩窄并保持右对齐。
+        div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .right(px(18.0))
+            .flex()
+            .justify_end()
+            .child(widget)
     }
 }
 

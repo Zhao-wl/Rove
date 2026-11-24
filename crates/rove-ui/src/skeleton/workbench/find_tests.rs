@@ -7,7 +7,7 @@ use crate::find::{
     host::FindHost,
     state::{CountLabel, SearchState},
 };
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{Modifiers, TestAppContext, VisualTestContext};
 use rove_base::{Position, Utf8Column};
 use rove_config::{SettingsOptions, SettingsService};
 
@@ -178,6 +178,56 @@ fn ctrl_f_opens_with_seed_and_escape_clears(cx: &mut TestAppContext) {
     // 再次 escape 不会有任何反应。
     press("escape", cx);
     assert!(!visible(&view, cx));
+}
+
+#[gpui::test]
+fn long_find_query_scrolls_without_covering_controls_in_a_narrow_editor(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let query = format!("{}Z", "W".repeat(80));
+    std::fs::write(fx.folder.path().join("notes.txt"), format!("{query}\n").repeat(6)).unwrap();
+    let (view, cx) = fx.open(cx);
+    let editor = cx.debug_bounds("editor").unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    cx.simulate_resize(gpui::size(
+        viewport.width - editor.size.width + gpui::px(335.0),
+        viewport.height,
+    ));
+    refresh(cx);
+
+    press("ctrl-f", cx);
+    type_text(&query, cx);
+    assert_eq!(input(&view, cx), query);
+    assert!(matches!(label(&view, cx), CountLabel::Matches { total: 6, .. }));
+
+    let editor = cx.debug_bounds("editor").unwrap();
+    let widget = cx.debug_bounds("find-widget").unwrap();
+    let field = cx.debug_bounds("findInputFocussed").unwrap();
+    let case = cx.debug_bounds("find-case").unwrap();
+    let regex = cx.debug_bounds("find-regex").unwrap();
+    let count = cx.debug_bounds("find-count").unwrap();
+    assert!(widget.left() >= editor.left());
+    assert!(widget.right() <= editor.right());
+    assert!(field.size.width > gpui::px(0.0));
+    assert!(field.right() <= case.left());
+    assert!(case.size.width >= gpui::px(20.0));
+    assert!(regex.right() <= count.left());
+    assert!(count.right() <= widget.right());
+
+    // 末尾的 Z 必须能在输入区右侧点中。回到开头后，左侧点击应再次定位到行首。
+    press("end", cx);
+    cx.simulate_click(
+        gpui::point(field.right() - gpui::px(2.0), field.center().y),
+        Modifiers::none(),
+    );
+    press("backspace", cx);
+    assert_eq!(input(&view, cx), query.trim_end_matches('Z'));
+    press("home", cx);
+    cx.simulate_click(
+        gpui::point(field.left() + gpui::px(1.0), field.center().y),
+        Modifiers::none(),
+    );
+    type_text("H", cx);
+    assert_eq!(input(&view, cx), format!("H{}", query.trim_end_matches('Z')));
 }
 
 #[gpui::test]
