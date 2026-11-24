@@ -341,7 +341,14 @@ fn xml_space_keeps_references_and_unresolved_entities_conservative() {
 
     let unresolved = r#"<root xml:space="&requested;"><block><a/><b/></block>  <end/></root>"#;
     let with_entity = format!("<!DOCTYPE root [<!ENTITY requested 'preserve'>]>{unresolved}");
-    assert!(format(&with_entity).ends_with(unresolved));
+    assert_eq!(
+        format(&with_entity),
+        format!("<!DOCTYPE root [<!ENTITY requested 'preserve'>]>\n{unresolved}")
+    );
+    assert!(parse(StructuredLanguage::Xml, &with_entity)
+        .diagnostics(&cancel)
+        .unwrap()
+        .is_empty());
 
     let dtd = r#"<!DOCTYPE root [<!ATTLIST root xml:space (default|preserve) 'preserve'>]>"#;
     let undeclared_in_tag = "<root><a/><b/></root>";
@@ -351,6 +358,16 @@ fn xml_space_keeps_references_and_unresolved_entities_conservative() {
     let parent_default = r#"<root xml:space="default"><block><a/><b/></block><end/></root>"#;
     let expected = "<root xml:space=\"default\">\n  <block><a/><b/></block>\n  <end/>\n</root>";
     assert!(format(&format!("{dtd}{parent_default}")).ends_with(expected));
+
+    let malformed = format!("{dtd}<root><block></root>");
+    assert!(format_text(
+        StructuredLanguage::Xml,
+        &malformed,
+        options,
+        FormatMode::Pretty,
+        &cancel
+    )
+    .is_err());
 }
 
 #[test]

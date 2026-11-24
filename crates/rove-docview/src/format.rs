@@ -133,7 +133,9 @@ fn format_document(
     }
     let tree = parse_tree(language, text, None, cancel)?;
     let root = tree.root_node();
-    if root.has_error() {
+    if root.has_error()
+        && (language != StructuredLanguage::Xml || !xml_dtd_spacing_valid(root, text, cancel)?)
+    {
         return Err(Error::InvalidInput);
     }
     let mut formatter = Formatter {
@@ -308,11 +310,7 @@ impl Formatter<'_> {
     fn xml(&mut self, root: Node<'_>) -> Result<()> {
         // A DTD can set xml:space independently on every element with no explicit value.
         // Treat those elements as preserved without reading or evaluating declarations.
-        let has_dtd = named(root).any(|child| {
-            child.kind() == "doctypedecl"
-                || (child.kind() == "prolog"
-                    && named(child).any(|entry| entry.kind() == "doctypedecl"))
-        });
+        let has_dtd = xml_doctype(root).is_some();
         let mut edits = Vec::new();
         let mut stack = vec![(root, 0, false)];
         while let Some((node, depth, inherited_preserve)) = stack.pop() {
@@ -424,6 +422,40 @@ fn named(node: Node<'_>) -> impl Iterator<Item = Node<'_>> {
         }
         None
     })
+}
+
+fn xml_doctype(root: Node<'_>) -> Option<Node<'_>> {
+    let prolog = named(root).find(|child| child.kind() == "prolog")?;
+    named(prolog).find(|child| child.kind() == "doctypedecl")
+}
+
+fn xml_dtd_spacing_valid(root: Node<'_>, text: &str, cancel: &Cancellation) -> Result<bool> {
+    let Some(doctype) = xml_doctype(root).filter(Node::has_error) else {
+        return Ok(false);
+    };
+    let mut cursor = doctype.walk();
+    let Some(close) = doctype
+        .children(&mut cursor)
+        .find(|child| child.kind() == "]")
+    else {
+        return Ok(false);
+    };
+    let at = close.start_byte();
+    if text.as_bytes().get(at.wrapping_sub(1)) != Some(&b'>') {
+        return Ok(false);
+    }
+    // The bundled grammar requires a separator between the last internal subset
+    // declaration and ']'. Validate with the optional separator present, then keep
+    // using the original tree and text so no byte ranges or DTD bytes change.
+    let mut validation = String::with_capacity(text.len() + 1);
+    validation.push_str(&text[..at]);
+    validation.push(' ');
+    validation.push_str(&text[at..]);
+    Ok(
+        !parse_tree(StructuredLanguage::Xml, &validation, None, cancel)?
+            .root_node()
+            .has_error(),
+    )
 }
 
 fn xml_whitespace(text: &str) -> bool {
