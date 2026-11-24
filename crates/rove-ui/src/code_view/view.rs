@@ -2938,7 +2938,9 @@ impl CodeView {
         // 重建行缓存后仍可复用整形缓存；这时也要重新计入文档宽度。
         if let Some(shaped) = self.shapes.peek(&self.shape_key(&entry)) {
             let xs = self.xs_for(&entry, Some(shaped));
-            self.content_width = self.content_width.max(f64::from(*xs.last().unwrap_or(&0.0)));
+            self.content_width = self
+                .content_width
+                .max(f64::from(*xs.last().unwrap_or(&0.0)));
         }
         let cost =
             entry.source.len() + entry.display.text.len() + entry.display.stops().len() * 12 + 128;
