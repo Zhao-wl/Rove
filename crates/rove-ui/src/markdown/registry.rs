@@ -220,6 +220,34 @@ pub fn register_contributions(registry: &mut ContributionRegistry) -> Result<()>
     Ok(())
 }
 
+/// Register the settings read by the active Markdown preview.
+pub fn register_settings(registry: &mut SettingRegistry) -> Result<()> {
+    for key in [
+        "markdown.links.openLocation",
+        "markdown.math.enabled",
+        "markdown.math.macros",
+        "markdown.preview.breaks",
+        "markdown.preview.doubleClickToSwitchToEditor",
+        "markdown.preview.fontFamily",
+        "markdown.preview.fontSize",
+        "markdown.preview.frontMatter",
+        "markdown.preview.lineHeight",
+        "markdown.preview.linkify",
+        "markdown.preview.markEditorSelection",
+        "markdown.preview.openMarkdownLinks",
+        "markdown.preview.scrollEditorWithPreview",
+        "markdown.preview.scrollPreviewWithEditor",
+        "markdown.preview.typographer",
+        "markdown.styles",
+        "rove.markdown.webviewIdleTimeout",
+    ] {
+        if let Some(entry) = rove_config::catalog::catalog().get(key) {
+            registry.register(key, entry.setting.clone())?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,32 +283,4 @@ mod tests {
             assert!(registry.get(key).is_some(), "{key}");
         }
     }
-}
-
-/// Register the settings read by the active Markdown preview.
-pub fn register_settings(registry: &mut SettingRegistry) -> Result<()> {
-    for key in [
-        "markdown.links.openLocation",
-        "markdown.math.enabled",
-        "markdown.math.macros",
-        "markdown.preview.breaks",
-        "markdown.preview.doubleClickToSwitchToEditor",
-        "markdown.preview.fontFamily",
-        "markdown.preview.fontSize",
-        "markdown.preview.frontMatter",
-        "markdown.preview.lineHeight",
-        "markdown.preview.linkify",
-        "markdown.preview.markEditorSelection",
-        "markdown.preview.openMarkdownLinks",
-        "markdown.preview.scrollEditorWithPreview",
-        "markdown.preview.scrollPreviewWithEditor",
-        "markdown.preview.typographer",
-        "markdown.styles",
-        "rove.markdown.webviewIdleTimeout",
-    ] {
-        if let Some(entry) = rove_config::catalog::catalog().get(key) {
-            registry.register(key, entry.setting.clone())?;
-        }
-    }
-    Ok(())
 }
