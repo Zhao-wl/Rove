@@ -22,7 +22,6 @@ use crate::{
         StaticList,
     },
     lists::{ItemId, QuickInputId, QuickInputOptions, Row},
-    skeleton::text::{VirtualContent, VirtualSource},
     welcome::{
         recent::{RecentKind, RecentList},
         registry as reg,
@@ -30,28 +29,11 @@ use crate::{
         view as page,
     },
 };
-use rove_buffer::ReadOnlyReason;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
-
-/// 欢迎页的虚拟文档内容来源：没有磁盘文件，正文是空的（绘制完全由本模块负责）。
-pub(super) struct WelcomeSource;
-
-impl VirtualSource for WelcomeSource {
-    fn load(&self, name: &str) -> Option<CoreResult<VirtualContent>> {
-        (name == reg::RESOURCE).then(|| {
-            Ok(VirtualContent {
-                text: String::new(),
-                language: "plaintext".into(),
-                // 虚拟文档里唯一「会话中也解除不了」的只读原因：欢迎页不是可编辑文本。
-                read_only: vec![ReadOnlyReason::Metadata],
-            })
-        })
-    }
-}
 
 /// 浮层当前在选什么。
 #[derive(Clone, Copy, PartialEq, Eq)]

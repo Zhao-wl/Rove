@@ -50,7 +50,7 @@ impl Workbench {
         };
         if self.settings_view.is_none() {
             let theme = self.theme.clone();
-            let strings = self.strings.clone();
+            let strings = self.find_strings.clone();
             let view = cx.new(|cx| SettingsView::new(shared, theme, strings, cx));
             cx.subscribe(&view, |workbench, _, event: &SettingsViewEvent, cx| {
                 let SettingsViewEvent::OpenJson(position) = *event;

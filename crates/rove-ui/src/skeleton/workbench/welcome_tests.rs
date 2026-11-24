@@ -654,6 +654,21 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     workbench.update(cx, |_, cx| cx.set_global(SharedSettings(service)));
     run(&workbench, cx, reg::OPEN_SETTINGS);
     assert!(tabs(&workbench, cx).contains(&Resource::Virtual(settings::RESOURCE.into())));
+    workbench.read_with(cx, |view, _| {
+        let current = view
+            .editor
+            .active()
+            .current()
+            .expect("active settings editor");
+        assert_eq!(
+            current.resource,
+            Resource::Virtual(settings::RESOURCE.into())
+        );
+        assert!(
+            current.opened().is_some(),
+            "the graphical settings document must finish opening"
+        );
+    });
     assert_eq!(fx.settings_text(), source);
     let editor = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
     editor.update(cx, |view, cx| {

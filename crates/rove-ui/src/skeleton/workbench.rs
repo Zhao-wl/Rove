@@ -1,4 +1,7 @@
-use super::{appearance, text::FileDocuments};
+use super::{
+    appearance,
+    text::{FileDocuments, StaticPageSource},
+};
 use crate::{
     code_view::{
         self, CodeView, CodeViewEvent, CodeViewServices, Reveal, ScrollPosition, Selection,
@@ -490,7 +493,12 @@ impl Workbench {
         let metadata = metadata_host::MetadataHost::with_loader(
             FileDocuments::new(root.clone(), services.clone())
                 .with_size_policy(size)
-                .with_virtual_source(Arc::new(welcome_host::WelcomeSource)),
+                .with_virtual_source(Arc::new(StaticPageSource(
+                    crate::welcome::registry::RESOURCE,
+                )))
+                .with_virtual_source(Arc::new(StaticPageSource(
+                    crate::settings_ui::registry::RESOURCE,
+                ))),
             metadata_loader,
             large_files.long_lines.clone(),
         );
