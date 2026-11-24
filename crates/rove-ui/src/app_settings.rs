@@ -12,8 +12,8 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 16] {
-    [
+fn modules() -> &'static [(&'static str, Register)] {
+    &[
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
         ("code_view", crate::code_view::options::register),
@@ -107,7 +107,7 @@ pub fn registry() -> Result<SettingRegistry> {
 /// Settings declared by running features, excluding catalog placeholders.
 pub(crate) fn consumer_registry() -> Result<SettingRegistry> {
     let mut registry = SettingRegistry::default();
-    for (_, register) in modules() {
+    for &(_, register) in modules() {
         let mut own = SettingRegistry::default();
         register(&mut own)?;
         merge(&mut registry, &own)?;
@@ -138,7 +138,7 @@ mod tests {
     fn module_registrations_agree_on_shared_keys() {
         let mut seen: std::collections::BTreeMap<String, (&str, rove_config::Setting)> =
             Default::default();
-        for (module, register) in modules() {
+        for &(module, register) in modules() {
             let mut own = SettingRegistry::default();
             register(&mut own).unwrap();
             for (key, setting) in own.entries() {
