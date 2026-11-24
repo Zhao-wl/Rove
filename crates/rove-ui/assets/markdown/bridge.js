@@ -11,6 +11,7 @@
   const content = document.getElementById('rove-content');
   let documentId = null;
   let seq = 0;
+  let sourceKey = null;
   let themeKind = 'vscode-dark';
   let mathMacros = {};
   let ignoreScroll = 0;
@@ -300,6 +301,7 @@
     const started = performance.now();
     documentId = message.documentId;
     seq = message.seq;
+    sourceKey = /^[0-9a-f]{32}$/.test(message.sourceKey) ? message.sourceKey + ':' : null;
     mathMacros = message.mathMacros || {};
     setStyles(message.styles || []);
     document.body.classList.toggle('showEditorSelection', !!message.markEditorSelection);
@@ -431,14 +433,13 @@
 
   function sourceLinesAt(node, offset) {
     const element = node.parentElement;
-    if (!element) {
+    if (!element || !sourceKey) {
       return null;
     }
-    const marker = element.closest('[data-source-code-lines], [data-source-lines]');
+    const marker = element.closest('[data-source-code-lines^="' + sourceKey +
+      '"], [data-source-lines^="' + sourceKey + '"]');
     if (!marker) {
-      const block = element.closest('.code-line[data-line]');
-      const line = block ? Number(block.getAttribute('data-line')) : NaN;
-      return Number.isSafeInteger(line) && line >= 0 ? [line, line] : null;
+      return null;
     }
     if (marker.hasAttribute('data-source-code-lines')) {
       // The highlighter adds nested spans, but keeps the code element and its literal newlines.
@@ -446,11 +447,11 @@
       before.selectNodeContents(marker);
       before.setEnd(node, offset);
       const index = before.toString().split('\n').length - 1;
-      const source = marker.getAttribute('data-source-code-lines').split(',')[index];
+      const source = marker.getAttribute('data-source-code-lines').slice(sourceKey.length).split(',')[index];
       const line = source ? Number(source) : NaN;
       return Number.isSafeInteger(line) && line >= 0 ? [line, line] : null;
     }
-    const lines = marker.getAttribute('data-source-lines').split(',').map(Number);
+    const lines = marker.getAttribute('data-source-lines').slice(sourceKey.length).split(',').map(Number);
     return lines.length === 2 && lines.every(Number.isSafeInteger) && lines[0] >= 0 &&
       lines[1] >= lines[0] ? lines : null;
   }

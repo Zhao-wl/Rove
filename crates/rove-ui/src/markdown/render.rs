@@ -91,6 +91,8 @@ impl Default for RenderOptions {
 pub struct Rendered {
     /// 净化后的正文 HTML（放进预览页的 `<body>`）。
     pub html: String,
+    /// 标识当前渲染器生成的源码行标记。
+    pub source_key: String,
     /// 文档引用的远程资源个数（已替换成占位图）。
     pub remote: usize,
     /// 正文里引用到的本地盘符（小写），WebView2 需要为它们建立文件主机映射。
@@ -102,7 +104,8 @@ pub struct Rendered {
 /// 把文档渲染成净化后的 HTML。`base` 是文档所在目录，用于解析相对路径；没有时相对路径按远程处理以外的
 /// “无法解析”丢弃。
 pub fn render(text: &str, base: Option<&Path>, options: &RenderOptions) -> Rendered {
-    let raw = to_html(text, options);
+    let source_key = super::page::nonce();
+    let raw = to_html(text, options, &source_key);
     let remote = Arc::new(AtomicUsize::new(0));
     let drives = Arc::new(Mutex::new(BTreeSet::new()));
     let html = sanitize(
@@ -114,6 +117,7 @@ pub fn render(text: &str, base: Option<&Path>, options: &RenderOptions) -> Rende
     let drives = std::mem::take(&mut *drives.lock().unwrap());
     Rendered {
         html,
+        source_key,
         remote: remote.load(Ordering::Relaxed),
         drives,
         lines: line_starts(text).len(),
@@ -166,6 +170,7 @@ struct Writer<'o> {
     out: String,
     lines: Vec<usize>,
     options: &'o RenderOptions,
+    source_key: &'o str,
     /// 表头/表体：表头单元格用 `th`。
     in_head: bool,
     alignments: Vec<Alignment>,
@@ -217,10 +222,17 @@ impl Writer<'_> {
         );
     }
 
-    fn source_span(&mut self, range: &Range<usize>) {
+    fn source_attribute(&mut self, range: &Range<usize>) {
         let first = self.line(range.start);
         let last = self.line(range.end.saturating_sub(1).max(range.start));
-        let _ = write!(self.out, "<span data-source-lines=\"{first},{last}\">");
+        let key = self.source_key;
+        let _ = write!(self.out, " data-source-lines=\"{key}:{first},{last}\"");
+    }
+
+    fn source_span(&mut self, range: &Range<usize>) {
+        self.out.push_str("<span");
+        self.source_attribute(range);
+        self.out.push('>');
     }
 
     fn text(&mut self, text: &str, range: &Range<usize>) {
@@ -240,7 +252,8 @@ impl Writer<'_> {
         self.out.push_str("</span>");
     }
 
-    fn start(&mut self, tag: Tag, offset: usize) {
+    fn start(&mut self, tag: Tag, range: Range<usize>) {
+        let offset = range.start;
         match tag {
             Tag::Paragraph => {
                 self.open("p", "", offset);
@@ -297,7 +310,11 @@ impl Writer<'_> {
                     source_lines: Vec::new(),
                 });
             }
-            Tag::HtmlBlock => {}
+            Tag::HtmlBlock => {
+                self.out.push_str("<div style=\"display:contents\"");
+                self.source_attribute(&range);
+                self.out.push('>');
+            }
             Tag::List(Some(start)) => {
                 self.open("ol", "", offset);
                 if start != 1 {
@@ -434,7 +451,8 @@ impl Writer<'_> {
                         escape(&mut self.out, &language);
                         self.out.push('"');
                     }
-                    self.out.push_str(" data-source-code-lines=\"");
+                    let key = self.source_key;
+                    let _ = write!(self.out, " data-source-code-lines=\"{key}:");
                     for (index, line) in source_lines.iter().enumerate() {
                         if index > 0 {
                             self.out.push(',');
@@ -446,7 +464,7 @@ impl Writer<'_> {
                     self.out.push_str("</code></pre>\n");
                 }
             }
-            TagEnd::HtmlBlock => {}
+            TagEnd::HtmlBlock => self.out.push_str("</div>\n"),
             TagEnd::List(true) => self.out.push_str("</ol>\n"),
             TagEnd::List(false) => self.out.push_str("</ul>\n"),
             TagEnd::Item => self.out.push_str("</li>\n"),
@@ -609,7 +627,7 @@ fn find_url(text: &str) -> Option<usize> {
     None
 }
 
-fn to_html(text: &str, options: &RenderOptions) -> String {
+fn to_html(text: &str, options: &RenderOptions, source_key: &str) -> String {
     let mut flags = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
@@ -627,6 +645,7 @@ fn to_html(text: &str, options: &RenderOptions) -> String {
         out: String::with_capacity(text.len() * 2),
         lines: line_starts(text),
         options,
+        source_key,
         in_head: false,
         alignments: Vec::new(),
         cell: 0,
@@ -653,7 +672,7 @@ fn to_html(text: &str, options: &RenderOptions) -> String {
             }
         }
         match event {
-            Event::Start(tag) => writer.start(tag, offset),
+            Event::Start(tag) => writer.start(tag, range),
             Event::End(tag) => writer.end(tag),
             Event::Text(text) => writer.text(&text, &range),
             Event::Code(code) => {
@@ -888,7 +907,7 @@ fn sanitize(
             "tfoot",
         ])
         .add_generic_attributes(["class", "id", "align", "style", "data-line", "dir"])
-        .add_tag_attributes("span", ["data-source-lines"])
+        .add_generic_attributes(["data-source-lines"])
         .add_tag_attributes("code", ["data-source-code-lines"])
         .add_tag_attributes("input", ["type", "checked", "disabled"])
         .add_tag_attributes("img", ["title", "loading"])
@@ -955,7 +974,10 @@ mod tests {
     use super::*;
 
     fn html(text: &str) -> String {
-        render(text, Some(Path::new("C:\\docs")), &RenderOptions::default()).html
+        let rendered = render(text, Some(Path::new("C:\\docs")), &RenderOptions::default());
+        rendered
+            .html
+            .replace(&format!("{}:", rendered.source_key), "")
     }
 
     #[test]
@@ -994,6 +1016,25 @@ mod tests {
         assert!(
             out.contains("data-source-code-lines=\"4,5,6\">let a = 1;\n\nlet b = 2;\n"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn only_the_current_render_has_its_source_key() {
+        let text = "<div><span data-source-lines=\"other:20,20\">raw</span></div>\n\nmarked\n";
+        let rendered = render(text, None, &RenderOptions::default());
+        assert!(rendered.html.contains("data-source-lines=\"other:20,20\""));
+        assert!(rendered.html.contains(&format!(
+            "data-source-lines=\"{}:0,0\"",
+            rendered.source_key
+        )));
+        assert!(rendered.html.contains(&format!(
+            "data-source-lines=\"{}:2,2\"",
+            rendered.source_key
+        )));
+        assert_ne!(
+            rendered.source_key,
+            render(text, None, &RenderOptions::default()).source_key
         );
     }
 
@@ -1111,12 +1152,10 @@ mod tests {
                 ..Default::default()
             },
         );
+        let breaks_html = breaks.html.replace(&format!("{}:", breaks.source_key), "");
         assert!(
-            breaks
-                .html
-                .contains("a</span><br>\n<span data-source-lines=\"1,1\">b"),
-            "{}",
-            breaks.html
+            breaks_html.contains("a</span><br>\n<span data-source-lines=\"1,1\">b"),
+            "{breaks_html}"
         );
         let linkified = html("见 https://example.com/x). 与 www.rove.dev。\n");
         assert!(

@@ -1010,6 +1010,17 @@ fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mu
     let fixture = Fixture::new("{}");
     let (view, cx) = fixture.open(cx);
     open(&view, "Long.md", explorer(), cx);
+    #[derive(Default)]
+    struct MenuCalls(usize);
+    impl gpui::Global for MenuCalls {}
+
+    view.update(cx, |view, cx| {
+        cx.set_global(MenuCalls::default());
+        view.register_markdown_context_menu(
+            |_, _, _, cx| cx.global_mut::<MenuCalls>().0 += 1,
+            |workbench| workbench.markdown_snapshot().visible,
+        );
+    });
     let (document, sequence) = view.read_with(cx, |view, _| {
         let snapshot = view.markdown_snapshot();
         assert!(snapshot.rendered && snapshot.visible);
@@ -1050,6 +1061,7 @@ fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mu
         })
     };
     let center = (0.5, 0.5);
+    let calls = |cx: &mut VisualTestContext| cx.update(|_, cx| cx.global::<MenuCalls>().0);
     send(cx, document, sequence + 1, 5, 7, center);
     assert_eq!(selected(cx), None);
     send(cx, DocumentId(document.0 + 1), sequence, 5, 7, center);
@@ -1060,6 +1072,7 @@ fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mu
     send(cx, document, sequence, 5, 7, center);
     let (_, _, middle) = selected(cx).unwrap();
     assert!(middle.x > top_left.x && middle.y > top_left.y);
+    assert_eq!(calls(cx), 2);
     send(cx, document, sequence, 5, 7, (1.01, 0.5));
     assert_eq!(selected(cx), None);
     send(cx, document, sequence, 3, u64::MAX, center);

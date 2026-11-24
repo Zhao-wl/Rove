@@ -111,6 +111,7 @@ pub(super) struct MarkdownPreview {
     position: Option<f64>,
     source_selection: Option<MarkdownSourceSelection>,
     source_selection_handler: Option<SourceSelectionHandler>,
+    dismiss_source_menu: Option<fn(&mut Workbench) -> bool>,
     trace: bool,
     #[cfg(test)]
     pub(super) fake: Rc<RefCell<crate::markdown::backend::FakeLog>>,
@@ -179,6 +180,7 @@ impl Default for MarkdownPreview {
             position: None,
             source_selection: None,
             source_selection_handler: None,
+            dismiss_source_menu: None,
             trace: std::env::var_os("ROVE_MARKDOWN_TRACE").is_some(),
             #[cfg(test)]
             fake,
@@ -244,8 +246,13 @@ impl Workbench {
 
     /// 注册当前工作台的预览选区菜单入口。
     #[allow(dead_code)]
-    pub(super) fn register_markdown_source_selection(&mut self, handler: SourceSelectionHandler) {
-        self.markdown.source_selection_handler = Some(handler);
+    pub(super) fn register_markdown_context_menu(
+        &mut self,
+        show: SourceSelectionHandler,
+        dismiss: fn(&mut Workbench) -> bool,
+    ) {
+        self.markdown.source_selection_handler = Some(show);
+        self.markdown.dismiss_source_menu = Some(dismiss);
     }
 
     /// 测量用（`examples/markdown_probe.rs`）：`where` 读回预览顶部对应的源码行（结果在
@@ -638,6 +645,7 @@ impl Workbench {
                     "seq": seq,
                     "documentId": id.0,
                     "html": rendered.html,
+                    "sourceKey": rendered.source_key,
                     "styles": styles,
                     "mathMacros": macros,
                     "markEditorSelection": mark,
@@ -915,7 +923,12 @@ impl Workbench {
                 cx.notify();
             }
             Some("pointerDown") if self.markdown_context_is_current(document, &message) => {
-                if self.shell.dismiss_menu() {
+                let shell_closed = self.shell.dismiss_menu();
+                let source_closed = self
+                    .markdown
+                    .dismiss_source_menu
+                    .is_some_and(|dismiss| dismiss(self));
+                if shell_closed || source_closed {
                     cx.notify();
                 }
             }
