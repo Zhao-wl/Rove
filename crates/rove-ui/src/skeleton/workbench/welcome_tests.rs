@@ -640,3 +640,362 @@ fn the_gear_menu_lists_every_usable_item(cx: &mut TestAppContext) {
         ]
     );
 }
+
+#[gpui::test]
+fn graphical_settings_dispatches_navigation_and_menu_bindings(cx: &mut TestAppContext) {
+    use crate::settings_ui::SharedSettings;
+
+    let fx = Fixture::new("{}\n");
+    let (workbench, cx) = fx.open(cx);
+    let service = fx.service.clone();
+    workbench.update_in(cx, |view, window, cx| {
+        cx.set_global(SharedSettings(service));
+        window.focus(&view.focus);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-,");
+    let editor = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
+    let assert_state = |cx: &mut VisualTestContext, focus: &str, query: &str, editing: bool| {
+        editor.update_in(cx, |view, window, cx| {
+            assert_eq!(
+                view.keyboard_state_for_test(window, cx),
+                (focus, query, editing)
+            );
+        });
+    };
+
+    assert_state(cx, "search", "", false);
+    cx.simulate_keystrokes("down");
+    assert_state(cx, "results", "", false);
+    cx.simulate_keystrokes("left");
+    assert_state(cx, "categories", "", false);
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "results", "", false);
+    cx.simulate_keystrokes("shift-f9");
+    assert_state(cx, "control", "", true);
+    cx.simulate_keystrokes("escape");
+    assert_state(cx, "results", "", false);
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("editor.fontSize");
+    assert_state(cx, "search", "editor.fontSize", false);
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "results", "editor.fontSize", false);
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "control", "editor.fontSize", true);
+    cx.simulate_keystrokes("escape");
+    assert_state(cx, "results", "editor.fontSize", false);
+    cx.simulate_keystrokes("up");
+    assert_state(cx, "search", "editor.fontSize", false);
+    cx.simulate_keystrokes("escape");
+    assert_state(cx, "search", "", false);
+    cx.simulate_keystrokes("up");
+    assert_state(cx, "search", "editor.fontSize", false);
+    assert_eq!(fx.settings_text(), "{}\n");
+
+    cx.simulate_keystrokes("down enter");
+    assert_state(cx, "control", "editor.fontSize", true);
+    cx.simulate_input("19");
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "results", "editor.fontSize", false);
+    let mut value = Value::Null;
+    for _ in 0..200 {
+        cx.run_until_parked();
+        value = fx
+            .service
+            .read("editor.fontSize", &Scope::default())
+            .unwrap();
+        if value == Value::Number(19.0) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(value, Value::Number(19.0));
+    assert!(fx.settings_text().contains("\"editor.fontSize\""));
+
+    cx.simulate_keystrokes("shift-f9 enter");
+    assert_state(cx, "results", "editor.fontSize", false);
+    let wait_for_setting = |cx: &mut VisualTestContext, predicate: &dyn Fn() -> bool| {
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            predicate(),
+            "settings did not settle: {}",
+            fx.settings_text()
+        );
+    };
+    wait_for_setting(cx, &|| !fx.settings_text().contains("\"editor.fontSize\""));
+
+    let toc = crate::settings_ui::registry::TOC_BEHAVIOR.id;
+    for (mode, expected) in [("hide", "results"), ("filter", "categories")] {
+        editor.update(cx, |view, cx| {
+            view.write_value(toc.into(), Value::String(mode.into()), cx);
+        });
+        wait_for_setting(cx, &|| {
+            fx.service.read(toc, &Scope::default()).unwrap() == Value::String(mode.into())
+        });
+        cx.simulate_keystrokes("ctrl-f down left");
+        assert_state(cx, expected, "editor.fontSize", false);
+    }
+
+    cx.update(|window, cx| {
+        use crate::settings_ui::registry::{SettingsAction, FOCUS_FILE};
+        window.dispatch_action(Box::new(SettingsAction(FOCUS_FILE)), cx);
+    });
+    cx.run_until_parked();
+    assert_editable_shared_file(&workbench, cx, fx.user.join("settings.json"));
+}
+
+#[gpui::test]
+fn graphical_settings_blocks_invalid_writes_and_reveals_the_json_error(cx: &mut TestAppContext) {
+    use crate::settings_ui::{registry as settings, SharedSettings};
+
+    let fx = Fixture::new("{\n  \"editor.fontSize\": 15\n}\n");
+    let (workbench, cx) = fx.open(cx);
+    let service = fx.service.clone();
+    workbench.update_in(cx, |view, window, cx| {
+        cx.set_global(SharedSettings(service));
+        window.focus(&view.focus);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-,");
+    let settings_view = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
+
+    let path = fx.user.join("settings.json");
+    let broken = "{\n  \"editor.fontSize\": 15,\n  \"syntax.error\": !\n}\n";
+    std::fs::write(&path, broken).unwrap();
+    fx.service.reload();
+    cx.run_until_parked();
+    let problems = fx.service.problems();
+    let error = problems.iter().find(|problem| problem.is_error()).unwrap();
+    assert_eq!(error.line, 3);
+    assert_eq!(error.column, 19);
+    assert_eq!(
+        fx.service
+            .read("editor.fontSize", &Scope::default())
+            .unwrap(),
+        Value::Number(15.0)
+    );
+    settings_view.update(cx, |view, cx| {
+        view.write_value("editor.fontSize".into(), Value::Number(21.0), cx);
+        view.toggle_checkbox("editor.minimap.enabled".into(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(fx.settings_text(), broken);
+
+    let jump = cx
+        .debug_bounds("settings-json")
+        .expect("settings JSON link");
+    cx.simulate_click(jump.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    workbench.read_with(cx, |view, _| {
+        let tab = view.editor.active().current().unwrap();
+        assert_eq!(tab.resource, Resource::File(path.clone()));
+        assert_eq!(
+            tab.view.cursor,
+            rove_base::Position {
+                line: rove_base::Line(2),
+                column: rove_base::Utf8Column(18),
+            }
+        );
+    });
+
+    let json_mode = "{\n  \"workbench.settings.editor\": \"json\"\n}\n";
+    std::fs::write(&path, json_mode).unwrap();
+    fx.service.reload();
+    cx.run_until_parked();
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::OPEN_UI, window, cx)
+    });
+    cx.run_until_parked();
+    workbench.read_with(cx, |view, _| {
+        assert_eq!(
+            view.editor.active().current().unwrap().resource,
+            Resource::Virtual(settings::RESOURCE.into())
+        );
+    });
+    cx.simulate_keystrokes("ctrl-,");
+    assert_editable_shared_file(&workbench, cx, path);
+    assert_eq!(fx.settings_text(), json_mode);
+}
+
+#[gpui::test]
+fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_file(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings_ui::{registry as settings, SharedSettings};
+
+    let source = "{\n  // preserve this comment\n\n  \"editor.fontSize\": 15,\n  \"editor.wordWrap\": \"off\",\n  \"editor.minimap.enabled\": false\n}\n";
+    let fx = Fixture::new(source);
+    let (workbench, cx) = fx.open(cx);
+    let service = fx.service.clone();
+    workbench.update_in(cx, |view, window, cx| {
+        cx.set_global(SharedSettings(service));
+        window.focus(&view.focus);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-,");
+    cx.run_until_parked();
+    assert!(tabs(&workbench, cx).contains(&Resource::Virtual(settings::RESOURCE.into())));
+    workbench.read_with(cx, |view, _| {
+        let current = view
+            .editor
+            .active()
+            .current()
+            .expect("active settings editor");
+        assert_eq!(
+            current.resource,
+            Resource::Virtual(settings::RESOURCE.into())
+        );
+        assert!(
+            current.opened().is_some(),
+            "the graphical settings document must finish opening"
+        );
+    });
+    assert_eq!(fx.settings_text(), source);
+    let editor = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
+    workbench.update_in(cx, |view, _, _| {
+        view.editor
+            .split(crate::editors::Direction::Right)
+            .expect("open another editor group");
+        assert!(view.editor.active().current().is_none());
+    });
+    run(&workbench, cx, reg::OPEN_SETTINGS);
+    assert_eq!(
+        tabs(&workbench, cx)
+            .iter()
+            .filter(|tab| crate::editors::settings::is_settings_resource(tab))
+            .count(),
+        1
+    );
+    workbench.update_in(cx, |view, window, cx| {
+        assert!(crate::editors::settings::is_settings_resource(
+            &view
+                .editor
+                .active()
+                .current()
+                .expect("settings tab")
+                .resource
+        ));
+        assert!(editor.read(cx).search_focus(cx).is_focused(window));
+    });
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("font size @modified");
+    cx.simulate_keystrokes("enter");
+    editor.update_in(cx, |view, window, cx| {
+        assert!(!view.search_focus(cx).is_focused(window));
+    });
+    cx.simulate_keystrokes("up");
+    editor.update_in(cx, |view, window, cx| {
+        assert!(view.search_focus(cx).is_focused(window));
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    editor.update(cx, |view, cx| {
+        assert!(view.select_result_for_test("editor.wordWrap", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::PREVIOUS_SEARCH, window, cx);
+    });
+    cx.run_until_parked();
+    editor.update(cx, |view, cx| {
+        assert!(!view.select_result_for_test("editor.wordWrap", cx));
+        assert!(view.select_result_for_test("editor.fontSize", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::FOCUS_CONTROL, window, cx)
+    });
+    editor.update_in(cx, |view, window, cx| {
+        view.edit_text_for_test("101", window, cx)
+    });
+    assert_eq!(fx.settings_text(), source);
+    editor.update_in(cx, |view, window, cx| {
+        view.edit_text_for_test("16", window, cx)
+    });
+    let wait_for_text = |cx: &mut VisualTestContext, expected: &str| {
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if fx.settings_text() == expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fx.settings_text(), expected);
+    };
+    let after_number = source.replace(": 15,", ": 16,");
+    wait_for_text(cx, &after_number);
+    assert_eq!(
+        fx.service
+            .read("editor.fontSize", &Scope::default())
+            .unwrap(),
+        Value::Number(16.0)
+    );
+
+    editor.update(cx, |view, cx| {
+        view.set_query_for_test("editor.wordWrap", cx);
+        assert!(view.select_result_for_test("editor.wordWrap", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::FOCUS_CONTROL, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("down enter");
+    let after_enum = after_number.replace("\"off\"", "\"on\"");
+    wait_for_text(cx, &after_enum);
+
+    editor.update(cx, |view, cx| {
+        view.set_query_for_test("editor.minimap.enabled", cx);
+        assert!(view.select_result_for_test("editor.minimap.enabled", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::FOCUS_CONTROL, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("space");
+    let after_bool = after_enum.replace(": false", ": true");
+    wait_for_text(cx, &after_bool);
+
+    // Queue two edits before the background executor has polled either write.
+    editor.update(cx, |view, cx| {
+        view.write_value("editor.fontSize".into(), Value::Number(17.0), cx);
+        view.write_value("editor.fontSize".into(), Value::Number(18.0), cx);
+    });
+    let first_queued = after_bool.replace(": 16,", ": 17,");
+    let last_queued = after_bool.replace(": 16,", ": 18,");
+    wait_for_text(cx, &last_queued);
+
+    editor.update(cx, |view, cx| {
+        view.toggle_checkbox("editor.minimap.enabled".into(), cx);
+        view.toggle_checkbox("editor.minimap.enabled".into(), cx);
+        view.write_value("editor.fontSize".into(), Value::Number(19.0), cx);
+    });
+    let between_toggles = last_queued.replace(": true", ": false");
+    let after_toggles = last_queued.replace(": 18,", ": 19,");
+    wait_for_text(cx, &after_toggles);
+
+    let backups: Vec<_> = std::fs::read_dir(fx._app_data.path().join("backup"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    for prior in [
+        source,
+        after_number.as_str(),
+        after_enum.as_str(),
+        after_bool.as_str(),
+        first_queued.as_str(),
+        last_queued.as_str(),
+        between_toggles.as_str(),
+    ] {
+        assert!(backups.iter().any(|backup| backup == prior));
+    }
+
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::OPEN_JSON, window, cx)
+    });
+    cx.run_until_parked();
+    assert_editable_shared_file(&workbench, cx, fx.user.join("settings.json"));
+}

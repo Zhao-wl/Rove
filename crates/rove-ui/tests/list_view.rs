@@ -88,6 +88,25 @@ fn with_list<R>(
 }
 
 #[gpui::test]
+fn measured_list_shows_multiple_rows_without_input(cx: &mut TestAppContext) {
+    let (theme, strings) = list_support::theme_and_strings();
+    let (list, cx) = cx.add_window_view(|_, cx| {
+        let widget = ListWidget::new(
+            Arc::new(StaticList::from_labels(["one", "two", "three"])),
+            RowHeight::Fixed(22.0),
+            ListOptions::default(),
+        );
+        ListView::new(widget, theme, strings, cx)
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let list = list.read(cx);
+        assert!(list.widget.viewport() >= 3.0 * 22.0);
+        assert_eq!(list.widget.visible_range(), 0..3);
+    });
+}
+
+#[gpui::test]
 fn keyboard_navigation_and_scroll_boundary_pass_through(cx: &mut TestAppContext) {
     let (host, cx) = open(cx, 1000);
     with_list(&host, cx, |l| {

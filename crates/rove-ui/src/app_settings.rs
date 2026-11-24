@@ -12,11 +12,12 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 11] {
-    [
+fn modules() -> &'static [(&'static str, Register)] {
+    &[
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
         ("code_view", crate::code_view::options::register),
+        ("minimap", crate::code_view::minimap::register_settings),
         ("editors", |r| {
             merge(r, &crate::editors::settings::register()?)
         }),
@@ -39,7 +40,51 @@ fn modules() -> [(&'static str, Register); 11] {
             "context_basket",
             crate::context_basket::registry::register_settings,
         ),
+        ("markdown", crate::markdown::registry::register_settings),
+        ("workbench", |registry| {
+            let consumed = rove_theme::service::THEME_SETTING_KEYS.into_iter().chain([
+                rove_theme::service::AUTO_COLOR_SCHEME.id,
+                rove_theme::service::PREFERRED_DARK_THEME.id,
+                rove_theme::service::PREFERRED_LIGHT_THEME.id,
+                "workbench.iconTheme",
+                crate::welcome::registry::STARTUP_EDITOR,
+                rove_update::mode::SETTING_KEY,
+            ]);
+            register_catalog_keys(registry, consumed)
+        }),
+        ("explorer", |registry| {
+            register_catalog_keys(
+                registry,
+                crate::explorer::model::SETTING_KEYS.iter().copied(),
+            )
+        }),
+        ("outline", |registry| {
+            use crate::outline::model::{SETTING_KEYS, SHOW_SETTINGS};
+
+            register_catalog_keys(registry, SETTING_KEYS.iter().copied())?;
+            let filters = ["outline", "breadcrumbs"].into_iter().flat_map(|section| {
+                SHOW_SETTINGS.map(move |(_, suffix)| format!("{section}.show{suffix}"))
+            });
+            register_catalog_keys(registry, filters)
+        }),
+        (
+            "settings_ui",
+            crate::settings_ui::registry::register_settings,
+        ),
     ]
+}
+
+fn register_catalog_keys(
+    registry: &mut SettingRegistry,
+    keys: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<()> {
+    let catalog = rove_config::catalog::catalog();
+    for key in keys {
+        let key = key.as_ref();
+        let setting = catalog.get(key).ok_or(rove_base::Error::NotFound)?;
+        registry.register(key, setting.setting.clone())?;
+    }
+    Ok(())
 }
 
 /// 把 `from` 中尚未登记的键并入 `into`（先登记者胜出）。
@@ -54,13 +99,19 @@ fn merge(into: &mut SettingRegistry, from: &SettingRegistry) -> Result<()> {
 
 /// 应用的统一设置登记表：各模块的键 + 内置目录。
 pub fn registry() -> Result<SettingRegistry> {
+    let mut registry = consumer_registry()?;
+    rove_config::register_builtin(&mut registry)?;
+    Ok(registry)
+}
+
+/// Settings declared by running features, excluding catalog placeholders.
+pub(crate) fn consumer_registry() -> Result<SettingRegistry> {
     let mut registry = SettingRegistry::default();
-    for (_, register) in modules() {
+    for &(_, register) in modules() {
         let mut own = SettingRegistry::default();
         register(&mut own)?;
         merge(&mut registry, &own)?;
     }
-    rove_config::register_builtin(&mut registry)?;
     Ok(registry)
 }
 
@@ -87,7 +138,7 @@ mod tests {
     fn module_registrations_agree_on_shared_keys() {
         let mut seen: std::collections::BTreeMap<String, (&str, rove_config::Setting)> =
             Default::default();
-        for (module, register) in modules() {
+        for &(module, register) in modules() {
             let mut own = SettingRegistry::default();
             register(&mut own).unwrap();
             for (key, setting) in own.entries() {

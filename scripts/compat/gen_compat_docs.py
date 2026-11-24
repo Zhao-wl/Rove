@@ -42,7 +42,7 @@ ROVE_SETTINGS = [
     ("rove.index.enabled", "true", "P0", "是否启用 C# 语义索引"),
     ("rove.metadataView.showDocs", "true", "P1", "元数据视图中是否显示文档注释（UX_SPEC §4.1）"),
     ("rove.markdown.webviewIdleTimeout", "300", "P0", "所有 Markdown 预览关闭后，多少秒销毁 WebView2 实例（UX_SPEC §4.3）"),
-    ("rove.markdown.allowRemoteResources", "false", "P0", "预览中是否加载远程图片等资源（UX_SPEC §4.3）"),
+    ("rove.markdown.allowRemoteResources", "false", "P0", "旧版兼容键，预览始终拦截远程资源（UX_SPEC §4.3）"),
     ("rove.contextBasket.referenceTemplate", "\"@{path} (lines {start}-{end})\"", "P1", "“复制为引用”的格式（UX_SPEC §5.3）"),
     ("rove.contextBasket.contextLines", "3", "P1", "从速览或搜索结果加入时，额外带上的前后行数（UX_SPEC §5.1）"),
     ("rove.locale", "\"auto\"", "P1", "界面语言：`auto`（跟随系统）、`zh-cn`、`en`。只读参考共用用户目录下 `argv.json` 的 `locale`，从不写入它"),

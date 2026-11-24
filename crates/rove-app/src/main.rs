@@ -26,7 +26,7 @@ fn main() {
             std::process::exit(2)
         }
     };
-    rove_ui::skeleton::launch_with_theme_extensions(startup, settings, started, extensions);
+    rove_ui::skeleton::launch_with_settings(startup, settings, started, extensions);
 }
 
 /// 拆出 `--vscode-user-dir`（FEATURES §13 规则 1），其余参数都是要打开的路径（#28）。

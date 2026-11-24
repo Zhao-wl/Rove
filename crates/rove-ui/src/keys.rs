@@ -105,6 +105,7 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::image_preview::registry::register_command(&mut registry)?;
     // #28：欢迎页、打开文件 / 文件夹 / 最近、设置、键位与颜色主题。
     crate::welcome::registry::register_commands(&mut registry)?;
+    crate::settings_ui::registry::register_commands(&mut registry)?;
     // #27：状态栏条目的选择器命令（更改缩进 / 编码 / 语言模式）。
     crate::status_items::registry::register_commands(&mut registry)?;
     // #60：侧边「引用」视图（16 条实现的 + 6 条只登记的层级命令）。
@@ -164,6 +165,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::markdown::registry::action_for(id))
         // #28：欢迎页与首选项入口。
         .or_else(|| crate::welcome::registry::action_for(id))
+        .or_else(|| crate::settings_ui::registry::action_for(id))
         // #27：状态栏条目的选择器（窗口在 `status_host` 里处理）。
         .or_else(|| crate::status_items::registry::action_for(id))
         // #60：引用视图（层级相关的 6 条没有 action，因此不出现在命令面板里）。

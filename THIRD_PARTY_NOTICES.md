@@ -153,7 +153,7 @@ Markdown 围栏注入查询的节点关系参考 [tree-sitter-md 0.5.4 的块级
 
 ## VS Code 默认设置（#13）
 
-`crates/rove-config/data/settings-catalog.json` 中的设置键名、VS Code 默认值与默认语言覆盖
+`crates/rove-config/data/settings-catalog.json` 中的设置键名、VS Code 默认值、说明文字、枚举说明与默认语言覆盖
 （`"[csharp]": {...}` 等）取自 Microsoft VS Code **1.145.2** 导出的默认设置
 （`docs/compat/vscode/default-settings.jsonc`），由 `scripts/compat/gen_settings_catalog.py`
 按 `scripts/compat/rules.py` 过滤生成；说明文字不进入该文件。`rove.*` 设置项为 Rove 自有。

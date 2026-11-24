@@ -1018,13 +1018,19 @@ impl Render for ListView {
             .when_some(colors.foreground, |d, c| d.text_color(c))
             .child(
                 canvas(
-                    move |bounds, _, cx| {
-                        entity.update(cx, |v, cx| {
-                            if v.bounds != Some(bounds) {
-                                v.bounds = Some(bounds);
-                                cx.notify();
-                            }
-                        })
+                    move |bounds, window, cx| {
+                        if entity.read(cx).bounds != Some(bounds) {
+                            // The visible range for this frame already used the old bounds.
+                            // Invalidate the list after prepaint so the next frame uses the measurement.
+                            window.defer(cx, move |_, cx| {
+                                entity.update(cx, |v, cx| {
+                                    if v.bounds != Some(bounds) {
+                                        v.bounds = Some(bounds);
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        }
                     },
                     |_, _, _, _| {},
                 )

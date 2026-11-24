@@ -41,6 +41,18 @@ pub const SHOW_SETTINGS: [(&str, &str); 26] = [
     ("typeParameter", "TypeParameters"),
 ];
 
+/// Scalar settings consumed by the Outline and Breadcrumb models.
+pub(crate) const SETTING_KEYS: &[&str] = &[
+    "outline.collapseItems",
+    "outline.icons",
+    "breadcrumbs.enabled",
+    "breadcrumbs.filePath",
+    "breadcrumbs.symbolPath",
+    "breadcrumbs.icons",
+    "breadcrumbs.symbolSortOrder",
+    "breadcrumbs.symbolPathSeparator",
+];
+
 fn read_bool(settings: &dyn Settings, key: &str, default: bool) -> bool {
     match settings.read(key, &Scope::default()) {
         Ok(Value::Bool(b)) => b,

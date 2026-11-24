@@ -51,6 +51,21 @@ pub struct VirtualContent {
     pub read_only: Vec<ReadOnlyReason>,
 }
 
+/// A workbench page rendered by its own editor rather than by the text editor.
+pub(crate) struct StaticPageSource(pub &'static str);
+
+impl VirtualSource for StaticPageSource {
+    fn load(&self, name: &str) -> Option<Result<VirtualContent>> {
+        (name == self.0).then(|| {
+            Ok(VirtualContent {
+                text: String::new(),
+                language: "plaintext".into(),
+                read_only: vec![ReadOnlyReason::Metadata],
+            })
+        })
+    }
+}
+
 /// Live documents are owned by tabs and callers. The cache only indexes their weak identities.
 #[derive(Default)]
 struct FileCache {

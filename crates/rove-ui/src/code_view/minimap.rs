@@ -16,6 +16,33 @@ pub const TOGGLE: &str = "editor.action.toggleMinimap";
 pub const ENABLED: Key<bool> = Key::new("editor.minimap.enabled");
 pub const DEFAULT_SECTION_PATTERN: &str = r"\bMARK:\s*(?<separator>-?)\s*(?<label>.*)$";
 
+pub(crate) fn register_settings(
+    registry: &mut rove_config::SettingRegistry,
+) -> rove_base::Result<()> {
+    for key in [
+        ENABLED.id,
+        "editor.minimap.side",
+        "editor.minimap.size",
+        "editor.minimap.scale",
+        "editor.minimap.maxColumn",
+        "editor.minimap.autohide",
+        "editor.minimap.showSlider",
+        "editor.minimap.showMarkSectionHeaders",
+        "editor.minimap.showRegionSectionHeaders",
+        "editor.minimap.sectionHeaderFontSize",
+        "editor.minimap.sectionHeaderLetterSpacing",
+        "editor.minimap.markSectionHeaderRegex",
+        "editor.overviewRulerBorder",
+        "editor.hideCursorInOverviewRuler",
+    ] {
+        let registered = rove_config::catalog::catalog()
+            .get(key)
+            .ok_or(rove_base::Error::NotFound)?;
+        registry.register(key, registered.setting.clone())?;
+    }
+    Ok(())
+}
+
 pub const PANEL_COLOR_KEYS: &[&str] = &[
     "minimap.background",
     "minimap.foregroundOpacity",

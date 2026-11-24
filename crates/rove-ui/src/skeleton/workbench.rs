@@ -1,4 +1,7 @@
-use super::{appearance, text::FileDocuments};
+use super::{
+    appearance,
+    text::{FileDocuments, StaticPageSource},
+};
 use crate::{
     code_view::{
         self, CodeView, CodeViewEvent, CodeViewServices, Reveal, ScrollPosition, Selection,
@@ -134,6 +137,9 @@ mod update_host;
 mod update_tests;
 // #28：欢迎页、最近打开、启动参数与首选项入口（设置、键位、颜色主题、齿轮菜单）的装配。
 mod image_host;
+mod settings_host;
+#[cfg(all(test, windows))]
+mod settings_native_probe;
 mod welcome_host;
 #[cfg(test)]
 mod welcome_tests;
@@ -294,6 +300,9 @@ pub struct Workbench {
     images: image_host::ImagePanels,
     /// #28：欢迎页、最近打开与首选项入口（见 `welcome_host.rs`）。
     welcome: welcome_host::Welcome,
+    settings_view: Option<Entity<crate::settings_ui::view::SettingsView>>,
+    settings_focus_requested: bool,
+    settings_notice_shown: bool,
     /// #28：本窗口有没有打开文件夹。空窗口显示欢迎页，资源管理器显示空状态（UX_SPEC §6.3）。
     has_folder: bool,
     /// #22：超大文件提示条 / 状态栏 / 索引进度 / 转到行等待 / 超长行临时标签（见 `large_file_host.rs`）。
@@ -486,7 +495,12 @@ impl Workbench {
         let metadata = metadata_host::MetadataHost::with_loader(
             FileDocuments::new(root.clone(), services.clone())
                 .with_size_policy(size)
-                .with_virtual_source(Arc::new(welcome_host::WelcomeSource)),
+                .with_virtual_source(Arc::new(StaticPageSource(
+                    crate::welcome::registry::RESOURCE,
+                )))
+                .with_virtual_source(Arc::new(StaticPageSource(
+                    crate::settings_ui::registry::RESOURCE,
+                ))),
             metadata_loader,
             large_files.long_lines.clone(),
         );
@@ -553,6 +567,9 @@ impl Workbench {
             markdown: Default::default(),
             images: Default::default(),
             welcome: welcome_host::Welcome::new(&store_for_welcome),
+            settings_view: None,
+            settings_focus_requested: false,
+            settings_notice_shown: false,
             about: Default::default(),
             updates: Default::default(),
             has_folder,
@@ -2012,6 +2029,7 @@ impl Render for Workbench {
         self.sync_markdown(window, cx);
         // #28：主题实时预览跟随选中项、共用文件提示条、浮层关闭后的焦点。
         self.sync_welcome(window, cx);
+        self.sync_settings(window, cx);
         // #60：引用视图的两个上下文键。
         self.sync_references(cx);
         self.sync_basket_editor_focus(window, cx);
@@ -2173,6 +2191,11 @@ impl Render for Workbench {
                     v.welcome_command(a.0, window, cx)
                 },
             ))
+            .on_action(cx.listener(
+                |v, a: &crate::settings_ui::registry::SettingsAction, window, cx| {
+                    v.settings_command(a.0, window, cx)
+                },
+            ))
             // #60：引用视图命令。
             .on_action(cx.listener(
                 |v, a: &crate::references::registry::ReferencesAction, window, cx| {
@@ -2270,6 +2293,31 @@ pub fn launch_with_theme_extensions(
     started: Instant,
     extensions: Option<PathBuf>,
 ) {
+    launch_internal(startup, settings, None, started, extensions);
+}
+
+pub fn launch_with_settings(
+    startup: crate::welcome::startup::Startup,
+    settings: Arc<rove_config::SettingsService>,
+    started: Instant,
+    extensions: Option<PathBuf>,
+) {
+    launch_internal(
+        startup,
+        settings.clone(),
+        Some(settings),
+        started,
+        extensions,
+    );
+}
+
+fn launch_internal(
+    startup: crate::welcome::startup::Startup,
+    settings: Arc<dyn Settings>,
+    shared: Option<Arc<rove_config::SettingsService>>,
+    started: Instant,
+    extensions: Option<PathBuf>,
+) {
     // #50：panic 与致命错误写一份本地崩溃日志（`%LOCALAPPDATA%\Rove\logs`，保留最近 10 份）。
     // 只保存在本地，不上传、不发起任何网络请求（FEATURES §10：遥测不做）。
     if let Some(state) = rove_buffer::hotexit::default_state_root(|key| std::env::var_os(key)) {
@@ -2286,6 +2334,9 @@ pub fn launch_with_theme_extensions(
     let application = Application::new().with_http_client(crate::net::blocked_http_client());
     application.run(move |cx: &mut App| {
         theme_host::start(extensions, settings.clone(), cx);
+        if let Some(shared) = shared {
+            crate::settings_ui::SharedSettings::install(shared, cx);
+        }
         if let Err(e) = cx
             .text_system()
             .add_fonts(vec![Cow::Borrowed(shell::icons::FONT)])
