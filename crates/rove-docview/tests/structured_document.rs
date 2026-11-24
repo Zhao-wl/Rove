@@ -314,6 +314,72 @@ fn xml_formatting_respects_mixed_content_and_xml_space() {
 }
 
 #[test]
+fn xml_space_keeps_references_and_unresolved_entities_conservative() {
+    let cancel = Cancellation::default();
+    let options = FormatOptions {
+        indentation: "  ",
+        ..Default::default()
+    };
+    let format = |source: &str| {
+        format_text(
+            StructuredLanguage::Xml,
+            source,
+            options,
+            FormatMode::Pretty,
+            &cancel,
+        )
+        .unwrap()
+    };
+
+    let preserve = r#"<root xml:space="pr&#101;serve"><block><a/><b/></block>  <end/></root>"#;
+    assert_eq!(format(preserve), preserve);
+
+    let reset = r#"<root xml:space="preserve"><block xml:space='d&#x65;fault'><a/><b/></block>  <end/></root>"#;
+    let expected = "<root xml:space=\"preserve\"><block xml:space='d&#x65;fault'>\n    <a/>\n    <b/>\n  </block>  <end/></root>";
+    assert_eq!(format(reset), expected);
+    assert_eq!(format(expected), expected);
+
+    let unresolved = r#"<root xml:space="&requested;"><block><a/><b/></block>  <end/></root>"#;
+    let with_entity = format!("<!DOCTYPE root [<!ENTITY requested 'preserve'>]>{unresolved}");
+    assert!(format(&with_entity).ends_with(unresolved));
+}
+
+#[test]
+fn format_disjoint_selections_returns_contextual_replacements_in_order() {
+    let text = r#"{"outer":{ "first":[1,2],"stay" : 1, "second":[3,4] }}"#;
+    let first = text.find("\"first\"").unwrap();
+    let second = text.find("\"second\"").unwrap();
+    let ranges = [
+        first..first + "\"first\":[1,2]".len(),
+        second..second + "\"second\":[3,4]".len(),
+    ];
+    let options = FormatOptions {
+        indentation: "  ",
+        ..Default::default()
+    };
+    let replacements = rove_docview::format::format_selections(
+        StructuredLanguage::Json,
+        text,
+        &ranges,
+        options,
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        replacements,
+        [
+            "\"first\": [\n      1,\n      2\n    ]",
+            "\"second\": [\n      3,\n      4\n    ]",
+        ]
+    );
+    let mut actual = text.to_owned();
+    for (span, replacement) in ranges.into_iter().zip(replacements).rev() {
+        actual.replace_range(span, &replacement);
+    }
+    assert!(actual.contains(r#","stay" : 1, "#));
+}
+
+#[test]
 fn previews_count_arrays_and_truncate_long_strings_and_numbers() {
     let string = "数".repeat(80);
     let number = "7".repeat(80);

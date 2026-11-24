@@ -586,6 +586,66 @@ fn structured_format_command_creates_one_undo_step(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn structured_paste_formats_in_context_and_preserves_outer_bytes(cx: &mut TestAppContext) {
+    let fx = Fixture::new(
+        r#"{"editor.formatOnPaste":true,"editor.tabSize":2,"editor.detectIndentation":false}"#,
+    );
+    let xml_start = r#"<root xml:space="pr&#101;serve">"#;
+    let xml = format!("{xml_start}A</root>");
+    let xml_paste = "<block><a/><b/></block>";
+    let expected_xml = format!("{xml_start}{xml_paste}A</root>");
+    let json = "{\n  \"outer\": {\n    \n  }\n}\n";
+    let json_paste = "\"chosen\":[1,2]";
+    let expected_json = "{\n  \"outer\": {\n    \"chosen\": [\n      1,\n      2\n    ]\n  }\n}\n";
+    let cases = [
+        (
+            "paste.xml",
+            xml.as_str(),
+            pos(0, xml_start.len() as u64),
+            xml_paste,
+            expected_xml.as_str(),
+        ),
+        ("paste.json", json, pos(2, 4), json_paste, expected_json),
+    ];
+    for (file, source, _, _, _) in cases {
+        std::fs::write(fx.folder.path().join(file), source).unwrap();
+    }
+
+    let (view, cx) = fx.open(cx);
+    let read = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            let (_, doc, _) = v.focused_text().unwrap();
+            let mut text = String::new();
+            doc.text
+                .visit_chunks(
+                    rove_base::ByteRange::new(
+                        rove_base::ByteOffset(0),
+                        rove_base::ByteOffset(doc.text.byte_len()),
+                    )
+                    .unwrap(),
+                    &mut |part| text.push_str(part),
+                )
+                .unwrap();
+            text
+        })
+    };
+    for (file, source, cursor, pasted, expected) in cases {
+        open_file(&view, file, Some(cursor), cx);
+        refresh(cx);
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
+        cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+        cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(pasted.into())));
+        cx.simulate_keystrokes("ctrl-v");
+        refresh(cx);
+        assert_eq!(read(cx), expected, "{file}");
+
+        cx.simulate_keystrokes("ctrl-z");
+        refresh(cx);
+        assert_eq!(read(cx), source, "{file}");
+    }
+}
+
+#[gpui::test]
 fn structured_format_on_save_preserves_utf16_bom_and_existing_line_endings(
     cx: &mut TestAppContext,
 ) {

@@ -1554,8 +1554,8 @@ impl CodeView {
                         return Ok(EditOutcome::default());
                     };
                     let mut edits = vec![applied];
-                    if let Some(config) = config {
-                        // 粘贴进来的那几行逐行重新缩进，并入同一个撤销单元。
+                    if let Some(config) = config.filter(|_| format.is_none()) {
+                        // 没有格式化提供方时按语言规则缩进，并入同一个撤销单元。
                         let pasted = edits[0]
                             .changes
                             .ranges
@@ -1587,19 +1587,8 @@ impl CodeView {
                         let ranges = edits[0]
                             .inserted_ranges()
                             .iter()
-                            .filter_map(|range| {
-                                let (start, end) = edits[1..].iter().fold(
-                                    (range.start(), range.end()),
-                                    |(start, end), edit| {
-                                        (
-                                            edit.map_offset(start, ed::Bias::Before),
-                                            edit.map_offset(end, ed::Bias::After),
-                                        )
-                                    },
-                                );
-                                (start < end)
-                                    .then(|| Span::new(start, end).expect("increasing range"))
-                            })
+                            .filter(|range| range.start() < range.end())
+                            .cloned()
                             .collect::<Vec<_>>();
                         formatting = Some((ranges, eol));
                     }
@@ -1712,7 +1701,7 @@ impl CodeView {
         eol: rove_buffer::Eol,
         cx: &mut Context<Self>,
     ) {
-        use rove_docview::format::{format_text, FormatMode, FormatOptions};
+        use rove_docview::format::{format_selections, FormatOptions};
         let Some(text) = self.text.clone() else {
             return;
         };
@@ -1741,29 +1730,43 @@ impl CodeView {
         let work_cancel = cancel.clone();
         self.paste_format = Some(cancel.clone());
         let job = cx.background_executor().spawn(async move {
-            let mut replacements = Vec::new();
-            for range in ranges {
-                work_cancel.check()?;
-                let mut input = String::new();
-                text.visit_chunks(range.clone(), &mut |part| {
-                    if work_cancel.check().is_ok() {
-                        input.push_str(part);
-                    }
-                })?;
-                let options = FormatOptions {
-                    indentation: &indentation,
-                    newline,
-                    keep_lines,
-                };
-                if let Ok(formatted) =
-                    format_text(language, &input, options, FormatMode::Pretty, &work_cancel)
-                {
-                    if input != formatted {
-                        replacements.push(Replacement::new(range, formatted));
-                    }
-                }
-            }
             work_cancel.check()?;
+            let len = text.byte_len();
+            let entire_document = Span::new(ByteOffset(0), ByteOffset(len))?;
+            let mut input =
+                String::with_capacity(usize::try_from(len).map_err(|_| Error::OutOfBounds)?);
+            text.visit_chunks(entire_document, &mut |part| {
+                if work_cancel.check().is_ok() {
+                    input.push_str(part);
+                }
+            })?;
+            work_cancel.check()?;
+            let spans: Vec<_> = ranges
+                .iter()
+                .map(|range| {
+                    let start = usize::try_from(range.start().0).map_err(|_| Error::OutOfBounds)?;
+                    let end = usize::try_from(range.end().0).map_err(|_| Error::OutOfBounds)?;
+                    Ok::<_, Error>(start..end)
+                })
+                .collect::<std::result::Result<_, _>>()?;
+            let options = FormatOptions {
+                indentation: &indentation,
+                newline,
+                keep_lines,
+            };
+            let formatted = format_selections(language, &input, &spans, options, &work_cancel)?;
+            let replacements: Vec<_> = ranges
+                .into_iter()
+                .zip(spans)
+                .zip(formatted)
+                .filter_map(|((range, span), formatted)| {
+                    if input[span] == formatted {
+                        None
+                    } else {
+                        Some(Replacement::new(range, formatted))
+                    }
+                })
+                .collect();
             Ok::<_, Error>(replacements)
         });
         cx.spawn(async move |view, cx| {

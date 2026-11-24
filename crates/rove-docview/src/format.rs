@@ -37,7 +37,7 @@ pub fn format_text(
     mode: FormatMode,
     cancel: &Cancellation,
 ) -> Result<String> {
-    format_document(language, text, options, mode, None, cancel)
+    format_document(language, text, options, mode, None, cancel).map(|(formatted, _)| formatted)
 }
 
 /// Format the selected gaps using the surrounding document's indentation depth.
@@ -49,26 +49,56 @@ pub fn format_selection(
     options: FormatOptions<'_>,
     cancel: &Cancellation,
 ) -> Result<String> {
-    if text.get(range.clone()).is_none() {
+    format_selections(
+        language,
+        text,
+        std::slice::from_ref(&range),
+        options,
+        cancel,
+    )
+    .map(|mut results| results.pop().expect("one selection"))
+}
+
+/// Format sorted, disjoint ranges with a single parse and return their replacements in order.
+pub fn format_selections(
+    language: StructuredLanguage,
+    text: &str,
+    ranges: &[Range<usize>],
+    options: FormatOptions<'_>,
+    cancel: &Cancellation,
+) -> Result<Vec<String>> {
+    if ranges.iter().any(|range| text.get(range.clone()).is_none()) {
         return Err(Error::OutOfBounds);
     }
-    let formatted = format_document(
+    if ranges.windows(2).any(|pair| pair[0].end > pair[1].start) {
+        return Err(Error::InvalidInput);
+    }
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (formatted, lengths) = format_document(
         language,
         text,
         options,
         FormatMode::Pretty,
-        Some(range.clone()),
+        Some(ranges),
         cancel,
     )?;
-    let suffix = text.len() - range.end;
-    let end = formatted
-        .len()
-        .checked_sub(suffix)
-        .ok_or(Error::OutOfBounds)?;
-    formatted
-        .get(range.start..end)
-        .map(str::to_owned)
-        .ok_or(Error::OutOfBounds)
+    let mut input_end = 0;
+    let mut output_end = 0;
+    ranges
+        .iter()
+        .zip(lengths)
+        .map(|(range, len)| {
+            let start = output_end + (range.start - input_end);
+            output_end = start + len;
+            input_end = range.end;
+            formatted
+                .get(start..output_end)
+                .map(str::to_owned)
+                .ok_or(Error::OutOfBounds)
+        })
+        .collect()
 }
 
 fn format_document(
@@ -76,9 +106,9 @@ fn format_document(
     text: &str,
     options: FormatOptions<'_>,
     mode: FormatMode,
-    selection: Option<Range<usize>>,
+    selections: Option<&[Range<usize>]>,
     cancel: &Cancellation,
-) -> Result<String> {
+) -> Result<(String, Vec<usize>)> {
     if !matches!(options.newline, "\n" | "\r\n" | "\r")
         || !options
             .indentation
@@ -93,8 +123,13 @@ fn format_document(
         }
         _ => {}
     }
+    let lengths: Vec<_> = selections
+        .unwrap_or_default()
+        .iter()
+        .map(|range| range.len())
+        .collect();
     if text.trim().is_empty() {
-        return Ok(text.to_owned());
+        return Ok((text.to_owned(), lengths));
     }
     let tree = parse_tree(language, text, None, cancel)?;
     let root = tree.root_node();
@@ -105,7 +140,8 @@ fn format_document(
         options,
         text,
         output: String::with_capacity(text.len()),
-        selection,
+        selections,
+        lengths,
         cancel,
     };
     if language == StructuredLanguage::Xml {
@@ -114,7 +150,7 @@ fn format_document(
         formatter.json(root, language == StructuredLanguage::Jsonc, mode)?;
     }
     cancel.check()?;
-    Ok(formatter.output)
+    Ok((formatter.output, formatter.lengths))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,15 +179,26 @@ struct Formatter<'a> {
     options: FormatOptions<'a>,
     text: &'a str,
     output: String,
-    selection: Option<Range<usize>>,
+    selections: Option<&'a [Range<usize>]>,
+    lengths: Vec<usize>,
     cancel: &'a Cancellation,
 }
 
 impl Formatter<'_> {
-    fn selected(&self, gap: &Range<usize>) -> bool {
-        self.selection
-            .as_ref()
-            .is_none_or(|range| gap.start >= range.start && gap.end <= range.end)
+    fn selection_for(&self, gap: &Range<usize>) -> Option<usize> {
+        let selections = self.selections?;
+        let index = selections.partition_point(|range| {
+            range.end < gap.start || (!gap.is_empty() && range.end == gap.start)
+        });
+        let range = selections.get(index)?;
+        (range.start <= gap.start && gap.end <= range.end).then_some(index)
+    }
+
+    fn note_gap(&mut self, selection: Option<usize>, original: usize, output_start: usize) {
+        if let Some(index) = selection {
+            self.lengths[index] =
+                self.lengths[index] - original + (self.output.len() - output_start);
+        }
     }
 
     fn json(&mut self, root: Node<'_>, comments: bool, mode: FormatMode) -> Result<()> {
@@ -177,9 +224,11 @@ impl Formatter<'_> {
             if let Some(prev) = &last {
                 let span = prev.span.end..token.span.start;
                 let gap = &self.text[span.clone()];
-                if !self.selected(&span) {
+                let selected = self.selection_for(&span);
+                if self.selections.is_some() && selected.is_none() {
                     self.output.push_str(gap);
                 } else {
+                    let output_start = self.output.len();
                     let (previous_kind, gap) = if comments {
                         if let Some(comma) = gap.find(',') {
                             self.output.push(',');
@@ -199,8 +248,9 @@ impl Formatter<'_> {
                         }
                         FormatMode::Minify => {}
                     }
+                    self.note_gap(selected, span.len(), output_start);
                 }
-            } else if self.selection.is_some() {
+            } else if self.selections.is_some() {
                 self.output.push_str(&self.text[..token.span.start]);
             }
             self.output.push_str(&self.text[token.span.clone()]);
@@ -212,7 +262,7 @@ impl Formatter<'_> {
         if mode == FormatMode::Pretty {
             if let Some(last) = last {
                 let tail = &self.text[last.span.end..];
-                if self.selection.is_some() {
+                if self.selections.is_some() {
                     self.output.push_str(tail);
                 } else if tail.contains(['\r', '\n']) {
                     self.breaks(tail, 0);
@@ -335,13 +385,18 @@ impl Formatter<'_> {
                 edits.extend(gaps);
             }
         }
-        edits.retain(|(span, _)| self.selected(span));
         edits.sort_unstable_by_key(|(span, _)| (span.start, span.end));
         let mut last = 0;
         for (gap, depth) in edits {
             self.cancel.check()?;
+            let selected = self.selection_for(&gap);
+            if self.selections.is_some() && selected.is_none() {
+                continue;
+            }
             self.output.push_str(&self.text[last..gap.start]);
+            let output_start = self.output.len();
             self.breaks(&self.text[gap.clone()], depth);
+            self.note_gap(selected, gap.len(), output_start);
             last = gap.end;
         }
         self.output.push_str(&self.text[last..]);
@@ -375,15 +430,42 @@ fn xml_space(text: &str, tag: Node<'_>) -> Option<bool> {
         let value = named(attr).find(|node| node.kind() == "AttValue");
         if let (Some(name), Some(value)) = (name, value) {
             if &text[name.byte_range()] == "xml:space" {
-                return match text[value.byte_range()].trim_matches(['\'', '"']) {
-                    "preserve" => Some(true),
-                    "default" => Some(false),
-                    _ => None,
-                };
+                let quoted = &text[value.byte_range()];
+                let value = quoted
+                    .get(1..quoted.len().saturating_sub(1))
+                    .unwrap_or_default();
+                // Only a known "default" overrides preservation. Named entities may depend
+                // on DTD declarations, which this local formatter does not evaluate.
+                return Some(!xml_space_is_default(value));
             }
         }
     }
     None
+}
+
+fn xml_space_is_default(mut value: &str) -> bool {
+    for expected in "default".chars() {
+        if let Some(rest) = value.strip_prefix(expected) {
+            value = rest;
+            continue;
+        }
+        let Some((reference, rest)) = value
+            .strip_prefix("&#")
+            .and_then(|text| text.split_once(';'))
+        else {
+            return false;
+        };
+        let (digits, radix) = reference
+            .strip_prefix('x')
+            .map_or((reference, 10), |digits| (digits, 16));
+        if digits.starts_with(['+', '-'])
+            || u32::from_str_radix(digits, radix).ok() != Some(u32::from(expected))
+        {
+            return false;
+        }
+        value = rest;
+    }
+    value.is_empty()
 }
 
 fn leaves<'a>(root: Node<'a>, text: &'a str) -> impl Iterator<Item = Token> + 'a {
