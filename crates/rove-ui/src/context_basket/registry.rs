@@ -17,6 +17,16 @@ pub const CLEAR_AFTER_COPY: rove_config::Key<bool> =
 pub const REFERENCE_TEMPLATE: rove_config::Key<String> =
     rove_config::Key::new("rove.contextBasket.referenceTemplate");
 
+pub fn register_settings(registry: &mut rove_config::SettingRegistry) -> Result<()> {
+    for key in [CONTEXT_LINES.id, CLEAR_AFTER_COPY.id, REFERENCE_TEMPLATE.id] {
+        let entry = rove_config::catalog::catalog()
+            .get(key)
+            .ok_or(rove_base::Error::NotFound)?;
+        registry.register(key, entry.setting.clone())?;
+    }
+    Ok(())
+}
+
 pub fn register_strings(table: &mut StringTable) -> Result<()> {
     for (key, text) in [
         ("contextBasket.title", "上下文篮子"),

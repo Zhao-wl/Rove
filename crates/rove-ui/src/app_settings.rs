@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 10] {
+fn modules() -> [(&'static str, Register); 11] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -34,6 +34,10 @@ fn modules() -> [(&'static str, Register); 10] {
         (
             "rove-buffer-hotexit",
             rove_buffer::hotexit::settings::register,
+        ),
+        (
+            "context_basket",
+            crate::context_basket::registry::register_settings,
         ),
     ]
 }
