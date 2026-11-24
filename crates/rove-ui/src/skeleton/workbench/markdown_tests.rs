@@ -228,11 +228,13 @@ fn markdown_source_keeps_line_starts_inside_the_wrapped_viewport(cx: &mut TestAp
         );
     });
     settle(cx);
-    // 横滚上限来自真实整形宽度。先准备被测长行，避免把空闲切片的进度当作验收条件。
+    // 更换回同一文档时行缓存和宽度会重置，但整形结果仍可复用。
     cx.update(|window, cx| {
         code.update(cx, |c, cx| {
             c.ensure_line_now(body_line, window);
-            cx.notify();
+            let text = c.text().cloned();
+            c.set_text(text, true, cx);
+            c.ensure_line_now(body_line, window);
         });
     });
     settle(cx);
