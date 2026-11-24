@@ -4,7 +4,7 @@ use crate::context_basket::{
     persistence::BasketStore,
     source,
 };
-use gpui::{Entity, Global, Subscription, WeakEntity};
+use gpui::{AppContext, Entity, Global, Subscription, WeakEntity};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -30,6 +30,11 @@ struct WorkspaceBaskets(BTreeMap<PathBuf, WeakEntity<WorkspaceBasket>>);
 
 impl Global for WorkspaceBaskets {}
 
+#[derive(Default)]
+struct BasketClipboardRequest(u64);
+
+impl Global for BasketClipboardRequest {}
+
 #[cfg(test)]
 pub(super) struct BasketTestStateRoot(pub(super) PathBuf);
 
@@ -51,7 +56,6 @@ pub(super) struct WindowBasket {
     pub(super) revision: u64,
     pub(super) pending_anchors: BTreeMap<u64, u64>,
     next_read: u64,
-    next_copy: u64,
     collection_epoch: u64,
     written: Arc<Mutex<u64>>,
 }
@@ -95,7 +99,6 @@ impl WindowBasket {
             revision: 0,
             pending_anchors: BTreeMap::new(),
             next_read: 0,
-            next_copy: 0,
             collection_epoch: 0,
             written: Arc::default(),
         }
@@ -715,8 +718,9 @@ impl Workbench {
 
     fn copy_basket(&mut self, markdown: bool, cx: &mut Context<Self>) {
         use crate::context_basket::{export, registry as reg};
-        self.basket.next_copy += 1;
-        let request = self.basket.next_copy;
+        let latest = &mut cx.default_global::<BasketClipboardRequest>().0;
+        *latest += 1;
+        let request = *latest;
         if self.basket.contents.items().is_empty() {
             let key = if self.basket.loaded {
                 "contextBasket.noExportableEntries"
@@ -811,7 +815,11 @@ impl Workbench {
         result: crate::context_basket::export::Export,
         cx: &mut Context<Self>,
     ) {
-        if self.basket.next_copy != request || self.basket.revision != revision {
+        if self.basket.revision != revision
+            || cx
+                .try_global::<BasketClipboardRequest>()
+                .is_none_or(|latest| latest.0 != request)
+        {
             return;
         }
         if result.entries == 0 {
