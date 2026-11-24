@@ -237,6 +237,20 @@ impl SettingsView {
         window.focus(&self.search_focus(cx));
     }
 
+    #[cfg(test)]
+    pub(crate) fn keyboard_state_for_test(&self, window: &Window, cx: &App) -> (&str, &str, bool) {
+        let focus = if self.search_focus(cx).is_focused(window) {
+            "search"
+        } else if self.results.focus_handle(cx).is_focused(window) {
+            "results"
+        } else if self.categories.focus_handle(cx).is_focused(window) {
+            "categories"
+        } else {
+            "control"
+        };
+        (focus, &self.query, self.row_editor.is_some())
+    }
+
     #[cfg(all(test, windows))]
     pub(crate) fn is_native_open_ready(&self, window: &Window, cx: &App) -> bool {
         self.search_focus(cx).is_focused(window)

@@ -642,6 +642,115 @@ fn the_gear_menu_lists_every_usable_item(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn graphical_settings_dispatches_navigation_and_menu_bindings(cx: &mut TestAppContext) {
+    use crate::settings_ui::SharedSettings;
+
+    let fx = Fixture::new("{}\n");
+    let (workbench, cx) = fx.open(cx);
+    let service = fx.service.clone();
+    workbench.update_in(cx, |view, window, cx| {
+        cx.set_global(SharedSettings(service));
+        window.focus(&view.focus);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-,");
+    let editor = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
+    let assert_state = |cx: &mut VisualTestContext, focus: &str, query: &str, editing: bool| {
+        editor.update_in(cx, |view, window, cx| {
+            assert_eq!(
+                view.keyboard_state_for_test(window, cx),
+                (focus, query, editing)
+            );
+        });
+    };
+
+    assert_state(cx, "search", "", false);
+    cx.simulate_keystrokes("down");
+    assert_state(cx, "results", "", false);
+    cx.simulate_keystrokes("left");
+    assert_state(cx, "categories", "", false);
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "results", "", false);
+    cx.simulate_keystrokes("shift-f9");
+    assert_state(cx, "control", "", true);
+    cx.simulate_keystrokes("escape");
+    assert_state(cx, "results", "", false);
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("editor.fontSize");
+    assert_state(cx, "search", "editor.fontSize", false);
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "results", "editor.fontSize", false);
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "control", "editor.fontSize", true);
+    cx.simulate_keystrokes("escape");
+    assert_state(cx, "results", "editor.fontSize", false);
+    cx.simulate_keystrokes("up");
+    assert_state(cx, "search", "editor.fontSize", false);
+    cx.simulate_keystrokes("escape");
+    assert_state(cx, "search", "", false);
+    cx.simulate_keystrokes("up");
+    assert_state(cx, "search", "editor.fontSize", false);
+    assert_eq!(fx.settings_text(), "{}\n");
+
+    cx.simulate_keystrokes("down enter");
+    assert_state(cx, "control", "editor.fontSize", true);
+    cx.simulate_input("19");
+    cx.simulate_keystrokes("enter");
+    assert_state(cx, "results", "editor.fontSize", false);
+    let mut value = Value::Null;
+    for _ in 0..200 {
+        cx.run_until_parked();
+        value = fx
+            .service
+            .read("editor.fontSize", &Scope::default())
+            .unwrap();
+        if value == Value::Number(19.0) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(value, Value::Number(19.0));
+    assert!(fx.settings_text().contains("\"editor.fontSize\""));
+
+    cx.simulate_keystrokes("shift-f9 enter");
+    assert_state(cx, "results", "editor.fontSize", false);
+    let wait_for_setting = |cx: &mut VisualTestContext, predicate: &dyn Fn() -> bool| {
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            predicate(),
+            "settings did not settle: {}",
+            fx.settings_text()
+        );
+    };
+    wait_for_setting(cx, &|| !fx.settings_text().contains("\"editor.fontSize\""));
+
+    let toc = crate::settings_ui::registry::TOC_BEHAVIOR.id;
+    for (mode, expected) in [("hide", "results"), ("filter", "categories")] {
+        editor.update(cx, |view, cx| {
+            view.write_value(toc.into(), Value::String(mode.into()), cx);
+        });
+        wait_for_setting(cx, &|| {
+            fx.service.read(toc, &Scope::default()).unwrap() == Value::String(mode.into())
+        });
+        cx.simulate_keystrokes("ctrl-f down left");
+        assert_state(cx, expected, "editor.fontSize", false);
+    }
+
+    cx.update(|window, cx| {
+        use crate::settings_ui::registry::{SettingsAction, FOCUS_FILE};
+        window.dispatch_action(Box::new(SettingsAction(FOCUS_FILE)), cx);
+    });
+    cx.run_until_parked();
+    assert_editable_shared_file(&workbench, cx, fx.user.join("settings.json"));
+}
+
+#[gpui::test]
 fn graphical_settings_blocks_invalid_writes_and_reveals_the_json_error(cx: &mut TestAppContext) {
     use crate::settings_ui::{registry as settings, SharedSettings};
 
