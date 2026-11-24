@@ -515,6 +515,17 @@ fn structured_json_errors_are_published_on_the_document(cx: &mut TestAppContext)
             Some(crate::code_view::decorations::TextDecoration::Wavy(_))
         )));
     });
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    for key in ["alt-f8", "f8", "shift-alt-f8", "shift-f8"] {
+        cx.simulate_keystrokes(key);
+        refresh(cx);
+        refresh(cx);
+        view.read_with(cx, |v, _| assert!(v.structured.marker.is_some(), "{key}"));
+        cx.simulate_keystrokes("escape");
+        refresh(cx);
+        view.read_with(cx, |v, _| assert!(v.structured.marker.is_none(), "{key}"));
+    }
     cx.simulate_keystrokes("ctrl-shift-m");
     refresh(cx);
     view.read_with(cx, |v, _| assert!(v.shell.layout.panel_visible));
@@ -560,6 +571,18 @@ fn structured_format_command_creates_one_undo_step(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-z");
     refresh(cx);
     assert_eq!(read(cx), original);
+
+    cx.simulate_keystrokes("shift-alt-f");
+    refresh(cx);
+    let pretty = read(cx);
+    view.update(cx, |v, cx| {
+        assert!(v.structured_command(crate::outline::structure::MINIFY, cx));
+    });
+    refresh(cx);
+    assert_eq!(read(cx), original);
+    cx.simulate_keystrokes("ctrl-z");
+    refresh(cx);
+    assert_eq!(read(cx), pretty);
 }
 
 #[gpui::test]

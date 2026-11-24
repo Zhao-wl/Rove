@@ -1,6 +1,7 @@
 //! Problems view shared by the structured document diagnostics and the settings service.
 use super::*;
 use crate::list_widget::text_input::{TextInput, TextInputColors, TextInputEvent};
+use crate::outline::structure as s;
 use gpui::ClipboardItem;
 use rove_base::{Line, Position, Utf8Column};
 
@@ -17,6 +18,7 @@ pub(super) struct Panel {
     filter: Option<Entity<TextInput>>,
     rows_focus: Option<FocusHandle>,
     selected: Option<usize>,
+    truncate_messages: bool,
     settings_subscription: Option<rove_base::Subscription>,
     settings: Arc<[rove_config::SettingsProblem]>,
 }
@@ -270,7 +272,15 @@ impl Workbench {
                     .when(index == selected, |view| view.bg(active))
                     .child(crate::outline::view::codicon(icon, px(16.0), Some(color)))
                     .child(place)
-                    .child(row.message.clone())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(self.problem_panel.truncate_messages, |message| {
+                                message.truncate()
+                            })
+                            .child(row.message.clone()),
+                    )
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.problem_panel.selected = Some(index);
                         window.focus(&focus);
@@ -309,18 +319,53 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !matches!(
-            id,
-            CLEAR_FILTER | COPY | FOCUS_FILTER | FOCUS_PROBLEMS | OPEN | OPEN_SIDE | QUICK_FIXES
-        ) {
-            return false;
+        use shell::{catalog::PROBLEMS, layout::PanelLocation};
+        match id {
+            s::FOCUS_PANEL | s::FOCUS_VIEW | s::SHOW_PANEL => {
+                self.shell.layout.active_panel_view = Some(PROBLEMS.into());
+                shell::view::run_command(self, "workbench.action.focusPanel", window, cx);
+                return true;
+            }
+            s::RESET_CONTAINER | s::RESET_VIEW => {
+                let location = Key::<String>::new("workbench.panel.defaultLocation")
+                    .read(&*self.settings, &Scope::default())
+                    .unwrap_or_default();
+                self.shell.layout.panel_location = Some(PanelLocation::from_setting(&location));
+                self.shell.schedule_save(cx);
+                cx.notify();
+                return true;
+            }
+            s::REMOVE_VIEW => {
+                if self.shell.active_panel_view() == PROBLEMS {
+                    shell::view::run_command(self, "workbench.action.closePanel", window, cx);
+                }
+                return true;
+            }
+            s::TOGGLE_VIEW => {
+                shell::view::run_command(self, "workbench.actions.view.toggleProblems", window, cx);
+                return true;
+            }
+            s::WRAP_MESSAGE | s::TRUNCATE_MESSAGE => {
+                self.problem_panel.truncate_messages = id == s::TRUNCATE_MESSAGE;
+                cx.notify();
+                return true;
+            }
+            CLEAR_FILTER
+            | COPY
+            | s::COPY_MESSAGE
+            | FOCUS_FILTER
+            | FOCUS_PROBLEMS
+            | OPEN
+            | OPEN_SIDE
+            | QUICK_FIXES => {}
+            _ => return false,
         }
         let (filter, focus) = self.prepare_problem_panel(cx);
         match id {
             CLEAR_FILTER => filter.update(cx, |input, cx| input.set_text("", cx)),
             FOCUS_FILTER => window.focus(&filter.focus_handle(cx)),
             FOCUS_PROBLEMS => window.focus(&focus),
-            OPEN | OPEN_SIDE | COPY => {
+            OPEN | OPEN_SIDE | COPY | s::COPY_MESSAGE => {
                 let data = self.listed_problems(cx);
                 let index = self.problem_panel.selected.unwrap_or(0);
                 if let Some(row) = data.get(index) {
@@ -332,6 +377,8 @@ impl Workbench {
                             row.position.column.0 + 1,
                             row.message,
                         )));
+                    } else if id == s::COPY_MESSAGE {
+                        cx.write_to_clipboard(ClipboardItem::new_string(row.message.clone()));
                     } else {
                         let target = if id == OPEN_SIDE {
                             crate::documents::OpenTarget::Beside

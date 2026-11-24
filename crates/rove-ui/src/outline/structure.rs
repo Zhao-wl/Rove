@@ -42,6 +42,29 @@ pub const NEXT: &str = "editor.action.marker.next";
 pub const PREVIOUS: &str = "editor.action.marker.prev";
 pub const NEXT_FILES: &str = "editor.action.marker.nextInFiles";
 pub const PREVIOUS_FILES: &str = "editor.action.marker.prevInFiles";
+pub const COPY_MESSAGE: &str = "problems.action.copyMessage";
+pub const WRAP_MESSAGE: &str = "problems.action.showMultilineMessage";
+pub const TRUNCATE_MESSAGE: &str = "problems.action.showSinglelineMessage";
+pub const FOCUS_PANEL: &str = "workbench.action.problems.focus";
+pub const SHOW_PANEL: &str = "workbench.action.showErrorsWarnings";
+pub const FOCUS_VIEW: &str = "workbench.panel.markers.view.focus";
+pub const RESET_CONTAINER: &str = "workbench.panel.markers.resetViewContainerLocation";
+pub const RESET_VIEW: &str = "workbench.panel.markers.view.resetViewLocation";
+pub const REMOVE_VIEW: &str = "workbench.panel.markers.view.removeView";
+pub const TOGGLE_VIEW: &str = "workbench.panel.markers.view.toggleVisibility";
+
+const REGISTERED_ONLY: &[(&str, &str)] = &[
+    ("editor.action.formatDocument.multiple", "structure.format"),
+    (
+        "editor.action.formatSelection.multiple",
+        "structure.formatSelection",
+    ),
+    ("problems.action.showQuickFixes", "structure.quickFixes"),
+    (
+        "problems.action.copyRelatedInformationMessage",
+        "structure.copyRelatedProblem",
+    ),
+];
 
 const COMMANDS: &[(&str, &str, &str)] = &[
     (FORMAT, "structure.format", "格式化文档"),
@@ -94,12 +117,35 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "structure.openProblemBeside",
         "在侧边打开问题",
     ),
+    (COPY_MESSAGE, "structure.copyProblemMessage", "复制问题消息"),
+    (
+        WRAP_MESSAGE,
+        "structure.wrapProblemMessage",
+        "多行显示问题消息",
+    ),
+    (
+        TRUNCATE_MESSAGE,
+        "structure.truncateProblemMessage",
+        "单行显示问题消息",
+    ),
+    (FOCUS_PANEL, "structure.focusProblemPanel", "聚焦问题面板"),
+    (SHOW_PANEL, "structure.showProblemPanel", "显示错误和警告"),
+    (FOCUS_VIEW, "structure.focusProblemView", "聚焦问题视图"),
+    (
+        RESET_CONTAINER,
+        "structure.resetProblemPanel",
+        "重置问题面板位置",
+    ),
+    (RESET_VIEW, "structure.resetProblemView", "重置问题视图位置"),
+    (REMOVE_VIEW, "structure.hideProblemView", "隐藏问题视图"),
+    (TOGGLE_VIEW, "structure.toggleProblemView", "切换问题视图"),
 ];
 const STRINGS: &[(&str, &str)] = &[
     ("structure.formatting", "正在格式化，按 Esc 取消。"),
     ("structure.markerTitle", "语法问题"),
     ("structure.problemsFilter", "筛选问题"),
     ("structure.quickFixes", "显示快速修复"),
+    ("structure.copyRelatedProblem", "复制相关问题消息"),
     (
         "structure.settingsProblem",
         "无法读取设置。请检查文件语法。",
@@ -139,13 +185,15 @@ pub fn register_commands(registry: &mut CommandRegistry) -> Result<()> {
             },
         )?;
     }
-    registry.register(
-        "problems.action.showQuickFixes",
-        Command {
-            title_key: "structure.quickFixes".into(),
-            category_key: None,
-        },
-    )?;
+    for (id, key) in REGISTERED_ONLY {
+        registry.register(
+            *id,
+            Command {
+                title_key: (*key).into(),
+                category_key: None,
+            },
+        )?;
+    }
     Ok(())
 }
 

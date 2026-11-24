@@ -306,6 +306,22 @@ fn xml_formatting_respects_mixed_content_and_xml_space() {
 }
 
 #[test]
+fn previews_count_arrays_and_truncate_long_strings_and_numbers() {
+    let string = "数".repeat(80);
+    let number = "7".repeat(80);
+    let items = ["null"; 24].join(",");
+    let text = format!(r#"{{"items":[{items}],"string":"{string}","number":{number}}}"#);
+    let document = parse(StructuredLanguage::Json, &text);
+    let roots = document.roots().unwrap();
+    assert_eq!(roots[0].symbol.name.as_ref(), "items");
+    assert_eq!(roots[0].value_preview.as_ref(), "[24]");
+    assert_eq!(roots[1].value_preview.chars().count(), 65);
+    assert_eq!(roots[2].value_preview.chars().count(), 65);
+    assert!(roots[1].value_preview.ends_with('…'));
+    assert!(roots[2].value_preview.ends_with('…'));
+}
+
+#[test]
 fn cancellation_does_not_publish_a_partial_snapshot() {
     let cancel = Cancellation::default();
     cancel.cancel();
