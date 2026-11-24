@@ -46,6 +46,8 @@ const WIDTH: f32 = 419.0;
 const ROW_CONTENT_HEIGHT: f32 = 25.0;
 /// 查找选项保留约 64 px，再给关键词留出一段可用的编辑空间。
 const INPUT_PREFERRED_WIDTH: f32 = 112.0;
+/// 文字和选项分行前，希望给光标和几个字符保留的宽度。
+const FIELD_PREFERRED_WIDTH: f32 = 32.0;
 const HISTORY_LIMIT: usize = 100;
 const BACKGROUND_REPLACE_MATCHES: usize = 128;
 const REPLACE_PREPARATION_DELAY: Duration = Duration::from_millis(20);
@@ -1840,7 +1842,10 @@ impl FindHost {
         let tip = |this: &Self, key: &str, command: &str, cx: &App| this.tooltip(key, command, cx);
         let toggles = div()
             .flex()
-            .flex_shrink_0()
+            .flex_none()
+            .flex_wrap()
+            .max_w(gpui::relative(1.0))
+            .justify_end()
             .items_center()
             .gap(px(1.0))
             .pr(px(2.0))
@@ -1876,7 +1881,9 @@ impl FindHost {
             div()
                 .flex()
                 .flex_1()
+                .flex_basis(px(FIELD_PREFERRED_WIDTH))
                 .min_w_0()
+                .max_w(gpui::relative(1.0))
                 .key_context(context)
                 .debug_selector(move || context_key.into())
                 .child(child)
@@ -1887,7 +1894,7 @@ impl FindHost {
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .h(px(24.0))
+                .min_h(px(24.0))
                 .px(px(4.0))
                 .bg(paint(c.input_background))
                 .border_1()
@@ -1900,6 +1907,9 @@ impl FindHost {
                 .text_color(paint(c.input_foreground))
         };
         let input_box = boxed(div(), error)
+            .flex_wrap()
+            .justify_end()
+            .gap(px(2.0))
             .flex_basis(px(INPUT_PREFERRED_WIDTH))
             .max_w(gpui::relative(1.0))
             .child(field(
@@ -1910,7 +1920,8 @@ impl FindHost {
         let count = div()
             .debug_selector(|| "find-count".into())
             .flex_shrink_0()
-            .min_w(px(69.0))
+            .min_w_0()
+            .max_w(gpui::relative(1.0))
             .px(px(4.0))
             .text_size(px(12.0))
             .text_color(paint(c.widget_foreground))
@@ -1977,6 +1988,8 @@ impl FindHost {
         let replace_row = (can_replace && expanded).then(|| {
             let preserve = self.shared.borrow().preserve_case;
             let replace_box = boxed(div(), false)
+                .flex_basis(px(64.0))
+                .max_w(gpui::relative(1.0))
                 .child(field(
                     reg::context::REPLACE_INPUT_FOCUSSED,
                     self.replace_input.clone().into_any_element(),
@@ -1996,9 +2009,11 @@ impl FindHost {
                 )));
             div()
                 .flex()
+                .flex_wrap()
+                .justify_end()
                 .items_center()
                 .gap(px(3.0))
-                .h(px(ROW_CONTENT_HEIGHT))
+                .min_h(px(ROW_CONTENT_HEIGHT))
                 .child(replace_box)
                 .child(button(
                     "find-replace",
