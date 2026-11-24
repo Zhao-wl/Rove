@@ -639,6 +639,33 @@ impl TextFile {
         self.reload_decoded(stamp, bytes, settings, None, now)
     }
 
+    /// Append an externally verified UTF-8 suffix while the saved editing baseline is unchanged.
+    pub fn append_from_disk(
+        &mut self,
+        base: &DiskStamp,
+        next: DiskStamp,
+        suffix: &str,
+        endings: LineEndings,
+        now: Instant,
+    ) -> Result<AppliedEdit> {
+        let bom_bytes = if self.bom { 3 } else { 0 };
+        if self.is_dirty()
+            || self.disk.as_ref() != Some(base)
+            || self.encoding != Encoding::Utf8
+            || self.deleted
+            || self.external.is_some()
+            || self.snapshot().byte_len() + bom_bytes != base.len
+            || base.len.checked_add(suffix.len() as u64) != Some(next.len)
+        {
+            return Err(Error::Stale);
+        }
+        let edit = self.session.append_from_disk(suffix, endings, now)?;
+        self.session.push_undo_stop();
+        self.saved_marker = self.session.history_marker();
+        self.disk = Some(next);
+        Ok(edit)
+    }
+
     /// `explicit` 为 `Some` 时按指定编码解码（不走自动识别）。
     fn reload_decoded(
         &mut self,

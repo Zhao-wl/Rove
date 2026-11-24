@@ -123,6 +123,11 @@ mod markdown_tests;
 mod large_file_host;
 #[cfg(test)]
 mod large_file_tests;
+mod tail_host;
+#[cfg(all(test, windows))]
+mod tail_native_probe;
+mod tail_read;
+mod tail_state;
 // #60：侧边「引用」视图（面板）与 references-view.* 命令。
 #[cfg(test)]
 mod nav_extra_tests;
@@ -316,6 +321,7 @@ pub struct Workbench {
     has_folder: bool,
     /// #22：超大文件提示条 / 状态栏 / 索引进度 / 转到行等待 / 超长行临时标签（见 `large_file_host.rs`）。
     large_files: large_file_host::LargeFiles,
+    follow_tail: tail_host::FollowTail,
     /// #27：状态栏右侧条目的快照、选择器与会话内覆盖（见 `status_host.rs`）。
     status: status_host::StatusItems,
     structured: crate::outline::structure::State,
@@ -510,6 +516,7 @@ impl Workbench {
         // #22 的超长行临时标签也是虚拟文档，串在元数据加载器前面。
         let metadata_loader = Arc::new(crate::metadata::MetadataLoader::new(nav.views.clone()));
         let large_files = large_file_host::LargeFiles::new(metadata_loader.clone());
+        let follow_tail = tail_host::FollowTail::default();
         let metadata = metadata_host::MetadataHost::with_loader(
             FileDocuments::new(root.clone(), services.clone())
                 .with_size_policy(size)
@@ -518,7 +525,8 @@ impl Workbench {
                 )))
                 .with_virtual_source(Arc::new(StaticPageSource(
                     crate::settings_ui::registry::RESOURCE,
-                ))),
+                )))
+                .with_virtual_source(follow_tail.previews.clone()),
             metadata_loader,
             large_files.long_lines.clone(),
         );
@@ -594,6 +602,7 @@ impl Workbench {
             replacement: replacement_host::ReplacementBatch::default(),
             has_folder,
             large_files,
+            follow_tail,
             status: Default::default(),
             structured: Default::default(),
             problem_panel: Default::default(),
@@ -665,6 +674,7 @@ impl Workbench {
         view.peek_settings_changed(cx);
         // #42：速览预览里的外部符号片段取自元数据视图。
         view.register_metadata_snippets();
+        view.register_truncation_action(tail_host::preview_overlay(), cx);
         view.sync_views(cx);
         view.restore_basket(cx);
         view.register_markdown_context_menu(
@@ -1026,7 +1036,7 @@ impl Workbench {
             self.index_command(id, cx);
             return;
         }
-        if self.structured_command(id, cx) {
+        if self.structured_command(id, cx) || self.follow_command(&invocation, cx) {
             return;
         }
         // #47：带参数的编辑命令，以及关闭有未保存修改的标签（先确认）。
@@ -1193,6 +1203,13 @@ impl Workbench {
         // #29：编辑器滚动 / 选区 → Markdown 预览。
         self.markdown_code_event(group, secondary, event);
         match event {
+            CodeViewEvent::UserScrolled {
+                old_top,
+                new_top,
+                at_end,
+            } => {
+                return self.follow_user_scroll(group, secondary, *old_top, *new_top, *at_end, cx);
+            }
             CodeViewEvent::EditBlocked { position, reasons } => {
                 return self.edit_blocked(group, secondary, *position, reasons, cx);
             }
@@ -1258,6 +1275,7 @@ impl Workbench {
             }
             CodeViewEvent::FoldsChanged(folds) => state.folds = folds.clone(),
             CodeViewEvent::TextChanged
+            | CodeViewEvent::UserScrolled { .. }
             | CodeViewEvent::EditBlocked { .. }
             | CodeViewEvent::ToggleReadonlyRequested
             | CodeViewEvent::PointerMoved { .. }
@@ -1352,10 +1370,14 @@ impl Workbench {
         let Some(document) = self.shown_document(group, secondary) else {
             return;
         };
-        let reason = reasons
-            .first()
-            .map(|r| self.label(code_view::read_only_reason_key(r), &[]))
-            .unwrap_or_default();
+        let reason = if self.formatted_tab_title(&document.resource).is_some() {
+            self.label(crate::follow_tail::READONLY_REASON, &[])
+        } else {
+            reasons
+                .first()
+                .map(|r| self.label(code_view::read_only_reason_key(r), &[]))
+                .unwrap_or_default()
+        };
         // 超大文件与元数据视图（#42）的只读不能在会话中取消，提示里不提切换。
         let key = if reasons
             .iter()
@@ -1901,7 +1923,7 @@ impl Workbench {
 }
 
 /// 骨架装配的工厂：视图容器与状态栏条目由工作台通用绘制，文件夹小节是骨架文件树，问题面板是空状态。
-const KNOWN_FACTORIES: [&str; 10] = [
+const KNOWN_FACTORIES: [&str; 11] = [
     CONTAINER_FACTORY,
     STATUS_FACTORY,
     FILE_VIEW,
@@ -1914,6 +1936,7 @@ const KNOWN_FACTORIES: [&str; 10] = [
     // #60：面板里的「引用」视图。
     crate::references::registry::VIEW,
     crate::context_basket::registry::SECTION,
+    crate::follow_tail::TITLE_FACTORY,
 ];
 impl ShellHost for Workbench {
     fn shell(&self) -> &Shell {
@@ -1999,6 +2022,9 @@ impl ShellHost for Workbench {
         self.focus.clone()
     }
     fn run_external_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == crate::follow_tail::RESUME {
+            self.focus_group_code(self.editor.focused, window, cx);
+        }
         if self.problem_panel_command(id, window, cx) {
             return;
         }
@@ -2146,6 +2172,7 @@ impl Render for Workbench {
         }
         // #22：超大文件提示条、状态栏标记、索引进度、滚动估计与流式查找。
         self.sync_large_files(cx);
+        self.sync_follow_tail(cx);
         self.sync_images(window, cx);
         // #27：状态栏右侧的文件状态条目（只在状态变化时重算，见 `status_host.rs`）。
         self.sync_status(window, cx);
@@ -2190,9 +2217,11 @@ impl Render for Workbench {
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape"
                     && (view.dismiss_basket_menu()
+                        || view.follow_tail.title_menu.take().is_some()
                         || view.structured.context_menu.take().is_some()
                         || view.close_structured_marker(cx)
                         || view.cancel_structured_format()
+                        || view.cancel_formatted_preview(cx)
                         || view
                             .code_view()
                             .clone()

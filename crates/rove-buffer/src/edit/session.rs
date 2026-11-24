@@ -678,13 +678,34 @@ impl EditSession {
         }
         let inserted = &text[prefix..new.len() - suffix];
         let transaction = Transaction::single(range, inserted).verbatim();
+        self.apply_external(&transaction, line_endings, now)
+            .map(Some)
+    }
+
+    pub(crate) fn append_from_disk(
+        &mut self,
+        text: &str,
+        line_endings: LineEndings,
+        now: Instant,
+    ) -> Result<AppliedEdit> {
+        let end = ByteOffset(self.buffer.snapshot().byte_len());
+        let transaction = Transaction::single(Span::new(end, end)?, text).verbatim();
+        self.apply_external(&transaction, line_endings, now)
+    }
+
+    fn apply_external(
+        &mut self,
+        transaction: &Transaction,
+        line_endings: LineEndings,
+        now: Instant,
+    ) -> Result<AppliedEdit> {
         let reasons: std::sync::Arc<[crate::ReadOnlyReason]> =
             std::sync::Arc::from(self.buffer.read_only());
         self.buffer.set_read_only(std::sync::Arc::from([]));
         self.history.close();
         let before = self.selections.clone();
         let result = self.commit(
-            &transaction,
+            transaction,
             EditKind::Other,
             now,
             true,
@@ -692,7 +713,7 @@ impl EditSession {
             |applied| before.map(|s| Ok(map_selection(applied, s))),
         );
         self.buffer.set_read_only(reasons);
-        result.map(Some)
+        result
     }
 
     pub fn contents(&self) -> String {

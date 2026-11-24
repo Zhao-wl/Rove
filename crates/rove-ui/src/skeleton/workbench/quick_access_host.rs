@@ -486,7 +486,10 @@ impl Workbench {
     fn command_entries(&self, cx: &App) -> Vec<CommandEntry> {
         let mut entries = Vec::new();
         for (id, command) in self.commands.registry().entries() {
-            if reg::hidden_in_palette(id) || !crate::keys::is_implemented(id, cx) {
+            if reg::hidden_in_palette(id)
+                || !self.follow_command_visible(id)
+                || !crate::keys::is_implemented(id, cx)
+            {
                 continue;
             }
             let title = Message::key(command.title_key.clone());

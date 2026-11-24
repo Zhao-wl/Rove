@@ -2544,6 +2544,7 @@ fn render_status_bar<T: ShellHost>(
         let tip = e.tooltip.clone().unwrap_or_else(|| text(host, &c.title));
         div()
             .id(SharedString::from(format!("status-{id}")))
+            .debug_selector(|| format!("status-{id}"))
             .h_full()
             .px(shell.z(5.0))
             .flex()

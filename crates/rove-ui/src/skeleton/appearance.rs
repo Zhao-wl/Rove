@@ -99,6 +99,7 @@ pub fn strings() -> Result<StringTable> {
     crate::update::registry::register_strings(&mut t)?;
     crate::image_preview::registry::register_strings(&mut t)?;
     crate::settings_ui::registry::register_strings(&mut t)?;
+    crate::follow_tail::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {
@@ -130,5 +131,6 @@ pub fn contributions() -> Result<ContributionRegistry> {
     // #60：面板里的「引用」视图（与「问题」并列，UX_SPEC §1.4）。
     crate::references::registry::register_contributions(&mut r)?;
     crate::image_preview::registry::register_contributions(&mut r)?;
+    crate::follow_tail::register_contributions(&mut r)?;
     Ok(r)
 }

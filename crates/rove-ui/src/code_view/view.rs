@@ -101,6 +101,12 @@ pub enum CodeViewEvent {
         source: SelectionSource,
     },
     ViewportChanged(Viewport),
+    /// A gesture or navigation key moved (or tried to move) the viewport vertically.
+    UserScrolled {
+        old_top: f64,
+        new_top: f64,
+        at_end: bool,
+    },
     /// 文本源被替换（新文档或新快照）。
     TextChanged,
     /// 折叠状态变了（#20）；宿主把它写回标签的 `ViewState::folds`。
@@ -1948,6 +1954,43 @@ impl CodeView {
 
     // ------------------------------------------------------------------ 滚动定位
 
+    fn follow_top(&self, document_line: u64, metrics: &Metrics) -> f64 {
+        let visual = self.view_line(document_line)
+            + u64::from(self.visual_map().span(document_line).saturating_sub(1));
+        (metrics.line_top(visual, &self.zones) + 1.0 - metrics.viewport_lines()).max(0.0)
+    }
+
+    pub(crate) fn follow_end(&mut self, document_line: u64, cx: &mut Context<Self>) {
+        if self.wrap.map.doc_lines() != self.doc_line_count() {
+            self.sync_fold_map();
+        }
+        if let Some(metrics) = self.metrics() {
+            let top = self.follow_top(document_line, &metrics);
+            self.set_scroll_position(
+                ScrollPosition {
+                    top,
+                    x: self.scroll.x,
+                },
+                false,
+                cx,
+            );
+        } else {
+            self.reveal_line(document_line, Reveal::Nearest, cx);
+        }
+    }
+
+    fn emit_user_scroll(&self, old_top: f64, cx: &mut Context<Self>) {
+        let Some(metrics) = self.metrics() else {
+            return;
+        };
+        let last = self.doc_line_count().saturating_sub(1);
+        cx.emit(CodeViewEvent::UserScrolled {
+            old_top,
+            new_top: self.scroll.top,
+            at_end: self.scroll.top + 0.01 >= self.follow_top(last, &metrics),
+        });
+    }
+
     pub fn scroll_position(&self) -> ScrollPosition {
         self.scroll
     }
@@ -2183,6 +2226,31 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let old_top = self.scroll.top;
+        let handled = self.execute_command(id, window, cx);
+        if handled
+            && matches!(
+                id,
+                "cursorTop"
+                    | "cursorTopSelect"
+                    | "cursorBottom"
+                    | "cursorBottomSelect"
+                    | "cursorPageUp"
+                    | "cursorPageUpSelect"
+                    | "cursorPageDown"
+                    | "cursorPageDownSelect"
+                    | "scrollLineUp"
+                    | "scrollLineDown"
+                    | "scrollPageUp"
+                    | "scrollPageDown"
+            )
+        {
+            self.emit_user_scroll(old_top, cx);
+        }
+        handled
+    }
+
+    fn execute_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.execute_smart_selection(id, window, cx) {
             return true;
         }
@@ -2782,7 +2850,11 @@ impl CodeView {
             let total = m.content_width + m.beyond_last_column;
             p.x = scroll::pos_for_thumb(track, m.viewport_width, total, at - thumb_len / 2.0);
         }
+        let old_top = self.scroll.top;
         self.set_scroll_position(p, false, cx);
+        if vertical {
+            self.emit_user_scroll(old_top, cx);
+        }
     }
 
     pub(crate) fn scrollbar_drag(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
@@ -2794,6 +2866,7 @@ impl CodeView {
                 let total = m.total_lines(&self.zones);
                 let top =
                     scroll::pos_for_thumb(bar.size.height.to_f64(), m.viewport_lines(), total, at);
+                let old_top = self.scroll.top;
                 self.set_scroll_position(
                     ScrollPosition {
                         top,
@@ -2802,6 +2875,7 @@ impl CodeView {
                     false,
                     cx,
                 );
+                self.emit_user_scroll(old_top, cx);
             }
             Some(Drag::HThumb { grab }) => {
                 let Some(bar) = self.layout.hbar else { return };
@@ -2852,7 +2926,11 @@ impl CodeView {
             x: self.scroll.x - dx,
         };
         let pixel_precise = matches!(delta, gpui::ScrollDelta::Pixels(_));
+        let old_top = self.scroll.top;
         self.set_scroll_position(p, !pixel_precise, cx);
+        if dy != 0.0 {
+            self.emit_user_scroll(old_top, cx);
+        }
     }
 
     // ------------------------------------------------------------------ 焦点与插入符闪烁

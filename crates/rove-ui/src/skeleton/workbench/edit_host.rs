@@ -391,7 +391,7 @@ impl Workbench {
         let Some(current) = self.open_document(document) else {
             return;
         };
-        let (snapshot, line_endings, selection) = {
+        let (snapshot, encoding, bom, line_endings, selection) = {
             let saves = self.editing.saves.borrow();
             let Some(file) = saves.file(document) else {
                 return;
@@ -403,7 +403,13 @@ impl Workbench {
                 .ok()
                 .zip(snapshot.position(primary.active).ok())
                 .map(|(a, b)| Selection::new(a, b));
-            (snapshot, file.line_endings().clone(), selection)
+            (
+                snapshot,
+                file.encoding().clone(),
+                file.bom(),
+                file.line_endings().clone(),
+                selection,
+            )
         };
         if snapshot.version() == current.text.version() {
             return;
@@ -413,6 +419,8 @@ impl Workbench {
             id: current.id,
             resource: current.resource.clone(),
             metadata: DocumentMetadata {
+                encoding,
+                bom,
                 line_endings,
                 ..current.metadata.clone()
             },
@@ -949,7 +957,10 @@ impl Workbench {
                     FileEvent::RescanRequired => Vec::new(),
                 };
                 for p in paths {
-                    saves.note_change(&self.root.join(p.as_str()), now);
+                    let path = self.root.join(p.as_str());
+                    if !self.follows_disk_path(&path) {
+                        saves.note_change(&path, now);
+                    }
                 }
             }
         }

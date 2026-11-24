@@ -113,6 +113,7 @@ fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> usize {
 struct FileStamp {
     len: u64,
     modified: Option<SystemTime>,
+    identity: Option<(u64, u64)>,
     head: u64,
     tail: u64,
 }
@@ -124,6 +125,7 @@ impl FileStamp {
         Ok(Self {
             len,
             modified: metadata.modified().ok(),
+            identity: crate::save::tail::file_identity(file, &metadata),
             head: sample_hash(file, 0, len.min(STAMP_SAMPLE))?,
             tail: sample_hash(file, len.saturating_sub(STAMP_SAMPLE), len)?,
         })
@@ -322,19 +324,37 @@ impl MappedText {
     /// 追加时新快照复用本快照已有的索引（冻结段共享），只扫描新增部分；本快照不受影响。
     /// 非 UTF-8 编码的超大文件（内容是解码副本）不做增量，按改写处理。
     pub fn reload(&self) -> Result<Reload> {
+        self.reload_with_replacement(true)?.ok_or(Error::NotReady)
+    }
+
+    /// Check the append fast path without creating a replacement snapshot. The caller can
+    /// run the normal open pipeline and detect encoding on the new file when this is `None`.
+    pub fn reload_append(&self) -> Result<Option<Reload>> {
+        self.reload_with_replacement(false)
+    }
+
+    fn reload_with_replacement(&self, replace: bool) -> Result<Option<Reload>> {
         let mut file = File::open(&self.path)?;
         let metadata = file.metadata()?;
         let len = metadata.len();
         let old = &self.stamp;
         let head_len = old.len.min(STAMP_SAMPLE);
-        let head_same = len >= head_len && sample_hash(&mut file, 0, head_len)? == old.head;
+        let same_file = old
+            .identity
+            .zip(crate::save::tail::file_identity(&file, &metadata))
+            .is_none_or(|(old, new)| old == new);
+        let head_same =
+            same_file && len >= head_len && sample_hash(&mut file, 0, head_len)? == old.head;
         if len == old.len && metadata.modified().ok() == old.modified && head_same {
-            return Ok(Reload::Unchanged);
+            return Ok(Some(Reload::Unchanged));
         }
         let appended = len > old.len
             && head_same
             && sample_hash(&mut file, old.len.saturating_sub(STAMP_SAMPLE), old.len)? == old.tail
             && self.is_memory_mapped();
+        if !appended && !replace {
+            return Ok(None);
+        }
         let stamp = FileStamp::read(&mut file)?;
         let storage = Arc::new(load_storage(&file, stamp.len, self.encoding)?);
         let new_len = storage.bytes().len() as u64;
@@ -346,7 +366,7 @@ impl MappedText {
                 index.scanned
             };
             index.complete = false;
-            return Ok(Reload::Appended(Self::start(
+            return Ok(Some(Reload::Appended(Self::start(
                 self.path.clone(),
                 self.encoding,
                 stamp,
@@ -354,9 +374,12 @@ impl MappedText {
                 new_len,
                 index,
                 from,
-            )));
+            ))));
         }
-        Ok(Reload::Replaced(Self::start(
+        if !replace {
+            return Ok(None);
+        }
+        Ok(Some(Reload::Replaced(Self::start(
             self.path.clone(),
             self.encoding,
             stamp,
@@ -364,7 +387,7 @@ impl MappedText {
             new_len,
             LineIndex::new(),
             0,
-        )))
+        ))))
     }
 
     /// 内容开头至多 `len` 个字节（打开时的二进制判定与换行符统计用）。
