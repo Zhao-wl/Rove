@@ -7,7 +7,7 @@ use crate::find::{
     host::FindHost,
     state::{CountLabel, SearchState},
 };
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{Modifiers, TestAppContext, VisualTestContext};
 use rove_base::{Position, Utf8Column};
 use rove_config::{SettingsOptions, SettingsService};
 
@@ -178,6 +178,108 @@ fn ctrl_f_opens_with_seed_and_escape_clears(cx: &mut TestAppContext) {
     // 再次 escape 不会有任何反应。
     press("escape", cx);
     assert!(!visible(&view, cx));
+}
+
+#[gpui::test]
+fn long_find_query_scrolls_without_covering_controls_in_a_narrow_split(cx: &mut TestAppContext) {
+    let fx = Fixture::new(r#"{"editor.find.addExtraSpaceOnTop":true}"#);
+    let query = format!("{}Z", "W".repeat(80));
+    std::fs::write(
+        fx.folder.path().join("notes.txt"),
+        format!("{query}\n").repeat(6),
+    )
+    .unwrap();
+    let (view, cx) = fx.open(cx);
+    let editor = cx.debug_bounds("editor").unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    cx.simulate_resize(gpui::size(
+        viewport.width - editor.size.width + gpui::px(480.0),
+        viewport.height,
+    ));
+    refresh(cx);
+
+    for (min_width, max_width) in [(230.0, 250.0), (110.0, 130.0)] {
+        let previous = view.read_with(cx, |v, _| v.editor.focused);
+        press("ctrl-\\", cx);
+        let active = view.read_with(cx, |v, _| v.editor.focused);
+        assert_ne!(previous, active);
+        let selector = Box::leak(format!("editor-body-{}", active.0).into_boxed_str());
+        let pane = cx.debug_bounds(selector).unwrap();
+        let width = f32::from(pane.size.width);
+        assert!(
+            (min_width..=max_width).contains(&width),
+            "窗格宽度为 {width}"
+        );
+
+        press("ctrl-f", cx);
+        press("ctrl-a", cx);
+        type_text(&query, cx);
+        assert_eq!(input(&view, cx), query);
+        assert!(matches!(
+            label(&view, cx),
+            CountLabel::Matches { total: 6, .. }
+        ));
+
+        let widget = cx.debug_bounds("find-widget").unwrap();
+        let field = cx.debug_bounds("findInputFocussed").unwrap();
+        let case = cx.debug_bounds("find-case").unwrap();
+        let count = cx.debug_bounds("find-count").unwrap();
+        assert!(widget.left() >= pane.left());
+        assert!(widget.right() <= pane.right());
+        assert!(field.size.width > gpui::px(0.0));
+        if min_width == 110.0 {
+            assert!(case.top() >= field.bottom());
+        } else {
+            assert!(field.right() <= case.left());
+        }
+        assert!(count.top() >= field.bottom());
+        for control in [
+            "find-case",
+            "find-word",
+            "find-regex",
+            "find-count",
+            "find-in-selection",
+            "find-previous",
+            "find-next",
+            "find-close",
+        ] {
+            let bounds = cx.debug_bounds(control).unwrap();
+            assert!(bounds.left() >= widget.left(), "{control}");
+            assert!(bounds.right() <= widget.right(), "{control}");
+            assert!(bounds.top() >= widget.top(), "{control}");
+            assert!(bounds.bottom() <= widget.bottom(), "{control}");
+        }
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
+        assert_eq!(
+            code.read_with(cx, |code, _| code.top_inset()),
+            f32::from(widget.size.height)
+        );
+
+        // 末尾的 Z 必须能在输入区右侧点中。回到开头后，左侧点击应再次定位到行首。
+        press("end", cx);
+        cx.simulate_click(
+            gpui::point(field.right() - gpui::px(2.0), field.center().y),
+            Modifiers::none(),
+        );
+        press("backspace", cx);
+        assert_eq!(input(&view, cx), query.trim_end_matches('Z'));
+        press("home", cx);
+        cx.simulate_click(
+            gpui::point(field.left() + gpui::px(1.0), field.center().y),
+            Modifiers::none(),
+        );
+        type_text("H", cx);
+        assert_eq!(
+            input(&view, cx),
+            format!("H{}", query.trim_end_matches('Z'))
+        );
+
+        let close = cx.debug_bounds("find-close").unwrap();
+        cx.simulate_click(close.center(), Modifiers::none());
+        refresh(cx);
+        assert!(!visible(&view, cx));
+        assert_eq!(code.read_with(cx, |code, _| code.top_inset()), 0.0);
+    }
 }
 
 #[gpui::test]

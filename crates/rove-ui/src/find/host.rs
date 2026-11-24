@@ -42,8 +42,12 @@ use std::time::Duration;
 
 /// 查找条宽度（VS Code `FIND_WIDGET_INITIAL_WIDTH`）。
 const WIDTH: f32 = 419.0;
-/// 查找条一行的高度（含上下内边距），也是 `editor.find.addExtraSpaceOnTop` 留出的空间。
-const ROW_HEIGHT: f32 = 33.0;
+/// 查找条一行中留给输入框和按钮的高度。
+const ROW_CONTENT_HEIGHT: f32 = 25.0;
+/// 查找选项保留约 64 px，再给关键词留出一段可用的编辑空间。
+const INPUT_PREFERRED_WIDTH: f32 = 112.0;
+/// 文字和选项分行前，希望给光标和几个字符保留的宽度。
+const FIELD_PREFERRED_WIDTH: f32 = 32.0;
 const HISTORY_LIMIT: usize = 100;
 const BACKGROUND_REPLACE_MATCHES: usize = 128;
 const REPLACE_PREPARATION_DELAY: Duration = Duration::from_millis(20);
@@ -725,7 +729,7 @@ impl FindHost {
         self.cfg = FindSettings::read(&*self.settings);
         self.model
             .set_word_separators(self.cfg.word_separators.clone());
-        self.apply_top_inset(cx);
+        self.clear_unused_top_inset(cx);
         if self.visible {
             self.research(After::Nothing, cx);
         }
@@ -813,7 +817,6 @@ impl FindHost {
         });
         self.shared.borrow_mut().search = search;
         self.set_visible(true, cx);
-        self.apply_top_inset(cx);
         if opts.focus_input {
             window.focus(&self.input.read(cx).focus_handle(cx));
         }
@@ -844,7 +847,7 @@ impl FindHost {
         self.searched_version = None;
         self.sync_match_options(cx);
         self.sync_decor(cx);
-        self.apply_top_inset(cx);
+        self.clear_unused_top_inset(cx);
         cx.emit(FindEvent::VisibilityChanged(false));
         if input_focused {
             let focus = self.code.read(cx).focus_handle(cx);
@@ -862,16 +865,10 @@ impl FindHost {
         cx.notify();
     }
 
-    fn apply_top_inset(&mut self, cx: &mut Context<Self>) {
-        // 替换行展开时查找条高一行（#48），留出的空白跟着变。
-        let rows = if self.replace_shown(cx) { 2.0 } else { 1.0 };
-        let inset = if self.visible && self.cfg.add_extra_space_on_top {
-            ROW_HEIGHT * rows
-        } else {
-            0.0
-        };
-        self.code
-            .update(cx, |code, cx| code.set_top_inset(inset, cx));
+    fn clear_unused_top_inset(&self, cx: &mut Context<Self>) {
+        if !self.visible || !self.cfg.add_extra_space_on_top {
+            self.code.update(cx, |code, cx| code.set_top_inset(0.0, cx));
+        }
     }
 
     // ------------------------------------------------------------------ 搜索
@@ -1261,7 +1258,6 @@ impl FindHost {
         {
             window.focus(&self.input.read(cx).focus_handle(cx));
         }
-        self.apply_top_inset(cx);
         self.prewarm_replacements(cx);
         cx.notify();
     }
@@ -1778,7 +1774,9 @@ impl FindHost {
             let fg = paint(c.widget_foreground);
             let mut el = div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .justify_center()
                 .w(px(20.0))
@@ -1814,9 +1812,11 @@ impl FindHost {
             let fg = paint(c.widget_foreground);
             let mut el = div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .flex()
                 .items_center()
                 .justify_center()
+                .flex_shrink_0()
                 .w(px(22.0))
                 .h(px(22.0))
                 .rounded(px(5.0))
@@ -1841,6 +1841,10 @@ impl FindHost {
         let tip = |this: &Self, key: &str, command: &str, cx: &App| this.tooltip(key, command, cx);
         let toggles = div()
             .flex()
+            .flex_none()
+            .flex_wrap()
+            .max_w(gpui::relative(1.0))
+            .justify_end()
             .items_center()
             .gap(px(1.0))
             .pr(px(2.0))
@@ -1876,8 +1880,11 @@ impl FindHost {
             div()
                 .flex()
                 .flex_1()
+                .flex_basis(px(FIELD_PREFERRED_WIDTH))
                 .min_w_0()
+                .max_w(gpui::relative(1.0))
                 .key_context(context)
+                .debug_selector(move || context_key.into())
                 .child(child)
         };
         let boxed = |children: gpui::Div, error: bool| {
@@ -1886,7 +1893,7 @@ impl FindHost {
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .h(px(24.0))
+                .min_h(px(24.0))
                 .px(px(4.0))
                 .bg(paint(c.input_background))
                 .border_1()
@@ -1899,24 +1906,33 @@ impl FindHost {
                 .text_color(paint(c.input_foreground))
         };
         let input_box = boxed(div(), error)
+            .flex_wrap()
+            .justify_end()
+            .gap(px(2.0))
+            .flex_basis(px(INPUT_PREFERRED_WIDTH))
+            .max_w(gpui::relative(1.0))
             .child(field(
                 reg::context::INPUT_FOCUSSED,
                 self.input.clone().into_any_element(),
             ))
             .child(toggles);
         let count = div()
+            .debug_selector(|| "find-count".into())
             .flex_shrink_0()
-            .min_w(px(69.0))
+            .min_w_0()
+            .max_w(gpui::relative(1.0))
             .px(px(4.0))
             .text_size(px(12.0))
             .text_color(paint(c.widget_foreground))
             .child(self.count_text());
-        let row = div()
+        let controls = div()
             .flex()
+            .flex_none()
+            .flex_wrap()
+            .max_w(gpui::relative(1.0))
+            .justify_end()
             .items_center()
             .gap(px(3.0))
-            .h(px(ROW_HEIGHT - 8.0))
-            .child(input_box)
             .child(count)
             .child(toggle(
                 "find-in-selection",
@@ -1955,12 +1971,24 @@ impl FindHost {
                 reg::CLOSE,
                 cx,
             ));
+        // 窄分栏把计数和导航按钮移到下一行，为关键词保留完整输入行。
+        let row = div()
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .items_center()
+            .gap(px(3.0))
+            .min_h(px(ROW_CONTENT_HEIGHT))
+            .child(input_box)
+            .child(controls);
         // #48：替换行。只读文档上整行不显示（UX_SPEC §1.2“不可用的项直接不显示”）。
         let can_replace = self.can_replace(cx);
         let expanded = self.shared.borrow().expanded;
         let replace_row = (can_replace && expanded).then(|| {
             let preserve = self.shared.borrow().preserve_case;
             let replace_box = boxed(div(), false)
+                .flex_basis(px(64.0))
+                .max_w(gpui::relative(1.0))
                 .child(field(
                     reg::context::REPLACE_INPUT_FOCUSSED,
                     self.replace_input.clone().into_any_element(),
@@ -1980,9 +2008,11 @@ impl FindHost {
                 )));
             div()
                 .flex()
+                .flex_wrap()
+                .justify_end()
                 .items_center()
                 .gap(px(3.0))
-                .h(px(ROW_HEIGHT - 8.0))
+                .min_h(px(ROW_CONTENT_HEIGHT))
                 .child(replace_box)
                 .child(button(
                     "find-replace",
@@ -2016,7 +2046,7 @@ impl FindHost {
                 .items_center()
                 .justify_center()
                 .w(px(16.0))
-                .h(px(ROW_HEIGHT - 8.0))
+                .h(px(ROW_CONTENT_HEIGHT))
                 .rounded(px(3.0))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
@@ -2051,12 +2081,11 @@ impl FindHost {
         context.add(reg::context::WIDGET_VISIBLE);
         let mut widget = div()
             .id("find-widget")
+            .debug_selector(|| "find-widget".into())
             .occlude()
             .key_context(context)
-            .absolute()
-            .top(px(0.0))
-            .right(px(18.0))
-            .w(px(WIDTH))
+            .w_full()
+            .max_w(px(WIDTH))
             .flex()
             .flex_col()
             .p(px(4.0))
@@ -2080,7 +2109,39 @@ impl FindHost {
                     .child(message),
             );
         }
-        widget
+        // 两侧锚定外层，使查找条能随编辑器组缩窄并保持右对齐。
+        let overlay = div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .right(px(18.0))
+            .flex()
+            .justify_end()
+            .child(widget);
+        if !self.cfg.add_extra_space_on_top {
+            return overlay;
+        }
+
+        // 查找条换行后，以实际布局高度为编辑器留出空间。
+        let host = cx.entity().downgrade();
+        overlay.on_children_prepainted(move |bounds, window, cx| {
+            let inset = f32::from(bounds[0].size.height);
+            let current = host
+                .read_with(cx, |host, cx| host.code.read(cx).top_inset())
+                .ok();
+            if current == Some(inset) {
+                return;
+            }
+            let host = host.clone();
+            window.defer(cx, move |_, cx| {
+                let _ = host.update(cx, |host, cx| {
+                    if host.visible && host.cfg.add_extra_space_on_top {
+                        host.code
+                            .update(cx, |code, cx| code.set_top_inset(inset, cx));
+                    }
+                });
+            });
+        })
     }
 }
 

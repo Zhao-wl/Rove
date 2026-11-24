@@ -7,11 +7,10 @@ use super::{
     registry::context as ck,
 };
 use gpui::{
-    div, fill, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem, Context,
-    CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, GlobalElementId, Hsla, KeyContext, LayoutId, MouseButton,
-    MouseDownEvent, PaintQuad, Pixels, ShapedLine, SharedString, Style, TextRun, UTF16Selection,
-    UnderlineStyle, Window,
+    div, fill, point, prelude::*, px, relative, App, Bounds, ClipboardItem, Context, CursorStyle,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, Hsla, KeyContext, LayoutId, MouseButton, MouseDownEvent, PaintQuad,
+    Pixels, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -41,6 +40,7 @@ pub struct TextInput {
     marked: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    scroll_x: Pixels,
     /// Enables `history.showPrevious/showNext` (find widget, search inputs).
     pub history: Option<InputHistory>,
     /// Extra context keys published by the owner (e.g. `cursorAtEndOfQuickInputBox`).
@@ -60,6 +60,7 @@ impl TextInput {
             marked: None,
             last_layout: None,
             last_bounds: None,
+            scroll_x: px(0.0),
             history: None,
             colors,
         }
@@ -324,15 +325,10 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range);
+        let text_left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
-            point(
-                bounds.left() + layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            point(text_left + layout.x_for_index(range.start), bounds.top()),
+            point(text_left + layout.x_for_index(range.end), bounds.bottom()),
         ))
     }
 
@@ -344,7 +340,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let local = self.last_bounds?.localize(&p)?;
         let layout = self.last_layout.as_ref()?;
-        let i = layout.index_for_x(p.x - local.x)?;
+        let i = layout.index_for_x(local.x + self.scroll_x)?;
         Some(self.offset_to_utf16(i))
     }
 }
@@ -355,6 +351,7 @@ impl Render for TextInput {
             .flex()
             .flex_1()
             .min_w_0()
+            .overflow_hidden()
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
@@ -438,7 +435,9 @@ impl Render for TextInput {
                 cx.listener(|v, e: &MouseDownEvent, w, cx| {
                     w.focus(&v.focus);
                     let i = match (v.last_bounds, v.last_layout.as_ref()) {
-                        (Some(b), Some(l)) => l.closest_index_for_x(e.position.x - b.left()),
+                        (Some(b), Some(l)) => {
+                            l.closest_index_for_x(e.position.x - b.left() + v.scroll_x)
+                        }
                         _ => v.content.len(),
                     };
                     if e.modifiers.shift {
@@ -458,6 +457,7 @@ struct TextElement {
 
 struct Prepaint {
     line: Option<ShapedLine>,
+    scroll_x: Pixels,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
@@ -547,17 +547,31 @@ impl Element for TextElement {
         let line = window
             .text_system()
             .shape_line(text, font_size, &runs, None);
-        let height = bounds.bottom() - bounds.top();
+        let caret_x = if input.content.is_empty() {
+            px(0.0)
+        } else {
+            line.x_for_index(input.cursor())
+        };
+        let scale = window.scale_factor();
+        let visible_width = (bounds.size.width - px(crate::dpi::hairline(scale))).max(px(0.0));
+        let max_scroll = (line.width - visible_width).max(px(0.0));
+        // Keep the current viewport until the active end of the selection leaves it.
+        let scroll_x = input
+            .scroll_x
+            .min(caret_x)
+            .max(caret_x - visible_width)
+            .clamp(px(0.0), max_scroll);
+        let text_left = bounds.left() - scroll_x;
         let (selection, cursor) = if input.selected.is_empty() {
-            let x = if input.content.is_empty() {
-                px(0.)
-            } else {
-                line.x_for_index(input.cursor())
-            };
             (
                 None,
                 Some(fill(
-                    Bounds::new(point(bounds.left() + x, bounds.top()), size(px(1.), height)),
+                    crate::dpi::vline(
+                        f32::from(text_left + caret_x),
+                        f32::from(bounds.top()),
+                        f32::from(bounds.size.height),
+                        scale,
+                    ),
                     input.colors.caret,
                 )),
             )
@@ -566,11 +580,11 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(input.selected.start),
+                            text_left + line.x_for_index(input.selected.start),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(input.selected.end),
+                            text_left + line.x_for_index(input.selected.end),
                             bounds.bottom(),
                         ),
                     ),
@@ -581,6 +595,7 @@ impl Element for TextElement {
         };
         Prepaint {
             line: Some(line),
+            scroll_x,
             cursor,
             selection,
         }
@@ -608,7 +623,8 @@ impl Element for TextElement {
         let Some(line) = prepaint.line.take() else {
             return;
         };
-        let _ = line.paint(bounds.origin, window.line_height(), window, cx);
+        let text_origin = point(bounds.left() - prepaint.scroll_x, bounds.top());
+        let _ = line.paint(text_origin, window.line_height(), window, cx);
         if focus.is_focused(window) {
             if let Some(c) = prepaint.cursor.take() {
                 window.paint_quad(c);
@@ -618,6 +634,7 @@ impl Element for TextElement {
         self.input.update(cx, |input, _| {
             input.last_layout = (!empty).then_some(line);
             input.last_bounds = Some(bounds);
+            input.scroll_x = prepaint.scroll_x;
         });
     }
 }
@@ -633,6 +650,62 @@ mod tests {
         assert_eq!(utf16_to_utf8("中", 1), 3);
         assert_eq!(utf16_to_utf8("a😀b", 3), 5);
         assert_eq!(utf16_to_utf8("a😀b", 99), 6);
+    }
+
+    #[gpui::test]
+    fn ime_hit_testing_uses_the_scrolled_input_origin(cx: &mut TestAppContext) {
+        struct PaddedInput(Entity<TextInput>);
+
+        impl Render for PaddedInput {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let input = div().flex().w(px(160.0)).pl(px(32.0)).child(self.0.clone());
+                div().child(input)
+            }
+        }
+
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            PaddedInput(cx.new(|cx| {
+                let mut input = TextInput::new(
+                    cx,
+                    TextInputColors {
+                        text: gpui::white(),
+                        placeholder: gpui::white(),
+                        caret: gpui::white(),
+                        selection: gpui::blue(),
+                    },
+                );
+                input.set_text(&"W".repeat(80), cx);
+                input
+            }))
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let input = view.read(cx).0.clone();
+            input.update(cx, |input, cx| {
+                let bounds = input.last_bounds.unwrap();
+                assert!(bounds.left() > px(0.0));
+                assert!(input.scroll_x > px(0.0));
+                for index in [77, 78] {
+                    let layout = input.last_layout.as_ref().unwrap();
+                    let x0 = layout.x_for_index(index);
+                    let x1 = layout.x_for_index(index + 1);
+                    let local_x = (x0 + x1) * 0.5 - input.scroll_x;
+                    assert_eq!(
+                        input.character_index_for_point(
+                            point(bounds.left() + local_x, bounds.center().y),
+                            window,
+                            cx,
+                        ),
+                        Some(index)
+                    );
+                }
+            });
+        });
     }
 
     /// Regression (PR #102 review): the IME selection was converted against the whole content
