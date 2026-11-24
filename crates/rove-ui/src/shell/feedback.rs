@@ -4,8 +4,8 @@
 //! 由 [`level_for`] 按 §6.1 的表映射到级别；契约里的 `FeedbackService::show` 仍可直接传级别，
 //! 但模态框只接受经 `report` 声明为“数据丢失 / 安全确认”的 key，其余一律拒绝（`InvalidInput`）。
 //!
-//! 本模块不依赖 GPUI：状态由 UI 线程持有并在渲染时读取；计时（状态栏消息 3 秒、
-//! 通知 toast 自动隐藏）由 UI 层按 `generation` 回调 [`FeedbackHub::expire_status`] 等方法。
+//! 本模块不依赖 GPUI：状态由 UI 线程持有并在渲染时读取；状态栏消息、光标提示与 toast
+//! 的计时由 UI 层按 `generation` 回调 [`FeedbackHub::expire_status`] 等方法。
 pub use crate::feedback::Severity;
 use crate::feedback::{Feedback, FeedbackAction, FeedbackEvent, FeedbackLevel, FeedbackService};
 use rove_base::*;
@@ -15,7 +15,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// 状态栏临时消息的默认显示时长（UX_SPEC §6.1：3 秒后消失）。
+/// 状态栏临时消息与光标提示的显示时长（UX_SPEC §6.1：3 秒后消失）。
 pub const STATUS_DURATION_MS: u32 = 3000;
 /// 没有按钮的信息 / 警告通知，toast 在这段时间后收起（仍保留在通知中心），与 VS Code 一致。
 pub const TOAST_AUTO_HIDE_MS: u32 = 10_000;
@@ -82,6 +82,7 @@ pub struct CursorHint {
     pub document: DocumentId,
     pub position: Position,
     pub message: Message,
+    pub(super) generation: u64,
 }
 #[derive(Clone, Debug)]
 pub struct EditorBar {
@@ -227,7 +228,14 @@ impl FeedbackHub {
     pub fn cursor_hint(&self) -> Option<&CursorHint> {
         self.cursor.as_ref()
     }
-    /// 光标移动、输入或切换编辑器时调用，与 VS Code 的 MessageController 相同。
+    pub(super) fn expire_cursor_hint(&mut self, generation: u64) -> bool {
+        if self.cursor.as_ref().map(|hint| hint.generation) == Some(generation) {
+            self.clear_cursor_hint();
+            return true;
+        }
+        false
+    }
+    /// 光标移动、输入或切换编辑器时提前收起提示。
     pub fn clear_cursor_hint(&mut self) {
         self.cursor = None;
     }
@@ -396,6 +404,7 @@ impl FeedbackService for FeedbackHub {
                     document,
                     position,
                     message: f.message,
+                    generation,
                 });
             }
             FeedbackLevel::EditorBar {
