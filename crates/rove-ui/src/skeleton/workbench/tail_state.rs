@@ -28,6 +28,7 @@ impl FollowMode {
 pub enum ReloadRequest {
     #[default]
     None,
+    PollPath,
     CheckAppend,
     ReopenPath,
 }

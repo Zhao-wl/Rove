@@ -82,7 +82,8 @@ fn r66_native_tail_replay() {
                     .stderr(Stdio::piped())
                     .spawn().map_err(|e| e.to_string())?;
                 let mut samples = Vec::new();
-                let mut missed_tail_samples = 0;
+                let mut off_tail_frames = 0;
+                let mut writer_updates = [0; 4];
                 let mut observed_updates = 0;
                 let mut previous_version = base_version.0;
                 let until = started + Duration::from_secs(15);
@@ -99,27 +100,34 @@ fn r66_native_tail_replay() {
                             let frames = code.update(cx, |code, _| code.take_frame_samples());
                             (frames, lines, document.text.byte_len(), follows, view.follow_tail.counts.appends, view.follow_tail.counts.reopens, at_end)
                         }).map_err(|e| e.to_string())?;
+                    let writing = child.try_wait().map_err(|e| e.to_string())?.is_none();
                     for frame in frames {
-                        if frame.text_version > base_version.0 {
-                            samples.push(frame.cpu.as_secs_f64() * 1_000.);
-                            if previous_version != frame.text_version {
-                                observed_updates += 1;
-                                previous_version = frame.text_version;
+                        if frame.text_version <= base_version.0 {
+                            continue;
+                        }
+                        samples.push(frame.cpu.as_secs_f64() * 1_000.);
+                        off_tail_frames += usize::from(frame.last_line + 1 < frame.known_lines);
+                        if previous_version != frame.text_version {
+                            observed_updates += 1;
+                            previous_version = frame.text_version;
+                            if writing {
+                                let elapsed = frame.end.unwrap().saturating_duration_since(started);
+                                let quarter = (elapsed.as_millis() / 2_500).min(3) as usize;
+                                writer_updates[quarter] += 1;
                             }
                         }
                     }
-                    if follows && !at_end {
-                        missed_tail_samples += 1;
-                    }
-                    if child.try_wait().map_err(|e| e.to_string())?.is_some()
-                        && lines == base_lines + 10_000 && at_end && follows
+                    if !writing && lines == base_lines + 10_000 && at_end && follows
                     {
                         let output = child.wait_with_output().map_err(|e| e.to_string())?;
                         if !output.status.success() || reopened != 0 || appended == 0 {
                             return Err(format!("writer/append counters: {:?}, appends={appended} reopens={reopened}", output.status));
                         }
                         println!("R66_NATIVE_WRITER {}", String::from_utf8_lossy(&output.stdout).trim());
-                        println!("R66_NATIVE_STATE base_bytes={base_bytes} final_bytes={bytes} base_lines={base_lines} final_lines={lines} append_indexes={appended} full_reopens={reopened} observed_updates={observed_updates} off_tail_poll_samples={missed_tail_samples}");
+                        println!("R66_NATIVE_STATE base_bytes={base_bytes} final_bytes={bytes} base_lines={base_lines} final_lines={lines} append_indexes={appended} full_reopens={reopened} observed_updates={observed_updates} writer_active_updates_by_quartile={writer_updates:?} off_tail_frames={off_tail_frames}");
+                        if writer_updates.iter().any(|&updates| updates < 3) || off_tail_frames != 0 {
+                            return Err("writing must update the painted tail throughout all four quarters".into());
+                        }
                         break;
                     }
                     if Instant::now() >= until {

@@ -20,7 +20,7 @@ use super::tail_state::ReloadRequest;
 pub(super) struct OrdinaryBaseline {
     stamp: DiskStamp,
     fingerprint: TailFingerprint,
-    endings: LineEndingCounts,
+    endings: Option<LineEndingCounts>,
 }
 
 pub(super) struct ReadJob {
@@ -31,8 +31,10 @@ pub(super) struct ReadJob {
     pub request: ReloadRequest,
     pub mapped: Option<Arc<MappedText>>,
     pub ordinary: Option<OrdinaryBaseline>,
-    /// Present only for a clean UTF-8 editing session at the captured snapshot version.
     pub saved: Option<DiskStamp>,
+    pub clean: bool,
+    /// Only a clean UTF-8 editing session can consume a suffix as an external edit.
+    pub can_append: bool,
 }
 
 pub(super) enum Change {
@@ -77,7 +79,10 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
         if !force {
             match mapped.reload_append()? {
                 Some(Reload::Unchanged) => return Ok(Change::Unchanged),
-                Some(Reload::Appended(next)) => return Ok(Change::MappedAppend(next)),
+                Some(Reload::Appended(next)) => {
+                    next.wait_complete(std::time::Duration::from_millis(50));
+                    return Ok(Change::MappedAppend(next));
+                }
                 // Reopen through the regular detector to read the new file's encoding and BOM.
                 Some(Reload::Replaced(_)) | None => {}
             }
@@ -87,23 +92,62 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
 
     let mut file = File::open(&job.path)?;
     let metadata = file.metadata()?;
-    if metadata.len() >= job.policy.huge_bytes && job.saved.is_some() {
+    if metadata.len() >= job.policy.huge_bytes && job.clean {
         return opened(job);
     }
-    if force || job.saved.is_none() {
+    if force {
         job.ordinary = None;
         return ordinary_full(job);
     }
-    let saved = job.saved.as_ref().unwrap();
+    let Some(saved) = job.saved.as_ref() else {
+        return Ok(Change::Unchanged);
+    };
+    if !job.can_append {
+        if job.request == ReloadRequest::PollPath
+            && job.ordinary.as_ref().is_some_and(|current| {
+                current.stamp.same_metadata(&metadata)
+                    && current
+                        .fingerprint
+                        .is_replaced(&file)
+                        .is_ok_and(|changed| !changed)
+            })
+        {
+            return Ok(Change::Unchanged);
+        }
+        if job.ordinary.is_none() && saved.same_metadata(&metadata) {
+            job.ordinary = Some(OrdinaryBaseline {
+                stamp: saved.clone(),
+                fingerprint: TailFingerprint::capture(&mut file)?,
+                endings: None,
+            });
+            if job.request == ReloadRequest::PollPath {
+                return Ok(Change::Unchanged);
+            }
+        }
+        let change = ordinary_full(job)?;
+        if let Change::Disk(stamp, _) = &change {
+            if stamp.same_metadata(&file.metadata()?) {
+                job.ordinary = Some(OrdinaryBaseline {
+                    stamp: stamp.clone(),
+                    fingerprint: TailFingerprint::capture(&mut file)?,
+                    endings: None,
+                });
+            }
+        }
+        return Ok(change);
+    }
     if job
         .ordinary
         .as_ref()
-        .is_none_or(|current| current.stamp != *saved)
+        .is_none_or(|current| current.stamp != *saved || current.endings.is_none())
     {
         if !saved.same_metadata(&metadata) {
             return ordinary_full(job);
         }
         let fingerprint = TailFingerprint::capture(&mut file)?;
+        if fingerprint.disk_stamp(saved.hash) != *saved {
+            return ordinary_full(job);
+        }
         let mut endings = LineEndingCounts::default();
         let text = job.document.text.as_ref();
         text.visit_chunks(
@@ -115,7 +159,7 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
         job.ordinary = Some(OrdinaryBaseline {
             stamp: saved.clone(),
             fingerprint,
-            endings,
+            endings: Some(endings),
         });
     }
     let current = job.ordinary.as_mut().unwrap();
@@ -139,7 +183,7 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
                 }
             };
             let stamp = next.disk_stamp(extend_disk_hash(current.stamp.hash, &bytes));
-            let mut endings = current.endings;
+            let mut endings = current.endings.unwrap();
             endings.add(text);
             let change = Change::OrdinaryAppend {
                 base: current.stamp.clone(),
@@ -150,7 +194,7 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
             *current = OrdinaryBaseline {
                 stamp,
                 fingerprint: next,
-                endings,
+                endings: Some(endings),
             };
             Ok(change)
         }

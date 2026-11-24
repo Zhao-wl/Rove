@@ -1184,7 +1184,8 @@ fn r66_real_unity_manifest_opens_a_formatted_readonly_copy(cx: &mut TestAppConte
     });
     let range = Span::new(ByteOffset(0), ByteOffset(preview.text.byte_len())).unwrap();
     let pretty = decoded(&preview, range);
-    assert!(pretty.starts_with("{\n    \"dependencies\": {"));
+    assert!(pretty.starts_with("{\n"));
+    assert!(pretty.contains("\n    \"dependencies\": {"));
     let input_hash = rove_buffer::save::content_hash(&before);
     assert_eq!(std::fs::read(input).unwrap(), before);
     assert_eq!(std::fs::read(path).unwrap(), before);

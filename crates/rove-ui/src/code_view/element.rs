@@ -475,8 +475,10 @@ impl CodeView {
         stats.first_line_y = y0 as f32;
         // #215：记下这一帧画的是哪个版本的文本，基准与测试才能判定「按键有没有被紧接着的那一帧吸收」。
         stats.text_version = self.text.as_ref().map_or(0, |t| t.version().0);
-        self.last_frame = stats;
         let last = lines.last().map_or(first_doc, |l| l.line);
+        stats.last_line = last;
+        stats.known_lines = doc_count;
+        self.last_frame = stats;
         let visible = first..view_line.max(first + 1);
         let link_started = self.recording.is_some().then(Instant::now);
         self.queue_visible_links(visible.clone(), cx);

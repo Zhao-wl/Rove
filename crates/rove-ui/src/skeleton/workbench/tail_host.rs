@@ -553,7 +553,7 @@ impl Workbench {
         for id in tracked {
             self.start_follow_read(id, cx);
         }
-        self.poll_external_follow_paths(cx);
+        self.poll_follow_paths(cx);
         self.follow_views_to_end(cx);
         let mode = self
             .follow_tab(self.editor.focused)
@@ -562,28 +562,26 @@ impl Workbench {
         self.publish_follow_status(mode);
     }
 
-    fn poll_external_follow_paths(&mut self, cx: &mut Context<Self>) {
-        if self.follow_tail.polling
-            || !self
-                .follow_tail
-                .documents
-                .values()
-                .any(|follow| follow.workspace_path.is_none())
-        {
+    /// Windows may delay last-write events while the writer keeps its handle open.
+    /// Use the same coalesced read queue for a periodic size/identity check.
+    fn poll_follow_paths(&mut self, cx: &mut Context<Self>) {
+        if self.follow_tail.polling || self.follow_tail.documents.is_empty() {
             return;
         }
         self.follow_tail.polling = true;
-        let timer = cx.background_executor().timer(Duration::from_millis(150));
+        let timer = cx.background_executor().timer(Duration::from_millis(100));
         cx.spawn(async move |weak, cx| {
             timer.await;
             let _ = weak.update(cx, |view, cx| {
                 view.follow_tail.polling = false;
-                for follow in view.follow_tail.documents.values_mut() {
-                    if follow.workspace_path.is_none() {
-                        follow.queue.request(ReloadRequest::CheckAppend);
+                let ids: Vec<_> = view.follow_tail.documents.keys().copied().collect();
+                for id in ids {
+                    if let Some(follow) = view.follow_tail.documents.get_mut(&id) {
+                        follow.queue.request(ReloadRequest::PollPath);
                     }
+                    view.start_follow_read(id, cx);
                 }
-                cx.notify();
+                view.poll_follow_paths(cx);
             });
         })
         .detach();
@@ -593,12 +591,16 @@ impl Workbench {
         let Some(document) = self.open_document(id) else {
             return;
         };
-        let saved = {
+        let (saved, clean, can_append) = {
             let saves = self.editing.saves.borrow();
-            saves
-                .file(id)
-                .filter(|file| !file.is_dirty() && *file.encoding() == Encoding::Utf8)
-                .and_then(|file| file.disk_stamp().cloned())
+            saves.file(id).map_or((None, false, false), |file| {
+                let clean = !file.is_dirty();
+                (
+                    file.disk_stamp().cloned(),
+                    clean,
+                    clean && *file.encoding() == Encoding::Utf8,
+                )
+            })
         };
         let Some(follow) = self.follow_tail.documents.get_mut(&id) else {
             return;
@@ -619,6 +621,8 @@ impl Workbench {
             mapped: self.metadata.files.mapped(id),
             ordinary: follow.ordinary.take(),
             saved,
+            clean,
+            can_append,
         };
         let task = cx
             .background_executor()
@@ -626,6 +630,13 @@ impl Workbench {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |view, cx| {
+                if matches!(
+                    result.change,
+                    Ok(TailChange::Unchanged | TailChange::Missing) | Err(_)
+                ) {
+                    view.apply_follow_result(id, token, result, cx);
+                    return;
+                }
                 if let Some(follow) = view
                     .follow_tail
                     .documents

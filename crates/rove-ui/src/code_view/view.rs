@@ -259,6 +259,9 @@ pub struct FrameStats {
     /// 首个可见行相对文本区顶边的 y（像素）。占位与正式结果替换前后必须相同。
     pub first_line_y: f32,
     pub first_line: u64,
+    /// 最后一个绘制的文档行以及预绘制时该快照的已知行数。
+    pub last_line: u64,
+    pub known_lines: u64,
     /// 本帧是否绘制了与正文相交的选区背景，用于扩选按键的帧吸收测量。
     pub selection_painted: bool,
     /// #215：本帧**实际绘制所用**文本快照的版本（`TextSource::version()`，prepaint 时取）。
