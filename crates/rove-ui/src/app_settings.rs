@@ -12,11 +12,12 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 13] {
+fn modules() -> [(&'static str, Register); 14] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
         ("code_view", crate::code_view::options::register),
+        ("minimap", crate::code_view::minimap::register_settings),
         ("editors", |r| {
             merge(r, &crate::editors::settings::register()?)
         }),
