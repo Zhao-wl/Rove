@@ -205,6 +205,87 @@ pub fn json_location(text: &str, key: &str) -> Option<(u32, u32)> {
     Some(rove_config::jsonc::line_column(text, member.key_span.start))
 }
 
+pub fn language_json_location(text: &str, key: &str) -> Option<(u32, u32)> {
+    use rove_config::jsonc::{Document, NodeKind};
+
+    let doc = Document::parse(text).ok()?;
+    for member in doc.root_members().iter().rev() {
+        if !member.key.starts_with('[') || !member.key.ends_with(']') {
+            continue;
+        }
+        if let NodeKind::Object(members) = &member.value.kind {
+            if let Some(setting) = members.iter().rev().find(|member| member.key == key) {
+                return Some(rove_config::jsonc::line_column(
+                    text,
+                    setting.key_span.start,
+                ));
+            }
+        }
+    }
+    None
+}
+
+pub fn source_position(text: &str, line: u32, column: u32) -> Option<rove_base::Position> {
+    use rove_base::{Line, Position, Utf8Column};
+
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut number = 1;
+    let mut start = 0;
+    let mut end = text.len();
+    let mut iter = text.char_indices().peekable();
+    while let Some((offset, ch)) = iter.next() {
+        if !matches!(ch, '\r' | '\n') {
+            continue;
+        }
+        if number == line {
+            end = offset;
+            break;
+        }
+        number += 1;
+        start = offset + 1;
+        if ch == '\r' && iter.peek().is_some_and(|(_, next)| *next == '\n') {
+            iter.next();
+            start += 1;
+        }
+    }
+    if number != line || column == 0 {
+        return None;
+    }
+    let content = text.get(start..end)?;
+    let byte = content
+        .char_indices()
+        .nth(column.saturating_sub(1) as usize)
+        .map_or(content.len(), |(byte, _)| byte);
+    Some(Position {
+        line: Line(u64::from(line.saturating_sub(1))),
+        column: Utf8Column(byte as u64),
+    })
+}
+
+pub fn clipboard_json(key: &str, value: &Value) -> Option<String> {
+    let object = rove_config::edit::set("{}", &[key], Some(value)).ok()?;
+    Some(
+        object
+            .strip_prefix('{')?
+            .strip_suffix('}')?
+            .trim()
+            .to_owned(),
+    )
+}
+
+pub fn text_value(current: &Value, text: &str) -> Option<Value> {
+    match current {
+        Value::Number(_) => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite())
+            .map(Value::Number),
+        Value::String(_) => Some(Value::String(text.into())),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +326,44 @@ mod tests {
         let modified = search(rows, "@modified", |key| key == selected);
         assert_eq!(modified.len(), 1);
         assert_eq!(modified[0].row.key, selected);
+    }
+
+    #[test]
+    fn form_values_and_language_links_use_shared_jsonc_formats() {
+        use std::sync::Arc;
+        let text = "{\n \"[csharp][xml]\": {\n   \"editor.fontSize\": 16\n }\n}";
+        assert_eq!(
+            language_json_location(text, "editor.fontSize"),
+            Some((3, 4))
+        );
+        assert_eq!(language_json_location(text, "editor.lineHeight"), None);
+        assert_eq!(
+            source_position("\u{feff}甲乙\r\n丙丁\r戊己", 1, 3)
+                .unwrap()
+                .column
+                .0,
+            6
+        );
+        assert_eq!(
+            source_position("甲乙\r\n丙丁\r戊己", 3, 2)
+                .unwrap()
+                .column
+                .0,
+            3
+        );
+        assert_eq!(
+            text_value(&Value::Number(14.0), " 16.5 "),
+            Some(Value::Number(16.5))
+        );
+        assert_eq!(text_value(&Value::Number(14.0), "NaN"), None);
+        assert_eq!(
+            clipboard_json(
+                "editor.fontFamily",
+                &Value::String(Arc::from("Rove \"Code\""))
+            )
+            .as_deref(),
+            Some("\"editor.fontFamily\": \"Rove \\\"Code\\\"\"")
+        );
     }
 
     #[test]

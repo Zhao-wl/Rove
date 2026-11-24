@@ -81,6 +81,13 @@ impl EditorTypes {
                 label: image_preview::LABEL,
             },
         )?;
+        types.register(
+            crate::settings_ui::registry::EDITOR,
+            EditorKind::Placeholder {
+                id: crate::settings_ui::registry::EDITOR.into(),
+                label: crate::settings_ui::registry::TAB_TITLE,
+            },
+        )?;
         let mut rules = Vec::new();
         if let Value::Object(patterns) = associations {
             for (pattern, id) in patterns.iter().rev() {
@@ -135,6 +142,14 @@ impl EditorTypes {
         // #28：欢迎页只有一种打开方式，用户的关联设置改不了它。
         if is_welcome_resource(resource) {
             return self.types.get(WELCOME).cloned().ok_or(Error::Unsupported);
+        }
+        if matches!(resource, Resource::Virtual(name) if name.as_ref() == crate::settings_ui::registry::RESOURCE)
+        {
+            return self
+                .types
+                .get(crate::settings_ui::registry::EDITOR)
+                .cloned()
+                .ok_or(Error::Unsupported);
         }
         let path = resource_path(resource);
         let mut associated = self

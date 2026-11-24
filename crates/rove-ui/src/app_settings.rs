@@ -40,6 +40,10 @@ fn modules() -> [(&'static str, Register); 12] {
             crate::context_basket::registry::register_settings,
         ),
         ("markdown", crate::markdown::registry::register_settings),
+        (
+            "settings_ui",
+            crate::settings_ui::registry::register_settings,
+        ),
     ]
 }
 

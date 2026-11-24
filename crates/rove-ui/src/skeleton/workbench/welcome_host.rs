@@ -261,10 +261,7 @@ impl Workbench {
             reg::SELECT_THEME => self.show_theme_picker(window, cx),
             reg::SELECT_ICON_THEME => self.show_icon_theme_picker(window, cx),
             reg::TOGGLE_COLOR_SCHEME => self.toggle_color_scheme(cx),
-            reg::OPEN_SETTINGS => {
-                let path = self.welcome.settings_path.clone();
-                self.open_shared_file(path, b"{}\n", cx);
-            }
+            reg::OPEN_SETTINGS => self.open_preferred_settings(cx),
             reg::OPEN_KEYBINDINGS => {
                 let path = self.welcome.keybindings_path.clone();
                 self.open_shared_file(path, b"[]\n", cx);
@@ -401,6 +398,24 @@ impl Workbench {
         initial: &'static [u8],
         cx: &mut Context<Self>,
     ) {
+        self.open_shared_file_at(path, initial, None, cx);
+    }
+
+    pub(super) fn open_settings_json(
+        &mut self,
+        location: Option<rove_base::Position>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_shared_file_at(self.welcome.settings_path.clone(), b"{}\n", location, cx);
+    }
+
+    fn open_shared_file_at(
+        &mut self,
+        path: Option<PathBuf>,
+        initial: &'static [u8],
+        location: Option<rove_base::Position>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(path) = path else {
             let _ = shell::view::report(
                 self,
@@ -418,6 +433,7 @@ impl Workbench {
             OpenOptions {
                 preview_tab: false,
                 presentation: crate::documents::Presentation::Source,
+                location,
                 ..Default::default()
             },
             move || initialize_shared_file(&target, initial).map_err(Error::from),

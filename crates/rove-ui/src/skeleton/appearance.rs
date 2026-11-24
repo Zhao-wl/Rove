@@ -97,6 +97,7 @@ pub fn strings() -> Result<StringTable> {
     // #149：自动更新的命令、状态、提示条与通知。
     crate::update::registry::register_strings(&mut t)?;
     crate::image_preview::registry::register_strings(&mut t)?;
+    crate::settings_ui::registry::register_strings(&mut t)?;
     Ok(t)
 }
 pub fn message(t: &dyn Strings, key: &str, args: &[(&str, String)]) -> String {

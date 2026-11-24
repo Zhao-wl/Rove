@@ -282,6 +282,12 @@ impl Workbench {
                     } else if crate::editors::settings::is_markdown_preview(&tab.kind) {
                         // #29：Markdown 预览（WebView2）。
                         body = body.child(self.markdown_viewport(group, tab.id, cx));
+                    } else if matches!(&tab.kind, EditorKind::Placeholder { id, .. }
+                        if id.as_ref() == crate::settings_ui::registry::EDITOR)
+                    {
+                        if let Some(settings) = &self.settings_view {
+                            body = body.child(settings.clone());
+                        }
                     } else if crate::editors::settings::is_image_preview(&tab.kind) {
                         body = body.child(self.image_viewport(tab.id, cx));
                     } else if let EditorKind::Placeholder { label, .. } = &tab.kind {
