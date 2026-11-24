@@ -304,3 +304,76 @@ fn permanent_delete_rechecks_the_confirmed_item() {
     ));
     assert_eq!(fs::read(&file).unwrap(), b"external replacement");
 }
+
+#[test]
+fn incremental_paste_names_preserve_extensions_and_padding() {
+    use rove_workspace::file_operations::transfer::{next_duplicate_name, Naming};
+    assert_eq!(
+        next_duplicate_name("Game.cs", false, Naming::Simple).as_deref(),
+        Some("Game copy.cs")
+    );
+    assert_eq!(
+        next_duplicate_name("Game copy.cs", false, Naming::Simple).as_deref(),
+        Some("Game copy 2.cs")
+    );
+    assert_eq!(
+        next_duplicate_name("Game.007.cs", false, Naming::Smart).as_deref(),
+        Some("Game.008.cs")
+    );
+    assert_eq!(
+        next_duplicate_name("006-Game.cs", false, Naming::Smart).as_deref(),
+        Some("007-Game.cs")
+    );
+    assert_eq!(
+        next_duplicate_name("Scripts", true, Naming::Smart).as_deref(),
+        Some("Scripts.1")
+    );
+    assert_eq!(
+        next_duplicate_name("Game.cs", false, Naming::Disabled),
+        None
+    );
+}
+
+#[test]
+fn stages_copies_and_moves_without_replacing_destinations() {
+    use rove_workspace::file_operations::transfer::{Transfer, TransferOutcome};
+    let temp = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let project = temp.path();
+    let source = external.path().join("From Explorer");
+    fs::create_dir_all(source.join("Nested")).unwrap();
+    fs::write(source.join("Nested/Original.cs"), b"native clipboard data").unwrap();
+    let folder = Folder::scan_root(project, WorkspaceConfig::default().without_watching()).unwrap();
+    let copied = path("Copied");
+    assert!(matches!(
+        folder
+            .transfer_from(&source, &copied, Transfer::Copy)
+            .unwrap(),
+        TransferOutcome::Copied
+    ));
+    assert_eq!(
+        fs::read(project.join("Copied/Nested/Original.cs")).unwrap(),
+        b"native clipboard data"
+    );
+    assert!(source.is_dir());
+    assert!(matches!(
+        folder.transfer_from(&source, &copied, Transfer::Move),
+        Err(OperationError::Io { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists
+    ));
+    let moved = path("Moved");
+    assert!(matches!(
+        folder
+            .transfer_from(&source, &moved, Transfer::Move)
+            .unwrap(),
+        TransferOutcome::Moved
+    ));
+    assert!(!source.exists());
+    assert!(matches!(
+        folder.undo_transfer(&moved, &source).unwrap(),
+        TransferOutcome::Moved
+    ));
+    assert_eq!(
+        fs::read(source.join("Nested/Original.cs")).unwrap(),
+        b"native clipboard data"
+    );
+}

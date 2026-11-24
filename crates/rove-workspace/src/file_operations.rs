@@ -58,6 +58,17 @@ pub struct EntryStamp {
 }
 
 impl EntryStamp {
+    fn same_object(&self, other: &Self) -> bool {
+        #[cfg(windows)]
+        {
+            self.directory == other.directory && self.file_id == other.file_id
+        }
+        #[cfg(not(windows))]
+        {
+            self.directory == other.directory && self.created == other.created
+        }
+    }
+
     fn read(path: &Path, metadata: &Metadata) -> io::Result<Self> {
         #[cfg(not(windows))]
         let _ = path;
@@ -307,6 +318,29 @@ impl Folder {
             .map(|(absolute, _)| absolute)
     }
 
+    pub fn checked_entry_identity(
+        &self,
+        path: &WorkspacePath,
+        expected: &EntryStamp,
+    ) -> Result<PathBuf> {
+        let (absolute, metadata) = self.editable_entry(path)?;
+        let live =
+            EntryStamp::read(&absolute, &metadata).map_err(|error| disk_error(path, error))?;
+        if !live.same_object(expected) {
+            return Err(disk_error(path, io::ErrorKind::InvalidData.into()));
+        }
+        Ok(absolute)
+    }
+
+    pub fn remove_empty_directory(
+        &self,
+        path: &WorkspacePath,
+        expected: &EntryStamp,
+    ) -> Result<()> {
+        let absolute = self.checked_entry_identity(path, expected)?;
+        fs::remove_dir(absolute).map_err(|error| disk_error(path, error))
+    }
+
     pub fn restore_target(&self, path: &WorkspacePath) -> Result<PathBuf> {
         self.verify_parent(parent_path(path).as_ref())?;
         self.verify_writable(path, false)?;
@@ -473,3 +507,5 @@ fn rename_without_replacing(source: &Path, target: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 pub mod recycle;
+
+pub mod transfer;
