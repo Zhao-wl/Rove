@@ -146,8 +146,7 @@ pub fn picks(
             RowDecor {
                 icon: Some(RowIcon { name, color_key }),
                 label_highlights: highlights,
-                detail_highlights: Vec::new(),
-                trailing: None,
+                ..Default::default()
             },
         );
     }

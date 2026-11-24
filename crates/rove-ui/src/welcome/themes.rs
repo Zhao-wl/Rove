@@ -9,11 +9,12 @@ use std::sync::Arc;
 /// 列表里的一项。
 #[derive(Clone, Debug)]
 pub struct ThemeItem {
-    /// `workbench.colorTheme` 的取值。
+    /// 用于实时预览和还原的目录标识。
     pub id: Arc<str>,
     /// 显示名称。
     pub label: Arc<str>,
     pub kind: ThemeKind,
+    pub from_extension: bool,
 }
 
 /// 选择器的一次会话。
@@ -29,9 +30,8 @@ pub struct ThemePicker {
 }
 
 impl ThemePicker {
-    /// 用主题目录（#10，内置主题；扩展主题是 R68）建一个会话。深色在前、浅色在后，
-    /// 组内保持目录顺序（与 `package.json` 的 `contributes.themes` 一致）。
-    pub fn new(catalog: &ThemeCatalog, current: &str) -> Self {
+    /// 内置主题按深浅排列，扩展贡献的主题放在独立分组。
+    pub fn new(catalog: &ThemeCatalog, built_in: &ThemeCatalog, current: &str) -> Self {
         let mut items: Vec<ThemeItem> = catalog
             .entries()
             .iter()
@@ -39,9 +39,10 @@ impl ThemePicker {
                 id: e.id.clone(),
                 label: e.label.clone(),
                 kind: e.kind,
+                from_extension: built_in.get(&e.id).is_none(),
             })
             .collect();
-        items.sort_by_key(|i| group_of(i.kind));
+        items.sort_by_key(|i| (i.from_extension, group_of(i.kind)));
         let original: Arc<str> = match items.iter().find(|i| &*i.id == current) {
             Some(item) => item.id.clone(),
             None => Arc::from(current),
@@ -90,7 +91,19 @@ impl ThemePicker {
             }
         }
         self.accepted = true;
-        (self.previewed != self.original).then(|| self.previewed.clone())
+        if self.previewed == self.original {
+            return None;
+        }
+        self.items
+            .iter()
+            .find(|item| item.id == self.previewed)
+            .map(|item| {
+                if item.from_extension {
+                    item.label.clone()
+                } else {
+                    item.id.clone()
+                }
+            })
     }
 
     /// `Esc` 或失去焦点关闭：返回要还原的主题 ID（没有预览过、或已确认时返回 `None`）。
@@ -118,7 +131,26 @@ mod tests {
     use super::*;
 
     fn picker() -> ThemePicker {
-        ThemePicker::new(&ThemeCatalog::builtin(), "Dark 2026")
+        let built_in = ThemeCatalog::builtin();
+        ThemePicker::new(&built_in, &built_in, "Dark 2026")
+    }
+
+    #[test]
+    fn extension_selection_previews_by_id_and_writes_its_label() {
+        let built_in = ThemeCatalog::builtin();
+        let mut catalog = built_in.clone();
+        let mut entry = built_in.entries()[0].clone();
+        entry.id = "extension.theme-id".into();
+        entry.label = "Extension Theme".into();
+        catalog.add(entry).unwrap();
+        let mut picker = ThemePicker::new(&catalog, &built_in, "Dark 2026");
+        let index = picker.items.len() - 1;
+        assert!(picker.items[index].from_extension);
+        assert_eq!(picker.focus(index).as_deref(), Some("extension.theme-id"));
+        assert_eq!(
+            picker.accept(Some(index)).as_deref(),
+            Some("Extension Theme")
+        );
     }
 
     #[test]
@@ -176,7 +208,8 @@ mod tests {
 
     #[test]
     fn an_unknown_configured_theme_is_still_the_restore_target() {
-        let mut p = ThemePicker::new(&ThemeCatalog::builtin(), "Monokai");
+        let built_in = ThemeCatalog::builtin();
+        let mut p = ThemePicker::new(&built_in, &built_in, "Monokai");
         assert!(p.initial_index().is_none());
         let first = p.focus(0).unwrap();
         assert_ne!(first.as_ref(), "Monokai");

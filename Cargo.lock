@@ -4560,6 +4560,7 @@ dependencies = [
  "rove-base",
  "rove-config",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4578,6 +4579,7 @@ dependencies = [
  "image",
  "log",
  "memchr",
+ "notify",
  "pulldown-cmark",
  "raw-window-handle",
  "rayon",
@@ -4600,6 +4602,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tempfile",
+ "ttf-parser 0.25.1",
  "unicode-segmentation",
  "webview2-com",
  "windows 0.61.3",

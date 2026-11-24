@@ -67,3 +67,5 @@ pub mod dpi;
 
 // #64：离线图片预览。
 mod image_preview;
+
+mod file_icons;

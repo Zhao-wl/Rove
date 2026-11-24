@@ -17,8 +17,9 @@ use gpui::{
     SharedString, StyledText, Window,
 };
 use rove_base::{Result, Value};
+use rove_config::Settings;
 use rove_i18n::{Message, Strings};
-use rove_theme::Theme;
+use rove_theme::{Theme, ThemeKind};
 use std::sync::Arc;
 
 /// Maximum visible result rows (VS Code shows about this many before scrolling).
@@ -36,11 +37,18 @@ pub struct QuickInputView {
     input: Entity<TextInput>,
     focus: FocusHandle,
     theme: Arc<dyn Theme>,
+    file_icons: Option<FileIconStyle>,
     strings: Arc<dyn Strings>,
     _input_events: gpui::Subscription,
 }
 
 impl EventEmitter<QuickInputViewEvent> for QuickInputView {}
+
+struct FileIconStyle {
+    icons: crate::file_icons::FileIcons,
+    kind: ThemeKind,
+    settings: Arc<dyn Settings>,
+}
 
 /// The user edited the input box (emitted after the service saw the new text). Hosts that score
 /// and sort themselves (#24) refresh the model synchronously from here.
@@ -91,6 +99,7 @@ impl QuickInputView {
             input,
             focus: cx.focus_handle(),
             theme,
+            file_icons: None,
             strings,
             _input_events: sub,
         }
@@ -98,6 +107,21 @@ impl QuickInputView {
 
     pub fn input(&self) -> &Entity<TextInput> {
         &self.input
+    }
+
+    pub(crate) fn set_file_icons(
+        &mut self,
+        icons: crate::file_icons::FileIcons,
+        kind: ThemeKind,
+        settings: Arc<dyn Settings>,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_icons = Some(FileIconStyle {
+            icons,
+            kind,
+            settings,
+        });
+        cx.notify();
     }
 
     /// Shows a picker and focuses its input. Replaces (cancels) any active one.
@@ -224,6 +248,30 @@ impl QuickInputView {
                     px(16.),
                     color(&*self.theme, icon.color_key),
                 ));
+            }
+            if a.decor.get(i).is_some_and(|decor| decor.file_icon) {
+                if let Some(style) = &self.file_icons {
+                    let path = std::path::Path::new(row.id.0.as_ref());
+                    let language = rove_syntax::highlight::language_for_path(
+                        path,
+                        Some(style.settings.as_ref()),
+                    );
+                    content = content.children(style.icons.element(
+                        rove_theme::file_icons::IconTarget::File {
+                            name: row.label.as_ref(),
+                            language: Some(&language),
+                        },
+                        style.kind,
+                        16.0,
+                        || {
+                            crate::outline::view::codicon(
+                                "file",
+                                px(16.),
+                                color(&*self.theme, "icon.foreground"),
+                            )
+                        },
+                    ));
+                }
             }
             content = content.child(highlighted_label(&ctx));
             if let Some(d) = &row.detail {

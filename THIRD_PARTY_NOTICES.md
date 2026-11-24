@@ -333,9 +333,13 @@ VS Code 内置的 **Seti 文件图标主题**（`extensions/theme-seti/`：`icon
 都是 MIT 许可（seti-ui © Jesse Weed；VS Code 的打包副本 © Microsoft Corporation，MIT 全文见上文
 「VS Code 默认主题与主题引擎」一节）。
 
-Rove 只读加载该主题，不修改字体与图标定义。**#69 合并前仓库里还没有这些文件**；
-合并时由 #69 在这里补上文件清单、版本与哈希（做法与上面的 codicons 一节相同）。
-发布包的体积分项（`packaging/package-contents.toml` 的 `[[embedded]]`）也要同时加上一条。
+Rove 只读加载该主题，不修改字体与图标定义。以下文件来自 VS Code 1.95 分支的固定提交
+[`f1a4fb101478`](https://github.com/microsoft/vscode/tree/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/theme-seti/icons)。
+
+| 文件 | SHA-256 |
+|---|---|
+| `crates/rove-theme/data/seti/vs-seti-icon-theme.json` | `aea174f3a7696c6d5f5f55c736e307b2c3929de65337bf521ba327195a651234` |
+| `crates/rove-theme/data/seti/seti.woff` | `b84076f5d67710edd57b71f4f885cbc028980b4237f0b02a29d282a9196e7a72` |
 
 ## VS Code 语义 token 的分类与回退表（#59）
 

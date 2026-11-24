@@ -24,6 +24,8 @@ pub const OPEN_SETTINGS: &str = "workbench.action.openSettings";
 pub const OPEN_KEYBINDINGS: &str = "workbench.action.openGlobalKeybindings";
 pub const SELECT_THEME: &str = "workbench.action.selectTheme";
 pub const SHOW_WELCOME: &str = "workbench.action.showWelcomePage";
+pub const SELECT_ICON_THEME: &str = "workbench.action.selectIconTheme";
+pub const TOGGLE_COLOR_SCHEME: &str = "workbench.action.toggleLightDarkThemes";
 
 /// 欢迎页的编辑器类型 ID 与它的资源名（虚拟文档，没有磁盘文件）。
 pub const EDITOR_TYPE: &str = "rove.welcomePage";
@@ -54,6 +56,16 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (SELECT_THEME, "welcome.command.selectTheme", "颜色主题"),
     (SHOW_WELCOME, "welcome.command.showWelcome", "欢迎使用"),
+    (
+        SELECT_ICON_THEME,
+        "welcome.command.selectIconTheme",
+        "文件图标主题",
+    ),
+    (
+        TOGGLE_COLOR_SCHEME,
+        "welcome.command.toggleColorScheme",
+        "切换浅色与深色主题",
+    ),
 ];
 
 /// 界面字符串（全部走登记机制，不写死）。
@@ -75,6 +87,10 @@ pub const STRINGS: &[(&str, &str)] = &[
         "此文件与 VS Code 共用。Rove 专有的设置放在 `rove.*` 下。",
     ),
     ("welcome.theme.placeholder", "选择颜色主题（上下键预览）"),
+    ("welcome.theme.fromExtensions", "来自扩展"),
+    ("welcome.iconTheme.placeholder", "选择文件图标主题"),
+    ("welcome.iconTheme.none", "无文件图标"),
+    ("welcome.iconTheme.seti", "Seti（Visual Studio Code）"),
     ("welcome.recent.placeholder", "选择要打开的文件夹或文件"),
     ("welcome.recent.empty", "没有最近打开的记录。"),
     ("welcome.openFailed", "无法打开：{path}"),

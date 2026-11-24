@@ -130,6 +130,11 @@ fn load_into(
             message,
         })
     };
+    const MAX_INCLUDE_DEPTH: usize = 32;
+    if stack.len() >= MAX_INCLUDE_DEPTH {
+        diag(doc, "include", "include 层级超过上限，已忽略".into());
+        return Ok(());
+    }
     if stack.iter().any(|p| p == path) {
         let chain = stack.join(" → ");
         diag(

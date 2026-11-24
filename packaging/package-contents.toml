@@ -83,3 +83,8 @@ owner = "#14"
 name = "设置项目录"
 path = "crates/rove-config/data"
 owner = "#13"
+
+[[embedded]]
+name = "Seti 文件图标主题"
+path = "crates/rove-theme/data/seti"
+owner = "#69"

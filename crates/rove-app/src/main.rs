@@ -15,7 +15,8 @@ fn main() {
     let message = |key| rove_ui::skeleton::appearance::message(&strings, key, &[]);
     // #28：`rove.exe <路径>`。没有参数就是空窗口（欢迎页）；参数是文件就打开文件，是文件夹就作为
     // 工作区打开；不存在的路径照常开窗口，内容区显示错误占位页（UX_SPEC §6.4），不弹模态框。
-    let (user_dir, rest) = parse_args(std::env::args_os().skip(1));
+    let (extensions, args) = split_extensions_arg(std::env::args_os().skip(1));
+    let (user_dir, rest) = parse_args(args);
     let startup = rove_ui::welcome::startup::plan(rest);
     // #104：应用唯一的设置服务（共享 VS Code 的 settings.json，热加载）。
     let settings = match rove_ui::app_settings::open(user_dir) {
@@ -25,7 +26,7 @@ fn main() {
             std::process::exit(2)
         }
     };
-    rove_ui::skeleton::launch(startup, settings, started);
+    rove_ui::skeleton::launch_with_theme_extensions(startup, settings, started, extensions);
 }
 
 /// 拆出 `--vscode-user-dir`（FEATURES §13 规则 1），其余参数都是要打开的路径（#28）。
@@ -33,6 +34,27 @@ fn parse_args(
     args: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> (Option<std::path::PathBuf>, Vec<std::ffi::OsString>) {
     rove_config::paths::split_user_dir_arg(args)
+}
+
+fn split_extensions_arg(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> (Option<std::path::PathBuf>, Vec<std::ffi::OsString>) {
+    let mut args = args.into_iter();
+    let mut extensions = None;
+    let mut rest = Vec::new();
+    while let Some(arg) = args.next() {
+        if arg == "--vscode-extensions-dir" {
+            extensions = args.next().filter(|path| !path.is_empty()).map(Into::into);
+        } else if let Some(path) = arg
+            .to_str()
+            .and_then(|s| s.strip_prefix("--vscode-extensions-dir="))
+        {
+            extensions = (!path.is_empty()).then(|| path.into());
+        } else {
+            rest.push(arg);
+        }
+    }
+    (extensions, rest)
 }
 
 /// Include loader time before main on the supported Windows platform.
@@ -77,11 +99,28 @@ fn process_start() -> Instant {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_args;
+    use super::{parse_args, split_extensions_arg};
     use std::{ffi::OsString, path::PathBuf};
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn extensions_override_is_not_taken_for_a_project_path() {
+        let (extensions, rest) = split_extensions_arg(args(&[
+            "--vscode-extensions-dir",
+            "first",
+            "--vscode-user-dir",
+            "settings",
+            "project",
+            "--vscode-extensions-dir=second",
+        ]));
+        assert_eq!(extensions, Some(PathBuf::from("second")));
+        assert_eq!(
+            parse_args(rest),
+            (Some(PathBuf::from("settings")), args(&["project"]))
+        );
     }
 
     #[test]

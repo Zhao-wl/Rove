@@ -3,4 +3,5 @@ pub mod appearance;
 pub(crate) mod events;
 pub(crate) mod text;
 mod workbench;
+pub use workbench::launch_with_theme_extensions;
 pub use workbench::{launch, MarkdownSnapshot, Workbench};

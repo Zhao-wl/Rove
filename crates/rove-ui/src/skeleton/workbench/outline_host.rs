@@ -502,7 +502,7 @@ impl Workbench {
         if !self.outline.crumbs.enabled {
             return None;
         }
-        let (_, symbols, segments) = self.group_segments(group)?;
+        let (document, symbols, segments) = self.group_segments(group)?;
         let zoom = self.shell.zoom();
         let height = px(BAR_HEIGHT * zoom);
         let icon_size = px(14.0 * zoom);
@@ -518,6 +518,8 @@ impl Workbench {
         let focus_fg = self.ui_color("breadcrumb.focusForeground");
         let selection_fg = self.ui_color("breadcrumb.activeSelectionForeground");
         let icon_fg = self.ui_color("icon.foreground");
+        let file_icons = cx.try_global::<super::theme_host::AppIcons>();
+        let theme_kind = self.theme_service.current().kind();
         let mut bar = div()
             .id(element_id("breadcrumbs", group, 0))
             .h(height)
@@ -539,16 +541,35 @@ impl Workbench {
         let count = segments.len();
         for (index, segment) in segments.into_iter().enumerate() {
             let (label, icon): (String, Option<gpui::Div>) = match &segment {
-                Segment::File { label, is_file, .. } => (
-                    label.to_string(),
-                    self.outline.crumbs.icons.then(|| {
+                Segment::File { label, is_file, .. } => {
+                    let fallback = || {
                         ov::codicon(
                             if *is_file { "file" } else { "folder" },
                             icon_size,
                             Some(icon_fg),
                         )
-                    }),
-                ),
+                    };
+                    let icon = if !self.outline.crumbs.icons {
+                        None
+                    } else if let Some(icons) = file_icons {
+                        let target = if *is_file {
+                            rove_theme::file_icons::IconTarget::File {
+                                name: label,
+                                language: Some(&document.metadata.language),
+                            }
+                        } else {
+                            rove_theme::file_icons::IconTarget::Folder {
+                                name: label,
+                                expanded: false,
+                                root: false,
+                            }
+                        };
+                        icons.0.element(target, theme_kind, 14.0 * zoom, fallback)
+                    } else {
+                        Some(fallback())
+                    };
+                    (label.to_string(), icon)
+                }
                 Segment::Symbol(id) => {
                     let Some(node) = symbols.as_ref().and_then(|s| s.node(*id)) else {
                         continue;

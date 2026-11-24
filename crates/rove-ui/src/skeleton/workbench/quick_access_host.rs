@@ -212,7 +212,24 @@ impl Workbench {
         self.quick.subscriptions = vec![changed, closed];
         self.quick.pick_events = Some(events);
         self.quick.view = Some(view.clone());
+        if let Some(icons) = cx.try_global::<super::theme_host::AppIcons>() {
+            self.update_quick_file_icons(icons.0.clone(), self.theme_service.current().kind(), cx);
+        }
         view
+    }
+
+    pub(super) fn update_quick_file_icons(
+        &self,
+        icons: crate::file_icons::FileIcons,
+        kind: rove_theme::ThemeKind,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(view) = &self.quick.view {
+            let settings = self.settings.clone();
+            view.update(cx, |view, cx| {
+                view.set_file_icons(icons, kind, settings, cx)
+            });
+        }
     }
 
     fn show_quick_access(&mut self, initial: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -643,10 +660,8 @@ impl Workbench {
                     disabled: false,
                 },
                 crate::list_widget::quick_input::RowDecor {
-                    icon: None,
                     label_highlights: p.highlights.clone(),
-                    detail_highlights: Vec::new(),
-                    trailing: None,
+                    ..Default::default()
                 },
             );
         }

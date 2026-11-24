@@ -627,6 +627,33 @@ impl Workbench {
             let index = pane.tabs.iter().position(|t| t.id == tab_id).unwrap() + 1;
             header = header.child(self.label("editors.index", &[("index", index.to_string())]));
         }
+        let show_icons = rove_config::Key::<bool>::new("workbench.editor.showIcons")
+            .read(self.settings.as_ref(), &rove_config::Scope::default())
+            .unwrap_or(true);
+        if show_icons {
+            let path = match &tab.resource {
+                Resource::Workspace(path) => Some(std::path::Path::new(path.as_str())),
+                Resource::File(path) => Some(path.as_path()),
+                Resource::Virtual(_) => None,
+            };
+            if let (Some((path, name)), Some(icons)) = (
+                path.and_then(|path| path.file_name().map(|name| (path, name))),
+                cx.try_global::<super::theme_host::AppIcons>(),
+            ) {
+                let language =
+                    rove_syntax::highlight::language_for_path(path, Some(self.settings.as_ref()));
+                let kind = self.theme_service.current().kind();
+                header = header.children(icons.0.element(
+                    rove_theme::file_icons::IconTarget::File {
+                        name: &name.to_string_lossy(),
+                        language: Some(&language),
+                    },
+                    kind,
+                    16.0,
+                    || div(),
+                ));
+            }
+        }
         header = header.child(text);
         // #47：磁盘上已被删除的文档（#49 的 `save.label.deleted`），内容仍在编辑器里。
         if self.tab_deleted(tab) {
