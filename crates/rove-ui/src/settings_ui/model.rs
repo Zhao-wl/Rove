@@ -330,6 +330,14 @@ mod tests {
 
     #[test]
     fn active_catalog_exposes_metadata_and_excludes_registered_placeholders() {
+        for (key, label) in [
+            ("workbench.colorTheme", "Color Theme"),
+            ("workbench.startupEditor", "Startup Editor"),
+            ("rove.update.mode", "Update Mode"),
+        ] {
+            let row = catalog_rows().iter().find(|row| row.key == key).unwrap();
+            assert_eq!(row.title, label);
+        }
         let rows = catalog_rows();
         let wrap = rows
             .iter()

@@ -12,7 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 type Register = fn(&mut SettingRegistry) -> Result<()>;
 
 /// 各模块的登记函数，按装配顺序排列。
-fn modules() -> [(&'static str, Register); 12] {
+fn modules() -> [(&'static str, Register); 13] {
     [
         ("shell", crate::shell::catalog::register_settings),
         ("rove-buffer", rove_buffer::settings::register),
@@ -40,6 +40,19 @@ fn modules() -> [(&'static str, Register); 12] {
             crate::context_basket::registry::register_settings,
         ),
         ("markdown", crate::markdown::registry::register_settings),
+        ("workbench", |registry| {
+            let consumed = rove_theme::service::THEME_SETTING_KEYS.into_iter().chain([
+                crate::welcome::registry::STARTUP_EDITOR,
+                rove_update::mode::SETTING_KEY,
+            ]);
+            for key in consumed {
+                let setting = rove_config::catalog::catalog()
+                    .get(key)
+                    .ok_or(rove_base::Error::NotFound)?;
+                registry.register(key, setting.setting.clone())?;
+            }
+            Ok(())
+        }),
         (
             "settings_ui",
             crate::settings_ui::registry::register_settings,
