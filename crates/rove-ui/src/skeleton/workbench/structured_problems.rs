@@ -194,9 +194,14 @@ impl Workbench {
                 .then(|| self.focused_text())
                 .flatten()
                 .and_then(|(_, document, at)| {
-                    data.iter().position(|row| {
-                        row.resource == document.resource && row.position.line == at.line
-                    })
+                    data.iter()
+                        .position(|row| {
+                            row.resource == document.resource && row.position.line == at.line
+                        })
+                        .or_else(|| {
+                            data.iter()
+                                .position(|row| row.resource == document.resource)
+                        })
                 });
         let selected = self.problem_panel.selected.or(revealed).unwrap_or(0);
 

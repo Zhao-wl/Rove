@@ -138,6 +138,7 @@ pub struct Shell {
     menubar_revealed: bool,
     drag: Option<Sash>,
     problems: (u32, u32),
+    pub(crate) problems_visible: bool,
     pub(crate) current_problem: Option<Message>,
     implemented: BTreeSet<String>,
     _subscriptions: Vec<Subscription>,
@@ -246,6 +247,7 @@ impl Shell {
             menubar_revealed: false,
             drag: None,
             problems: (0, 0),
+            problems_visible: true,
             current_problem: None,
             implemented: BTreeSet::new(),
             _subscriptions: Vec::new(),
@@ -2499,9 +2501,13 @@ fn update_builtin_status_items<T: ShellHost>(host: &mut T) {
     };
     let shell = host.shell_mut();
     let contributions = std::mem::take(&mut shell.contributions);
-    let _ = shell
-        .status_bar
-        .set(&contributions, STATUS_PROBLEMS, problems);
+    if shell.problems_visible {
+        let _ = shell
+            .status_bar
+            .set(&contributions, STATUS_PROBLEMS, problems);
+    } else {
+        shell.status_bar.remove(STATUS_PROBLEMS);
+    }
     if show_bell {
         let _ = shell
             .status_bar

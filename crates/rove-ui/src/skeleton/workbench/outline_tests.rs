@@ -518,6 +518,13 @@ fn structured_json_errors_are_published_on_the_document(cx: &mut TestAppContext)
     cx.simulate_keystrokes("ctrl-shift-m");
     refresh(cx);
     view.read_with(cx, |v, _| assert!(v.shell.layout.panel_visible));
+    fx.change(r#"{"problems.visibility":false}"#, cx);
+    view.read_with(cx, |v, _| {
+        let (group, _, _) = v.focused_text().unwrap();
+        assert!(!v.shell.problems_visible);
+        assert!(v.views[&group].primary.structured_mark.is_none());
+        assert!(!v.outline.structure_style.borrow().badges);
+    });
 }
 
 #[gpui::test]

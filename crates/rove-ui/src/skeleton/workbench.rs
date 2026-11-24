@@ -719,6 +719,9 @@ impl Workbench {
         self.markdown_settings_changed(keys);
         self.outline_settings_changed(keys, cx);
         self.sync_structured_outline_style();
+        if keys.contains("problems.visibility") || keys.contains("problems.decorations.enabled") {
+            self.refresh_problem_decorations(cx);
+        }
         if keys.contains("json.maxItemsComputed") {
             self.structured_limit_changed();
         }

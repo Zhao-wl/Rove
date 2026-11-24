@@ -303,31 +303,33 @@ impl Workbench {
     pub(super) fn sync_structured_outline_style(&mut self) {
         let style = &self.outline.structure_style;
         let mut style = style.borrow_mut();
-        style.badges = self.structured_bool("outline.problems.enabled", true)
-            && self.structured_bool("outline.problems.badges", true);
-        style.colors = self.structured_bool("outline.problems.enabled", true)
-            && self.structured_bool("outline.problems.colors", true);
+        let visible = self.structured_bool("problems.visibility", true)
+            && self.structured_bool("outline.problems.enabled", true);
+        style.badges = visible && self.structured_bool("outline.problems.badges", true);
+        style.colors = visible && self.structured_bool("outline.problems.colors", true);
     }
 
     pub(super) fn sync_current_problem(&mut self) {
-        self.shell.current_problem = self
-            .structured_bool("problems.showCurrentInStatus", false)
-            .then(|| self.focused_text())
-            .flatten()
-            .and_then(|(_, doc, at)| {
-                let entry = self.structured.documents.get(&doc.id)?;
-                if entry.snapshot.version() != doc.text.version() {
-                    return None;
-                }
-                let start = entry
-                    .problems
-                    .partition_point(|p| p.range.start().line < at.line);
-                entry.problems[start..]
-                    .iter()
-                    .take_while(|p| p.range.start().line == at.line)
-                    .find(|p| p.range.start() <= at && at <= p.range.end())
-                    .map(|p| Message::key(problem_key(p.kind)))
-            });
+        let visible = self.structured_bool("problems.visibility", true);
+        self.shell.problems_visible = visible;
+        self.shell.current_problem = (visible
+            && self.structured_bool("problems.showCurrentInStatus", false))
+        .then(|| self.focused_text())
+        .flatten()
+        .and_then(|(_, doc, at)| {
+            let entry = self.structured.documents.get(&doc.id)?;
+            if entry.snapshot.version() != doc.text.version() {
+                return None;
+            }
+            let start = entry
+                .problems
+                .partition_point(|p| p.range.start().line < at.line);
+            entry.problems[start..]
+                .iter()
+                .take_while(|p| p.range.start().line == at.line)
+                .find(|p| p.range.start() <= at && at <= p.range.end())
+                .map(|p| Message::key(problem_key(p.kind)))
+        });
     }
 
     /// Only polish slots whose shown revision or active theme actually changed.
@@ -337,6 +339,7 @@ impl Workbench {
             InlineDecoration, LayerId, LineDecorations, TextDecoration, TextStyle,
         };
         let color = self.theme.color("editorError.foreground").ok().flatten();
+        let visible = self.structured_bool("problems.visibility", true);
         for slot in self
             .views
             .values_mut()
@@ -344,7 +347,7 @@ impl Workbench {
         {
             let active = slot.shown.and_then(|shown| {
                 let entry = self.structured.documents.get(&shown.document)?;
-                (entry.snapshot.version() == shown.version && !entry.problems.is_empty())
+                (visible && entry.snapshot.version() == shown.version && !entry.problems.is_empty())
                     .then_some((shown, entry))
             });
             let key = active.map(|(shown, _)| (shown.document, shown.version, color));
@@ -416,14 +419,21 @@ impl Workbench {
         }
     }
 
+    pub(super) fn refresh_problem_decorations(&self, cx: &mut Context<Self>) {
+        for entry in self.structured.documents.values() {
+            self.publish_problem_decorations(&entry.resource, entry.problems.len(), cx);
+        }
+    }
+
     fn publish_problem_decorations(
-        &mut self,
+        &self,
         resource: &Resource,
         errors: usize,
         cx: &mut Context<Self>,
     ) {
         if let Resource::Workspace(path) = resource {
-            let enabled = self.structured_bool("problems.decorations.enabled", true);
+            let enabled = self.structured_bool("problems.visibility", true)
+                && self.structured_bool("problems.decorations.enabled", true);
             self.explorer.update(cx, |explorer, cx| {
                 explorer
                     .problems()
@@ -1112,6 +1122,11 @@ impl Workbench {
     }
 
     pub(super) fn sync_structured_marker(&mut self, cx: &mut Context<Self>) {
+        if !self.structured_bool("problems.visibility", true) {
+            self.structured.pending_marker = None;
+            self.close_structured_marker(cx);
+            return;
+        }
         let Some((group, document, _)) = self.focused_text() else {
             self.close_structured_marker(cx);
             return;
@@ -1205,6 +1220,9 @@ impl Workbench {
     }
 
     fn navigate_structured_problem(&mut self, command: &str, cx: &mut Context<Self>) {
+        if !self.structured_bool("problems.visibility", true) {
+            return;
+        }
         let Some((_, doc, cursor)) = self.focused_text() else {
             return;
         };
