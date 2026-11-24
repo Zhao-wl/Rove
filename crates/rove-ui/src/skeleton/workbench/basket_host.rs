@@ -1,8 +1,9 @@
 use super::{Context, FileEvent, Workbench};
 use crate::context_basket::{
-    model::{at_or_below, same_path, Availability, Basket, LineRange},
+    model::{at_or_below, same_path, Availability, Basket, Entry, LineRange},
     persistence::BasketStore,
     source,
+    tracking::Anchor,
 };
 use gpui::{AppContext, AsyncApp, Entity, Global, Subscription, WeakEntity};
 use std::{
@@ -23,8 +24,24 @@ struct BasketSnapshot {
 struct WorkspaceBasket {
     snapshot: Option<BasketSnapshot>,
     pending_anchors: BTreeMap<u64, usize>,
+    captures: BTreeMap<u64, AnchorCapture>,
+    capture_generation: u64,
     written: Arc<Mutex<u64>>,
 }
+
+struct AnchorCapture {
+    path: rove_base::WorkspacePath,
+    lines: LineRange,
+    generation: u64,
+}
+
+impl AnchorCapture {
+    fn matches(&self, entry: &Entry) -> bool {
+        self.path == entry.path && self.lines == entry.lines
+    }
+}
+
+type CapturedAnchor = (u64, LineRange, Option<Anchor>, Option<BasketPreview>);
 
 struct SharedAnchorBatch {
     workspace: Entity<WorkspaceBasket>,
@@ -44,6 +61,57 @@ impl SharedAnchorBatch {
             }
         });
         Self { workspace, ids }
+    }
+
+    fn install_captures(
+        self,
+        generation: u64,
+        anchors: Vec<CapturedAnchor>,
+        store: Option<BasketStore>,
+        cx: &mut AsyncApp,
+    ) -> Option<impl FnOnce() + Send + 'static> {
+        let write = self
+            .workspace
+            .update(cx, |state, cx| {
+                let snapshot = state.snapshot.as_mut()?;
+                let mut changed = false;
+                for (id, range, anchor, preview) in anchors {
+                    if state.captures.get(&id).map(|capture| capture.generation) != Some(generation)
+                    {
+                        continue;
+                    }
+                    let capture = state.captures.remove(&id).expect("the generation matched");
+                    let Some(anchor) = anchor else {
+                        continue;
+                    };
+                    if !snapshot.contents.items().iter().any(|entry| {
+                        entry.id() == id
+                            && entry.availability == Availability::Current
+                            && capture.matches(entry)
+                    }) {
+                        continue;
+                    }
+                    changed |= snapshot.contents.install_anchor(id, range, anchor);
+                    changed |= set_preview(&mut snapshot.previews, id, preview);
+                }
+                if !changed {
+                    return None;
+                }
+                snapshot.revision += 1;
+                cx.notify();
+                store.map(|store| {
+                    write_snapshot(
+                        store,
+                        state.written.clone(),
+                        snapshot.revision,
+                        snapshot.contents.clone(),
+                    )
+                })
+            })
+            .ok()
+            .flatten();
+        self.completed(cx);
+        write
     }
 
     fn completed(self, cx: &mut AsyncApp) {
@@ -177,34 +245,53 @@ impl WindowBasket {
     }
 
     fn set_preview(&mut self, id: u64, next: Option<BasketPreview>) -> bool {
-        match next {
-            Some(next) if self.previews.get(&id) != Some(&next) => {
-                self.previews.insert(id, next);
-                true
-            }
-            None => self.previews.remove(&id).is_some(),
-            Some(_) => false,
-        }
+        set_preview(&mut self.previews, id, next)
     }
 
     fn write_job(&self) -> Option<impl FnOnce() + Send + 'static> {
         let store = self.store.clone()?;
-        let revision = self.revision;
-        if !self.loaded || revision == 0 {
+        if !self.loaded || self.revision == 0 {
             return None;
         }
-        let written = self.written.clone();
-        let snapshot = self.contents.clone();
-        Some(move || {
-            let mut latest = written.lock().unwrap_or_else(|error| error.into_inner());
-            if *latest >= revision {
-                return;
-            }
-            match store.save(&snapshot) {
-                Ok(()) => *latest = revision,
-                Err(error) => eprintln!("context basket: {error}"),
-            }
-        })
+        Some(write_snapshot(
+            store,
+            self.written.clone(),
+            self.revision,
+            self.contents.clone(),
+        ))
+    }
+}
+
+fn set_preview(
+    previews: &mut BTreeMap<u64, BasketPreview>,
+    id: u64,
+    next: Option<BasketPreview>,
+) -> bool {
+    match next {
+        Some(next) if previews.get(&id) != Some(&next) => {
+            previews.insert(id, next);
+            true
+        }
+        None => previews.remove(&id).is_some(),
+        Some(_) => false,
+    }
+}
+
+fn write_snapshot(
+    store: BasketStore,
+    written: Arc<Mutex<u64>>,
+    revision: u64,
+    snapshot: Basket,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        let mut latest = written.lock().unwrap_or_else(|error| error.into_inner());
+        if *latest >= revision {
+            return;
+        }
+        match store.save(&snapshot) {
+            Ok(()) => *latest = revision,
+            Err(error) => eprintln!("context basket: {error}"),
+        }
     }
 }
 
@@ -422,7 +509,18 @@ impl Workbench {
             })
             .collect();
         let mut paths = BTreeMap::<_, Vec<_>>::new();
+        let shared = self.basket.shared.as_ref().map(|shared| shared.read(cx));
         for entry in self.basket.contents.items() {
+            if entry.anchor.is_none()
+                && shared.is_some_and(|state| {
+                    state
+                        .captures
+                        .get(&entry.id())
+                        .is_some_and(|capture| capture.matches(entry))
+                })
+            {
+                continue;
+            }
             if !dirty.iter().any(|path| same_path(path, &entry.path))
                 && (all || refresh.iter().any(|path| same_path(path, &entry.path)))
             {
@@ -667,15 +765,35 @@ impl Workbench {
         if ranges.is_empty() {
             return;
         }
-        self.basket.next_read += 1;
-        let revision = self.basket.next_read;
-        self.basket
-            .pending_anchors
-            .extend(ranges.iter().map(|(id, _)| (*id, revision)));
-        let shared_anchors =
-            self.basket.shared.clone().map(|shared| {
-                SharedAnchorBatch::begin(shared, ranges.iter().map(|(id, _)| *id), cx)
+        let shared = self.basket.shared.clone().map(|workspace| {
+            let generation = workspace.update(cx, |state, _| {
+                state.capture_generation += 1;
+                let generation = state.capture_generation;
+                for (id, lines) in &ranges {
+                    if let Some(entry) = self.basket.contents.items().iter().find(|e| e.id() == *id)
+                    {
+                        state.captures.insert(
+                            *id,
+                            AnchorCapture {
+                                path: entry.path.clone(),
+                                lines: *lines,
+                                generation,
+                            },
+                        );
+                    }
+                }
+                generation
             });
+            let batch = SharedAnchorBatch::begin(workspace, ranges.iter().map(|(id, _)| *id), cx);
+            (batch, generation)
+        });
+        let revision = self.basket.next_read + 1;
+        if shared.is_none() {
+            self.basket.next_read = revision;
+            self.basket
+                .pending_anchors
+                .extend(ranges.iter().map(|(id, _)| (*id, revision)));
+        }
         let task = cx.background_executor().spawn(async move {
             ranges
                 .into_iter()
@@ -689,6 +807,20 @@ impl Workbench {
                 })
                 .collect::<Vec<_>>()
         });
+        if let Some((batch, generation)) = shared {
+            let store = self.basket.store.clone();
+            cx.spawn(async move |_, cx| {
+                let anchors = task.await;
+                let workspace = batch.workspace.clone();
+                if let Some(write) = batch.install_captures(generation, anchors, store, cx) {
+                    cx.background_executor().spawn(async move { write() }).await;
+                }
+                drop(workspace);
+            })
+            .detach();
+            return;
+        }
+
         cx.spawn(async move |this, cx| {
             let anchors = task.await;
             let _ = this.update(cx, |view, cx| {
@@ -708,9 +840,6 @@ impl Workbench {
                 }
                 view.resume_basket_copy(cx);
             });
-            if let Some(shared_anchors) = shared_anchors {
-                shared_anchors.completed(cx);
-            }
         })
         .detach();
     }

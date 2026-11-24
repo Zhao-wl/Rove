@@ -205,6 +205,62 @@ fn context_basket_syncs_same_workspace_windows_and_keeps_other_roots_independent
 
 #[gpui::test]
 fn context_basket_can_copy_from_another_window_while_anchors_are_prepared(cx: &mut TestAppContext) {
+    let fixture = start_shared_capture(cx);
+    cx.update(|app| {
+        fixture.second.update(app, |view, cx| {
+            assert_eq!(view.basket.contents.items().len(), 1);
+            assert!(view.basket.contents.items()[0].anchor.is_none());
+            view.basket_workspace_files_changed(
+                &[super::FileEvent::Changed(
+                    WorkspacePath::new("example.txt").unwrap(),
+                )],
+                cx,
+            );
+            assert!(view.basket.pending_anchors.is_empty());
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        });
+    });
+    assert_shared_capture_copies(cx);
+}
+
+#[gpui::test]
+fn context_basket_commits_pending_anchor_after_the_source_window_closes(cx: &mut TestAppContext) {
+    let SharedCaptureFixture {
+        root,
+        state,
+        first,
+        first_window,
+        second,
+    } = start_shared_capture(cx);
+    let source = first.downgrade();
+    drop(first);
+    let mut first_view = gpui::VisualTestContext::from_window(first_window, cx);
+    first_view.update(|window, _| window.remove_window());
+    assert!(source.upgrade().is_none());
+    cx.update(|app| {
+        second.update(app, |view, cx| {
+            assert!(view.basket.contents.items()[0].anchor.is_none());
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        });
+    });
+    assert_shared_capture_copies(cx);
+    let stored = crate::context_basket::persistence::BasketStore::with_base(
+        Some(state.path().into()),
+        root.path(),
+    )
+    .load();
+    assert!(stored.items()[0].anchor.is_some());
+}
+
+struct SharedCaptureFixture {
+    root: tempfile::TempDir,
+    state: tempfile::TempDir,
+    first: gpui::Entity<Workbench>,
+    first_window: gpui::AnyWindowHandle,
+    second: gpui::Entity<Workbench>,
+}
+
+fn start_shared_capture(cx: &mut TestAppContext) -> SharedCaptureFixture {
     use super::basket_host::BasketTestStateRoot;
     use crate::context_basket::model::Entry;
 
@@ -213,9 +269,9 @@ fn context_basket_can_copy_from_another_window_while_anchors_are_prepared(cx: &m
     let content = "first\nselected\nlast\n";
     std::fs::write(root.path().join("example.txt"), content).unwrap();
     cx.update(|app| app.set_global(BasketTestStateRoot(state.path().into())));
-    let first = cx
-        .add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx))
-        .0;
+    let (first, first_cx) =
+        cx.add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx));
+    let first_window = first_cx.update(|window, _| window.window_handle());
     let second = cx
         .add_window_view(|_, cx| Workbench::new(root.path().into(), Instant::now(), cx))
         .0;
@@ -240,14 +296,16 @@ fn context_basket_can_copy_from_another_window_while_anchors_are_prepared(cx: &m
             );
         });
     });
-    cx.update(|app| {
-        second.update(app, |view, cx| {
-            assert_eq!(view.basket.contents.items().len(), 1);
-            assert!(view.basket.contents.items()[0].anchor.is_none());
-            assert!(view.basket.pending_anchors.is_empty());
-            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
-        });
-    });
+    SharedCaptureFixture {
+        root,
+        state,
+        first,
+        first_window,
+        second,
+    }
+}
+
+fn assert_shared_capture_copies(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let copied = cx
         .update(|app| app.read_from_clipboard().and_then(|item| item.text()))
