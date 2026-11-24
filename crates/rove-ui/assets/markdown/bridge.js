@@ -455,7 +455,12 @@
     if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 0 || last < first) {
       return;
     }
-    post({ type: 'sourceSelection', documentId: documentId, seq: seq, first: first, last: last });
+    const x = event.clientX / window.innerWidth;
+    const y = event.clientY / window.innerHeight;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+      return;
+    }
+    post({ type: 'sourceSelection', documentId: documentId, seq: seq, first: first, last: last, x: x, y: y });
   });
 
   document.addEventListener('dblclick', function (event) {

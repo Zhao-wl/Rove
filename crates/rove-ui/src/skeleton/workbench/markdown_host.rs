@@ -41,6 +41,13 @@ pub(super) struct RenderKey {
     options: u64,
 }
 
+/// 源码范围使用从零开始的半开区间。菜单锚点使用窗口逻辑坐标。
+#[derive(Clone, Debug)]
+pub struct MarkdownSourceSelection {
+    pub lines: rove_base::LineRange,
+    pub anchor: gpui::Point<Pixels>,
+}
+
 /// 预览状态的只读快照（测试与 `markdown_probe` 用）。
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownSnapshot {
@@ -60,9 +67,12 @@ pub struct MarkdownSnapshot {
     pub process_ids: Vec<u32>,
     /// 最近一次 [`Workbench::markdown_probe`] 读回的预览顶部源码行。
     pub position: Option<f64>,
-    /// Source lines (zero-based, half-open) from the current preview's last context request.
-    pub source_selection: Option<rove_base::LineRange>,
+    /// 当前预览最近一次右键请求中的选区。
+    pub source_selection: Option<MarkdownSourceSelection>,
 }
+
+type SourceSelectionHandler =
+    fn(&mut Workbench, DocumentId, &MarkdownSourceSelection, &mut Context<Workbench>);
 
 pub(super) struct MarkdownPreview {
     backend: Rc<RefCell<Box<dyn Backend>>>,
@@ -88,6 +98,7 @@ pub(super) struct MarkdownPreview {
     idle_pending: bool,
     /// 这一帧实例是否显示（画布在 prepaint 时读取：遮挡判定在编辑区构建之后才知道）。
     visible: Rc<Cell<bool>>,
+    viewport_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// 预览→编辑器滚动后，编辑器回报的视口不再回推（防回声）。
     echo: Option<(DocumentId, f64)>,
     fragment: Option<(Resource, String)>,
@@ -97,7 +108,8 @@ pub(super) struct MarkdownPreview {
     created_ms: Option<f64>,
     external: Option<String>,
     position: Option<f64>,
-    source_selection: Option<rove_base::LineRange>,
+    source_selection: Option<MarkdownSourceSelection>,
+    source_selection_handler: Option<SourceSelectionHandler>,
     trace: bool,
     #[cfg(test)]
     pub(super) fake: Rc<RefCell<crate::markdown::backend::FakeLog>>,
@@ -155,6 +167,7 @@ impl Default for MarkdownPreview {
             idle_generation: 0,
             idle_pending: false,
             visible: Rc::new(Cell::new(false)),
+            viewport_bounds: Rc::new(Cell::new(None)),
             echo: None,
             fragment: None,
             options_generation: 0,
@@ -164,6 +177,7 @@ impl Default for MarkdownPreview {
             external: None,
             position: None,
             source_selection: None,
+            source_selection_handler: None,
             trace: std::env::var_os("ROVE_MARKDOWN_TRACE").is_some(),
             #[cfg(test)]
             fake,
@@ -225,6 +239,12 @@ impl Workbench {
             .then(|| m.source_selection.clone())
             .flatten(),
         }
+    }
+
+    /// 注册当前工作台的预览选区菜单入口。
+    #[allow(dead_code)]
+    pub(super) fn register_markdown_source_selection(&mut self, handler: SourceSelectionHandler) {
+        self.markdown.source_selection_handler = Some(handler);
     }
 
     /// 测量用（`examples/markdown_probe.rs`）：`where` 读回预览顶部对应的源码行（结果在
@@ -853,16 +873,36 @@ impl Workbench {
                 }
             }
             Some("sourceSelection") if self.markdown_context_is_current(document, &message) => {
-                self.markdown.source_selection = (|| {
+                let selection = (|| {
                     let doc = self.open_document(document?)?;
                     let first = message["first"].as_u64()?;
                     let last = message["last"].as_u64()?;
                     let end = last.checked_add(1)?;
-                    if end > doc.text.lines().known || first > last {
+                    let x = message["x"].as_f64()?;
+                    let y = message["y"].as_f64()?;
+                    if end > doc.text.lines().known
+                        || first > last
+                        || !(0.0..=1.0).contains(&x)
+                        || !(0.0..=1.0).contains(&y)
+                    {
                         return None;
                     }
-                    rove_base::LineRange::new(rove_base::Line(first), rove_base::Line(end)).ok()
+                    let bounds = self.markdown.viewport_bounds.get()?;
+                    let lines =
+                        rove_base::LineRange::new(rove_base::Line(first), rove_base::Line(end))
+                            .ok()?;
+                    let anchor = bounds.origin
+                        + gpui::point(bounds.size.width * x as f32, bounds.size.height * y as f32);
+                    Some(MarkdownSourceSelection { lines, anchor })
                 })();
+                if let (Some(handler), Some(document), Some(selection)) = (
+                    self.markdown.source_selection_handler,
+                    document,
+                    selection.as_ref(),
+                ) {
+                    handler(self, document, selection, cx);
+                }
+                self.markdown.source_selection = selection;
                 cx.notify();
             }
             Some("pointerDown") if self.markdown_context_is_current(document, &message) => {
@@ -1285,6 +1325,7 @@ impl Workbench {
         let visible = self.markdown.visible.clone();
         let prepaint_visible = visible.clone();
         let prepaint_backend = backend.clone();
+        let viewport_bounds = self.markdown.viewport_bounds.clone();
         let bar = self.ui_color("editorWidget.background");
         let skeleton = (!rendered || !visible.get()).then(|| {
             let line = |w: f32, h: f32| div().h(px(h)).w(relative(w)).rounded_sm().bg(bar);
@@ -1316,6 +1357,7 @@ impl Workbench {
         .child(
             canvas(
                 move |bounds: Bounds<Pixels>, window, _| {
+                    viewport_bounds.set(Some(bounds));
                     if prepaint_visible.get()
                         && prepaint_backend.borrow().uses_native_child_window()
                     {

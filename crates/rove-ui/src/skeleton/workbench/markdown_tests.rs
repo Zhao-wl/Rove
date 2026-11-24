@@ -1018,37 +1018,53 @@ fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mu
             snapshot.render_sequence,
         )
     });
-    let send =
-        |cx: &mut VisualTestContext, document: DocumentId, seq: u64, first: u64, last: u64| {
-            view.update(cx, |view, _| {
-                view.markdown
-                    .sender_for_test()
-                    .try_send(crate::markdown::backend::BackendEvent::Message(
-                        serde_json::json!({
-                            "version": 1, "type": "sourceSelection",
-                            "documentId": document.0, "seq": seq, "first": first, "last": last,
-                        }),
-                    ))
-                    .unwrap();
-            });
-            settle(cx);
-        };
+    let send = |cx: &mut VisualTestContext,
+                document: DocumentId,
+                seq: u64,
+                first: u64,
+                last: u64,
+                point: (f64, f64)| {
+        view.update(cx, |view, _| {
+            view.markdown
+                .sender_for_test()
+                .try_send(crate::markdown::backend::BackendEvent::Message(
+                    serde_json::json!({
+                        "version": 1, "type": "sourceSelection",
+                        "documentId": document.0, "seq": seq, "first": first, "last": last,
+                        "x": point.0, "y": point.1,
+                    }),
+                ))
+                .unwrap();
+        });
+        settle(cx);
+    };
     let selected = |cx: &mut VisualTestContext| {
         view.read_with(cx, |view, _| {
-            view.markdown_snapshot()
-                .source_selection
-                .map(|range| (range.start().0, range.end().0))
+            view.markdown_snapshot().source_selection.map(|selection| {
+                (
+                    selection.lines.start().0,
+                    selection.lines.end().0,
+                    selection.anchor,
+                )
+            })
         })
     };
-    send(cx, document, sequence + 1, 5, 7);
+    let center = (0.5, 0.5);
+    send(cx, document, sequence + 1, 5, 7, center);
     assert_eq!(selected(cx), None);
-    send(cx, DocumentId(document.0 + 1), sequence, 5, 7);
+    send(cx, DocumentId(document.0 + 1), sequence, 5, 7, center);
     assert_eq!(selected(cx), None);
-    send(cx, document, sequence, 5, 7);
-    assert_eq!(selected(cx), Some((5, 8)));
-    send(cx, document, sequence, 3, u64::MAX);
+    send(cx, document, sequence, 5, 7, (0.0, 0.0));
+    let (first, end, top_left) = selected(cx).unwrap();
+    assert_eq!((first, end), (5, 8));
+    send(cx, document, sequence, 5, 7, center);
+    let (_, _, middle) = selected(cx).unwrap();
+    assert!(middle.x > top_left.x && middle.y > top_left.y);
+    send(cx, document, sequence, 5, 7, (1.01, 0.5));
     assert_eq!(selected(cx), None);
-    send(cx, document, sequence, 5, 7);
+    send(cx, document, sequence, 3, u64::MAX, center);
+    assert_eq!(selected(cx), None);
+    send(cx, document, sequence, 5, 7, center);
     open(&view, "Other.md", explorer(), cx);
     assert_eq!(selected(cx), None);
 }
