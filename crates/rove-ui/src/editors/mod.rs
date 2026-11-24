@@ -1565,18 +1565,20 @@ impl EditorService {
 impl EditorService {
     /// #29：把一个标签就地换成另一种编辑器（Markdown 预览 ↔ 源码，`markdown.togglePreview`、双击预览）。
     /// 文档已加载时直接换，不重新读盘；换成源码时可带一个要定位的行（插入符放在行首并居中显示）。
-    /// 标签位置、预览/固定状态不变。返回是否换了。
+    /// 标签位置、预览/固定状态不变。只有显式重开才激活标签及其组。
     pub(crate) fn reopen_as(
         &mut self,
         group: EditorGroupId,
         tab: TabId,
         kind: EditorKind,
         line: Option<u32>,
+        activate: bool,
     ) -> bool {
         let Some(pane) = self.groups.get_mut(&group) else {
             return false;
         };
         let rows = pane.rows;
+        let was_active = pane.active == Some(tab);
         let duplicate = pane.tab(tab).and_then(|entry| {
             pane.tabs
                 .iter()
@@ -1598,8 +1600,10 @@ impl EditorService {
                 entry.view.reveal(position, None, rows, opened);
                 entry.reveal = true;
             }
-            self.remove_tab(group, tab, true);
-            self.activate(group, existing, true);
+            self.remove_tab(group, tab, activate);
+            if activate || was_active {
+                self.activate(group, existing, activate);
+            }
             self.start_highlight(group, existing);
             return true;
         }
@@ -1619,7 +1623,9 @@ impl EditorService {
             entry.view.reveal(position, None, rows, lines);
             entry.reveal = true;
         }
-        self.activate(group, tab, true);
+        if activate {
+            self.activate(group, tab, true);
+        }
         self.start_highlight(group, tab);
         true
     }

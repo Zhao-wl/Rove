@@ -455,7 +455,32 @@ fn main() {
             phase("offline_rerender", json!({ "rendered": snap.rendered && snap.render_sequence != before, "stats": snap.stats, "remote_blocked": snap.remote }));
             let previous_owner = snap.owner;
             let before = snap.render_sequence;
-            open(cx, "Other.md", false);
+            // #324：从真实窗口的快速打开面板选文件，保留原有 WebView2 渲染断言。
+            window
+                .update(cx, |v: &mut Workbench, window, cx| {
+                    rove_ui::shell::ShellHost::run_external_command(
+                        v,
+                        "workbench.action.quickOpen",
+                        window,
+                        cx,
+                    )
+                })
+                .unwrap();
+            let key_window = gpui::AnyWindowHandle::from(window);
+            sleep(250).await;
+            key_window
+                .update(cx, |_, window, cx| {
+                    for key in ["o", "t", "h", "e", "r", ".", "m", "d"] {
+                        window.dispatch_keystroke(gpui::Keystroke::parse(key).unwrap(), cx);
+                    }
+                })
+                .unwrap();
+            sleep(250).await;
+            key_window
+                .update(cx, |_, window, cx| {
+                    window.dispatch_keystroke(gpui::Keystroke::parse("enter").unwrap(), cx);
+                })
+                .unwrap();
             let started = Instant::now();
             let mut snap = snapshot(cx);
             while (!snap.rendered || snap.owner == previous_owner || snap.render_sequence == before) && started.elapsed() < Duration::from_secs(20) {
