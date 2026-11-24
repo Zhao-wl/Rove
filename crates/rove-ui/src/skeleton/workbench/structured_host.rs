@@ -165,15 +165,21 @@ impl Workbench {
         crate::code_view::options::json_item_limit(self.settings.as_ref())
     }
 
-    pub(super) fn structured_limit_changed(&mut self) {
+    pub(super) fn structured_limit_changed(&mut self, cx: &mut Context<Self>) {
         if let Some((_, _, cancel)) = self.structured.pending.take() {
-            cancel.cancel();
-        }
-        for (_, cancel) in std::mem::take(&mut self.structured.replacement_parses).into_values() {
             cancel.cancel();
         }
         self.structured.failed = None;
         self.clear_structured_tree();
+        for (id, (version, cancel)) in std::mem::take(&mut self.structured.replacement_parses) {
+            cancel.cancel();
+            if self
+                .open_document(id)
+                .is_some_and(|doc| doc.text.version() == version)
+            {
+                self.refresh_replaced_structure(id, cx);
+            }
+        }
     }
 
     pub(super) fn refresh_replaced_structure(&mut self, id: DocumentId, cx: &mut Context<Self>) {
@@ -289,14 +295,15 @@ impl Workbench {
             }
             _ => return,
         }
-        if self
+        let Some(document) = self
             .open_document(id)
-            .is_none_or(|doc| doc.text.version() != version)
-        {
+            .filter(|doc| doc.text.version() == version)
+        else {
             return;
-        }
+        };
         match result {
-            Ok(entry) => {
+            Ok(mut entry) => {
+                entry.resource = document.resource.clone();
                 let snapshot = entry.snapshot.clone();
                 self.publish_problem_decorations(&entry.resource, 0, cx);
                 self.structured.documents.insert(id, entry);

@@ -641,6 +641,25 @@ fn replace_workspace_refreshes_background_problems_without_switching_the_active_
     };
     wait(&view, cx, active_outline);
     prepare(&view, cx, "invalid", "false");
+    let changed_limit = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mark = changed_limit.clone();
+    let observation = view.update(cx, |_, cx| {
+        cx.observe_self(move |wb, cx| {
+            if !mark.get() && wb.structured.replacement_parses.contains_key(&document) {
+                mark.set(true);
+                let key: Arc<str> = "json.maxItemsComputed".into();
+                futures_lite::future::block_on(wb.settings.write(
+                    key.clone(),
+                    rove_config::Scope::default(),
+                    rove_base::Value::Number(10.0),
+                    Cancellation::default(),
+                ))
+                .unwrap();
+                // Deliver the setting at the exact boundary before the queued parser can run.
+                wb.settings_changed(&BTreeSet::from([key]), cx);
+            }
+        })
+    });
     command(&view, cx, commands::REPLACE_ALL);
     wait(&view, cx, |wb, cx| {
         wb.search.read(cx).replacement_test_state().3
@@ -648,7 +667,10 @@ fn replace_workspace_refreshes_background_problems_without_switching_the_active_
             && !has_structure_problem(wb, cx, &resource)
             && !badge(wb, cx)
             && active_outline(wb, cx)
+            && wb.structured.documents[&document].limit == 10
     });
+    assert!(changed_limit.get(), "修改阈值前必须有后台解析在途");
+    drop(observation);
 
     command(&view, cx, commands::UNDO_REPLACE);
     wait(&view, cx, |wb, cx| {

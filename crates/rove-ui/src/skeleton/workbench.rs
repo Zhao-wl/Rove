@@ -728,7 +728,7 @@ impl Workbench {
             self.refresh_problem_decorations(cx);
         }
         if keys.contains("json.maxItemsComputed") {
-            self.structured_limit_changed();
+            self.structured_limit_changed(cx);
         }
         // #40：editor.gotoLocation.* / editor.hover.* / editor.occurrencesHighlight* 变化。
         self.nav_settings_changed(keys, cx);
