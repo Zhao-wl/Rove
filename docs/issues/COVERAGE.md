@@ -72,7 +72,6 @@
 | §7 | 设置（`settings.json`） | P0 | 是 | R13 设置层（M1） |
 | §7 | 设置界面（preferences） | P1 | 之后 | R70 图形化设置界面（M4） |
 | §7 | 键位（keybindings） | P0 | 是 | R14 键位与命令层（M1） |
-| §7 | 界面语言（localization） | P1 | 之后 | R67 英文界面翻译与界面语言切换（M4）、R01 【接口先行 A1】架构与接口契约（M1） |
 | §7 | 自动更新（update） | P0 | 是 | R76 自动更新（M5） |
 | §9 | Markdown 预览（侧边预览、滚动同步） | P0 | 是 | R29 Markdown 预览（M1） |
 | §9 | Markdown 大纲、链接跳转 | P1 | 是 | R26 大纲（M1）、R71 链接检测与打开（M4）、R29 Markdown 预览（M1） |
