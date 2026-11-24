@@ -968,7 +968,10 @@ fn open_structured_fixture(
         v.open_documents()
             .open(
                 resource.clone(),
-                OpenOptions::default(),
+                OpenOptions {
+                    preview_tab: false,
+                    ..OpenOptions::default()
+                },
                 Cancellation::default(),
             )
             .unwrap();
@@ -1070,13 +1073,17 @@ fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut Test
         v.open_documents()
             .open(
                 Resource::Workspace(other.clone()),
-                OpenOptions::default(),
+                OpenOptions {
+                    preview_tab: false,
+                    ..OpenOptions::default()
+                },
                 Cancellation::default(),
             )
             .unwrap();
         cx.notify();
     });
     cx.run_until_parked();
+    view.read_with(cx, |v, _| assert!(v.open_document(document).is_some()));
     explorer.update(cx, |_, cx| {
         cx.emit(ExplorerEvent::MoveDropped {
             paths: vec![other],
