@@ -79,16 +79,25 @@ fn wait_for(
     timeout: Duration,
     ready: impl Fn(&Workbench, &App) -> bool,
 ) {
+    assert!(reaches(view, cx, timeout, ready), "等待全局替换条件超时");
+}
+
+fn reaches(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    timeout: Duration,
+    ready: impl Fn(&Workbench, &App) -> bool,
+) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() <= deadline {
         cx.run_until_parked();
         if view.read_with(cx, |wb, cx| ready(wb, cx)) {
-            return;
+            return true;
         }
         cx.executor().advance_clock(Duration::from_millis(25));
         std::thread::sleep(Duration::from_millis(2));
     }
-    panic!("等待全局替换条件超时");
+    false
 }
 
 fn prepare(view: &Entity<Workbench>, cx: &mut VisualTestContext, query: &str, replacement: &str) {
@@ -101,6 +110,18 @@ fn prepare_for(
     query: &str,
     replacement: &str,
     timeout: Duration,
+) {
+    start_search(view, cx, query, replacement);
+    wait_for(view, cx, timeout, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+}
+
+fn start_search(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    query: &str,
+    replacement: &str,
 ) {
     cx.simulate_keystrokes("ctrl-shift-h");
     cx.run_until_parked();
@@ -119,9 +140,6 @@ fn prepare_for(
             search.set_query(query, cx);
         });
         window.refresh();
-    });
-    wait_for(view, cx, timeout, |wb, cx| {
-        wb.search.read(cx).replacement_test_state().1
     });
 }
 
@@ -1093,6 +1111,66 @@ fn scroll_replacement_results(view: &Entity<Workbench>, cx: &mut VisualTestConte
     scroll_elapsed
 }
 
+fn prepare_full_unity_preview(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    label: &str,
+    query: &str,
+    replacement: &str,
+) -> rove_search::SearchSummary {
+    use crate::search::view::State;
+
+    let timeout = Duration::from_secs(90);
+    let search_start = Instant::now();
+    start_search(view, cx, query, replacement);
+    reaches(view, cx, timeout, |wb, cx| {
+        matches!(
+            wb.search.read(cx).state(),
+            State::Done(_) | State::Failed | State::Cancelled | State::InvalidPattern
+        )
+    });
+    let summary = view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        let State::Done(summary) = search.state() else {
+            let files = search.results().files();
+            let matches = files.iter().map(|file| file.count()).sum::<usize>();
+            panic!(
+                "{label} 搜索未完成，耗时 {:?}，状态 {:?}，已收到 {} 个文件内 {matches} 处匹配",
+                search_start.elapsed(),
+                search.state(),
+                files.len(),
+            );
+        };
+        summary.clone()
+    });
+    eprintln!(
+        "{label} 搜索完成：{:?}，{} 份文件，{} 个文件内 {} 处匹配，{} 跳过，截断={}",
+        search_start.elapsed(),
+        summary.files_searched,
+        summary.files_with_matches,
+        summary.matches,
+        summary.skipped,
+        summary.limit_hit,
+    );
+    let preview_start = Instant::now();
+    let ready = reaches(view, cx, timeout, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+    let preview_state = view.read_with(cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_preview_stage()
+    });
+    assert!(
+        ready,
+        "{label} 预览未就绪，搜索已完成，从确认搜索后等了 {:?}，预览状态 {preview_state}",
+        preview_start.elapsed(),
+    );
+    eprintln!(
+        "{label} 对照就绪：搜索完成后 {:?}，状态 {preview_state}",
+        preview_start.elapsed(),
+    );
+    summary
+}
+
 #[gpui::test]
 fn replace_workspace_large_unity_reads_the_original_workspace_for_preview(cx: &mut TestAppContext) {
     use rove_test_support::UnityProject;
@@ -1106,25 +1184,21 @@ fn replace_workspace_large_unity_reads_the_original_workspace_for_preview(cx: &m
     let fixture = Fixture::new(r#"{"search.maxResults":0,"files.readonlyInclude":{"**":true}}"#);
     let (view, cx) = fixture.open_at(&root, cx);
     let preview_start = Instant::now();
-    prepare_for(
+    let summary = prepare_full_unity_preview(
         &view,
         cx,
+        "大型 Unity 原根只读",
         "GetComponent",
         "rove_read_only_preview",
-        Duration::from_secs(90),
     );
     let preview_elapsed = preview_start.elapsed();
-    let summary = view.read_with(cx, |wb, cx| {
+    view.read_with(cx, |wb, cx| {
         let search = wb.search.read(cx);
-        let crate::search::view::State::Done(summary) = search.state() else {
-            panic!("原项目查询没有完整结束");
-        };
         assert!(search.results().files().iter().any(|f| {
             search
                 .replacement_test_comparison(&f.path)
                 .is_some_and(|(old, new)| old == "GetComponent" && new == "rove_read_only_preview")
         }));
-        summary.clone()
     });
     assert!(
         !summary.limit_hit,
@@ -1226,16 +1300,9 @@ fn replace_workspace_large_unity_writes_only_the_independent_full_copy(cx: &mut 
     let (view, cx) = fixture.open_at(&copy, cx);
     let query = "GetComponent";
     let replacement = "rove_full_copy_replacement";
-    let timeout = Duration::from_secs(90);
     let preview_start = Instant::now();
-    prepare_for(&view, cx, query, replacement, timeout);
+    let summary = prepare_full_unity_preview(&view, cx, "大型 Unity 完整副本", query, replacement);
     let preview_elapsed = preview_start.elapsed();
-    let summary = view.read_with(cx, |wb, cx| {
-        let crate::search::view::State::Done(summary) = wb.search.read(cx).state() else {
-            panic!("完整副本查询没有完成");
-        };
-        summary.clone()
-    });
     assert!(
         !summary.limit_hit && summary.files_searched > 1500,
         "{summary:?}"
@@ -1243,7 +1310,7 @@ fn replace_workspace_large_unity_writes_only_the_independent_full_copy(cx: &mut 
     let scroll_elapsed = scroll_replacement_results(&view, cx);
     let (cancel_elapsed, opened) = cancel_large_replacement(&copy, &view, cx);
 
-    prepare_for(&view, cx, query, replacement, timeout);
+    prepare_full_unity_preview(&view, cx, "大型 Unity 完整副本撤销后", query, replacement);
     let candidates = view.read_with(cx, |wb, cx| {
         wb.search.read(cx).replacement_test_writable_files()
     });

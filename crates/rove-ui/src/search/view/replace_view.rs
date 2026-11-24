@@ -224,6 +224,17 @@ impl SearchView {
     }
 
     #[cfg(test)]
+    pub(crate) fn replacement_test_preview_stage(&self) -> &'static str {
+        if self.replace.plans.is_some() {
+            "ready"
+        } else if self.replace.pending.is_some() {
+            "pending"
+        } else {
+            "no request"
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn replacement_test_writable_files(&self) -> Vec<WorkspacePath> {
         self.replace
             .plans
