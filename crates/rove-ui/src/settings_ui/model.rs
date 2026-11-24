@@ -205,6 +205,28 @@ pub fn json_location(text: &str, key: &str) -> Option<(u32, u32)> {
     Some(rove_config::jsonc::line_column(text, member.key_span.start))
 }
 
+pub fn language_overrides(text: &str) -> Option<std::collections::BTreeSet<String>> {
+    use rove_config::jsonc::{Document, NodeKind};
+
+    let doc = Document::parse(text).ok()?;
+    if doc
+        .root
+        .as_ref()
+        .is_some_and(|node| !matches!(node.kind, NodeKind::Object(_)))
+    {
+        return None;
+    }
+    let mut result = std::collections::BTreeSet::new();
+    for member in doc.root_members() {
+        if member.key.starts_with('[') && member.key.ends_with(']') {
+            if let NodeKind::Object(members) = &member.value.kind {
+                result.extend(members.iter().map(|entry| entry.key.clone()));
+            }
+        }
+    }
+    Some(result)
+}
+
 pub fn language_json_location(text: &str, key: &str) -> Option<(u32, u32)> {
     use rove_config::jsonc::{Document, NodeKind};
 
@@ -286,9 +308,25 @@ pub fn text_value(current: &Value, text: &str) -> Option<Value> {
     }
 }
 
+pub(crate) fn valid_edit(key: &str, value: &Value) -> bool {
+    let Value::Number(value) = value else {
+        return true;
+    };
+    value.is_finite()
+        && crate::code_view::options::number_limits(key)
+            .is_none_or(|(min, max)| (min..=max).contains(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_inputs_follow_the_code_view() {
+        assert!(!valid_edit("editor.fontSize", &Value::Number(101.0)));
+        assert!(!valid_edit("editor.tabSize", &Value::Number(0.0)));
+        assert!(valid_edit("editor.fontSize", &Value::Number(14.5)));
+    }
 
     #[test]
     fn active_catalog_exposes_metadata_and_excludes_registered_placeholders() {

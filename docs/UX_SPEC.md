@@ -78,7 +78,7 @@
 
 | 场景 | VS Code | Rove | 原因 |
 |---|---|---|---|
-| 首选项 → 设置 | 打开图形化的设置界面 | M1–M3：**直接打开 `settings.json`**（与 VS Code 共用的那一份）；图形化设置界面（P1，M4）完成后，与 VS Code 一样按 `workbench.settings.editor` 决定打开图形界面还是 JSON | FEATURES §7 |
+| 首选项 → 设置 | 打开图形化的设置界面 | 默认以标签打开图形化设置界面，按 `workbench.settings.editor` 可改为直接打开与 VS Code 共用的 `settings.json` | FEATURES §7 |
 | 首次打开共用设置文件时 | — | 编辑器顶部显示一条提示：“此文件与 VS Code 共用。Rove 专有的设置放在 `rove.*` 下。”可以选择“不再提示” | 避免用户误以为改的只是 Rove 的设置（D4） |
 | 首选项 → 键盘快捷方式 | 图形化的键位编辑器 | 直接打开共用的 `keybindings.json`；图形化键位编辑器是 P2 | FEATURES §7 |
 | 命令面板中的命令 | 所有已注册的命令 | 只列出 Rove 已实现的命令；命令 ID 与 VS Code 相同 | D4 |

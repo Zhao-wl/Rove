@@ -249,6 +249,7 @@ cargo test --workspace
 | `large-file` | 无骨架标记（#2 没有对应的临时实现）：已由 `rove-ui::large_file` 与 `skeleton/workbench/large_file_host.rs` 实现（见 §39）：超大文件提示条与状态栏标记、行索引进度与滚动条的字节→行外推、转到行的等待与取消、流式查找、超长行截断标记与只读临时标签 | #22（已完成） |
 | `metadata-view` | 无骨架标记（#2 没有元数据视图这种文档类型）：已由 `rove-lang-cs::metadata_view` 与 `rove-ui::metadata`、`skeleton/workbench/metadata_host.rs` 实现（见 §26、§35）：`rove-cs-metadata:` 虚拟资源、只读文档、`X [元数据]` 标签与 DLL 路径悬停、`#region` 头、面包屑、`showDocs` 热切换、索引原子替换后换进同一个标签 | #34、#42（已完成） |
 | `image-preview` | 无骨架标记，由 `rove-ui::image_preview` 解码，`skeleton/workbench/image_host.rs` 接入只读自定义编辑器。文件类型通过 #17 关联登记。图片解码与 SVG 重栅格化在后台执行。 | #64 |
+| `settings-editor` | 由 `rove-ui::settings_ui` 提供图形化设置标签，复用 #13 的设置服务、#18 的虚拟列表与树、#28 的共享文件提示条。 | #71 |
 
 数据链路：后台流式扫描返回 `Arc<dyn Workspace>`（根目录已列出），资源管理器经 #18 的树组件激活资源；
 `OpenDocuments` 入队后台 `Documents::open` 与 `SyntaxService::analyze`，只接受最新请求，

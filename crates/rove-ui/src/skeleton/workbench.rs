@@ -296,6 +296,8 @@ pub struct Workbench {
     /// #28：欢迎页、最近打开与首选项入口（见 `welcome_host.rs`）。
     welcome: welcome_host::Welcome,
     settings_view: Option<Entity<crate::settings_ui::view::SettingsView>>,
+    settings_focus_requested: bool,
+    settings_notice_shown: bool,
     /// #28：本窗口有没有打开文件夹。空窗口显示欢迎页，资源管理器显示空状态（UX_SPEC §6.3）。
     has_folder: bool,
     /// #22：超大文件提示条 / 状态栏 / 索引进度 / 转到行等待 / 超长行临时标签（见 `large_file_host.rs`）。
@@ -556,6 +558,8 @@ impl Workbench {
             images: Default::default(),
             welcome: welcome_host::Welcome::new(&store_for_welcome),
             settings_view: None,
+            settings_focus_requested: false,
+            settings_notice_shown: false,
             about: Default::default(),
             updates: Default::default(),
             has_folder,
@@ -2015,6 +2019,7 @@ impl Render for Workbench {
         self.sync_markdown(window, cx);
         // #28：主题实时预览跟随选中项、共用文件提示条、浮层关闭后的焦点。
         self.sync_welcome(window, cx);
+        self.sync_settings(window, cx);
         // #60：引用视图的两个上下文键。
         self.sync_references(cx);
         self.sync_basket_editor_focus(window, cx);

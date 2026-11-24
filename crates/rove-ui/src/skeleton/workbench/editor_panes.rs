@@ -267,6 +267,17 @@ impl Workbench {
             .current()
             .is_some_and(|tab| tab.kind == EditorKind::Text && tab.opened().is_some());
         if text_ready {
+            let settings_json = cx
+                .try_global::<crate::settings_ui::SharedSettings>()
+                .is_some_and(|shared| {
+                    pane.current().is_some_and(|tab| {
+                        matches!(&tab.resource,
+                    rove_base::Resource::File(path) if path == shared.0.settings_path())
+                    })
+                });
+            if settings_json {
+                viewports = viewports.key_context(crate::settings_ui::registry::IN_JSON);
+            }
             body = body.child(viewports);
         }
         match pane.current() {

@@ -461,6 +461,14 @@ impl Workbench {
             return;
         }
         let document = opened.document.id;
+        self.report_shared_notice(document, cx);
+    }
+
+    pub(super) fn report_shared_notice(
+        &mut self,
+        document: rove_base::DocumentId,
+        cx: &mut Context<Self>,
+    ) {
         let _ = shell::view::report(
             self,
             reg::SHARED_FILE_BAR,

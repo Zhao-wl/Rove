@@ -59,6 +59,7 @@ impl Workbench {
             .detach();
             self.settings_view = Some(view);
         }
+        self.settings_focus_requested = true;
         let resource = Resource::Virtual(reg::RESOURCE.into());
         if let Err(error) = self.open_documents().open(
             resource,
@@ -71,5 +72,26 @@ impl Workbench {
             eprintln!("settings: {error}");
         }
         cx.notify();
+    }
+
+    pub(super) fn sync_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.editor.active().current() else {
+            return;
+        };
+        if !matches!(&tab.resource, Resource::Virtual(id) if id.as_ref() == reg::RESOURCE) {
+            return;
+        }
+        let Some(document) = tab.opened().map(|opened| opened.document.id) else {
+            return;
+        };
+        if !self.settings_notice_shown {
+            self.settings_notice_shown = true;
+            self.report_shared_notice(document, cx);
+        }
+        if std::mem::take(&mut self.settings_focus_requested) {
+            if let Some(view) = &self.settings_view {
+                view.read(cx).focus_search(window, cx);
+            }
+        }
     }
 }

@@ -463,6 +463,35 @@ struct Reader<'a> {
     scope: Scope,
 }
 
+/// Accepted numeric ranges for the code view and its settings controls.
+pub(crate) fn number_limits(key: &str) -> Option<(f64, f64)> {
+    Some(match key {
+        "editor.stopRenderingLineAfter" => (-1.0, 1e9),
+        "editor.fontSize" => (6.0, 100.0),
+        "editor.lineHeight" => (0.0, 150.0),
+        "editor.letterSpacing" => (-5.0, 20.0),
+        "editor.wordWrapColumn" => (1.0, 1e6),
+        "editor.tabSize" => (1.0, 100.0),
+        "editor.mouseWheelScrollSensitivity" => (0.0, 1e3),
+        "editor.fastScrollSensitivity" => (0.0, 1e3),
+        "editor.scrollBeyondLastColumn" => (0.0, 1e6),
+        "editor.cursorSurroundingLines" => (0.0, 1e6),
+        "editor.scrollbar.verticalScrollbarSize" => (0.0, 1000.0),
+        "editor.scrollbar.horizontalScrollbarSize" => (0.0, 1000.0),
+        "editor.padding.top" => (0.0, 1000.0),
+        "editor.padding.bottom" => (0.0, 1000.0),
+        "editor.multiCursorLimit" => (1.0, 1e6),
+        "editor.cursorWidth" => (0.0, 100.0),
+        "editor.cursorHeight" => (0.0, 1000.0),
+        "editor.maxTokenizationLineLength" => (-1.0, 1e9),
+        "rove.bracketPairColorization.maximumBrackets" => (1.0, 1e7),
+        "editor.occurrencesHighlightDelay" => (0.0, 2000.0),
+        "editor.selectionHighlightMaxLength" => (0.0, 1e9),
+        "editor.foldingMaximumRegions" => (10.0, 65000.0),
+        _ => return None,
+    })
+}
+
 impl Reader<'_> {
     fn raw(&self, key: &str) -> Value {
         let fallback = SETTINGS
@@ -472,7 +501,8 @@ impl Reader<'_> {
             .unwrap_or(Value::Null);
         self.settings.read(key, &self.scope).unwrap_or(fallback)
     }
-    fn num(&self, key: &str, lo: f64, hi: f64) -> f64 {
+    fn num(&self, key: &str) -> f64 {
+        let (lo, hi) = number_limits(key).expect("registered code view numeric limits");
         let fallback = match SETTINGS.iter().find(|(k, _)| *k == key) {
             Some((_, DefaultValue::Num(n))) => *n,
             _ => 0.0,
@@ -648,17 +678,17 @@ impl EditorOptions {
             "hidden" => ScrollbarVisibility::Hidden,
             _ => ScrollbarVisibility::Auto,
         };
-        let stop = r.num("editor.stopRenderingLineAfter", -1.0, 1e9);
+        let stop = r.num("editor.stopRenderingLineAfter");
         Self {
             font_family: font_family.into(),
             font_fallbacks,
             minimap,
-            font_size: r.num("editor.fontSize", 6.0, 100.0),
+            font_size: r.num("editor.fontSize"),
             font_weight: weight,
             ligatures,
             font_variations,
-            line_height_setting: r.num("editor.lineHeight", 0.0, 150.0),
-            letter_spacing: r.num("editor.letterSpacing", -5.0, 20.0),
+            line_height_setting: r.num("editor.lineHeight"),
+            letter_spacing: r.num("editor.letterSpacing"),
             fullwidth_font_width: r.str("editor.fullwidthCharacterWidth") != "fixed",
             word_break_keep_all: r.str("editor.wordBreak") == "keepAll",
             wrap: super::wrap::WrapOptions {
@@ -668,7 +698,7 @@ impl EditorOptions {
                     "bounded" => super::wrap::WordWrap::Bounded,
                     _ => super::wrap::WordWrap::Off,
                 },
-                column: r.num("editor.wordWrapColumn", 1.0, 1e6) as u32,
+                column: r.num("editor.wordWrapColumn") as u32,
                 indent: match r.str("editor.wrappingIndent").as_str() {
                     "none" => super::wrap::WrappingIndent::None,
                     "indent" => super::wrap::WrappingIndent::Indent,
@@ -684,9 +714,9 @@ impl EditorOptions {
                 escaped_line_feeds: r.bool("editor.wrapOnEscapedLineFeeds"),
                 indicator: r.bool("editor.wordWrapIndicator"),
                 separators: r.str("editor.wordSeparators").into(),
-                tab_size: r.num("editor.tabSize", 1.0, 100.0) as u32,
+                tab_size: r.num("editor.tabSize") as u32,
             },
-            tab_size: r.num("editor.tabSize", 1.0, 100.0) as u32,
+            tab_size: r.num("editor.tabSize") as u32,
             smart_select_subwords: r.bool("editor.smartSelect.selectSubwords"),
             smart_select_whitespace: r
                 .bool("editor.smartSelect.selectLeadingAndTrailingWhitespace"),
@@ -696,22 +726,18 @@ impl EditorOptions {
                 Some(stop as usize)
             },
             smooth_scrolling: r.bool("editor.smoothScrolling"),
-            wheel_sensitivity: r.num("editor.mouseWheelScrollSensitivity", 0.0, 1e3),
-            fast_scroll_sensitivity: r.num("editor.fastScrollSensitivity", 0.0, 1e3),
+            wheel_sensitivity: r.num("editor.mouseWheelScrollSensitivity"),
+            fast_scroll_sensitivity: r.num("editor.fastScrollSensitivity"),
             scroll_predominant_axis: r.bool("editor.scrollPredominantAxis"),
             inertial_scroll: r.bool("editor.inertialScroll"),
             scroll_beyond_last_line: r.bool("editor.scrollBeyondLastLine"),
-            scroll_beyond_last_column: r.num("editor.scrollBeyondLastColumn", 0.0, 1e6),
-            cursor_surrounding_lines: r.num("editor.cursorSurroundingLines", 0.0, 1e6) as u64,
+            scroll_beyond_last_column: r.num("editor.scrollBeyondLastColumn"),
+            cursor_surrounding_lines: r.num("editor.cursorSurroundingLines") as u64,
             cursor_surrounding_all: r.str("editor.cursorSurroundingLinesStyle") == "all",
             vertical_scrollbar: visibility("editor.scrollbar.vertical"),
             horizontal_scrollbar: visibility("editor.scrollbar.horizontal"),
-            vertical_scrollbar_size: r.num("editor.scrollbar.verticalScrollbarSize", 0.0, 1000.0),
-            horizontal_scrollbar_size: r.num(
-                "editor.scrollbar.horizontalScrollbarSize",
-                0.0,
-                1000.0,
-            ),
+            vertical_scrollbar_size: r.num("editor.scrollbar.verticalScrollbarSize"),
+            horizontal_scrollbar_size: r.num("editor.scrollbar.horizontalScrollbarSize"),
             scroll_by_page: r.bool("editor.scrollbar.scrollByPage"),
             ignore_horizontal_scrollbar_in_content_height: r
                 .bool("editor.scrollbar.ignoreHorizontalScrollbarInContentHeight"),
@@ -727,8 +753,8 @@ impl EditorOptions {
                 _ => FinalNewline::On,
             },
             glyph_margin: r.bool("editor.glyphMargin"),
-            padding_top: r.num("editor.padding.top", 0.0, 1000.0),
-            padding_bottom: r.num("editor.padding.bottom", 0.0, 1000.0),
+            padding_top: r.num("editor.padding.top"),
+            padding_bottom: r.num("editor.padding.bottom"),
             render_line_highlight: match r.str("editor.renderLineHighlight").as_str() {
                 "none" => LineHighlight::None,
                 "gutter" => LineHighlight::Gutter,
@@ -749,11 +775,11 @@ impl EditorOptions {
                 &r.str("editor.multiCursorModifier"),
             ),
             multi_cursor_merge_overlapping: r.bool("editor.multiCursorMergeOverlapping"),
-            multi_cursor_limit: r.num("editor.multiCursorLimit", 1.0, 1e6) as usize,
+            multi_cursor_limit: r.num("editor.multiCursorLimit") as usize,
             column_selection: r.bool("editor.columnSelection"),
             indent_size: match r.raw("editor.indentSize") {
                 Value::Number(n) if n >= 1.0 => n.min(100.0) as u32,
-                _ => r.num("editor.tabSize", 1.0, 100.0) as u32,
+                _ => r.num("editor.tabSize") as u32,
             },
             auto_indent: super::autoedit::indent::AutoIndent::parse(&r.str("editor.autoIndent")),
             auto_indent_on_paste: r.bool("editor.autoIndentOnPaste"),
@@ -761,7 +787,7 @@ impl EditorOptions {
             comments: super::autoedit::comments::CommentOptions {
                 insert_space: r.bool("editor.comments.insertSpace"),
                 ignore_empty_lines: r.bool("editor.comments.ignoreEmptyLines"),
-                tab_size: r.num("editor.tabSize", 1.0, 100.0) as usize,
+                tab_size: r.num("editor.tabSize") as usize,
             },
             auto_close: super::autoedit::autoclose::AutoCloseOptions {
                 brackets: super::autoedit::autoclose::AutoClosing::parse(
@@ -783,8 +809,8 @@ impl EditorOptions {
                     &r.str("editor.autoSurround"),
                 ),
             },
-            cursor_width: r.num("editor.cursorWidth", 0.0, 100.0),
-            cursor_height: r.num("editor.cursorHeight", 0.0, 1000.0),
+            cursor_width: r.num("editor.cursorWidth"),
+            cursor_height: r.num("editor.cursorHeight"),
             cursor_blinking: match r.str("editor.cursorBlinking").as_str() {
                 "smooth" => CursorBlinking::Smooth,
                 "phase" => CursorBlinking::Phase,
@@ -797,7 +823,7 @@ impl EditorOptions {
             empty_selection_clipboard: r.bool("editor.emptySelectionClipboard"),
             mouse_wheel_zoom: r.bool("editor.mouseWheelZoom"),
             max_tokenization_line_length: {
-                let n = r.num("editor.maxTokenizationLineLength", -1.0, 1e9);
+                let n = r.num("editor.maxTokenizationLineLength");
                 (n >= 0.0).then_some(n as usize)
             },
             match_brackets: match r.str("editor.matchBrackets").as_str() {
@@ -809,8 +835,7 @@ impl EditorOptions {
             independent_color_pool_per_bracket_type: r
                 .bool("editor.bracketPairColorization.independentColorPoolPerBracketType"),
             highlight_active_bracket_pair: r.bool("editor.guides.highlightActiveBracketPair"),
-            bracket_maximum: r.num("rove.bracketPairColorization.maximumBrackets", 1.0, 1e7)
-                as usize,
+            bracket_maximum: r.num("rove.bracketPairColorization.maximumBrackets") as usize,
             language_brackets: parse_bracket_pairs(&r.raw("editor.language.brackets")),
             language_colorized_brackets: parse_bracket_pairs(
                 &r.raw("editor.language.colorizedBracketPairs"),
@@ -820,11 +845,9 @@ impl EditorOptions {
                 Value::String(s) => &*s != "off",
                 _ => true,
             },
-            occurrences_highlight_delay_ms: r.num("editor.occurrencesHighlightDelay", 0.0, 2000.0)
-                as u64,
+            occurrences_highlight_delay_ms: r.num("editor.occurrencesHighlightDelay") as u64,
             selection_highlight: r.bool("editor.selectionHighlight"),
-            selection_highlight_max_length: r.num("editor.selectionHighlightMaxLength", 0.0, 1e9)
-                as usize,
+            selection_highlight_max_length: r.num("editor.selectionHighlightMaxLength") as usize,
             selection_highlight_multiline: r.bool("editor.selectionHighlightMultiline"),
             selected_text_case_sensitive: r.str("editor.selectedTextMatchMode") == "caseSensitive",
             folding: r.bool("editor.folding"),
@@ -833,7 +856,7 @@ impl EditorOptions {
             } else {
                 super::folding::FoldingStrategy::Auto
             },
-            folding_maximum_regions: r.num("editor.foldingMaximumRegions", 10.0, 65000.0) as usize,
+            folding_maximum_regions: r.num("editor.foldingMaximumRegions") as usize,
             show_folding_controls: match r.str("editor.showFoldingControls").as_str() {
                 "always" => FoldingControls::Always,
                 "never" => FoldingControls::Never,

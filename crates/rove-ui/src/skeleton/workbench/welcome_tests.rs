@@ -640,3 +640,58 @@ fn the_gear_menu_lists_every_usable_item(cx: &mut TestAppContext) {
         ]
     );
 }
+
+#[gpui::test]
+fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_file(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings_ui::{registry as settings, SharedSettings};
+
+    let source = "{\n  // preserve this comment\n  \"editor.fontSize\": 15,\n  \"editor.wordWrap\": \"off\"\n}\n";
+    let fx = Fixture::new(source);
+    let (workbench, cx) = fx.open(cx);
+    let service = fx.service.clone();
+    workbench.update(cx, |_, cx| cx.set_global(SharedSettings(service)));
+    run(&workbench, cx, reg::OPEN_SETTINGS);
+    assert!(tabs(&workbench, cx).contains(&Resource::Virtual(settings::RESOURCE.into())));
+    assert_eq!(fx.settings_text(), source);
+    let editor = workbench.read_with(cx, |view, _| view.settings_view.clone().unwrap());
+    editor.update(cx, |view, cx| {
+        view.set_query_for_test("font size @modified", cx)
+    });
+    cx.run_until_parked();
+    editor.update(cx, |view, cx| {
+        assert!(!view.select_result_for_test("editor.wordWrap", cx));
+        assert!(view.select_result_for_test("editor.fontSize", cx));
+    });
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::FOCUS_CONTROL, window, cx)
+    });
+    editor.update_in(cx, |view, window, cx| {
+        view.edit_text_for_test("101", window, cx)
+    });
+    assert_eq!(fx.settings_text(), source);
+    editor.update_in(cx, |view, window, cx| {
+        view.edit_text_for_test("16", window, cx)
+    });
+    let expected = source.replace(": 15,", ": 16,");
+    for _ in 0..200 {
+        cx.run_until_parked();
+        if fx.settings_text() == expected {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(fx.settings_text(), expected);
+    assert_eq!(
+        fx.service
+            .read("editor.fontSize", &Scope::default())
+            .unwrap(),
+        Value::Number(16.0)
+    );
+    workbench.update_in(cx, |view, window, cx| {
+        view.settings_command(settings::OPEN_JSON, window, cx)
+    });
+    cx.run_until_parked();
+    assert_editable_shared_file(&workbench, cx, fx.user.join("settings.json"));
+}

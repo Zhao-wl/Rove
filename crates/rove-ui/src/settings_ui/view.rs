@@ -9,8 +9,8 @@ use crate::list_widget::{
 };
 use crate::lists::{EmptyList, ItemId, Row};
 use gpui::{
-    div, prelude::*, px, App, Context, Entity, EventEmitter, Focusable, Hsla, KeyContext,
-    SharedString, Subscription, Window,
+    div, prelude::*, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    KeyContext, SharedString, Subscription, Window,
 };
 use rove_base::{Cancellation, Position, Value, Version};
 use rove_config::{Scope, Settings, SettingsService};
@@ -35,6 +35,9 @@ pub enum SettingsViewEvent {
     OpenJson(Option<Position>),
 }
 
+mod controls;
+use controls::RowEditor;
+
 pub struct SettingsView {
     settings: Arc<SettingsService>,
     theme: Arc<dyn Theme>,
@@ -49,6 +52,10 @@ pub struct SettingsView {
     show_categories: bool,
     revision: Version,
     write_error: Option<String>,
+    language_overrides: Arc<BTreeSet<String>>,
+    row_editor: Option<RowEditor>,
+    menu_focus: FocusHandle,
+    invalid_input: bool,
     _listeners: Vec<Subscription>,
 }
 
@@ -95,7 +102,10 @@ impl SettingsView {
         let results = cx.new(|cx| {
             let list = ListWidget::new(
                 Arc::new(EmptyList),
-                RowHeight::Fixed(SETTING_HEIGHT),
+                RowHeight::PerRow(Arc::new(|row| {
+                    let extra = usize::from(row.detail.as_deref() == Some("badges"));
+                    SETTING_HEIGHT + 26.0 * extra as f32
+                })),
                 options,
             );
             let mut view = ListView::new(list, theme.clone(), strings.clone(), cx);
@@ -132,16 +142,39 @@ impl SettingsView {
         });
         let (send, receive) = async_channel::bounded(1);
         let on_change = send.clone();
+        let _ = send.try_send(());
         let values = settings.changes().subscribe(Arc::new(move |_| {
             let _ = on_change.try_send(());
         }));
         let problems = settings.problem_changes().subscribe(Arc::new(move |_| {
             let _ = send.try_send(());
         }));
+        let background = cx.background_executor().clone();
+        let path = settings.settings_path().to_path_buf();
         cx.spawn(async move |this, cx| {
             let (_values, _problems) = (values, problems);
             while receive.recv().await.is_ok() {
-                if this.update(cx, |view, cx| view.refresh(cx)).is_err() {
+                let path = path.clone();
+                let overrides = background
+                    .spawn(async move {
+                        match std::fs::read_to_string(path) {
+                            Ok(text) => model::language_overrides(&text),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                Some(BTreeSet::new())
+                            }
+                            Err(_) => None,
+                        }
+                    })
+                    .await;
+                if this
+                    .update(cx, |view, cx| {
+                        if let Some(overrides) = overrides {
+                            view.language_overrides = Arc::new(overrides);
+                        }
+                        view.refresh(cx);
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -162,6 +195,10 @@ impl SettingsView {
             show_categories: true,
             revision: Version(0),
             write_error: None,
+            language_overrides: Arc::default(),
+            row_editor: None,
+            menu_focus: cx.focus_handle(),
+            invalid_input: false,
             _listeners: vec![search_events, category_events, result_events],
         };
         view.refresh(cx);
@@ -177,7 +214,24 @@ impl SettingsView {
             reg::CLEAR_SEARCH => {
                 self.search.update(cx, |input, cx| input.set_text("", cx));
             }
-            reg::SEARCH | reg::SEARCH_FROM_ROW | reg::LEVEL_UP => self.focus_search(window, cx),
+            reg::SEARCH | reg::SEARCH_FROM_ROW => self.focus_search(window, cx),
+            reg::LEVEL_UP => {
+                if self.row_editor.take().is_some() {
+                    self.focus_results(window, cx);
+                } else {
+                    self.focus_search(window, cx);
+                }
+                cx.notify();
+            }
+            reg::FOCUS_CONTROL | reg::SHOW_MENU => {
+                if let Some(id) = self.results.read(cx).widget.focused_id() {
+                    if command == reg::SHOW_MENU {
+                        self.show_row_menu(id.0, false, window, cx);
+                    } else {
+                        self.activate_value(id.0, window, cx);
+                    }
+                }
+            }
             reg::LIST_FROM_SEARCH | reg::LIST_FROM_SEARCH_ENTER | reg::FOCUS_LIST => {
                 if !self.query.trim().is_empty() && self.search_history.last() != Some(&self.query)
                 {
@@ -217,6 +271,39 @@ impl SettingsView {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_query_for_test(&self, query: &str, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |input, cx| input.set_text(query, cx));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn select_result_for_test(&self, key: &str, cx: &mut Context<Self>) -> bool {
+        self.results.update(cx, |list, cx| {
+            let found = list.widget.focus_id(&ItemId(key.into())).is_ok();
+            cx.notify();
+            found
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn edit_text_for_test(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(RowEditor::Input { input, .. }) = &self.row_editor else {
+            panic!("settings input did not open");
+        };
+        input.update(cx, |input, cx| input.set_text(value, cx));
+        self.commit_input(window, cx);
+    }
+
+    fn focus_results(&self, window: &mut Window, cx: &App) {
+        window.focus(&self.results.focus_handle(cx));
+    }
+
     fn color(&self, key: &str) -> Hsla {
         self.theme
             .color(key)
@@ -241,10 +328,14 @@ impl SettingsView {
         if self.read_only() {
             return;
         }
-        self.write_error = None;
         let write = self
             .settings
             .write(key, Scope::default(), value, Cancellation::default());
+        self.finish_mutation(write, cx);
+    }
+
+    fn finish_mutation(&mut self, write: rove_base::Task<()>, cx: &mut Context<Self>) {
+        self.write_error = None;
         cx.spawn(async move |this, cx| {
             if let Err(error) = write.await {
                 let _ = this.update(cx, |view, cx| {
@@ -331,12 +422,15 @@ impl SettingsView {
             .collect();
         self.revision.0 += 1;
         let revision = self.revision;
+        let overrides = self.language_overrides.clone();
         let list_rows = rows
             .iter()
             .map(|entry| Row {
                 id: ItemId(entry.row.key.as_str().into()),
                 label: entry.row.title.as_str().into(),
-                detail: Some(entry.row.key.as_str().into()),
+                detail: (entry.row.rove_default
+                    || (entry.row.language_overridable && overrides.contains(&entry.row.key)))
+                .then(|| Arc::<str>::from("badges")),
                 depth: 0,
                 expandable: false,
                 expanded: false,
@@ -392,6 +486,31 @@ impl SettingsView {
                     );
                 }
 
+                if entry.row.language_overridable && overrides.contains(&entry.row.key) {
+                    let key = context.row.id.0.clone();
+                    let editor = editor.clone();
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "settings-language-{}",
+                                entry.row.key
+                            )))
+                            .text_size(px(11.))
+                            .cursor_pointer()
+                            .child(
+                                strings
+                                    .text(&Message::key("settings.languageOverrides"))
+                                    .unwrap_or_default(),
+                            )
+                            .on_click(move |_, _, cx| {
+                                if let Some(view) = editor.upgrade() {
+                                    view.update(cx, |view, cx| {
+                                        view.open_key(key.clone(), true, cx)
+                                    });
+                                }
+                            }),
+                    );
+                }
                 if model::explicit_value(settings.as_ref(), entry.row) {
                     row = row
                         .border_l_2()
@@ -432,7 +551,7 @@ impl SettingsView {
                         }
                         row = row.child(control);
                     }
-                    Some(Value::Object(_) | Value::Array(_)) => {
+                    Some(Value::Object(_) | Value::Array(_) | Value::Null) => {
                         let editor = editor.clone();
                         row = row.child(
                             div()
@@ -455,18 +574,71 @@ impl SettingsView {
                                 }),
                         );
                     }
-                    Some(Value::String(value)) => {
-                        row = row.child(
-                            div()
-                                .text_size(px(12.))
-                                .child(SharedString::from(value.to_string())),
-                        );
-                    }
-                    Some(Value::Number(value)) => {
-                        row = row.child(div().text_size(px(12.)).child(value.to_string()));
+                    Some(value @ (Value::String(_) | Value::Number(_))) => {
+                        let text = match value {
+                            Value::String(value) => value.to_string(),
+                            Value::Number(value) => value.to_string(),
+                            _ => unreachable!(),
+                        };
+                        let dropdown = !entry.row.choices.is_empty();
+                        let label = if dropdown {
+                            format!("{text}  ▾")
+                        } else {
+                            text
+                        };
+                        let mut control = div()
+                            .id(SharedString::from(format!(
+                                "settings-value-{}",
+                                entry.row.key
+                            )))
+                            .px(px(6.))
+                            .text_size(px(12.))
+                            .border_1()
+                            .border_color(color(if dropdown {
+                                "settings.dropdownBorder"
+                            } else {
+                                "settings.textInputBorder"
+                            }))
+                            .child(label);
+                        if !read_only {
+                            let editor = editor.clone();
+                            control = control.cursor_pointer().on_click(move |_, window, cx| {
+                                if let Some(view) = editor.upgrade() {
+                                    view.update(cx, |view, cx| {
+                                        view.activate_value(key.clone(), window, cx)
+                                    });
+                                }
+                            });
+                        }
+                        row = row.child(control);
                     }
                     _ => {}
                 }
+                let key = context.row.id.0.clone();
+                let editor = editor.clone();
+                row = row.relative().child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "settings-actions-{}",
+                            entry.row.key
+                        )))
+                        .absolute()
+                        .top(px(4.))
+                        .right(px(8.))
+                        .cursor_pointer()
+                        .child(crate::outline::view::codicon(
+                            "gear",
+                            px(14.),
+                            Some(foreground),
+                        ))
+                        .on_click(move |_, window, cx| {
+                            if let Some(view) = editor.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.show_row_menu(key.clone(), false, window, cx)
+                                });
+                            }
+                        }),
+                );
                 row.into_any_element()
             }));
             cx.notify();
@@ -596,6 +768,17 @@ impl Render for SettingsView {
                     .text_color(self.color("errorForeground"))
                     .child(self.strings.text(&message).unwrap_or_default())
             }))
+            .children(
+                self.category
+                    .as_deref()
+                    .filter(|category| *category == "Rove")
+                    .map(|_| {
+                        div()
+                            .text_size(px(12.))
+                            .child(self.label("settings.category.roveDescription"))
+                    }),
+            )
+            .children(self.row_editor_element(cx))
             .child(body)
     }
 }

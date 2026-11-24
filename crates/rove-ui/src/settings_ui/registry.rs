@@ -97,6 +97,7 @@ const STRINGS: &[(&str, &str)] = &[
         "settings.invalidFile",
         "设置文件第 {line} 行、第 {column} 列有错误。已显示上一份有效设置。",
     ),
+    ("settings.apply", "应用"),
     ("settings.invalidValue", "请输入有效的设置值。"),
     ("settings.writeFailed", "无法写入设置（{error}）。"),
     ("settings.unavailable", "无法访问共享设置文件。"),

@@ -186,7 +186,6 @@
 {"key": "ctrl+shift+backspace", "command": "search.searchEditor.action.deleteFileResults", "when": "inSearchEditor", "priority": "P0", "source": "vscode"},
 {"key": "escape", "command": "settings.action.clearSearchResults", "when": "inSettingsEditor && inSettingsSearch", "priority": "P1", "source": "vscode"},
 {"key": "ctrl+f", "command": "settings.action.search", "when": "inSettingsEditor", "priority": "P1", "source": "vscode"},
-{"key": "ctrl+i", "command": "settings.action.toggleAiSearch", "when": "aiSettingResultsAvailable && inSettingsEditor", "priority": "P1", "source": "vscode"},
 {"key": "ctrl+k f2", "command": "togglePeekWidgetFocus", "when": "inReferenceSearchEditor || referenceSearchVisible", "priority": "P0", "source": "vscode"},
 {"key": "escape", "command": "welcome.goBack", "when": "inWelcome && activeEditor == 'gettingStartedPage'", "priority": "P0", "source": "vscode"},
 {"key": "alt+f5", "command": "workbench.action.editor.nextChange", "when": "editorTextFocus && !textCompareEditorActive && quickDiffDecorationCount != '0'", "priority": "P2", "source": "vscode"},
