@@ -1004,3 +1004,80 @@ fn preview_scale_follows_the_window_and_zoom_is_not_doubled(cx: &mut TestAppCont
         "网页缩放应当是 1.2^2，实际 {zoom}"
     );
 }
+
+#[gpui::test]
+fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    let (view, cx) = fixture.open(cx);
+    open(&view, "Long.md", explorer(), cx);
+    #[derive(Default)]
+    struct MenuCalls(usize);
+    impl gpui::Global for MenuCalls {}
+
+    view.update(cx, |view, cx| {
+        cx.set_global(MenuCalls::default());
+        view.register_markdown_context_menu(
+            |_, _, _, cx| cx.global_mut::<MenuCalls>().0 += 1,
+            |workbench| workbench.markdown_snapshot().visible,
+        );
+    });
+    let (document, sequence) = view.read_with(cx, |view, _| {
+        let snapshot = view.markdown_snapshot();
+        assert!(snapshot.rendered && snapshot.visible);
+        (
+            view.markdown.requested.unwrap().document,
+            snapshot.render_sequence,
+        )
+    });
+    let send = |cx: &mut VisualTestContext,
+                document: DocumentId,
+                seq: u64,
+                first: u64,
+                last: u64,
+                point: (f64, f64)| {
+        view.update(cx, |view, _| {
+            view.markdown
+                .sender_for_test()
+                .try_send(crate::markdown::backend::BackendEvent::Message(
+                    serde_json::json!({
+                        "version": 1, "type": "sourceSelection",
+                        "documentId": document.0, "seq": seq, "first": first, "last": last,
+                        "x": point.0, "y": point.1,
+                    }),
+                ))
+                .unwrap();
+        });
+        settle(cx);
+    };
+    let selected = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |view, _| {
+            view.markdown_snapshot().source_selection.map(|selection| {
+                (
+                    selection.lines.start().0,
+                    selection.lines.end().0,
+                    selection.anchor,
+                )
+            })
+        })
+    };
+    let center = (0.5, 0.5);
+    let calls = |cx: &mut VisualTestContext| cx.update(|_, cx| cx.global::<MenuCalls>().0);
+    send(cx, document, sequence + 1, 5, 7, center);
+    assert_eq!(selected(cx), None);
+    send(cx, DocumentId(document.0 + 1), sequence, 5, 7, center);
+    assert_eq!(selected(cx), None);
+    send(cx, document, sequence, 5, 7, (0.0, 0.0));
+    let (first, end, top_left) = selected(cx).unwrap();
+    assert_eq!((first, end), (5, 8));
+    send(cx, document, sequence, 5, 7, center);
+    let (_, _, middle) = selected(cx).unwrap();
+    assert!(middle.x > top_left.x && middle.y > top_left.y);
+    assert_eq!(calls(cx), 2);
+    send(cx, document, sequence, 5, 7, (1.01, 0.5));
+    assert_eq!(selected(cx), None);
+    send(cx, document, sequence, 3, u64::MAX, center);
+    assert_eq!(selected(cx), None);
+    send(cx, document, sequence, 5, 7, center);
+    open(&view, "Other.md", explorer(), cx);
+    assert_eq!(selected(cx), None);
+}

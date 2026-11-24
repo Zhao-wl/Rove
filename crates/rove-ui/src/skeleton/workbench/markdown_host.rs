@@ -41,6 +41,14 @@ pub(super) struct RenderKey {
     options: u64,
 }
 
+/// 源码范围使用从零开始的半开区间。菜单锚点使用窗口逻辑坐标。
+#[derive(Clone, Debug)]
+pub struct MarkdownSourceSelection {
+    pub lines: rove_base::LineRange,
+    pub version: Version,
+    pub anchor: gpui::Point<Pixels>,
+}
+
 /// 预览状态的只读快照（测试与 `markdown_probe` 用）。
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownSnapshot {
@@ -60,7 +68,12 @@ pub struct MarkdownSnapshot {
     pub process_ids: Vec<u32>,
     /// 最近一次 [`Workbench::markdown_probe`] 读回的预览顶部源码行。
     pub position: Option<f64>,
+    /// 当前预览最近一次右键请求中的选区。
+    pub source_selection: Option<MarkdownSourceSelection>,
 }
+
+type SourceSelectionHandler =
+    fn(&mut Workbench, DocumentId, &MarkdownSourceSelection, &mut Context<Workbench>);
 
 pub(super) struct MarkdownPreview {
     backend: Rc<RefCell<Box<dyn Backend>>>,
@@ -86,6 +99,7 @@ pub(super) struct MarkdownPreview {
     idle_pending: bool,
     /// 这一帧实例是否显示（画布在 prepaint 时读取：遮挡判定在编辑区构建之后才知道）。
     visible: Rc<Cell<bool>>,
+    viewport_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// 预览→编辑器滚动后，编辑器回报的视口不再回推（防回声）。
     echo: Option<(DocumentId, f64)>,
     fragment: Option<(Resource, String)>,
@@ -95,6 +109,9 @@ pub(super) struct MarkdownPreview {
     created_ms: Option<f64>,
     external: Option<String>,
     position: Option<f64>,
+    source_selection: Option<MarkdownSourceSelection>,
+    source_selection_handler: Option<SourceSelectionHandler>,
+    dismiss_source_menu: Option<fn(&mut Workbench) -> bool>,
     trace: bool,
     #[cfg(test)]
     pub(super) fake: Rc<RefCell<crate::markdown::backend::FakeLog>>,
@@ -152,6 +169,7 @@ impl Default for MarkdownPreview {
             idle_generation: 0,
             idle_pending: false,
             visible: Rc::new(Cell::new(false)),
+            viewport_bounds: Rc::new(Cell::new(None)),
             echo: None,
             fragment: None,
             options_generation: 0,
@@ -160,6 +178,9 @@ impl Default for MarkdownPreview {
             created_ms: None,
             external: None,
             position: None,
+            source_selection: None,
+            source_selection_handler: None,
+            dismiss_source_menu: None,
             trace: std::env::var_os("ROVE_MARKDOWN_TRACE").is_some(),
             #[cfg(test)]
             fake,
@@ -215,7 +236,23 @@ impl Workbench {
             idle_pending: m.idle_pending,
             process_ids: backend.process_ids(),
             position: m.position,
+            source_selection: (m.visible.get()
+                && m.rendered.is_some()
+                && m.rendered == m.requested.map(|_| m.seq))
+            .then(|| m.source_selection.clone())
+            .flatten(),
         }
+    }
+
+    /// 注册当前工作台的预览选区菜单入口。
+    #[allow(dead_code)]
+    pub(super) fn register_markdown_context_menu(
+        &mut self,
+        show: SourceSelectionHandler,
+        dismiss: fn(&mut Workbench) -> bool,
+    ) {
+        self.markdown.source_selection_handler = Some(show);
+        self.markdown.dismiss_source_menu = Some(dismiss);
     }
 
     /// 测量用（`examples/markdown_probe.rs`）：`where` 读回预览顶部对应的源码行（结果在
@@ -545,6 +582,7 @@ impl Workbench {
             .requested
             .is_some_and(|old| old.document == key.document && old.tab == key.tab);
         self.markdown.requested = Some(key);
+        self.markdown.source_selection = None;
         self.markdown.seq += 1;
         let seq = self.markdown.seq;
         let base = self
@@ -607,6 +645,7 @@ impl Workbench {
                     "seq": seq,
                     "documentId": id.0,
                     "html": rendered.html,
+                    "sourceKey": rendered.source_key,
                     "styles": styles,
                     "mathMacros": macros,
                     "markEditorSelection": mark,
@@ -777,6 +816,22 @@ impl Workbench {
         );
     }
 
+    fn markdown_context_is_current(&self, document: Option<DocumentId>, message: &Json) -> bool {
+        document.is_some()
+            && document == self.markdown.requested.map(|key| key.document)
+            && message["seq"].as_u64() == self.markdown.rendered
+            && self.markdown.rendered == Some(self.markdown.seq)
+            && self.markdown.visible.get()
+            && self.markdown.owner.is_some_and(|(group, tab)| {
+                self.editor
+                    .maximized
+                    .is_none_or(|maximized| maximized == group)
+                    && self
+                        .preview_tab(group)
+                        .is_some_and(|preview| preview.id == tab)
+            })
+    }
+
     fn markdown_message(&mut self, message: Json, window: &mut Window, cx: &mut Context<Self>) {
         let document = message["documentId"].as_u64().map(DocumentId);
         let current = self.markdown.requested.map(|k| k.document);
@@ -826,22 +881,54 @@ impl Workbench {
                     self.markdown_scroll_editors(document.unwrap(), line, cx);
                 }
             }
-            Some("pointerDown")
-                if document.is_some()
-                    && document == current
-                    && message["seq"].as_u64() == self.markdown.rendered
-                    && self.markdown.rendered == Some(self.markdown.seq)
-                    && self.markdown.visible.get()
-                    && self.markdown.owner.is_some_and(|(group, tab)| {
-                        self.editor
-                            .maximized
-                            .is_none_or(|maximized| maximized == group)
-                            && self
-                                .preview_tab(group)
-                                .is_some_and(|preview| preview.id == tab)
-                    }) =>
-            {
-                if self.shell.dismiss_menu() {
+            Some("sourceSelection") if self.markdown_context_is_current(document, &message) => {
+                let selection = (|| {
+                    let doc = self.open_document(document?)?;
+                    let version = self.markdown.requested?.version;
+                    if doc.text.version() != version {
+                        return None;
+                    }
+                    let first = message["first"].as_u64()?;
+                    let last = message["last"].as_u64()?;
+                    let end = last.checked_add(1)?;
+                    let x = message["x"].as_f64()?;
+                    let y = message["y"].as_f64()?;
+                    if end > doc.text.lines().known
+                        || first > last
+                        || !(0.0..=1.0).contains(&x)
+                        || !(0.0..=1.0).contains(&y)
+                    {
+                        return None;
+                    }
+                    let bounds = self.markdown.viewport_bounds.get()?;
+                    let lines =
+                        rove_base::LineRange::new(rove_base::Line(first), rove_base::Line(end))
+                            .ok()?;
+                    let anchor = bounds.origin
+                        + gpui::point(bounds.size.width * x as f32, bounds.size.height * y as f32);
+                    Some(MarkdownSourceSelection {
+                        lines,
+                        version,
+                        anchor,
+                    })
+                })();
+                if let (Some(handler), Some(document), Some(selection)) = (
+                    self.markdown.source_selection_handler,
+                    document,
+                    selection.as_ref(),
+                ) {
+                    handler(self, document, selection, cx);
+                }
+                self.markdown.source_selection = selection;
+                cx.notify();
+            }
+            Some("pointerDown") if self.markdown_context_is_current(document, &message) => {
+                let shell_closed = self.shell.dismiss_menu();
+                let source_closed = self
+                    .markdown
+                    .dismiss_source_menu
+                    .is_some_and(|dismiss| dismiss(self));
+                if shell_closed || source_closed {
                     cx.notify();
                 }
             }
@@ -1260,6 +1347,7 @@ impl Workbench {
         let visible = self.markdown.visible.clone();
         let prepaint_visible = visible.clone();
         let prepaint_backend = backend.clone();
+        let viewport_bounds = self.markdown.viewport_bounds.clone();
         let bar = self.ui_color("editorWidget.background");
         let skeleton = (!rendered || !visible.get()).then(|| {
             let line = |w: f32, h: f32| div().h(px(h)).w(relative(w)).rounded_sm().bg(bar);
@@ -1291,6 +1379,7 @@ impl Workbench {
         .child(
             canvas(
                 move |bounds: Bounds<Pixels>, window, _| {
+                    viewport_bounds.set(Some(bounds));
                     if prepaint_visible.get()
                         && prepaint_backend.borrow().uses_native_child_window()
                     {

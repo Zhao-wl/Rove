@@ -3,7 +3,7 @@
 //
 // 协议 {version:1, type, ...}：
 //   宿主 → 页面：render、theme、scrollTo、selection、fragment
-//   页面 → 宿主：ready、rendered、scroll、pointerDown、dblclick、link、focusExit
+//   页面 → 宿主：ready、rendered、scroll、pointerDown、dblclick、link、focusExit、sourceSelection
 (function () {
   'use strict';
   const VERSION = 1;
@@ -11,6 +11,7 @@
   const content = document.getElementById('rove-content');
   let documentId = null;
   let seq = 0;
+  let sourceKey = null;
   let themeKind = 'vscode-dark';
   let mathMacros = {};
   let ignoreScroll = 0;
@@ -300,6 +301,7 @@
     const started = performance.now();
     documentId = message.documentId;
     seq = message.seq;
+    sourceKey = /^[0-9a-f]{32}$/.test(message.sourceKey) ? message.sourceKey + ':' : null;
     mathMacros = message.mathMacros || {};
     setStyles(message.styles || []);
     document.body.classList.toggle('showEditorSelection', !!message.markEditorSelection);
@@ -428,6 +430,84 @@
       post({ type: 'pointerDown', documentId: documentId, seq: seq });
     }
   }, true);
+
+  function sourceLinesAt(node, offset) {
+    const element = node.parentElement;
+    if (!element || !sourceKey) {
+      return null;
+    }
+    const marker = element.closest('[data-source-code-lines^="' + sourceKey +
+      '"], [data-source-lines^="' + sourceKey + '"]');
+    if (!marker) {
+      return null;
+    }
+    if (marker.hasAttribute('data-source-code-lines')) {
+      // The highlighter adds nested spans, but keeps the code element and its literal newlines.
+      const before = document.createRange();
+      before.selectNodeContents(marker);
+      before.setEnd(node, offset);
+      const index = before.toString().split('\n').length - 1;
+      const source = marker.getAttribute('data-source-code-lines').slice(sourceKey.length).split(',')[index];
+      const line = source ? Number(source) : NaN;
+      return Number.isSafeInteger(line) && line >= 0 ? [line, line] : null;
+    }
+    const lines = marker.getAttribute('data-source-lines').slice(sourceKey.length).split(',').map(Number);
+    return lines.length === 2 && lines.every(Number.isSafeInteger) && lines[0] >= 0 &&
+      lines[1] >= lines[0] ? lines : null;
+  }
+
+  function selectedSourceLines(range) {
+    const common = range.commonAncestorContainer;
+    const walker = document.createTreeWalker(common, NodeFilter.SHOW_TEXT);
+    let first = null;
+    let last = null;
+    for (let node = common.nodeType === Node.TEXT_NODE ? common : walker.nextNode();
+         node; node = walker.nextNode()) {
+      if (range.comparePoint(node, 0) > 0) {
+        break;
+      }
+      if (range.comparePoint(node, node.length) < 0) {
+        continue;
+      }
+      const start = range.startContainer === node ? range.startOffset : 0;
+      const end = range.endContainer === node ? range.endOffset : node.length;
+      if (start >= end || node.data.slice(start, end).trim().length === 0) {
+        continue;
+      }
+      first = first || { node: node, offset: start };
+      last = { node: node, offset: end - 1 };
+    }
+    if (!first) {
+      return null;
+    }
+    const start = sourceLinesAt(first.node, first.offset);
+    const end = sourceLinesAt(last.node, last.offset);
+    return start && end ? [Math.min(start[0], end[0]), Math.max(start[1], end[1])] : null;
+  }
+
+  // The preview is a native child window. Publish only a selected range within the rendered content.
+  document.addEventListener('contextmenu', function (event) {
+    const selected = window.getSelection();
+    if (!event.isTrusted || documentId === null || !content.contains(event.target) ||
+        !selected || selected.isCollapsed || selected.rangeCount !== 1) {
+      return;
+    }
+    const range = selected.getRangeAt(0);
+    if (!content.contains(range.startContainer) || !content.contains(range.endContainer)) {
+      return;
+    }
+    const lines = selectedSourceLines(range);
+    if (!lines) {
+      return;
+    }
+    const [first, last] = lines;
+    const x = event.clientX / window.innerWidth;
+    const y = event.clientY / window.innerHeight;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+      return;
+    }
+    post({ type: 'sourceSelection', documentId: documentId, seq: seq, first: first, last: last, x: x, y: y });
+  });
 
   document.addEventListener('dblclick', function (event) {
     if (documentId === null) {
