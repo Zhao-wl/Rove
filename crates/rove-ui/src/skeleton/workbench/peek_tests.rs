@@ -1035,6 +1035,9 @@ fn peek_preview_recovers_when_the_next_file_fails_to_open(cx: &mut TestAppContex
     // 双击预览不会打开 A：窗口还在（真打开了会以 `side = false` 关掉整个速览）。
     double_click_preview(&w, pos(0, 1), cx);
     assert!(peek(&view, cx).is_some(), "双击失败的预览不打开任何文件");
+    assert!(preview_focused(&w, cx));
+    press("ctrl-k f2", cx);
+    assert!(list_focused(&w, cx));
     // 文件回来后再次选中 B：重新尝试打开，预览换成 B。
     f.file("Assets/Enemy.cs", ENEMY);
     press("down", cx);
