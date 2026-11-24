@@ -34,25 +34,22 @@ struct Row {
 impl Workbench {
     pub(super) fn watch_settings_problems(
         &mut self,
-        service: &rove_config::SettingsService,
+        service: Arc<rove_config::SettingsService>,
         cx: &mut Context<Self>,
     ) {
+        let (send, receive) = async_channel::bounded(1);
+        self.problem_panel.settings_subscription =
+            Some(service.problem_changes().subscribe(Arc::new(move |_| {
+                let _ = send.try_send(());
+            })));
         self.problem_panel.settings = service.problems();
         self.update_problem_count();
-        let (send, receive) = async_channel::unbounded();
-        self.problem_panel.settings_subscription = Some(service.problem_changes().subscribe(
-            Arc::new(move |problems| {
-                let _ = send.try_send(problems);
-            }),
-        ));
         cx.spawn(async move |weak, cx| {
-            while let Ok(mut problems) = receive.recv().await {
-                while let Ok(more) = receive.try_recv() {
-                    problems = more;
-                }
+            while receive.recv().await.is_ok() {
                 if weak
                     .update(cx, |view, cx| {
-                        view.problem_panel.settings = problems;
+                        // Callbacks can arrive out of order; the service owns the latest snapshot.
+                        view.problem_panel.settings = service.problems();
                         view.update_problem_count();
                         cx.notify();
                     })

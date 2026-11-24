@@ -79,6 +79,38 @@ fn structured_problems_follow_the_settings_view_service(cx: &mut TestAppContext)
     view.read_with(cx, |v, _| assert_eq!(v.settings_error_counts(), (0, 0)));
 }
 
+#[gpui::test]
+fn structured_problems_ignore_out_of_order_settings_notifications(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let settings_path = fx.user.path().join("settings.json");
+    let restore_path = settings_path.clone();
+    let service = Arc::downgrade(&fx.service);
+    let _restore = fx
+        .service
+        .problem_changes()
+        .subscribe(Arc::new(move |problems| {
+            if problems.iter().any(|problem| !problem.is_error()) {
+                // This listener runs first and publishes recovery before the warning reaches Problems.
+                std::fs::write(&restore_path, r#"{"editor.formatOnPaste": true}"#).unwrap();
+                service.upgrade().unwrap().reload();
+            }
+        }));
+    cx.update(|cx| crate::settings_ui::SharedSettings::install(fx.service.clone(), cx));
+    let (view, cx) = fx.open(cx);
+
+    std::fs::write(settings_path, r#"{"editor.formatOnPaste": "invalid"}"#).unwrap();
+    fx.service.reload();
+    let setting = Key::<bool>::new("editor.formatOnPaste");
+    assert!(!fx.service.read_typed(&setting, &Scope::default()).unwrap());
+    assert!(setting
+        .read(fx.service.as_ref(), &Scope::default())
+        .unwrap());
+    assert!(fx.service.problems().is_empty());
+
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert_eq!(v.settings_error_counts(), (0, 0)));
+}
+
 fn refresh(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.refresh();

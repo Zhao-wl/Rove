@@ -377,7 +377,7 @@ impl Workbench {
             .try_global::<crate::settings_ui::SharedSettings>()
             .map(|shared| shared.0.clone())
         {
-            view.watch_settings_problems(&service, cx);
+            view.watch_settings_problems(service, cx);
         }
         // #36：应用入口按设置启动 C# 索引（测试入口 `new` 不启动，条目不显示）。
         view.start_index(cx);
