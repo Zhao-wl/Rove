@@ -68,8 +68,8 @@ pub(super) struct Welcome {
     /// 与 VS Code 共用的两份文件（#13 解析的位置）。
     settings_path: Option<PathBuf>,
     keybindings_path: Option<PathBuf>,
-    /// 打开后要显示共用提示条的文件：等它的标签就绪后才知道 DocumentId。
-    pending_notice: Option<PathBuf>,
+    /// 首选项文件就绪并显示在当前编辑器时，再给对应文档显示提示条。
+    pending_notices: BTreeSet<PathBuf>,
     /// 浮层（颜色主题 / 打开最近）。
     view: Option<Entity<QuickInputView>>,
     id: Option<QuickInputId>,
@@ -409,47 +409,39 @@ impl Workbench {
             );
             return;
         };
-        let initialize = cx.background_executor().spawn(async move {
-            if let Err(e) = initialize_shared_file(&path, initial) {
-                eprintln!("welcome: {}: {e}", path.display());
+        let target = path.clone();
+        match self.editor.open_prepared(
+            Resource::File(path.clone()),
+            OpenOptions {
+                preview_tab: false,
+                presentation: crate::documents::Presentation::Source,
+                ..Default::default()
+            },
+            move || initialize_shared_file(&target, initial).map_err(Error::from),
+        ) {
+            Ok(_) => {
+                self.welcome.pending_notices.insert(path);
             }
-            path
-        });
-        cx.spawn(async move |this, cx| {
-            let path = initialize.await;
-            let _ = this.update(cx, |view, cx| {
-                view.welcome.pending_notice = Some(path.clone());
-                if let Err(e) = view.open_documents().open(
-                    Resource::File(path),
-                    OpenOptions {
-                        preview_tab: false,
-                        presentation: crate::documents::Presentation::Source,
-                        ..Default::default()
-                    },
-                    Cancellation::default(),
-                ) {
-                    eprintln!("welcome: {e}");
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+            Err(e) => eprintln!("welcome: {e}"),
+        }
+        cx.notify();
     }
 
     /// 共用文件的标签就绪后显示第 3 级提示条（UX_SPEC §6.1）。「不再提示」与持久化由 #16 负责。
     fn sync_shared_notice(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.welcome.pending_notice.clone() else {
+        if self.welcome.pending_notices.is_empty() {
+            return;
+        }
+        let Some(tab) = self.editor.active().current() else {
             return;
         };
-        let document = self.editor.groups.values().find_map(|pane| {
-            pane.tabs
-                .iter()
-                .find(|tab| matches!(&tab.resource, Resource::File(p) if *p == path))
-                .and_then(Tab::opened)
-                .map(|o| o.document.id)
-        });
-        let Some(document) = document else { return };
-        self.welcome.pending_notice = None;
+        let (Resource::File(path), Some(opened)) = (&tab.resource, tab.opened()) else {
+            return;
+        };
+        if !self.welcome.pending_notices.remove(path) {
+            return;
+        }
+        let document = opened.document.id;
         let _ = shell::view::report(
             self,
             reg::SHARED_FILE_BAR,

@@ -329,7 +329,11 @@ fn startup_arguments_open_files_and_show_an_error_page_for_missing_paths(cx: &mu
 
 // ---------------------------------------------------------------- 首选项入口
 
-fn assert_editable_shared_file(view: &Entity<Workbench>, cx: &mut VisualTestContext, path: PathBuf) {
+fn assert_editable_shared_file(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    path: PathBuf,
+) {
     view.read_with(cx, |v, cx| {
         let tab = v.editor.active().current().unwrap();
         assert_eq!(tab.resource, Resource::File(path));
@@ -354,6 +358,80 @@ fn opening_missing_shared_files_creates_editable_json(cx: &mut TestAppContext) {
     run(&view, cx, reg::OPEN_KEYBINDINGS);
     assert_editable_shared_file(&view, cx, keybindings.clone());
     assert_eq!(std::fs::read_to_string(keybindings).unwrap(), "[]\n");
+}
+
+#[gpui::test]
+fn opening_missing_shared_files_keeps_the_command_target_and_focus(cx: &mut TestAppContext) {
+    let fx = Fixture::with_shared_files(None);
+    let (view, cx) = fx.open(cx);
+    let settings = Resource::File(fx.user.join("settings.json"));
+    let keybindings = Resource::File(fx.user.join("keybindings.json"));
+    let (left, right) = view.update_in(cx, |v, window, cx| {
+        let left = v.editor.focused;
+        let right = v.editor.split(Direction::Right).unwrap();
+
+        v.editor.focus(left);
+        v.welcome_command(reg::OPEN_SETTINGS, window, cx);
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.resource, settings);
+        assert!(matches!(tab.content, Content::Loading));
+
+        v.editor.focus(right);
+        v.welcome_command(reg::OPEN_KEYBINDINGS, window, cx);
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.resource, keybindings);
+        assert!(matches!(tab.content, Content::Loading));
+
+        v.editor.focus(left);
+        (left, right)
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.editor.focused, left);
+        for (group, resource) in [(left, settings), (right, keybindings.clone())] {
+            let tab = v.editor.groups[&group].current().unwrap();
+            assert_eq!(tab.resource, resource);
+            assert!(tab.opened().is_some());
+        }
+        let doc = v.editor.active().current().unwrap().opened().unwrap();
+        assert_eq!(v.shell.feedback.editor_bars(doc.document.id).count(), 1);
+    });
+
+    view.update(cx, |v, cx| {
+        v.editor.focus(right);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(tab.resource, keybindings);
+        let doc = tab.opened().unwrap();
+        assert_eq!(v.shell.feedback.editor_bars(doc.document.id).count(), 1);
+    });
+}
+
+#[gpui::test]
+fn retrying_a_failed_shared_open_retries_initialization(cx: &mut TestAppContext) {
+    let fx = Fixture::with_shared_files(None);
+    let blocked_parent = fx.user.parent().unwrap();
+    std::fs::write(blocked_parent, "a file where the Code directory should be").unwrap();
+    let (view, cx) = fx.open(cx);
+
+    run(&view, cx, reg::OPEN_SETTINGS);
+    let (group, tab) = view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert!(matches!(tab.content, Content::Failed(_)));
+        (v.editor.focused, tab.id)
+    });
+
+    std::fs::remove_file(blocked_parent).unwrap();
+    view.update(cx, |v, cx| {
+        v.editor.retry(group, tab);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_editable_shared_file(&view, cx, fx.user.join("settings.json"));
 }
 
 #[gpui::test]
