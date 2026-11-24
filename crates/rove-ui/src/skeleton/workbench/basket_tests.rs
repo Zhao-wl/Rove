@@ -250,6 +250,43 @@ fn context_basket_rechecks_a_real_disk_change_after_shared_capture(cx: &mut Test
 }
 
 #[gpui::test]
+fn context_basket_follows_a_rename_during_shared_capture(cx: &mut TestAppContext) {
+    let fixture = start_shared_capture(cx);
+    let from = WorkspacePath::new("example.txt").unwrap();
+    let to = WorkspacePath::new("renamed.txt").unwrap();
+    std::fs::rename(
+        fixture.root.path().join(from.as_str()),
+        fixture.root.path().join(to.as_str()),
+    )
+    .unwrap();
+    cx.update(|app| {
+        fixture.second.update(app, |view, cx| {
+            view.basket_workspace_files_changed(
+                &[super::FileEvent::Renamed {
+                    from,
+                    to: to.clone(),
+                }],
+                cx,
+            );
+            assert!(view.basket_command(reg::COPY_MARKDOWN, cx));
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|app| {
+        let entry = &fixture.second.read(app).basket.contents.items()[0];
+        assert_eq!(entry.path, to);
+        assert_eq!(entry.availability, Availability::Current);
+        assert!(entry.anchor.is_some());
+        let copied = app
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap();
+        assert!(copied.contains("renamed.txt:2-2"));
+        assert!(copied.contains("\nselected\n"));
+    });
+}
+
+#[gpui::test]
 fn context_basket_commits_pending_anchor_after_the_source_window_closes(cx: &mut TestAppContext) {
     let SharedCaptureFixture {
         root,

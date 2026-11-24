@@ -413,12 +413,30 @@ impl Workbench {
         });
         if let Some(shared) = self.basket.shared.clone() {
             let accepted = shared.update(cx, |state, cx| {
-                if state
+                let Some(previous) = state
                     .snapshot
                     .as_ref()
-                    .is_none_or(|snapshot| snapshot.revision != self.basket.revision)
-                {
+                    .filter(|snapshot| snapshot.revision == self.basket.revision)
+                else {
                     return false;
+                };
+                // An accepted workspace rename moves a pending capture with the same entry.
+                for (id, capture) in &mut state.captures {
+                    if !previous
+                        .contents
+                        .items()
+                        .iter()
+                        .any(|entry| entry.id() == *id && capture.matches(entry))
+                    {
+                        continue;
+                    }
+                    if let Some(entry) = self.basket.contents.items().iter().find(|entry| {
+                        entry.id() == *id
+                            && entry.lines == capture.lines
+                            && entry.availability == Availability::Current
+                    }) {
+                        capture.path.clone_from(&entry.path);
+                    }
                 }
                 state.snapshot = Some(BasketSnapshot {
                     contents: self.basket.contents.clone(),
