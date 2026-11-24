@@ -167,12 +167,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn toggle_checkbox(&mut self, key: Arc<str>, cx: &mut Context<Self>) {
-        if let Ok(Value::Bool(value)) = self.settings.read(&key, &Scope::default()) {
-            self.write_value(key, Value::Bool(!value), cx);
-        }
-    }
-
     pub(super) fn row_editor_element(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         match self.row_editor.as_ref()? {
             RowEditor::Checkbox { key } => {

@@ -786,6 +786,15 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
     let last_queued = after_bool.replace(": 16,", ": 18,");
     wait_for_text(cx, &last_queued);
 
+    editor.update(cx, |view, cx| {
+        view.toggle_checkbox("editor.minimap.enabled".into(), cx);
+        view.toggle_checkbox("editor.minimap.enabled".into(), cx);
+        view.write_value("editor.fontSize".into(), Value::Number(19.0), cx);
+    });
+    let between_toggles = last_queued.replace(": true", ": false");
+    let after_toggles = last_queued.replace(": 18,", ": 19,");
+    wait_for_text(cx, &after_toggles);
+
     let backups: Vec<_> = std::fs::read_dir(fx._app_data.path().join("backup"))
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
@@ -796,6 +805,8 @@ fn graphical_settings_opens_via_preferences_filters_and_preserves_the_shared_fil
         after_enum.as_str(),
         after_bool.as_str(),
         first_queued.as_str(),
+        last_queued.as_str(),
+        between_toggles.as_str(),
     ] {
         assert!(backups.iter().any(|backup| backup == prior));
     }

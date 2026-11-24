@@ -366,6 +366,25 @@ impl SettingsView {
         self.finish_mutation(write, cx);
     }
 
+    pub(crate) fn toggle_checkbox(&mut self, key: Arc<str>, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        let settings = self.settings.clone();
+        self.finish_mutation(
+            Box::pin(async move {
+                let scope = Scope::default();
+                let Value::Bool(value) = settings.read(&key, &scope)? else {
+                    return Err(rove_base::Error::Unsupported);
+                };
+                settings
+                    .write(key, scope, Value::Bool(!value), Cancellation::default())
+                    .await
+            }),
+            cx,
+        );
+    }
+
     fn finish_mutation(&mut self, write: rove_base::Task<()>, cx: &mut Context<Self>) {
         self.write_error = None;
         self.mutations
@@ -573,7 +592,7 @@ impl SettingsView {
                             control = control.cursor_pointer().on_click(move |_, _, cx| {
                                 if let Some(view) = editor.upgrade() {
                                     view.update(cx, |view, cx| {
-                                        view.write_value(key.clone(), Value::Bool(!checked), cx)
+                                        view.toggle_checkbox(key.clone(), cx)
                                     });
                                 }
                             });
