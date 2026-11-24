@@ -642,3 +642,13 @@ status = "recorded"
 bench = "smart_select/key_to_paint"
 aggregate = "p99"
 reason = "记录按键分发到该选区首次绘制完成的完整墙钟，包含刷新等待。章程第 6 节使用另列的活动耗时判定预算。"
+
+[[budget]]
+id = "json_compact_50mb_first_layer"
+metric = "50 MiB 紧凑 JSON 的结构树首层"
+value = 300
+unit = "ms"
+owner = "#61"
+status = "enforced"
+bench = "structure/json_compact_50mb_first_layer"
+reason = "issue #61：接收解码后文本至 Structure::roots 返回首层，分开测量后台语法诊断；根下的容器仍待展开"

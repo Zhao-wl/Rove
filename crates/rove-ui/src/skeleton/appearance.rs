@@ -63,6 +63,7 @@ pub fn strings() -> Result<StringTable> {
     crate::index_status::register_strings(&mut t)?;
     crate::outline::registry::register_strings(&mut t)?;
     crate::context_basket::registry::register_strings(&mut t)?;
+    crate::outline::structure::register_strings(&mut t)?;
     crate::find::registry::register_strings(&mut t)?;
     // #24：快速打开、命令面板与转到行的标题和提示。
     crate::quick_access::registry::register_strings(&mut t)?;

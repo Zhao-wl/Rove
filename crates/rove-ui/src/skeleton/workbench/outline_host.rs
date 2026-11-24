@@ -88,6 +88,9 @@ impl Workbench {
     /// 每帧调用（只读缓存与轻量状态）：让大纲跟上活动编辑器，必要时在后台请求新版本的符号。
     pub(super) fn sync_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_sticky_symbols(cx);
+        self.sync_problem_marks(cx);
+        self.sync_current_problem();
+        self.sync_structured_marker(cx);
         self.outline.bar_active = self.outline.bar.focus.contains_focused(window, cx)
             || self
                 .outline
@@ -111,11 +114,23 @@ impl Workbench {
             .filter_map(|t| t.opened().map(|o| o.document.id))
             .collect();
         self.outline.retain_documents(&open);
+        self.retain_structured_documents(&open, cx);
         let Some((group, document, cursor)) = self.focused_text() else {
             self.cancel_symbols();
+            self.reset_structured_outline();
             self.outline.clear(Status::NoEditor, cx);
             return;
         };
+        if self.sync_structured_outline(&document, cursor, cx) {
+            if availability(&document.metadata.language, document.metadata.size)
+                == Availability::Available
+            {
+                self.ensure_symbols(&document, cx);
+            } else {
+                self.cancel_symbols();
+            }
+            return;
+        }
         match availability(&document.metadata.language, document.metadata.size) {
             Availability::Available => {}
             other => {
@@ -129,7 +144,6 @@ impl Workbench {
                 return;
             }
         }
-        let version = document.text.version();
         let cached = self.outline.cached(document.id).cloned();
         match &cached {
             Some(symbols) => self.outline.show(document.id, symbols.clone(), cx),
@@ -143,16 +157,7 @@ impl Workbench {
             }
             None => {}
         }
-        let current = cached.as_ref().is_some_and(|s| s.version() == version);
-        let requested = self
-            .outline
-            .pending
-            .as_ref()
-            .is_some_and(|(d, v, _)| *d == document.id && *v == version)
-            || self.outline.failed == Some((document.id, version));
-        if !current && !requested {
-            self.request_symbols(document.clone(), cx);
-        }
+        self.ensure_symbols(&document, cx);
         // 跟随光标：路径变化时选中最深的可见节点。
         if let Some(symbols) = cached {
             let path = self.cursor_path(group, &document, &symbols, cursor);
@@ -161,6 +166,23 @@ impl Workbench {
                 self.outline.reveal_path(&path, cx);
                 self.outline.revealed = Some(key);
             }
+        }
+    }
+
+    fn ensure_symbols(&mut self, document: &Arc<Document>, cx: &mut Context<Self>) {
+        let version = document.text.version();
+        let current = self
+            .outline
+            .cached(document.id)
+            .is_some_and(|symbols| symbols.version() == version);
+        let requested = self
+            .outline
+            .pending
+            .as_ref()
+            .is_some_and(|(d, v, _)| *d == document.id && *v == version)
+            || self.outline.failed == Some((document.id, version));
+        if !current && !requested {
+            self.request_symbols(document.clone(), cx);
         }
     }
 
@@ -267,8 +289,12 @@ impl Workbench {
             == Availability::Available)
             .then(|| self.outline.cached(document.id).cloned())
             .flatten();
+        let structured = self
+            .structured
+            .current
+            .is_some_and(|(id, _)| id == document.id);
         let path = match &symbols {
-            Some(s) => {
+            Some(s) if !structured => {
                 let previous = self
                     .outline
                     .paths
@@ -280,7 +306,7 @@ impl Workbench {
                     None => s.path_at(cursor),
                 }
             }
-            None => Vec::new(),
+            _ => Vec::new(),
         };
         let segments = self
             .outline
@@ -290,6 +316,9 @@ impl Workbench {
 
     /// 大纲列表事件：单击/回车定位，展开状态按文档保留。
     fn outline_list_event(&mut self, event: &ListEvent, cx: &mut Context<Self>) {
+        if self.structured_outline_event(event, cx) {
+            return;
+        }
         let Some((document, _)) = self.outline.shown.clone() else {
             return;
         };
@@ -441,6 +470,17 @@ impl Workbench {
             Status::NoEditor | Status::Unsupported => message("outline.empty"),
             Status::TooLarge => message("outline.tooLarge"),
             Status::Loading => message("outline.loading"),
+            Status::Ready if self.structured.current.is_some() => {
+                if self.structured.nodes.is_empty() {
+                    message("outline.noSymbols")
+                } else {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.outline.list.clone())
+                        .into_any_element()
+                }
+            }
             Status::Ready => {
                 let empty = self
                     .outline
@@ -473,12 +513,14 @@ impl Workbench {
         };
         div()
             .id("outline")
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .child(toolbar)
             .child(body)
+            .children(self.structured_context_menu(cx).map(deferred))
             .into_any_element()
     }
 
@@ -631,6 +673,16 @@ impl Workbench {
             bar = bar.child(item);
             if index + 1 < count {
                 bar = bar.child(ov::codicon("chevron-right", icon_size, Some(fg)));
+            }
+        }
+        if let Some((id, version, _, path)) = &self.structured.path {
+            if self.outline.crumbs.symbol_path != crate::outline::model::PathMode::Off
+                && *id == document.id
+                && *version == document.text.version()
+            {
+                bar = bar
+                    .child(ov::codicon("chevron-right", icon_size, Some(fg)))
+                    .child(path.to_string());
             }
         }
         Some(bar.into_any_element())
@@ -1061,6 +1113,7 @@ impl Workbench {
         {
             let theme = self.theme.clone();
             self.outline.reload_settings(&*self.settings, theme, cx);
+            self.structured.current = None;
             publish_breadcrumbs_enabled(self.outline.crumbs.enabled, cx);
         }
     }

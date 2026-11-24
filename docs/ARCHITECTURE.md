@@ -122,7 +122,7 @@ I/O 错误保留 ErrorKind 和诊断文字，支持从 std::io::Error 转换。�
 | 快速输入 | 同上 / QuickInput | #18 | #24；EmptyQuickInput |
 | 视图/状态栏贡献 | rove-ui/src/contributions.rs / ContributionRegistry | #16（#2 装配） | 各视图负责方；空 Registry |
 | C# 导航 | rove-lang-cs/src/query.rs / CsQueries | #38；#32–#37 提供数据 | #40、#41、#58、#59；EmptyCsQueries |
-| 文档结构树 | rove-docview/src/contracts.rs / Structure | #60 | 大纲、面包屑；EmptyStructure |
+| 文档结构树 | rove-docview/src/contracts.rs / Structure | R60（#61） | `ParsedStructure` 为生产提供方，`EmptyStructure` 用于空模型与契约测试；大纲、面包屑共用版本化节点 |
 
 每个接口的语义、线程、复杂度/预算和错误说明见对应 trait 的 rustdoc；就近消费示例测试展示注册、读取、失效、取消或不可用分支。替身的“空/Unsupported/NotReady”不表示正式功能已实现，#2 必须替换主链所需的提供器。正式文件扫描、JSONC 解析、主题算法、命令解析和界面绘制均留给表中负责 issue。
 

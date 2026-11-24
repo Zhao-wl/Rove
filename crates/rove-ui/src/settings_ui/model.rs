@@ -399,6 +399,25 @@ mod tests {
     }
 
     #[test]
+    fn structured_document_settings_are_visible_and_share_numeric_limits() {
+        let rows = catalog_rows();
+        for key in crate::outline::structure::SETTING_KEYS {
+            assert!(rows.iter().any(|row| row.key == *key), "missing {key}");
+        }
+        let limit = rows
+            .iter()
+            .find(|row| row.key == "json.maxItemsComputed")
+            .unwrap();
+        assert!(!limit.language_overridable);
+        assert!(!valid_edit("json.maxItemsComputed", &Value::Number(0.0)));
+        assert!(valid_edit("json.maxItemsComputed", &Value::Number(5_000.0)));
+        assert!(!valid_edit(
+            "json.maxItemsComputed",
+            &Value::Number(250_001.0)
+        ));
+    }
+
+    #[test]
     fn search_matches_metadata_and_filters_explicit_changes() {
         let rows = catalog_rows();
         let selected = "editor.fontSize";

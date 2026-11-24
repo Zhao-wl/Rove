@@ -823,7 +823,20 @@ impl CodeView {
                                 entry.display.stop_index_for_display(range.end),
                             );
                             let foreground = style.foreground.unwrap_or(self.palette.foreground);
-                            if let Some(u) = style.underline.and_then(|mark| mark.color(foreground))
+                            if let Some(super::TextDecoration::Wavy(wave)) = style.underline {
+                                if b > a {
+                                    window.paint_underline(
+                                        point(left + px(a), y + px(lh - 3.0)),
+                                        px(b - a),
+                                        &gpui::UnderlineStyle {
+                                            color: Some(hsla(wave)),
+                                            thickness: px(1.0),
+                                            wavy: true,
+                                        },
+                                    );
+                                }
+                            } else if let Some(u) =
+                                style.underline.and_then(|mark| mark.color(foreground))
                             {
                                 let r = dpi::hline(
                                     f32::from(left) + a,

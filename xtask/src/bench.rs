@@ -70,6 +70,10 @@ const TARGETS: &[BenchTarget] = &[
         requires: "",
     },
     BenchTarget {
+        name: "structure",
+        requires: "",
+    },
+    BenchTarget {
         name: "l1",
         requires: "",
     },

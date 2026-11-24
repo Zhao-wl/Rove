@@ -108,6 +108,8 @@ mod search_tests;
 mod status_host;
 #[cfg(test)]
 mod status_tests;
+mod structured_host;
+mod structured_problems;
 // #29：Markdown 预览（WebView2 实例、渲染、命令、滚动同步）的装配与入口测试。
 mod markdown_host;
 #[cfg(test)]
@@ -191,6 +193,7 @@ struct CodeSlot {
     shown: Option<Shown>,
     /// #47：已装上编辑入口的文档。
     edit_doc: Option<DocumentId>,
+    structured_mark: Option<(DocumentId, Version, Option<Color>)>,
     _events: gpui::Subscription,
 }
 
@@ -309,6 +312,8 @@ pub struct Workbench {
     large_files: large_file_host::LargeFiles,
     /// #27：状态栏右侧条目的快照、选择器与会话内覆盖（见 `status_host.rs`）。
     status: status_host::StatusItems,
+    structured: crate::outline::structure::State,
+    problem_panel: structured_problems::Panel,
     /// #50：热退出的备份服务、待恢复的备份与退出标记（见 `hotexit_host.rs`）。
     hotexit: hotexit_host::HotExit,
     /// #52：`addCursorsAtSearchResults` 要放的多光标；目标文件显示出来之后才写进代码视图
@@ -368,6 +373,12 @@ impl Workbench {
     ) -> CoreResult<Self> {
         let editor = EditorSettings::read(&*settings)?;
         let mut view = Self::build(root, started, store, settings, editor, cx);
+        if let Some(service) = cx
+            .try_global::<crate::settings_ui::SharedSettings>()
+            .map(|shared| shared.0.clone())
+        {
+            view.watch_settings_problems(service, cx);
+        }
         // #36：应用入口按设置启动 C# 索引（测试入口 `new` 不启动，条目不显示）。
         view.start_index(cx);
         theme_host::attach(&mut view, cx);
@@ -575,6 +586,8 @@ impl Workbench {
             has_folder,
             large_files,
             status: Default::default(),
+            structured: Default::default(),
+            problem_panel: Default::default(),
             hotexit: Default::default(),
             pending_cursors: None,
             references: Default::default(),
@@ -613,6 +626,9 @@ impl Workbench {
         // #60：转到工作区中的符号（`Ctrl+T`）。
         for (id, _, _) in crate::workspace_symbols::COMMANDS {
             view.shell.mark_implemented(*id);
+        }
+        for id in crate::outline::structure::commands() {
+            view.shell.mark_implemented(id);
         }
         // 装配校验：每个贡献的工厂、标题与命令都必须存在（#2/#16 的职责）。
         for (id, c) in view.shell.contributions.entries() {
@@ -702,6 +718,13 @@ impl Workbench {
         // #29：markdown.* 变化重新渲染；编辑器设置重建后恢复“预览是否可用”。
         self.markdown_settings_changed(keys);
         self.outline_settings_changed(keys, cx);
+        self.sync_structured_outline_style();
+        if keys.contains("problems.visibility") || keys.contains("problems.decorations.enabled") {
+            self.refresh_problem_decorations(cx);
+        }
+        if keys.contains("json.maxItemsComputed") {
+            self.structured_limit_changed();
+        }
         // #40：editor.gotoLocation.* / editor.hover.* / editor.occurrencesHighlight* 变化。
         self.nav_settings_changed(keys, cx);
         // #59：editor.semanticHighlighting.enabled / semanticTokenColorCustomizations 变化。
@@ -1010,6 +1033,9 @@ impl Workbench {
             self.index_command(id, cx);
             return;
         }
+        if self.structured_command(id, cx) {
+            return;
+        }
         // #47：带参数的编辑命令，以及关闭有未保存修改的标签（先确认）。
         if id == code_view::smart_selection::SELECT_TO_BRACKET {
             let include = !matches!(invocation.args, Value::Bool(false))
@@ -1156,6 +1182,7 @@ impl Workbench {
             find,
             shown: None,
             edit_doc: None,
+            structured_mark: None,
             _events: events,
         }
     }
@@ -1907,7 +1934,7 @@ impl ShellHost for Workbench {
         match factory_key {
             FILE_VIEW => Some(self.render_file_tree(cx)),
             crate::context_basket::registry::SECTION => Some(self.render_basket(window, cx)),
-            PROBLEMS => Some(shell::view::render_problems_empty(self)),
+            PROBLEMS => Some(self.render_structured_problems(cx)),
             crate::index_status::DETAILS_VIEW => Some(self.render_index_details(cx)),
             crate::outline::registry::OUTLINE_VIEW => Some(self.render_outline(cx)),
             search_host::SEARCH_FACTORY => Some(self.render_search()),
@@ -1952,6 +1979,9 @@ impl ShellHost for Workbench {
         self.focus.clone()
     }
     fn run_external_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.problem_panel_command(id, window, cx) {
+            return;
+        }
         // #28：欢迎页与首选项入口（齿轮菜单、命令面板）。
         if Self::is_welcome_command(id) {
             self.welcome_command(id, window, cx);
@@ -2091,6 +2121,14 @@ impl Render for Workbench {
         let mut context = editor_actions::context(&self.editor)
             + self.breadcrumbs_context()
             + &self.nav_context();
+        if self.has_structure_formatter() {
+            context.push_str(
+                " editorHasDocumentFormattingProvider editorHasDocumentSelectionFormattingProvider",
+            );
+        }
+        if self.structured.marker.is_some() {
+            context.push_str(" markersNavigationVisible");
+        }
         if let Some(zen) = self.shell.zen_context() {
             context.push(' ');
             context.push_str(zen);
@@ -2105,7 +2143,15 @@ impl Render for Workbench {
             .key_context(context.as_str())
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape"
-                    && (view.dismiss_basket_menu() || view.nav.link_menu.take().is_some())
+                    && (view.dismiss_basket_menu()
+                        || view.structured.context_menu.take().is_some()
+                        || view.close_structured_marker(cx)
+                        || view.cancel_structured_format()
+                        || view
+                            .code_view()
+                            .clone()
+                            .update(cx, |code, _| code.cancel_paste_format())
+                        || view.nav.link_menu.take().is_some())
                 {
                     cx.notify();
                     cx.stop_propagation();
@@ -2117,7 +2163,10 @@ impl Render for Workbench {
                 }),
             )
             // #14: keys resolved by the keybinding service for commands without a module action.
-            .on_action(cx.listener(|v, a: &crate::keys::RunCommand, _, cx| {
+            .on_action(cx.listener(|v, a: &crate::keys::RunCommand, window, cx| {
+                if v.problem_panel_command(a.id.as_ref(), window, cx) {
+                    return;
+                }
                 v.run_invocation(
                     Invocation {
                         id: a.id.as_ref().into(),
