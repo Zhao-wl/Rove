@@ -1126,7 +1126,10 @@ impl Render for ListView {
                     v.thumb_drag = None;
                 }),
             )
-            .on_key_down(cx.listener(|v, e: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|v, e: &KeyDownEvent, window, cx| {
+                if !v.focus.is_focused(window) {
+                    return;
+                }
                 let m = &e.keystroke.modifiers;
                 if m.control || m.alt || m.platform {
                     return;

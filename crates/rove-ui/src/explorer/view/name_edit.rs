@@ -56,6 +56,8 @@ impl NameEdit {
                     .border_1()
                     .border_color(color_of(theme, border).unwrap_or_else(gpui::transparent_black))
                     .bg(color_of(theme, "input.background").unwrap_or_else(gpui::transparent_black))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .child(self.input.clone())
                     .into_any_element(),
             );
