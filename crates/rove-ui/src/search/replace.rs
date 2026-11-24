@@ -2,12 +2,12 @@
 use crate::find::replace::ReplacePattern;
 use rove_base::{ByteOffset, ByteRange, Cancellation, Error};
 use rove_buffer::{
-    edit::{Bias, EditBuffer, Replacement, Transaction},
+    edit::{AppliedEdit, Bias, EditBuffer, Replacement, Transaction},
     open_bytes,
     save::{
         content_hash, encode, write_atomic_with, DiskStamp, Unencodable, WriteError, WriteOptions,
     },
-    LoadOptions, LoadedText, TextSource,
+    Encoding, LoadOptions, LoadedText, TextSource,
 };
 use rove_config::Settings;
 use rove_search::{
@@ -15,7 +15,7 @@ use rove_search::{
     LineMatch,
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::File,
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
@@ -212,6 +212,110 @@ impl DiskSnapshot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SourceFormat {
+    pub encoding: Encoding,
+    pub bom: bool,
+}
+
+impl SourceFormat {
+    fn of(loaded: &LoadedText) -> Self {
+        Self {
+            encoding: loaded.metadata.encoding.clone(),
+            bom: loaded.metadata.bom,
+        }
+    }
+
+    fn encode(&self, source: &dyn TextSource) -> Result<Vec<u8>> {
+        encode(source, &self.encoding, self.bom, Unencodable::Reject).map_err(|_| Failure::Invalid)
+    }
+}
+
+pub(crate) struct OpenDiskBaseline {
+    pub text: Arc<dyn TextSource>,
+    pub stamp: DiskStamp,
+    pub format: SourceFormat,
+    pub dirty: bool,
+}
+
+/// 打开文件可能先保存再关闭。关闭后没有编辑历史，由批次记录恢复原始字节。
+pub(crate) struct OpenDiskUndo {
+    pub path: PathBuf,
+    canonical: PathBuf,
+    baseline: DiskStamp,
+    original: File,
+    format: SourceFormat,
+}
+
+impl OpenDiskUndo {
+    pub fn capture(
+        root: &Path,
+        path: PathBuf,
+        before: OpenDiskBaseline,
+        size_limit: u64,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        cancel.check()?;
+        let canonical = path.canonicalize()?;
+        if !canonical.starts_with(root.canonicalize()?) || path.symlink_metadata()?.is_symlink() {
+            return Err(Failure::Changed);
+        }
+        let disk = DiskSnapshot::read(&path, size_limit)?;
+        if !disk.matches(&before.stamp) {
+            return Err(Failure::Changed);
+        }
+        let bytes = if before.dirty {
+            before.format.encode(before.text.as_ref())?
+        } else {
+            disk.bytes
+        };
+        let mut original = tempfile::tempfile()?;
+        original.write_all(&bytes)?;
+        Ok(Self {
+            path,
+            canonical,
+            baseline: before.stamp,
+            original,
+            format: before.format,
+        })
+    }
+
+    pub fn restore(
+        &mut self,
+        after: &dyn TextSource,
+        write: &WriteOptions,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        cancel.check()?;
+        if self.path.canonicalize()? != self.canonical || self.path.symlink_metadata()?.is_symlink()
+        {
+            return Err(Failure::Changed);
+        }
+        let saved = self.format.encode(after)?;
+        let expected = DiskStamp::from_bytes(&self.path, &saved);
+        let size_limit = self.baseline.len.max(expected.len).saturating_add(1);
+        let current = DiskSnapshot::read(&self.path, size_limit)?;
+        if current.matches(&self.baseline) {
+            return Ok(());
+        }
+        if current.bytes != saved {
+            return Err(Failure::Changed);
+        }
+        let mut bytes = Vec::new();
+        self.original.rewind()?;
+        self.original.read_to_end(&mut bytes)?;
+        guarded_write(
+            &self.path,
+            &self.canonical,
+            &bytes,
+            &expected,
+            write,
+            cancel,
+        )?;
+        Ok(())
+    }
+}
+
 /// 写盘前保留逐字节的原始内容。每次只读一份文件，批量撤销不在内存中累计各文件正文。
 pub(crate) struct DiskUndo {
     pub path: PathBuf,
@@ -222,49 +326,57 @@ pub(crate) struct DiskUndo {
 
 impl DiskUndo {
     pub fn apply(
-        path: PathBuf,
-        expected: &DiskStamp,
-        canonical: PathBuf,
+        source: DiskSource,
         edits: &Transaction,
-        settings: &dyn Settings,
+        partial: Option<(&rove_search::SearchQuery, &[PlannedMatch])>,
+        settings: Arc<dyn Settings>,
         write: &WriteOptions,
         cancel: &Cancellation,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Option<Vec<LineMatch>>)> {
+        let DiskSource {
+            path,
+            canonical,
+            stamp: expected,
+            format,
+        } = source;
         cancel.check()?;
         if path.canonicalize()? != canonical || path.symlink_metadata()?.is_symlink() {
             return Err(Failure::Changed);
         }
         let snap = DiskSnapshot::read(&path, expected.len.saturating_add(1))?;
-        if !snap.matches(expected) {
+        if !snap.matches(&expected) {
             return Err(Failure::Changed);
         }
-        let loaded = load_for_replacement(&snap.bytes, settings)?;
-        let metadata = &loaded.metadata;
+        let loaded = load_for_replacement(&snap.bytes, settings.as_ref())?;
+        if SourceFormat::of(&loaded) != format {
+            return Err(Failure::Changed);
+        }
         let mut buffer = EditBuffer::from_loaded(&loaded)?;
-        let encoded = |source: &dyn TextSource| {
-            encode(
-                source,
-                &metadata.encoding,
-                metadata.bom,
-                Unencodable::Reject,
-            )
-            .map_err(|_| Failure::Invalid)
-        };
         // 有些有损解码的文件不能逐字节重编码。保持其他字节原样是跨文件替换的前置条件。
-        if encoded(buffer.text())? != snap.bytes {
+        if format.encode(buffer.text())? != snap.bytes {
             return Err(Failure::Invalid);
         }
-        buffer.apply(edits)?;
-        let bytes = encoded(buffer.text())?;
+        let applied = buffer.apply(edits)?;
+        let remaining = partial
+            .map(|(query, remaining)| {
+                let config = rove_search::SearchConfig::from_settings(settings);
+                let mut matcher = ReplacementMatcher::new(query, &config, cancel.clone())?;
+                remaining_lines(&mut matcher, buffer.text(), &applied, remaining)
+            })
+            .transpose()?;
+        let bytes = format.encode(buffer.text())?;
         let mut original = tempfile::tempfile()?;
         original.write_all(&snap.bytes)?;
-        let result = guarded_write(&path, &canonical, &bytes, expected, write, cancel)?;
-        Ok(Self {
-            path,
-            expected: result,
-            original,
-            canonical,
-        })
+        let result = guarded_write(&path, &canonical, &bytes, &expected, write, cancel)?;
+        Ok((
+            Self {
+                path,
+                expected: result,
+                original,
+                canonical,
+            },
+            remaining,
+        ))
     }
 
     pub fn restore(&mut self, write: &WriteOptions, cancel: &Cancellation) -> Result<()> {
@@ -281,6 +393,50 @@ impl DiskUndo {
         )?;
         Ok(())
     }
+}
+
+/// 只更新原结果树中还保留的匹配；替换引入的新匹配和用户之前剔除的项不会出现。
+fn remaining_lines(
+    matcher: &mut ReplacementMatcher,
+    text: &dyn TextSource,
+    applied: &AppliedEdit,
+    remaining: &[PlannedMatch],
+) -> Result<Vec<LineMatch>> {
+    let wanted: BTreeSet<_> = remaining
+        .iter()
+        .map(|change| {
+            let range = &change.edit.range;
+            let start = applied.map_offset(range.start(), Bias::After);
+            let end_bias = if range.start() == range.end() {
+                Bias::After
+            } else {
+                Bias::Before
+            };
+            let end = applied.map_offset(range.end(), end_bias);
+            (start.0, end.0)
+        })
+        .collect();
+    let (mut lines, exact) = matcher.scan(&contents(text)?)?;
+    let mut displayed = BTreeMap::new();
+    for found in exact {
+        if wanted.contains(&(found.bytes.start as u64, found.bytes.end as u64)) {
+            *displayed
+                .entry((found.line, found.columns.start, found.columns.end))
+                .or_insert(0usize) += 1;
+        }
+    }
+    for line in &mut lines {
+        line.ranges.retain(|range| {
+            let key = (line.line, range.start, range.end);
+            let Some(count) = displayed.get_mut(&key).filter(|count| **count > 0) else {
+                return false;
+            };
+            *count -= 1;
+            true
+        });
+    }
+    lines.retain(|line| !line.ranges.is_empty());
+    Ok(lines)
 }
 
 fn guarded_write(
@@ -335,11 +491,15 @@ pub(crate) struct OpenRecovery {
 #[derive(Clone)]
 pub(crate) enum Origin {
     Open(rove_base::DocumentId, rove_base::Version),
-    Disk {
-        path: PathBuf,
-        canonical: PathBuf,
-        stamp: DiskStamp,
-    },
+    Disk(DiskSource),
+}
+
+#[derive(Clone)]
+pub(crate) struct DiskSource {
+    pub path: PathBuf,
+    canonical: PathBuf,
+    pub stamp: DiskStamp,
+    format: SourceFormat,
 }
 
 #[derive(Clone)]
@@ -347,6 +507,7 @@ pub(crate) struct FilePlan {
     pub path: rove_base::WorkspacePath,
     pub origin: Origin,
     pub changes: Vec<PlannedMatch>,
+    pub remaining: Vec<PlannedMatch>,
     pub read_only: bool,
 }
 
@@ -482,6 +643,7 @@ pub(crate) type Preview = BTreeMap<rove_base::WorkspacePath, PreviewFile>;
 pub(crate) struct ApplyRequest {
     pub serial: u64,
     pub plans: Vec<FilePlan>,
+    pub query: rove_search::SearchQuery,
     pub skipped: Vec<rove_base::WorkspacePath>,
     pub stale: Vec<rove_base::WorkspacePath>,
     pub cancel: Cancellation,
@@ -535,11 +697,12 @@ pub(crate) fn prepare_preview(
                 let eol = EditBuffer::from_loaded(&loaded)?.eol();
                 Ok((
                     contents(loaded.text.as_ref())?,
-                    Origin::Disk {
+                    Origin::Disk(DiskSource {
                         path: absolute.clone(),
                         canonical: target,
                         stamp: snapshot.stamp,
-                    },
+                        format: SourceFormat::of(&loaded),
+                    }),
                     false,
                     eol,
                 ))
@@ -589,6 +752,7 @@ pub(crate) fn prepare_preview(
                 path: path.clone(),
                 origin,
                 changes,
+                remaining: Vec::new(),
                 read_only: rule_read_only || open_read_only,
             })
         }) {
@@ -762,12 +926,19 @@ mod tests {
         );
         let cancel = Cancellation::default();
         let write = WriteOptions::default();
-        let mut undo = DiskUndo::apply(
-            path.clone(),
-            &original.stamp,
-            path.canonicalize().unwrap(),
+        let (mut undo, _) = DiskUndo::apply(
+            DiskSource {
+                path: path.clone(),
+                canonical: path.canonicalize().unwrap(),
+                stamp: original.stamp,
+                format: SourceFormat {
+                    encoding: Encoding::Utf8,
+                    bom: true,
+                },
+            },
             &edit,
-            &settings,
+            None,
+            Arc::new(settings),
             &write,
             &cancel,
         )

@@ -4,8 +4,8 @@ use crate::{
     feedback::{Feedback, FeedbackService, Severity},
     search::{
         replace::{
-            self, ApplyRequest, DiskUndo, Failure, FilePlan, OpenFile, OpenRecovery, Origin,
-            PreviewRequest,
+            self, ApplyRequest, DiskUndo, Failure, OpenDiskBaseline, OpenDiskUndo, OpenFile,
+            OpenRecovery, Origin, PreviewRequest, SourceFormat,
         },
         view::{ReplacementEvent, Report},
     },
@@ -24,12 +24,16 @@ pub(super) struct ReplacementBatch {
 }
 
 enum Undo {
-    Open {
-        document: DocumentId,
-        marker: u64,
-        version: Version,
-    },
+    Open(OpenUndo),
     Disk(DiskUndo),
+}
+
+struct OpenUndo {
+    document: DocumentId,
+    marker: u64,
+    version: Version,
+    after: Arc<rove_buffer::RopeText>,
+    disk: OpenDiskUndo,
 }
 
 impl Workbench {
@@ -115,7 +119,6 @@ impl Workbench {
         self.replacement.running = true;
         let settings = self.settings.clone();
         let root = self.root.clone();
-        let rules = rove_workspace::WorkspaceConfig::from_settings(settings.as_ref());
         cx.spawn(async move |this, cx| {
             let mut report = Report {
                 skipped: request.skipped,
@@ -125,13 +128,14 @@ impl Workbench {
             let mut undo = Vec::new();
             let mut busy = Vec::new();
             let mut read_only = Vec::new();
-            for plan in request.plans {
+            for mut plan in request.plans {
                 if request.cancel.check().is_err() {
                     report.cancelled = true;
                     break;
                 }
                 // 用户可能在预览之后更新只读设置。旧计划的可写判断不能授权这次事务。
-                let Ok(rules) = &rules else {
+                let Ok(rules) = rove_workspace::WorkspaceConfig::from_settings(settings.as_ref())
+                else {
                     report.failed.push(plan.path);
                     continue;
                 };
@@ -143,7 +147,24 @@ impl Workbench {
                     report.skipped.push(plan.path);
                     continue;
                 }
-                let tx = match replace::transaction(plan.changes.clone()) {
+                let Ok(policy) = rove_buffer::SizePolicy::read(settings.as_ref()) else {
+                    report.failed.push(plan.path);
+                    continue;
+                };
+                let changes = std::mem::take(&mut plan.changes);
+                let (changes, transaction) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let transaction = replace::transaction(changes.clone());
+                        (changes, transaction)
+                    })
+                    .await;
+                plan.changes = changes;
+                if request.cancel.check().is_err() {
+                    report.cancelled = true;
+                    break;
+                }
+                let tx = match transaction {
                     Ok(tx) if tx.is_empty() => {
                         report.applied.insert(plan.path, plan.changes);
                         continue;
@@ -154,35 +175,82 @@ impl Workbench {
                         continue;
                     }
                 };
-                let result = match plan.origin.clone() {
-                    Origin::Open(document, version) => this
-                        .update(cx, |wb, cx| {
-                            wb.apply_open_replacement(&root, &plan, document, version, tx, cx)
-                        })
-                        .unwrap_or(Err(Failure::Changed)),
-                    Origin::Disk {
-                        path,
-                        canonical,
-                        stamp,
-                    } => {
+                let result = match plan.origin {
+                    Origin::Open(document, version) => {
+                        let path = root.join(plan.path.as_str());
+                        let before = this
+                            .update(cx, |wb, _| wb.open_disk_baseline(&path, document, version))
+                            .unwrap_or(Err(Failure::Changed));
+                        match before {
+                            Ok(before) if before.text.byte_len() >= policy.huge_bytes => {
+                                Err(Failure::Skipped)
+                            }
+                            Ok(before) => {
+                                let cancel = request.cancel.clone();
+                                let capture_root = root.clone();
+                                let backup = cx
+                                    .background_executor()
+                                    .spawn(async move {
+                                        OpenDiskUndo::capture(
+                                            &capture_root,
+                                            path,
+                                            before,
+                                            policy.huge_bytes,
+                                            &cancel,
+                                        )
+                                    })
+                                    .await;
+                                match backup {
+                                    Ok(_) if request.cancel.check().is_err() => {
+                                        Err(Failure::Cancelled)
+                                    }
+                                    Ok(backup) => this
+                                        .update(cx, |wb, cx| {
+                                            if wb.root != root {
+                                                return Err(Failure::Changed);
+                                            }
+                                            wb.apply_open_replacement(
+                                                &plan.path,
+                                                (document, version),
+                                                tx,
+                                                backup,
+                                                cx,
+                                            )
+                                        })
+                                        .unwrap_or(Err(Failure::Changed))
+                                        .map(|undo| (undo, None)),
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Origin::Disk(source) if source.stamp.len >= policy.huge_bytes => {
+                        Err(Failure::Skipped)
+                    }
+                    Origin::Disk(source) => {
                         let may_write = this
-                            .update(cx, |wb, _| wb.root == root && !wb.is_path_open(&path))
+                            .update(cx, |wb, _| {
+                                wb.root == root && !wb.is_path_open(&source.path)
+                            })
                             .unwrap_or(false);
                         if may_write {
                             let cancel = request.cancel.clone();
                             let settings = settings.clone();
+                            let query = request.query.clone();
+                            let remaining = std::mem::take(&mut plan.remaining);
                             cx.background_executor()
                                 .spawn(async move {
                                     DiskUndo::apply(
-                                        path,
-                                        &stamp,
-                                        canonical,
+                                        source,
                                         &tx,
-                                        settings.as_ref(),
+                                        (!remaining.is_empty())
+                                            .then_some((&query, remaining.as_slice())),
+                                        settings,
                                         &WriteOptions::default(),
                                         &cancel,
                                     )
-                                    .map(Undo::Disk)
+                                    .map(|(undo, remaining)| (Undo::Disk(undo), remaining))
                                 })
                                 .await
                         } else {
@@ -191,7 +259,10 @@ impl Workbench {
                     }
                 };
                 match result {
-                    Ok(entry) => {
+                    Ok((entry, remaining)) => {
+                        if let Some(remaining) = remaining {
+                            report.remaining_lines.insert(plan.path.clone(), remaining);
+                        }
                         undo.push((plan.path.clone(), entry));
                         report.applied.insert(plan.path, plan.changes);
                     }
@@ -242,24 +313,44 @@ impl Workbench {
         })
     }
 
-    fn apply_open_replacement(
-        &mut self,
-        root: &Path,
-        plan: &FilePlan,
+    fn open_disk_baseline(
+        &self,
+        path: &Path,
         document: DocumentId,
         version: Version,
-        transaction: Transaction,
-        cx: &mut Context<Self>,
-    ) -> Result<Undo, Failure> {
-        if self.root != root {
+    ) -> Result<OpenDiskBaseline, Failure> {
+        let saves = self.editing.saves.borrow();
+        let file = saves.file(document).ok_or(Failure::Changed)?;
+        let text = file.snapshot();
+        if file.path() != Some(path) || text.version() != version {
             return Err(Failure::Changed);
         }
+        if !file.session().buffer().read_only().is_empty() {
+            return Err(Failure::Skipped);
+        }
+        Ok(OpenDiskBaseline {
+            text,
+            stamp: file.disk_stamp().cloned().ok_or(Failure::Changed)?,
+            format: SourceFormat {
+                encoding: file.encoding().clone(),
+                bom: file.bom(),
+            },
+            dirty: file.is_dirty(),
+        })
+    }
+
+    fn apply_open_replacement(
+        &mut self,
+        path: &WorkspacePath,
+        (document, version): (DocumentId, Version),
+        transaction: Transaction,
+        disk: OpenDiskUndo,
+        cx: &mut Context<Self>,
+    ) -> Result<Undo, Failure> {
         let (result, before, after, edit) = {
             let mut saves = self.editing.saves.borrow_mut();
             let file = saves.file_mut(document).ok_or(Failure::Changed)?;
-            if file.path() != Some(root.join(plan.path.as_str()).as_path())
-                || file.snapshot().version() != version
-            {
+            if file.path() != Some(disk.path.as_path()) || file.snapshot().version() != version {
                 return Err(Failure::Changed);
             }
             let session = file.session_mut();
@@ -280,11 +371,13 @@ impl Workbench {
             });
             let combined = crate::code_view::edit::coalesce_spans(spans, applied.before);
             (
-                Undo::Open {
+                Undo::Open(OpenUndo {
                     document,
                     marker: session.history_marker(),
                     version: session.buffer().version(),
-                },
+                    after: after.clone(),
+                    disk,
+                }),
                 before,
                 after,
                 combined,
@@ -296,7 +389,7 @@ impl Workbench {
             let version = after.version();
             if states
                 .edited_from_snapshot(
-                    &plan.path,
+                    path,
                     before.as_ref(),
                     edit.before,
                     &edit.old,
@@ -305,10 +398,11 @@ impl Workbench {
                 )
                 .is_ok()
             {
-                self.nav.buffers.note_edited(&plan.path, document, version);
+                self.nav.buffers.note_edited(path, document, version);
             }
         }
         self.note_hot_exit_edit(document, cx);
+        cx.notify();
         Ok(result)
     }
 
@@ -316,6 +410,8 @@ impl Workbench {
         self.replacement.running = true;
         let undo = std::mem::take(&mut self.replacement.undo);
         let cancel = Cancellation::default();
+        let settings = self.settings.clone();
+        let root = self.root.clone();
         self.search
             .update(cx, |view, cx| view.start_undo(cancel.clone(), cx));
         cx.spawn(async move |this, cx| {
@@ -328,41 +424,54 @@ impl Workbench {
                     retained.push((path, entry));
                     continue;
                 }
+                let may_undo = rove_workspace::WorkspaceConfig::from_settings(settings.as_ref())
+                    .is_ok_and(|rules| rules.readonly.evaluate(path.as_str(), false).is_empty());
+                if !may_undo {
+                    report.failed.push(path.clone());
+                    retained.push((path, entry));
+                    continue;
+                }
                 let result = match entry {
-                    Undo::Open {
-                        document,
-                        marker,
-                        version,
-                    } => {
-                        let ok = this
+                    Undo::Open(mut open) => {
+                        let result = this
                             .update(cx, |wb, cx| {
-                                let changed = wb
-                                    .editing
-                                    .saves
-                                    .borrow_mut()
-                                    .file_mut(document)
-                                    .is_some_and(|file| {
-                                        let session = file.session_mut();
-                                        session.history_marker() == marker
-                                            && session.buffer().version() == version
-                                            && session.undo().is_ok_and(|edits| !edits.is_empty())
-                                    });
-                                if changed {
-                                    wb.sync_document_from_session(document, cx);
-                                    wb.note_hot_exit_edit(document, cx);
+                                if wb.root != root {
+                                    return Err(Failure::Changed);
                                 }
-                                changed
+                                match wb.try_undo_open(&open, cx)? {
+                                    true => Ok(true),
+                                    false if wb.path_has_unpersisted_edits(&open.disk.path) => {
+                                        Err(Failure::Changed)
+                                    }
+                                    false => Ok(false),
+                                }
                             })
-                            .unwrap_or(false);
-                        (!ok).then_some(Undo::Open {
-                            document,
-                            marker,
-                            version,
-                        })
+                            .unwrap_or(Err(Failure::Changed));
+                        match result {
+                            Ok(true) => None,
+                            Err(_) => Some(Undo::Open(open)),
+                            Ok(false) => {
+                                let cancel = cancel.clone();
+                                cx.background_executor()
+                                    .spawn(async move {
+                                        open.disk
+                                            .restore(
+                                                open.after.as_ref(),
+                                                &WriteOptions::default(),
+                                                &cancel,
+                                            )
+                                            .err()
+                                            .map(|_| Undo::Open(open))
+                                    })
+                                    .await
+                            }
+                        }
                     }
                     Undo::Disk(mut disk) => {
                         if this
-                            .update(cx, |wb, _| wb.path_has_unpersisted_edits(&disk.path))
+                            .update(cx, |wb, _| {
+                                wb.root != root || wb.path_has_unpersisted_edits(&disk.path)
+                            })
                             .unwrap_or(true)
                         {
                             Some(Undo::Disk(disk))
@@ -403,6 +512,30 @@ impl Workbench {
             });
         })
         .detach();
+    }
+
+    /// true 由原编辑会话撤销，false 表示已关闭该会话，由独立记录接手。
+    fn try_undo_open(&mut self, open: &OpenUndo, cx: &mut Context<Self>) -> Result<bool, Failure> {
+        {
+            let mut saves = self.editing.saves.borrow_mut();
+            let Some(file) = saves.file_mut(open.document) else {
+                return Ok(false);
+            };
+            if file.path() != Some(open.disk.path.as_path()) {
+                return Err(Failure::Changed);
+            }
+            let session = file.session_mut();
+            if !session.buffer().read_only().is_empty()
+                || session.history_marker() != open.marker
+                || session.buffer().version() != open.version
+                || session.undo()?.is_empty()
+            {
+                return Err(Failure::Changed);
+            }
+        }
+        self.sync_document_from_session(open.document, cx);
+        self.note_hot_exit_edit(open.document, cx);
+        Ok(true)
     }
 
     fn replace_receipt(&mut self, report: &Report) {

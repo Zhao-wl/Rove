@@ -117,6 +117,248 @@ fn focus_file(view: &Entity<Workbench>, cx: &mut VisualTestContext, path: &Works
     });
 }
 
+fn open_file(
+    fixture: &Fixture,
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    name: &str,
+) -> DocumentId {
+    let path = fixture.folder.path().join(name);
+    view.update(cx, |wb, cx| {
+        wb.open_documents()
+            .open(
+                Resource::Workspace(WorkspacePath::new(name).unwrap()),
+                OpenOptions::default(),
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    wait(view, cx, |wb, _| {
+        wb.editing.saves.borrow().document_for(&path).is_some()
+    });
+    view.read_with(cx, |wb, _| {
+        wb.editing.saves.borrow().document_for(&path).unwrap()
+    })
+}
+
+fn change_setting(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    key: &str,
+    value: rove_base::Value,
+) {
+    let scope = rove_config::Scope::default();
+    view.update(cx, |wb, cx| {
+        let task = wb.settings.write(
+            key.into(),
+            scope.clone(),
+            value.clone(),
+            Cancellation::default(),
+        );
+        cx.background_executor()
+            .spawn(async move { task.await.unwrap() })
+            .detach();
+    });
+    wait(view, cx, |wb, _| {
+        wb.settings
+            .read(key, &scope)
+            .is_ok_and(|actual| actual == value)
+    });
+}
+
+#[gpui::test]
+fn replace_workspace_undo_restores_saved_closed_tabs_without_overwriting_external_edits(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new("{}");
+    let original = b"\xef\xbb\xbfneedle\r\nkeep\n";
+    fixture.file("restore.txt", original);
+    fixture.file("external.txt", b"needle");
+    let (view, cx) = fixture.open(cx);
+    let restore = open_file(&fixture, &view, cx, "restore.txt");
+    let external = open_file(&fixture, &view, cx, "external.txt");
+    prepare(&view, cx, "needle", "REPLACED");
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    view.update(cx, |wb, cx| {
+        for document in [restore, external] {
+            wb.start_save(document, rove_buffer::save::SaveRequest::default(), cx);
+        }
+    });
+    wait(&view, cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        [restore, external]
+            .into_iter()
+            .all(|id| saves.file(id).is_some_and(|file| !file.is_dirty()))
+    });
+    assert_eq!(
+        fixture.read("restore.txt"),
+        b"\xef\xbb\xbfREPLACED\r\nkeep\n"
+    );
+    assert_eq!(fixture.read("external.txt"), b"REPLACED");
+    view.update(cx, |wb, cx| {
+        for document in [restore, external] {
+            let (group, tab) = wb
+                .editor
+                .groups
+                .iter()
+                .find_map(|(group, state)| {
+                    state
+                        .tabs
+                        .iter()
+                        .find(|tab| {
+                            tab.opened()
+                                .is_some_and(|open| open.document.id == document)
+                        })
+                        .map(|tab| (*group, tab.id))
+                })
+                .unwrap();
+            wb.close_tab_checked(group, tab, cx);
+        }
+    });
+    wait(&view, cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        [restore, external]
+            .into_iter()
+            .all(|id| saves.file(id).is_none())
+    });
+    fixture.file("external.txt", b"external edit");
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                report.undone && report.failed == [WorkspacePath::new("external.txt").unwrap()]
+            })
+    });
+    assert_eq!(fixture.read("restore.txt"), original);
+    assert_eq!(fixture.read("external.txt"), b"external edit");
+}
+
+#[gpui::test]
+fn replace_workspace_rejects_changed_encoding_and_size_limit_after_preview(
+    cx: &mut TestAppContext,
+) {
+    let fixture =
+        Fixture::new(r#"{"files.encoding":"windows1252","files.autoGuessEncoding":false}"#);
+    fixture.file("encoding.txt", &[0x80, b'A', b'B']);
+    let mut large = vec![b' '; 256];
+    large.push(b'A');
+    fixture.file("size.txt", &large);
+    let (view, cx) = fixture.open(cx);
+    prepare(&view, cx, "A", "X");
+    assert!(view.read_with(cx, |wb, cx| wb.search.read(cx).replacement_test_state().2));
+    change_setting(
+        &view,
+        cx,
+        "files.encoding",
+        rove_base::Value::String("windows1251".into()),
+    );
+    change_setting(
+        &view,
+        cx,
+        "rove.largeFile.threshold",
+        rove_base::Value::Number(128.0),
+    );
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                report.applied.is_empty()
+                    && report.failed == [WorkspacePath::new("encoding.txt").unwrap()]
+                    && report.skipped == [WorkspacePath::new("size.txt").unwrap()]
+            })
+    });
+    assert_eq!(fixture.read("encoding.txt"), [0x80, b'A', b'B']);
+    assert_eq!(fixture.read("size.txt"), large);
+}
+
+#[gpui::test]
+fn replace_workspace_undo_rechecks_new_read_only_rule(cx: &mut TestAppContext) {
+    let fixture = Fixture::new("{}");
+    fixture.file("protected.txt", b"needle");
+    let (view, cx) = fixture.open(cx);
+    prepare(&view, cx, "needle", "REPLACED");
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    change_setting(
+        &view,
+        cx,
+        rove_workspace::FILES_READONLY_INCLUDE,
+        rove_base::Value::Object(Arc::new(BTreeMap::from([(
+            "protected.txt".into(),
+            rove_base::Value::Bool(true),
+        )]))),
+    );
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                !report.undone && report.failed == [WorkspacePath::new("protected.txt").unwrap()]
+            })
+    });
+    assert_eq!(fixture.read("protected.txt"), b"REPLACED");
+}
+
+#[gpui::test]
+fn replace_workspace_cancels_between_open_files_and_undoes_the_successful_prefix(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new("{}");
+    fixture.file("a.txt", b"needle");
+    fixture.file("b.txt", b"needle");
+    let (view, cx) = fixture.open(cx);
+    let first = open_file(&fixture, &view, cx, "a.txt");
+    let second = open_file(&fixture, &view, cx, "b.txt");
+    prepare(&view, cx, "needle", "REPLACED");
+    let observation = view.update(cx, |_, cx| {
+        cx.observe_self(move |wb, cx| {
+            let first_changed = wb
+                .editing
+                .saves
+                .borrow()
+                .file(first)
+                .is_some_and(|file| file.is_dirty());
+            if first_changed {
+                wb.search
+                    .update(cx, |search, cx| search.cancel_replacement(cx));
+            }
+        })
+    });
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| report.cancelled && report.applied.len() == 1)
+    });
+    drop(observation);
+    view.read_with(cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        assert_eq!(saves.file(first).unwrap().session().contents(), "REPLACED");
+        assert_eq!(saves.file(second).unwrap().session().contents(), "needle");
+    });
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+    });
+    view.read_with(cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        assert_eq!(saves.file(first).unwrap().session().contents(), "needle");
+        assert_eq!(saves.file(second).unwrap().session().contents(), "needle");
+    });
+}
+
 #[gpui::test]
 fn replace_workspace_batch_undo_restores_bytes_and_keeps_open_buffer_dirty(
     cx: &mut TestAppContext,
@@ -238,7 +480,7 @@ fn replace_workspace_batch_undo_restores_bytes_and_keeps_open_buffer_dirty(
 #[gpui::test]
 fn replace_workspace_selection_file_folder_and_cancel_widget(cx: &mut TestAppContext) {
     let fixture = Fixture::new(r#"{"search.useReplacePreview": false}"#);
-    fixture.file("folder/first.txt", b"needle needle");
+    fixture.file("folder/first.txt", b"needle needle needle");
     fixture.file("folder/second.txt", b"needle");
     fixture.file("other.txt", b"needle");
     let (view, cx) = fixture.open(cx);
@@ -248,39 +490,42 @@ fn replace_workspace_selection_file_folder_and_cancel_widget(cx: &mut TestAppCon
     cx.run_until_parked();
     assert!(view.read_with(cx, |wb, cx| {
         let search = wb.search.read(cx);
-        !search.replacement_test_state().0 && search.results().match_count() == 4
+        !search.replacement_test_state().0 && search.results().match_count() == 5
     }));
     command(&view, cx, commands::REPLACE_IN_FILES);
     wait(&view, cx, |wb, cx| {
         wb.search.read(cx).replacement_test_state().1
     });
-    let set_focus = |view: &Entity<Workbench>, cx: &mut VisualTestContext, line: bool| {
+    let set_focus = |view: &Entity<Workbench>, cx: &mut VisualTestContext, offset: usize| {
         cx.update(|_, cx| {
             let search = view.read(cx).search.clone();
             let search = search.read(cx);
             let path = WorkspacePath::new("folder/first.txt").unwrap();
-            let index = search.rows().file_row(&path).unwrap() + usize::from(line);
+            let index = search.rows().file_row(&path).unwrap() + offset;
             search.list.clone().update(cx, |list, cx| {
                 list.widget.set_focus(Some(index));
                 cx.notify();
             });
         });
     };
-    set_focus(&view, cx, true);
-    command(&view, cx, commands::REPLACE_MATCH);
-    wait(&view, cx, |_, _| {
-        fixture.read("folder/first.txt") == b"NEW needle"
-    });
-    command(&view, cx, commands::REFRESH);
+    set_focus(&view, cx, 3);
+    command(&view, cx, commands::REMOVE);
     wait(&view, cx, |wb, cx| {
         wb.search.read(cx).replacement_test_state().1
     });
-    set_focus(&view, cx, false);
+    set_focus(&view, cx, 1);
+    command(&view, cx, commands::REPLACE_MATCH);
+    wait(&view, cx, |_, _| {
+        fixture.read("folder/first.txt") == b"NEW needle needle"
+    });
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().1
+    });
+    set_focus(&view, cx, 0);
     command(&view, cx, commands::REPLACE_FILE);
     wait(&view, cx, |_, _| {
-        fixture.read("folder/first.txt") == b"NEW NEW"
+        fixture.read("folder/first.txt") == b"NEW NEW needle"
     });
-    command(&view, cx, commands::REFRESH);
     wait(&view, cx, |wb, cx| {
         wb.search.read(cx).replacement_test_state().1
     });
@@ -585,19 +830,51 @@ fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut Te
         cx.run_until_parked();
     }
     let scroll_elapsed = scroll_start.elapsed();
-    let apply_start = Instant::now();
-    // 本测量在替换已派发后取消，后台线程必须保留成功前缀供撤销。
-    cx.update(|window, cx| {
-        let search = view.read(cx).search.clone();
-        search.update(cx, |search, cx| {
-            search.command(commands::REPLACE_ALL, window, cx);
-            search.command(commands::CANCEL, window, cx);
-        });
+    let first = view.read_with(cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .results()
+            .files()
+            .iter()
+            .map(|file| file.path.clone())
+            .min()
+            .unwrap()
     });
+    let document = open_file(&fixture, &view, cx, first.as_str());
+    command(&view, cx, commands::REPLACE_IN_FILES);
     wait(&view, cx, |wb, cx| {
-        wb.search.read(cx).replacement_test_cancelled()
+        wb.search.read(cx).replacement_test_state().1
+    });
+    let observation = view.update(cx, |_, cx| {
+        cx.observe_self(move |wb, cx| {
+            if wb
+                .editing
+                .saves
+                .borrow()
+                .file(document)
+                .is_some_and(|file| file.is_dirty())
+            {
+                wb.search
+                    .update(cx, |search, cx| search.cancel_replacement(cx));
+            }
+        })
+    });
+    let apply_start = Instant::now();
+    command(&view, cx, commands::REPLACE_ALL);
+    wait(&view, cx, |wb, cx| {
+        wb.search
+            .read(cx)
+            .replacement_test_report()
+            .is_some_and(|report| {
+                report.cancelled && report.applied.len() == 1 && report.applied.contains_key(&first)
+            })
     });
     let cancel_elapsed = apply_start.elapsed();
+    drop(observation);
+    command(&view, cx, commands::UNDO_REPLACE);
+    wait(&view, cx, |wb, cx| {
+        !wb.search.read(cx).replacement_test_state().3
+    });
     eprintln!(
         "全局替换真实 Unity 源码副本：{file_count} 文件 / {total_bytes} B / {matches} 处；预览 {preview_elapsed:?}，五次滚动 {scroll_elapsed:?}，取消 {cancel_elapsed:?}"
     );

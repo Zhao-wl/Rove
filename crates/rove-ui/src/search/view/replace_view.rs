@@ -30,6 +30,7 @@ pub(super) struct ReplacementState {
 #[derive(Default)]
 pub(crate) struct Report {
     pub applied: BTreeMap<WorkspacePath, Vec<PlannedMatch>>,
+    pub remaining_lines: BTreeMap<WorkspacePath, Vec<rove_search::LineMatch>>,
     pub skipped: Vec<WorkspacePath>,
     pub failed: Vec<WorkspacePath>,
     pub cancelled: bool,
@@ -125,6 +126,16 @@ impl SearchView {
                 let Some(file) = self.results.file(path).cloned() else {
                     continue;
                 };
+                if let Some(lines) = report.remaining_lines.get(path) {
+                    self.results.remove(&Target::File(path.clone()));
+                    if !lines.is_empty() {
+                        self.results.add(rove_search::FileMatches {
+                            path: path.clone(),
+                            lines: lines.clone(),
+                        });
+                    }
+                    continue;
+                }
                 if applied.len() == file.count() {
                     self.results.remove(&Target::File(path.clone()));
                     continue;
@@ -194,14 +205,6 @@ impl SearchView {
     }
 
     #[cfg(test)]
-    pub(crate) fn replacement_test_cancelled(&self) -> bool {
-        self.replace
-            .result
-            .as_ref()
-            .is_some_and(|report| report.cancelled)
-    }
-
-    #[cfg(test)]
     pub(crate) fn replacement_test_state(&self) -> (bool, bool, bool, bool) {
         (
             self.replace.open,
@@ -253,7 +256,7 @@ impl SearchView {
         {
             return;
         }
-        let Some(preview) = &self.replace.plans else {
+        let (Some(preview), Some(query)) = (&self.replace.plans, &self.last_query) else {
             return;
         };
         let target = self.focused_target(cx);
@@ -298,9 +301,15 @@ impl SearchView {
                 PreviewFile::Planned(plan) if !plan.read_only => {
                     let mut plan = plan.clone();
                     if let Some((line, columns)) = &selected {
-                        plan.changes
-                            .retain(|change| change.line == *line && change.columns == *columns);
-                        plan.changes.truncate(1);
+                        let Some(index) = plan
+                            .changes
+                            .iter()
+                            .position(|change| change.line == *line && change.columns == *columns)
+                        else {
+                            continue;
+                        };
+                        let choice = plan.changes.remove(index);
+                        plan.remaining = std::mem::replace(&mut plan.changes, vec![choice]);
                     }
                     if !plan.changes.is_empty() {
                         plans.push(plan);
@@ -315,6 +324,7 @@ impl SearchView {
         cx.emit(ReplacementEvent::Apply(ApplyRequest {
             serial: self.replace.serial,
             plans,
+            query: query.clone(),
             skipped,
             stale,
             cancel,
@@ -322,7 +332,7 @@ impl SearchView {
         cx.notify();
     }
 
-    fn cancel_replacement(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn cancel_replacement(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = &self.replace.applying {
             cancel.cancel();
         }
