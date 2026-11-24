@@ -244,17 +244,25 @@ impl CodeView {
             vs.max(overview_w)
         };
         let text_w_guess = (width - gutter_w - vertical_w - minimap_w).max(0.0) as f64;
-        // #58：软换行开着时不需要横向滚动（照搬 VS Code 隐藏水平滚动条），
-        // 并且固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
+        // 软换行固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
         let wrapping = self.word_wrap_enabled();
         self.sync_wrap(text_w_guess);
         let line_count = self.line_count();
         let o = &self.options;
+        let horizontal_scroll = self.horizontal_scroll_allowed(text_w_guess);
+        let (content_width, beyond) = if !horizontal_scroll {
+            (0.0, 0.0)
+        } else if wrapping {
+            // 固定换行列比视口宽，只需要滚到这一视觉行的结尾。
+            (self.content_width.min(self.wrap.width), beyond)
+        } else {
+            (self.content_width, beyond)
+        };
         let show_h = match o.horizontal_scrollbar {
-            _ if wrapping => false,
+            _ if !horizontal_scroll => false,
             ScrollbarVisibility::Visible => true,
             ScrollbarVisibility::Hidden => false,
-            ScrollbarVisibility::Auto => self.content_width + beyond > text_w_guess,
+            ScrollbarVisibility::Auto => content_width + beyond > text_w_guess,
         };
         let hbar_h = if show_h { hs } else { 0.0 };
         let viewport_h = if o.ignore_horizontal_scrollbar_in_content_height {
@@ -270,7 +278,7 @@ impl CodeView {
             padding_top: o.padding_top + self.top_inset as f64,
             padding_bottom: o.padding_bottom,
             scroll_beyond_last_line: o.scroll_beyond_last_line,
-            content_width: self.content_width,
+            content_width,
             beyond_last_column: beyond,
             // #55：本帧的粘性区高度在算出粘性行之后填（见下面的 `update_sticky`）。
             sticky_height: 0.0,

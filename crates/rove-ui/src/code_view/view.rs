@@ -1045,6 +1045,18 @@ impl CodeView {
         cx.notify();
     }
 
+    /// 固定换行列超出文本区时，该列内的内容仍需要水平滚动。
+    pub(crate) fn horizontal_scroll_allowed(&self, viewport_width: f64) -> bool {
+        match self.word_wrap() {
+            WordWrap::Off => true,
+            WordWrap::Column => {
+                let cell = (self.font.cell_width as f64).max(1.0);
+                self.options.wrap.column.max(1) as f64 * cell > viewport_width
+            }
+            WordWrap::On | WordWrap::Bounded => false,
+        }
+    }
+
     /// 上一帧的文本区宽度（切换换行时还没有新布局，先用它）。
     fn wrap_width_hint(&self) -> f64 {
         self.layout
@@ -1068,10 +1080,10 @@ impl CodeView {
         self.animation = None;
         self.scroll = ScrollPosition {
             top,
-            x: if self.word_wrap_enabled() {
-                0.0
-            } else {
+            x: if self.horizontal_scroll_allowed(m.viewport_width) {
                 self.scroll.x
+            } else {
+                0.0
             },
         }
         .clamped(&m, &self.zones);
@@ -1115,8 +1127,9 @@ impl CodeView {
                     self.wrap.pending.mark(0..doc_lines);
                     self.wrap.pass = Some((Instant::now(), doc_lines));
                     self.wrap.changed = None;
-                    // 软换行下没有横向滚动。
-                    self.scroll.x = 0.0;
+                    if !self.horizontal_scroll_allowed(text_width) {
+                        self.scroll.x = 0.0;
+                    }
                     self.restore_anchor(anchor);
                     self.wrap.anchor = anchor.map(|(d, y)| (d, y, self.scroll.top));
                 }
@@ -1904,13 +1917,17 @@ impl CodeView {
         animate: bool,
         cx: &mut Context<Self>,
     ) {
-        let target = match self.metrics() {
+        let mut target = match self.metrics() {
             Some(m) => p.clamped(&m, &self.zones),
             None => ScrollPosition {
                 top: p.top.max(0.0),
                 x: p.x.max(0.0),
             },
         };
+        // 能放进视口的换行行不能被滚轮或定位请求推离左缘。
+        if !self.horizontal_scroll_allowed(self.wrap_width_hint()) {
+            target.x = 0.0;
+        }
         if animate && self.options.smooth_scrolling && (target.top - self.scroll.top).abs() > 1e-9 {
             self.animation = Some(Animation {
                 from: self.current_top(),
