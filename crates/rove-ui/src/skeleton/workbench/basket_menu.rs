@@ -249,7 +249,7 @@ impl Workbench {
                     .anchor(Corner::TopLeft)
                     .position(at)
                     .snap_to_window_with_margin(px(4.0))
-                    .child(card),
+                    .child(card.child(crate::markdown::occlusion_marker())),
             )
             .with_priority(2)
             .into_any_element(),

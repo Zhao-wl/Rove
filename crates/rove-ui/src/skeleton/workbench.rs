@@ -625,7 +625,10 @@ impl Workbench {
         view.register_metadata_snippets();
         view.sync_views(cx);
         view.restore_basket(cx);
-        view.register_markdown_source_selection(Self::show_basket_markdown_menu);
+        view.register_markdown_context_menu(
+            Self::show_basket_markdown_menu,
+            Self::dismiss_basket_menu,
+        );
         use crate::context_basket::registry as basket;
         for id in [
             basket::ADD,
@@ -2063,7 +2066,7 @@ impl Render for Workbench {
         let about = self.about_overlay(cx);
         // #302：快速输入、菜单及 tooltip 按实际相交区域裁切。
         self.sync_markdown_overlays(
-            goto.is_some() || hover.is_some() || welcome.is_some() || basket_menu.is_some(),
+            goto.is_some() || hover.is_some() || welcome.is_some(),
             window,
             cx,
         );

@@ -1027,10 +1027,17 @@ fn context_basket_collects_source_lines_from_the_markdown_preview(cx: &mut TestA
             ))
             .unwrap();
     });
+    settle(cx);
+    view.read_with(cx, |view, _| {
+        assert!(view.markdown_snapshot().visible);
+        assert_preview_clipped(view);
+    });
     super::basket_tests::click_basket_menu(cx, 0);
     settle(cx);
     assert_eq!(active_kind(&view, cx), ("Long.md".to_string(), true));
     view.read_with(cx, |view, _| {
+        assert!(view.markdown_snapshot().visible);
+        assert!(view.markdown.fake.borrow().occlusions.is_empty());
         let entries = view.basket.contents.items();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path.as_str(), "Long.md");
@@ -1042,9 +1049,6 @@ fn context_basket_collects_source_lines_from_the_markdown_preview(cx: &mut TestA
 fn preview_source_selection_is_scoped_to_the_visible_document_and_render(cx: &mut TestAppContext) {
     let fixture = Fixture::new("{}");
     let (view, cx) = fixture.open(cx);
-    view.update(cx, |view, _| {
-        view.register_markdown_source_selection(|_, _, _, _| {})
-    });
     open(&view, "Long.md", explorer(), cx);
     #[derive(Default)]
     struct MenuCalls(usize);
