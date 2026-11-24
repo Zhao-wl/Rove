@@ -693,6 +693,7 @@ impl Workbench {
     pub(super) fn add_basket_sources(
         &mut self,
         requests: Vec<BasketCapture>,
+        preview: Option<(rove_base::DocumentId, rove_base::Version)>,
         cx: &mut Context<Self>,
     ) {
         use crate::context_basket::{
@@ -707,7 +708,22 @@ impl Workbench {
             return;
         }
         let mut opened = BTreeMap::new();
+        if let Some((document, version)) = preview {
+            let Some(doc) = self
+                .open_document(document)
+                .filter(|doc| doc.text.version() == version)
+            else {
+                self.report_basket("contextBasket.reselect", Arc::from([]), cx);
+                return;
+            };
+            if let rove_base::Resource::Workspace(path) = &doc.resource {
+                opened.insert(path.clone(), (doc.text.clone(), doc.metadata.size));
+            }
+        }
         for request in &requests {
+            if opened.contains_key(&request.path) {
+                continue;
+            }
             for tab in self.editor.groups.values().flat_map(|group| &group.tabs) {
                 let rove_base::Resource::Workspace(path) = &tab.resource else {
                     continue;
@@ -759,6 +775,13 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let prepared = task.await;
             let _ = this.update(cx, |view, cx| {
+                if preview.is_some_and(|(document, version)| {
+                    view.open_document(document)
+                        .is_none_or(|doc| doc.text.version() != version)
+                }) {
+                    view.report_basket("contextBasket.reselect", Arc::from([]), cx);
+                    return;
+                }
                 let prepared = match prepared {
                     Ok(prepared) => prepared,
                     Err(key) => {

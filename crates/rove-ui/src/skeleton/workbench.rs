@@ -625,6 +625,7 @@ impl Workbench {
         view.register_metadata_snippets();
         view.sync_views(cx);
         view.restore_basket(cx);
+        view.register_markdown_source_selection(Self::show_basket_markdown_menu);
         use crate::context_basket::registry as basket;
         for id in [
             basket::ADD,

@@ -1,14 +1,18 @@
-use super::{basket_host::BasketCapture, Context, Workbench};
+use super::{
+    basket_host::BasketCapture, markdown_host::MarkdownSourceSelection, Context, Workbench,
+};
 use crate::{
     context_basket::{capture::SourceRange, source},
     lists::ItemId,
 };
 use gpui::{anchored, deferred, div, prelude::*, px, AnyElement, Corner, Pixels, Point, Window};
-use rove_base::{DocumentId, Resource};
+use rove_base::{DocumentId, Resource, Version};
+use std::sync::Arc;
 
 enum MenuAction {
     Editor(crate::documents::EditorGroupId, bool),
     Sources(Vec<BasketCapture>),
+    Markdown(BasketCapture, DocumentId, Version),
 }
 
 pub(super) struct BasketMenu {
@@ -20,13 +24,11 @@ impl Workbench {
     fn show_basket_menu(
         &mut self,
         options: Vec<(&'static str, MenuAction)>,
+        position: Option<Point<Pixels>>,
         cx: &mut Context<Self>,
     ) {
         if !options.is_empty() {
-            self.basket.menu = Some(BasketMenu {
-                position: None,
-                options,
-            });
+            self.basket.menu = Some(BasketMenu { position, options });
             cx.notify();
         }
     }
@@ -42,6 +44,7 @@ impl Workbench {
                 "command.rove.contextBasket.add",
                 MenuAction::Editor(group, secondary),
             )],
+            None,
             cx,
         );
     }
@@ -62,7 +65,41 @@ impl Workbench {
         if !whole.is_empty() {
             options.push(("contextBasket.addWholeFile", MenuAction::Sources(whole)));
         }
-        self.show_basket_menu(options, cx);
+        self.show_basket_menu(options, None, cx);
+    }
+
+    pub(super) fn show_basket_markdown_menu(
+        &mut self,
+        document: DocumentId,
+        selection: &MarkdownSourceSelection,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.open_document(document) else {
+            return;
+        };
+        let Resource::Workspace(path) = &doc.resource else {
+            return;
+        };
+        let Some(lines) = crate::context_basket::model::LineRange::new(
+            selection.lines.start().0 + 1,
+            selection.lines.end().0,
+        ) else {
+            self.report_basket("contextBasket.tooLong", Arc::from([]), cx);
+            return;
+        };
+        let capture = BasketCapture {
+            path: path.clone(),
+            range: SourceRange::Selected(lines),
+            symbol: None,
+        };
+        self.show_basket_menu(
+            vec![(
+                "command.rove.contextBasket.add",
+                MenuAction::Markdown(capture, document, selection.version),
+            )],
+            Some(selection.anchor),
+            cx,
+        );
     }
 
     pub(super) fn show_basket_result_menu(
@@ -191,7 +228,14 @@ impl Workbench {
                                 view.add_basket_editor_pane(group, secondary, cx);
                             }
                             Some(MenuAction::Sources(targets)) => {
-                                view.add_basket_sources(targets, cx)
+                                view.add_basket_sources(targets, None, cx);
+                            }
+                            Some(MenuAction::Markdown(capture, document, version)) => {
+                                view.add_basket_sources(
+                                    vec![capture],
+                                    Some((document, version)),
+                                    cx,
+                                );
                             }
                             None => {}
                         }
