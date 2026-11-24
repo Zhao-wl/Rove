@@ -66,17 +66,22 @@ pub fn catalog_rows() -> &'static [SettingRow] {
 
 fn setting_title(key: &str) -> String {
     let mut title = String::new();
-    let mut previous_lower = false;
-    for ch in key.split('.').skip(1).collect::<Vec<_>>().join(" ").chars() {
-        if previous_lower && ch.is_uppercase() {
+    for part in key.split('.').skip(1).filter(|part| !part.is_empty()) {
+        if !title.is_empty() {
             title.push(' ');
         }
-        if title.is_empty() {
-            title.extend(ch.to_uppercase());
-        } else {
-            title.push(ch);
+        let mut previous_lower = false;
+        for (index, ch) in part.chars().enumerate() {
+            if previous_lower && ch.is_uppercase() {
+                title.push(' ');
+            }
+            if index == 0 {
+                title.extend(ch.to_uppercase());
+            } else {
+                title.push(ch);
+            }
+            previous_lower = ch.is_lowercase();
         }
-        previous_lower = ch.is_lowercase();
     }
     if title.is_empty() {
         key.to_owned()
