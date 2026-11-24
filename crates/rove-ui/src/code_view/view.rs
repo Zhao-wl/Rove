@@ -388,6 +388,8 @@ pub(crate) struct WrapState {
     pub columns: u32,
     /// 当前的换行宽度（像素，`advanced` 用）。
     pub width: f64,
+    /// 固定换行列下，已经整形并显示过的最长视觉行宽度。
+    pub content_width: f64,
     /// 换行缓存代次：视口宽度 / 字体 / 字号 / DPI / 换行设置任一变化就 +1。
     pub generation: u64,
     /// 生效中的换行参数（列上限 + 设置 + 字体代次）；与新值不同就整体重算。
@@ -446,6 +448,7 @@ impl Default for WrapState {
             map: VisualMap::default(),
             columns: 0,
             width: 0.0,
+            content_width: 0.0,
             generation: 1,
             applied: None,
             session: None,
@@ -890,6 +893,7 @@ impl CodeView {
         self.links.reset();
         self.lines.clear();
         self.content_width = 0.0;
+        self.wrap.content_width = 0.0;
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
         self.column_select = None;
@@ -1051,7 +1055,8 @@ impl CodeView {
             WordWrap::Off => true,
             WordWrap::Column => {
                 let cell = (self.font.cell_width as f64).max(1.0);
-                self.options.wrap.column.max(1) as f64 * cell > viewport_width
+                let column_width = self.options.wrap.column.max(1) as f64 * cell;
+                column_width.max(self.wrap.content_width) > viewport_width
             }
             WordWrap::On | WordWrap::Bounded => false,
         }
@@ -1122,6 +1127,7 @@ impl CodeView {
                     self.wrap.generation += 1;
                     self.wrap.columns = columns;
                     self.wrap.width = columns as f64 * cell;
+                    self.wrap.content_width = 0.0;
                     self.wrap.map.enable_wrap(doc_lines);
                     self.wrap.pending.clear();
                     self.wrap.pending.mark(0..doc_lines);

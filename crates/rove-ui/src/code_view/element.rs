@@ -11,6 +11,7 @@ use super::scroll::{self, Metrics, ScrollPosition};
 use super::view::{
     hsla, CodeView, CodeViewEvent, Drag, FrameLayout, FrameStats, LineEntry, Shaped, Viewport,
 };
+use super::wrap::WordWrap;
 use crate::dpi;
 use gpui::{
     fill, outline, point, px, quad, size, App, BorderStyle, Bounds, ContentMask,
@@ -246,6 +247,7 @@ impl CodeView {
         let text_w_guess = (width - gutter_w - vertical_w - minimap_w).max(0.0) as f64;
         // 软换行固定留出垂直滚动条的位置，避免“换行 → 行数变 → 滚动条出现 → 宽度变”的抖动。
         let wrapping = self.word_wrap_enabled();
+        let fixed_wrap = self.word_wrap() == WordWrap::Column;
         self.sync_wrap(text_w_guess);
         let line_count = self.line_count();
         let o = &self.options;
@@ -253,8 +255,7 @@ impl CodeView {
         let (content_width, beyond) = if !horizontal_scroll {
             (0.0, 0.0)
         } else if wrapping {
-            // 固定换行列比视口宽，只需要滚到这一视觉行的结尾。
-            (self.content_width.min(self.wrap.width), beyond)
+            (self.wrap.content_width, beyond)
         } else {
             (self.content_width, beyond)
         };
@@ -343,6 +344,7 @@ impl CodeView {
         let (mut line, mut seg) = self.wrap.map.to_doc(first);
         let first_doc = line;
         let mut stats = FrameStats::default();
+        let mut wrapped_width = self.wrap.content_width;
         let cell = self.font.cell_width;
         while view_line < line_count && y < viewport_h && line < doc_count {
             let entry = match &composed {
@@ -365,6 +367,10 @@ impl CodeView {
                     let r = w.segment_range(seg, e.display.source_len);
                     let x0 = e.display.x_for_source(&xs, r.start);
                     let indent = w.indent_columns(seg) as f32 * cell;
+                    if fixed_wrap && shaped.is_some() {
+                        let x1 = e.display.x_for_source(&xs, r.end);
+                        wrapped_width = wrapped_width.max(f64::from(x1 - x0 + indent));
+                    }
                     (indent, indent - x0, r, w.count())
                 }
                 _ => (0.0, 0.0, 0..u32::MAX, 1),
@@ -406,6 +412,12 @@ impl CodeView {
             }
         }
         self.commit_wrap();
+        if wrapped_width > self.wrap.content_width {
+            self.wrap.content_width = wrapped_width;
+            // 视觉行宽来自整形结果，下一帧按已知宽度更新水平条。
+            let view = view.clone();
+            window.on_next_frame(move |_, cx| view.update(cx, |_, cx| cx.notify()));
+        }
         self.wrap.rows = lines.iter().map(|l| (l.line, l.seg)).collect();
         // #55：粘性行复用正文的行缓存与整形缓存（同一行在正文与粘性区颜色一致）。
         let sticky_lines: Vec<u64> = self.sticky.lines().iter().map(|s| s.line).collect();
@@ -545,22 +557,31 @@ impl CodeView {
         Some(self.xs_for(entry, l.shaped.as_deref()))
     }
 
-    /// #58：一条视觉行的裁剪区。软换行开着时把这一行限制在
-    /// `[续行缩进, 换行列]` 之间，别的段的内容不会溢到这一行上。
+    /// #58：一条视觉行的裁剪区。固定列可以横滚时，使用本段实际的显示范围。
     fn row_mask(
         &self,
         l: &PaintLine,
         text: Bounds<Pixels>,
         y: Pixels,
+        entry: &LineEntry,
+        xs: &[f32],
     ) -> Option<ContentMask<Pixels>> {
         if self.wrap.columns == 0 {
             return None;
         }
-        let right = (self.wrap.width as f32).min(f32::from(text.size.width));
-        let w = (right - l.indent).max(0.0);
+        let text_width = f32::from(text.size.width);
+        let (indent, right) = if self.horizontal_scroll_allowed(f64::from(text_width)) {
+            // 只画本视觉行的源区间。横滚后，后续段不能从右侧露到当前行。
+            let scroll = self.scroll.x as f32;
+            let end = entry.display.x_for_source(xs, l.range.end) + l.shift - scroll;
+            ((l.indent - scroll).max(0.0), end.min(text_width))
+        } else {
+            (l.indent, (self.wrap.width as f32).min(text_width))
+        };
+        let w = (right - indent).max(0.0);
         Some(ContentMask {
             bounds: Bounds::new(
-                point(text.origin.x + px(l.indent), y),
+                point(text.origin.x + px(indent), y),
                 size(px(w), px(self.font.line_height)),
             ),
         })
@@ -658,7 +679,7 @@ impl CodeView {
                     // #58：续行整体左移到自己那一段的起点，再按视觉行裁剪，于是同一条缓冲行的
                     // 每一段都用同一份整形结果与同一张 x 表绘制，不另算一套几何。
                     let left = left + px(l.shift);
-                    let row = self.row_mask(l, text, y);
+                    let row = self.row_mask(l, text, y, entry, &xs);
                     let mut draw = |window: &mut Window| {
                         // 整行装饰。
                         if let Some(m) = &entry.merged {
@@ -1336,7 +1357,9 @@ impl CodeView {
         let text = self.layout.text;
         let min_x = f32::from(text.origin.x - left) - self.font.cell_width * 4.0;
         // #58：软换行时这一行只画到换行列为止，后面的字形属于下一条视觉行。
-        let width = if self.wrap.columns > 0 {
+        let width = if self.wrap.columns > 0
+            && !self.horizontal_scroll_allowed(text.size.width.to_f64())
+        {
             px((self.wrap.width as f32).min(f32::from(text.size.width)))
         } else {
             text.size.width

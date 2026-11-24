@@ -423,7 +423,12 @@ fn scroll_model_counts_visual_lines(cx: &mut TestAppContext) {
 #[gpui::test]
 fn fixed_wrap_column_wider_than_the_viewport_can_scroll_to_the_row_end(cx: &mut TestAppContext) {
     let text = "x".repeat(500);
-    let (view, cx) = open(cx, &text, wrap_column(300));
+    let mut options = wrap_column(300);
+    options.extend([
+        ("editor.letterSpacing", Value::Number(3.0)),
+        ("editor.scrollBeyondLastColumn", Value::Number(0.0)),
+    ]);
+    let (view, cx) = open(cx, &text, options);
     assert!(span(&view, cx, 0) > 1);
     let first = pos(0, 0);
     let first_row_end = pos(0, u64::from(breaks(&view, cx, 0)[0] - 1));
