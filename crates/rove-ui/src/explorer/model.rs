@@ -6,7 +6,9 @@ use crate::{
 use rove_base::{Error, Value, WorkspacePath};
 use rove_config::{Scope, Settings};
 use rove_i18n::{Message, Strings};
-use rove_workspace::{fold_key, Entry, EntryKind, FileEvent, RuleSet, Workspace};
+use rove_workspace::{
+    fold_key, Entry, EntryKind, FileEvent, RuleSet, Workspace, FILES_READONLY_FROM_PERMISSIONS,
+};
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, HashMap, HashSet},
@@ -67,6 +69,7 @@ pub struct ExplorerSettings {
     pub reverse: bool,
     pub auto_reveal: AutoReveal,
     pub auto_reveal_exclude: RuleSet,
+    pub readonly_from_permissions: bool,
     /// `workbench.editor.decorations.badges` / `.colors`。
     pub badges: bool,
     pub colors: bool,
@@ -81,6 +84,7 @@ impl Default for ExplorerSettings {
             reverse: false,
             auto_reveal: AutoReveal::On,
             auto_reveal_exclude: RuleSet::empty(),
+            readonly_from_permissions: false,
             badges: true,
             colors: true,
         }
@@ -95,6 +99,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "explorer.sortOrderReverse",
     "explorer.autoReveal",
     "explorer.autoRevealExclude",
+    FILES_READONLY_FROM_PERMISSIONS,
     "workbench.editor.decorations.badges",
     "workbench.editor.decorations.colors",
 ];
@@ -135,6 +140,7 @@ impl ExplorerSettings {
             auto_reveal_exclude: get("explorer.autoRevealExclude")
                 .and_then(|v| RuleSet::from_value(&v).ok())
                 .unwrap_or_default(),
+            readonly_from_permissions: flag(FILES_READONLY_FROM_PERMISSIONS, false),
             badges: flag("workbench.editor.decorations.badges", true),
             colors: flag("workbench.editor.decorations.colors", true),
         }

@@ -666,6 +666,57 @@ fn r66_explorer_content_change_does_not_refresh_an_unchanged_tree(cx: &mut TestA
     assert_eq!(selected(&view, cx), ["Editor.log"]);
 }
 
+#[cfg(windows)]
+#[gpui::test]
+fn r66_explorer_permission_changes_refresh_the_readonly_badge(cx: &mut TestAppContext) {
+    use crate::explorer::decorations::Badge;
+    use std::{cell::Cell, rc::Rc};
+
+    let fx = Fixture::new(
+        r#"{ "files.readonlyFromPermissions": true }"#,
+        &["Editor.log"],
+    );
+    let (view, cx) = fx.open(cx);
+    let explorer = view.read_with(cx, |view, _| view.explorer.clone());
+    let log = WorkspacePath::new("Editor.log").unwrap();
+    let path = fx.path(log.as_str());
+    let baseline_permissions = std::fs::metadata(&path).unwrap().permissions();
+    let notifications = Rc::new(Cell::new(0));
+    let observed = notifications.clone();
+    let _subscription =
+        cx.update(|_, cx| cx.observe(&explorer, move |_, _| observed.set(observed.get() + 1)));
+    let badge = |cx: &VisualTestContext| {
+        explorer.read_with(cx, |explorer, _| {
+            explorer
+                .decoration(&log, false)
+                .and_then(|decoration| decoration.badge)
+        })
+    };
+    assert_eq!(badge(cx), None);
+    for readonly in [true, false] {
+        let notified = notifications.get();
+        let mut permissions = baseline_permissions.clone();
+        permissions.set_readonly(readonly);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let expected = readonly.then_some(Badge::Lock);
+        let changed = loop {
+            cx.run_until_parked();
+            if badge(cx) == expected && notifications.get() > notified {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        if !changed {
+            std::fs::set_permissions(&path, baseline_permissions.clone()).unwrap();
+        }
+        assert!(changed, "no Explorer notification for readonly={readonly}");
+    }
+}
+
 #[gpui::test]
 fn external_bulk_changes_keep_the_tree_in_sync_with_disk_and_keep_marks(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}", &["Assets/keep.cs", "Other/x.cs", "Top.cs"]);
