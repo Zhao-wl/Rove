@@ -1380,6 +1380,62 @@ fn explorer_structured_problems_ignore_echo_after_undoing_an_overwrite(cx: &mut 
 }
 
 #[gpui::test]
+fn r66_confirmed_explorer_delete_closes_an_open_followed_log(cx: &mut TestAppContext) {
+    use super::large_file_tests::wait_tail;
+    let fixture = Fixture::new(
+        r#"{"files.enableTrash": false, "workbench.editor.closeOnFileDelete": true}"#,
+        &["Editor.log"],
+    );
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("enter");
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| view.active_large_file_document().is_some())
+    });
+    let id = view.read_with(cx, |view, _| view.active_large_file_document().unwrap().id);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .is_some()
+        })
+    });
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("shift-delete");
+    cx.run_until_parked();
+    let key = view.read_with(cx, |view, _| {
+        assert!(view.open_document(id).is_some());
+        view.shell
+            .feedback
+            .modal()
+            .expect("permanent delete confirmation")
+            .key
+            .clone()
+    });
+    assert!(fixture.path("Editor.log").exists());
+    view.update(cx, |view, _| {
+        view.shell
+            .feedback
+            .act(&key, registry::FILE_OP_CONFIRM)
+            .unwrap()
+    });
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.open_document(id).is_none()
+                && view
+                    .shell
+                    .status_bar
+                    .get(crate::follow_tail::FOLLOW_STATUS)
+                    .is_none()
+        })
+    });
+    assert!(!fixture.path("Editor.log").exists());
+}
+
+#[gpui::test]
 fn explorer_permanent_delete_requires_confirmation_even_when_recycle_prompt_is_off(
     cx: &mut TestAppContext,
 ) {

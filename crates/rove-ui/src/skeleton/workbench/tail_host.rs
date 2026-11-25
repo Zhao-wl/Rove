@@ -488,14 +488,17 @@ impl Workbench {
         }
     }
 
+    fn active_follow_documents(&self) -> impl Iterator<Item = &Arc<Document>> {
+        self.editor.groups.keys().filter_map(|&group| {
+            let (tab, document) = self.follow_tab(group)?;
+            let follow = self.follow_tail.views.get(&tab.id)?;
+            (follow.document == document.id).then_some(document)
+        })
+    }
+
     pub(super) fn followed_resources(&self) -> Vec<Resource> {
-        self.follow_tail
-            .documents
-            .keys()
-            .filter_map(|&id| {
-                self.open_document(id)
-                    .map(|document| document.resource.clone())
-            })
+        self.active_follow_documents()
+            .map(|document| document.resource.clone())
             .collect()
     }
 
@@ -521,17 +524,13 @@ impl Workbench {
     }
 
     pub(super) fn follows_workspace_path(&self, path: &WorkspacePath) -> bool {
-        self.follow_tail
-            .documents
-            .values()
-            .any(|doc| doc.workspace_path.as_ref() == Some(path))
+        self.active_follow_documents()
+            .any(|document| self.follow_workspace_path(&document.resource).as_ref() == Some(path))
     }
 
     pub(super) fn follows_disk_path(&self, path: &std::path::Path) -> bool {
-        self.follow_tail
-            .documents
-            .values()
-            .any(|doc| doc.path == path)
+        self.active_follow_documents()
+            .any(|document| self.disk_path(&document.resource).as_deref() == Some(path))
     }
 
     pub(super) fn follow_user_scroll(
@@ -640,7 +639,11 @@ impl Workbench {
         if self.follow_path_reserved(id) {
             return;
         }
-        let Some(document) = self.open_document(id) else {
+        let Some(document) = self
+            .active_follow_documents()
+            .find(|document| document.id == id)
+            .cloned()
+        else {
             return;
         };
         let (saved, clean, can_append) = {
@@ -723,7 +726,11 @@ impl Workbench {
         if !follow.queue.complete(token) {
             return;
         }
-        let Some(current) = self.open_document(id) else {
+        let Some(current) = self
+            .active_follow_documents()
+            .find(|document| document.id == id)
+            .cloned()
+        else {
             return;
         };
         if current.text.version() != result.origin {

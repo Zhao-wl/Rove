@@ -1257,6 +1257,58 @@ fn r66_external_parent_rotation_keeps_the_log_path_and_updates_other_tabs(cx: &m
 }
 
 #[gpui::test]
+fn r66_same_turn_follow_exit_allows_an_external_rename(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "workbench.editor.enablePreview": false }"#,
+    );
+    std::fs::copy(
+        fixture.folder.path().join("big.log"),
+        fixture.folder.path().join("other.log"),
+    )
+    .unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "small.txt", cx);
+    let other_tab = view.read_with(cx, |view, _| view.editor.active().current().unwrap().id);
+
+    for (source, target, switch_tab) in [
+        ("big.log", "archived-big.log", false),
+        ("other.log", "archived-other.log", true),
+    ] {
+        open_file(&view, source, cx);
+        let original = document(&view, cx).id;
+        view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+        wait_tail(cx, |cx| {
+            status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+        });
+        std::fs::rename(
+            fixture.folder.path().join(source),
+            fixture.folder.path().join(target),
+        )
+        .unwrap();
+        let from = WorkspacePath::new(source).unwrap();
+        let to = WorkspacePath::new(target).unwrap();
+        view.update(cx, |view, cx| {
+            if switch_tab {
+                view.switch_tab(view.editor.focused, other_tab);
+            } else {
+                view.command(crate::follow_tail::FOLLOW, cx);
+            }
+            view.apply_explorer_workspace_events(
+                vec![FileEvent::Renamed {
+                    from,
+                    to: to.clone(),
+                }],
+                cx,
+            );
+            assert_eq!(
+                view.open_document(original).unwrap().resource,
+                Resource::Workspace(to)
+            );
+        });
+    }
+}
+
+#[gpui::test]
 fn r66_follow_status_and_readonly_notice_coexist_with_index_progress(cx: &mut TestAppContext) {
     let fixture = Fixture::new(SETTINGS);
     let (view, cx) = fixture.open(cx);
