@@ -503,25 +503,29 @@ impl CodeView {
     // ------------------------------------------------------------------ 鼠标手势
 
     /// `Alt+点击`（或 `editor.multiCursorModifier = ctrlCmd` 时的 `Ctrl+点击`）加光标；
-    /// 点在已有光标上时删掉它（VS Code 行为），只剩一个时不删。
-    pub(crate) fn add_cursor_at(&mut self, p: Position, cx: &mut Context<Self>) {
+    /// 点在已有选区里时删掉它，只剩一个时不删。返回可继续拖动的新选区下标。
+    pub(crate) fn add_cursor_at(&mut self, p: Position, cx: &mut Context<Self>) -> Option<usize> {
         let p = self.clamp_position(p);
         let mut items = self.selections();
-        let existing = items
-            .iter()
-            .position(|s| s.is_empty() && s.active == p)
-            .filter(|_| items.len() > 1);
-        if let Some(i) = existing {
-            items.remove(i);
-            self.apply_selections(items);
-        } else {
-            items.insert(0, Selection::caret(p));
-            let merged = self.normalize_selections(items);
-            self.apply_selections(merged);
+        let existing = items.iter().position(|s| s.start() <= p && p <= s.end());
+        if existing.is_some() && items.len() == 1 && self.options.multi_cursor_merge_overlapping {
+            return None;
         }
+        let added = if let Some(i) = existing.filter(|_| items.len() > 1) {
+            items.remove(i);
+            None
+        } else {
+            let index = items.len();
+            let caret = Selection::caret(p);
+            items.push(caret);
+            items = self.normalize_selections(items);
+            (items.get(index) == Some(&caret)).then_some(index)
+        };
+        self.apply_selections(items);
         self.column_select = None;
         self.match_session = None;
         self.selection_changed(SelectionSource::Mouse, cx);
+        added
     }
 
     /// `Shift+Alt+拖动`：从 `anchor` 到 `active` 的列选择。
@@ -763,11 +767,11 @@ impl CodeView {
         let Some(searcher) = self.searcher_for(&search, whole_word) else {
             return;
         };
-        let from = if forward {
-            self.cursor.selection.end()
-        } else {
-            self.cursor.selection.start()
+        let mut items = self.selections();
+        let Some(last) = items.last() else {
+            return;
         };
+        let from = if forward { last.end() } else { last.start() };
         let cancel = Cancellation::default();
         let Ok(Some(step)) =
             engine::find_next(&*text, &searcher, None, from, forward, true, &cancel)
@@ -779,16 +783,17 @@ impl CodeView {
             text: search,
             whole_word,
         });
-        let mut items = self.selections();
         if move_last {
-            items[0] = found;
-        } else {
-            items.insert(0, found);
+            items.pop();
         }
+        items.push(found);
         let merged = self.normalize_selections(items);
+        let accepted = merged.contains(&found);
         self.apply_selections(merged);
         self.column_select = None;
-        self.reveal_caret_multi(cx);
+        if accepted {
+            self.reveal_position(found.active, Reveal::Nearest, cx);
+        }
         self.selection_changed(SelectionSource::Keyboard, cx);
     }
 
@@ -823,16 +828,16 @@ impl CodeView {
         if out.matches.is_empty() {
             return;
         }
-        let caret = self.cursor.selection.active;
+        let primary = self.cursor.selection;
         let mut items: Vec<Selection> = out
             .matches
             .iter()
             .map(|m| Selection::new(m.start, m.end))
             .collect();
-        // 光标所在的那一处作为主选区。
+        // VS Code 把第一个与原主选区相交的匹配交换到首位。
         let at = items
             .iter()
-            .position(|s| s.start() <= caret && caret <= s.end());
+            .position(|s| s.start() <= primary.end() && primary.start() <= s.end());
         if let Some(i) = at {
             items.swap(0, i);
         }

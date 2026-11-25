@@ -393,9 +393,10 @@ pub(crate) enum Drag {
         granularity: Granularity,
         origin: (Position, Position),
     },
-    /// #52：按住多光标修饰键拖动添加的那一段选区（它是主选区，`origin` 是按下时的位置）。
+    /// #52：只延展本次按下追加的选区。
     AddedText {
         origin: Position,
+        index: usize,
     },
     /// #52：`Shift+Alt+拖动`的列选择。
     Column {
@@ -2542,8 +2543,9 @@ impl CodeView {
         let Some(p) = self.position_for_point(point) else {
             return;
         };
-        self.add_cursor_at(p, cx);
-        self.drag = Some(Drag::AddedText { origin: p });
+        self.drag = self
+            .add_cursor_at(p, cx)
+            .map(|index| Drag::AddedText { origin: p, index });
     }
 
     /// #52：`Shift+Alt+拖动`按下：开始列选择。
@@ -2772,11 +2774,30 @@ impl CodeView {
                 }
                 return;
             }
-            Some(Drag::AddedText { origin }) => {
+            Some(Drag::AddedText { origin, index }) => {
                 if let Some(p) = self.position_for_point(point) {
                     let mut items = self.selections();
-                    items[0] = Selection::new(origin, p);
+                    let Some(item) = items.get_mut(index).filter(|s| s.anchor == origin) else {
+                        self.drag = None;
+                        return;
+                    };
+                    let selection = Selection::new(origin, p);
+                    *item = selection;
+                    let before_merge = items.len();
                     let merged = self.normalize_selections(items);
+                    // 次选区被合并后，鼠标继续延展承接了这段范围的选区。
+                    // 未合并时按原下标找，允许关闭重叠合并时存在相同范围。
+                    let retained = if merged.len() == before_merge {
+                        Some(index)
+                    } else {
+                        merged.iter().position(|s| {
+                            s.start() <= selection.start() && selection.end() <= s.end()
+                        })
+                    };
+                    self.drag = retained.map(|index| Drag::AddedText {
+                        origin: merged[index].anchor,
+                        index,
+                    });
                     self.apply_selections(merged);
                     self.selection_changed(SelectionSource::Mouse, cx);
                 }

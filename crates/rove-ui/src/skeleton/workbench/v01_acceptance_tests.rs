@@ -513,6 +513,58 @@ fn v01_multicursor_line_edit_with_wrap_on_undoes_as_one_unit(cx: &mut TestAppCon
     );
 }
 
+#[gpui::test]
+fn vscode_primary_selection_survives_workbench_multicursor_gestures(cx: &mut TestAppContext) {
+    use crate::code_view::Selection;
+
+    let before = "word alpha\nword beta\nword gamma\nword delta\n";
+    let fx = Fixture::new(
+        r#"{ "editor.multiCursorModifier": "alt", "editor.stickyScroll.enabled": false }"#,
+    );
+    fx.file("Assets/Words.txt", before.as_bytes());
+    let (view, cx) = fx.open(cx);
+    let code = open_file(&view, "Assets/Words.txt", cx);
+    let range = |line| Selection::new(pos(line, 0), pos(line, 4));
+    let selections = |cx: &VisualTestContext| code.read_with(cx, |code, _| code.selections());
+
+    caret(&code, pos(2, 2), cx);
+    let target = code
+        .update(cx, |code, _| code.point_for_position(pos(0, 2)))
+        .unwrap();
+    let alt = gpui::Modifiers {
+        alt: true,
+        ..gpui::Modifiers::none()
+    };
+    cx.simulate_mouse_down(target, gpui::MouseButton::Left, alt);
+    cx.simulate_mouse_up(target, gpui::MouseButton::Left, alt);
+    settle(cx);
+    assert_eq!(
+        selections(cx),
+        [Selection::caret(pos(2, 2)), Selection::caret(pos(0, 2))]
+    );
+    press("escape", cx);
+    assert_eq!(selections(cx), [Selection::caret(pos(2, 2))]);
+
+    press("ctrl-d", cx);
+    assert_eq!(selections(cx), [range(2)]);
+    press("ctrl-d", cx);
+    assert_eq!(selections(cx), [range(2), range(3)]);
+    press("ctrl-k ctrl-d", cx);
+    assert_eq!(selections(cx), [range(2), range(0)]);
+    press("ctrl-d", cx);
+    assert_eq!(selections(cx), [range(2), range(0), range(1)]);
+    press("ctrl-shift-l", cx);
+    let all = [range(2), range(1), range(0), range(3)];
+    assert_eq!(selections(cx), all);
+    press("X", cx);
+    assert_eq!(text_of(&code, cx), "X alpha\nX beta\nX gamma\nX delta\n");
+    press("ctrl-z", cx);
+    assert_eq!(text_of(&code, cx), before);
+    assert_eq!(selections(cx), all);
+    press("escape", cx);
+    assert_eq!(selections(cx), [range(2)]);
+}
+
 // ===================================================================== 场景 2
 
 /// 场景 2 的判据「GBK 文件编辑后保存零额外差异」：改动由**注释切换**

@@ -245,13 +245,16 @@ fn alt_click_adds_a_cursor_and_clicking_it_again_removes_it(cx: &mut TestAppCont
     f.caret(0, 1);
     assert!(!f.view.update(f.cx, |v, _| v.has_multiple_selections()));
     f.click(1, 2, alt());
-    assert_eq!(f.selections(), carets(&[(1, 2), (0, 1)]), "新光标是主选区");
+    assert_eq!(f.selections(), carets(&[(0, 1), (1, 2)]));
     assert!(f.view.update(f.cx, |v, _| v.has_multiple_selections()));
     f.click(2, 3, alt());
-    assert_eq!(f.selections(), carets(&[(2, 3), (1, 2), (0, 1)]));
+    assert_eq!(f.selections(), carets(&[(0, 1), (1, 2), (2, 3)]));
     // 再点同一个光标：删掉它（VS Code 行为）。
     f.click(1, 2, alt());
-    assert_eq!(f.selections(), carets(&[(2, 3), (0, 1)]));
+    assert_eq!(f.selections(), carets(&[(0, 1), (2, 3)]));
+    // 点到主选区时，第一个仍存在的选区成为主选区。
+    f.click(0, 1, alt());
+    assert_eq!(f.selections(), carets(&[(2, 3)]));
     // 普通点击回到单光标（列 0 会落在行号栏上，这里点行内）。
     f.click(0, 2, Modifiers::default());
     assert_eq!(f.selections(), carets(&[(0, 2)]));
@@ -261,15 +264,61 @@ fn alt_click_adds_a_cursor_and_clicking_it_again_removes_it(cx: &mut TestAppCont
 #[gpui::test]
 fn alt_drag_adds_a_whole_selection(cx: &mut TestAppContext) {
     let mut f = lf("alpha\nbeta\n", cx);
-    f.caret(0, 0);
-    f.drag((1, 1), (1, 4), alt());
+    let primary = Selection::new(pos(0, 4), pos(0, 1));
+    f.set(vec![primary]);
+    f.drag((1, 4), (1, 1), alt());
     assert_eq!(
         f.selections(),
-        vec![
-            Selection::new(pos(1, 1), pos(1, 4)),
-            Selection::caret(pos(0, 0))
-        ]
+        vec![primary, Selection::new(pos(1, 4), pos(1, 1))]
     );
+    f.click(1, 2, alt());
+    assert_eq!(f.selections(), vec![primary]);
+    f.click(0, 2, alt());
+    assert_eq!(f.selections(), vec![primary], "单个选区无法删除");
+}
+
+#[gpui::test]
+fn alt_drag_continues_the_merged_selection_like_vscode(cx: &mut TestAppContext) {
+    let mut f = lf("abcdefghij\n", cx);
+    // VS Code 1.146.0：并集与拖选范围相等、以及并集延伸到拖选范围之外。
+    for (primary, crossing_column, merged_end) in [
+        (Selection::caret(pos(0, 5)), 8, 8),
+        (Selection::new(pos(0, 4), pos(0, 9)), 6, 9),
+    ] {
+        f.set(vec![primary]);
+        let [start, crossing, back] = f.view.update(f.cx, |view, _| {
+            [2, crossing_column, 3].map(|column| view.point_for_position(pos(0, column)).unwrap())
+        });
+        f.cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: start,
+            modifiers: alt(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert_eq!(f.selections(), [primary, Selection::caret(pos(0, 2))]);
+
+        for (position, active_column) in [(crossing, merged_end), (back, 3)] {
+            f.cx.simulate_event(gpui::MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: alt(),
+            });
+            assert_eq!(
+                f.selections(),
+                [Selection::new(pos(0, 2), pos(0, active_column))]
+            );
+        }
+
+        f.cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: back,
+            modifiers: alt(),
+            click_count: 1,
+        });
+        settle(f.cx);
+        assert_eq!(f.selections(), [Selection::new(pos(0, 2), pos(0, 3))]);
+    }
 }
 
 #[gpui::test]
@@ -363,24 +412,24 @@ fn multi_cursor_modifier_swaps_add_cursor_and_go_to_definition(cx: &mut TestAppC
 #[gpui::test]
 fn ctrl_d_selects_the_word_then_adds_matches_and_wraps(cx: &mut TestAppContext) {
     let mut f = lf("foo bar\nfoo baz\nqux foo\n", cx);
-    f.caret(0, 1);
-    // 第一次：选中光标处的单词。
+    let first = Selection::new(pos(0, 0), pos(0, 3));
+    let second = Selection::new(pos(1, 0), pos(1, 3));
+    let last = Selection::new(pos(2, 4), pos(2, 7));
+    f.caret(1, 1);
     f.run("editor.action.addSelectionToNextFindMatch");
-    assert_eq!(f.selections(), vec![Selection::new(pos(0, 0), pos(0, 3))]);
-    // 第二次、第三次：依次加上后面的匹配。
+    assert_eq!(f.selections(), vec![second]);
     f.run("editor.action.addSelectionToNextFindMatch");
-    assert_eq!(f.primary(), Selection::new(pos(1, 0), pos(1, 3)));
-    assert_eq!(f.selections().len(), 2);
+    assert_eq!(f.selections(), vec![second, last]);
     f.run("editor.action.addSelectionToNextFindMatch");
-    assert_eq!(f.primary(), Selection::new(pos(2, 4), pos(2, 7)));
-    assert_eq!(f.selections().len(), 3);
-    // 到达末尾：循环回到第一处，与已有选区合并，数量不变。
+    assert_eq!(f.selections(), vec![second, last, first], "从末尾回环");
     f.run("editor.action.addSelectionToNextFindMatch");
-    assert_eq!(f.selections().len(), 3, "全部选中后不再增加");
-    // 向上：上一处匹配。
-    let before = f.selections().len();
+    assert_eq!(
+        f.selections(),
+        vec![second, last, first],
+        "重复范围不升为主选区"
+    );
     f.run("editor.action.addSelectionToPreviousFindMatch");
-    assert_eq!(f.selections().len(), before);
+    assert_eq!(f.selections(), vec![second, last, first]);
 }
 
 #[gpui::test]
