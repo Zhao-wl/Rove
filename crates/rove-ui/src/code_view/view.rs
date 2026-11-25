@@ -242,6 +242,11 @@ pub struct FrameStats {
     pub cpu: Duration,
     /// 其中布局（prepaint）部分。
     pub layout: Duration,
+    /// Time between this view's prepaint and paint callbacks.
+    pub paint_gap: Duration,
+    /// This view's paint callback, including editor input and hit testing.
+    pub paint: Duration,
+    pub guides_cpu: Duration,
     /// Cache lookup and dispatch time for viewport link detection.
     pub links_cpu: Duration,
     /// Time spent emitting shaped text glyphs and painting the line-number gutter.

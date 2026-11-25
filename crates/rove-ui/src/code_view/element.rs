@@ -116,7 +116,9 @@ impl Element for CodeElement {
         cx: &mut App,
     ) {
         let view = self.view.clone();
-        let focus = self.view.read(cx).focus.clone();
+        let code = self.view.read(cx);
+        let paint_start = code.recording.is_some().then(Instant::now);
+        let focus = code.focus.clone();
         // #47：输入法与键盘字符经 `EntityInputHandler` 进入代码视图（只在聚焦时登记）。
         window.handle_input(
             &focus,
@@ -138,6 +140,14 @@ impl Element for CodeElement {
                 v.last_frame.minimap_cpu += start.elapsed();
             }
             register_mouse(&view, frame, window, v.link_cursor);
+            if let Some(start) = paint_start {
+                v.last_frame.paint = start.elapsed();
+                if let Some(prepaint) = v.frame_started {
+                    v.last_frame.paint_gap = start
+                        .saturating_duration_since(prepaint)
+                        .saturating_sub(v.last_frame.layout);
+                }
+            }
             v.finish_frame(window, cx);
         });
     }
@@ -641,11 +651,13 @@ impl CodeView {
             (Some(a), Some(b)) => a.line..b.line + 1,
             _ => 0..0,
         };
+        let guides_start = measure.then(Instant::now);
         let bracket_guides = self.bracket_pair_guides(visible.clone());
         let active_indent = o
             .guides_indentation
             .then(|| self.active_indent_guide(visible))
             .flatten();
+        let guides_cpu = guides_start.map_or(std::time::Duration::ZERO, |start| start.elapsed());
 
         window.paint_quad(fill(lay.bounds, hsla(p.background)));
         window.paint_quad(fill(lay.gutter, hsla(p.gutter_background)));
@@ -1039,6 +1051,7 @@ impl CodeView {
 
         self.last_frame.selection_painted = selection_painted;
         self.last_frame.glyph_cpu = glyph_cpu;
+        self.last_frame.guides_cpu = guides_cpu;
         let gutter = measure.then(Instant::now);
         self.paint_gutter(frame, window);
         if let Some(start) = gutter {

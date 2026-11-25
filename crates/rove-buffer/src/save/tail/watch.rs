@@ -338,9 +338,11 @@ fn invalidated(
             .iter()
             .any(|filename| filename.len() == raw_name.len() / 2)
         {
-            let name = raw_name
-                .chunks_exact(2)
-                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            let (units, _) = raw_name.as_chunks::<2>();
+            let name = units
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
                 .collect::<Vec<_>>();
             let same = filenames.iter().any(|filename| {
                 // SAFETY: both slices hold the exact number of UTF-16 units provided.

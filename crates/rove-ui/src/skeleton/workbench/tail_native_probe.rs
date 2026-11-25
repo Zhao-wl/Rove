@@ -197,12 +197,15 @@ fn r66_native_tail_replay() {
     );
     for (frame, new_snapshot) in samples.iter().rev().take(5) {
         println!(
-            "R66_NATIVE_SLOW_FRAME cpu_ms={:.3} layout_ms={:.3} paint_ms={:.3} glyph_ms={:.3} gutter_ms={:.3} links_ms={:.3} glyphs={} visible_lines={} shaped={} placeholders={} missing={} new_snapshot={new_snapshot}",
+            "R66_NATIVE_SLOW_FRAME cpu_ms={:.3} layout_ms={:.3} gap_ms={:.3} paint_ms={:.3} glyph_ms={:.3} gutter_ms={:.3} guides_ms={:.3} minimap_ms={:.3} links_ms={:.3} glyphs={} visible_lines={} shaped={} placeholders={} missing={} new_snapshot={new_snapshot}",
             ms(frame.cpu),
             ms(frame.layout),
-            ms(frame.cpu.saturating_sub(frame.layout)),
+            ms(frame.paint_gap),
+            ms(frame.paint),
             ms(frame.glyph_cpu),
             ms(frame.gutter_cpu),
+            ms(frame.guides_cpu),
+            ms(frame.minimap_cpu),
             ms(frame.links_cpu),
             frame.glyphs,
             frame.visible_lines,
