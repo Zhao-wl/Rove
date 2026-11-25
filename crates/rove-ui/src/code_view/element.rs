@@ -116,7 +116,9 @@ impl Element for CodeElement {
         cx: &mut App,
     ) {
         let view = self.view.clone();
-        let focus = self.view.read(cx).focus.clone();
+        let code = self.view.read(cx);
+        let paint_start = code.recording.is_some().then(Instant::now);
+        let focus = code.focus.clone();
         // #47：输入法与键盘字符经 `EntityInputHandler` 进入代码视图（只在聚焦时登记）。
         window.handle_input(
             &focus,
@@ -138,6 +140,14 @@ impl Element for CodeElement {
                 v.last_frame.minimap_cpu += start.elapsed();
             }
             register_mouse(&view, frame, window, v.link_cursor);
+            if let Some(start) = paint_start {
+                v.last_frame.paint = start.elapsed();
+                if let Some(prepaint) = v.frame_started {
+                    v.last_frame.paint_gap = start
+                        .saturating_duration_since(prepaint)
+                        .saturating_sub(v.last_frame.layout);
+                }
+            }
             v.finish_frame(window, cx);
         });
     }
@@ -475,8 +485,10 @@ impl CodeView {
         stats.first_line_y = y0 as f32;
         // #215：记下这一帧画的是哪个版本的文本，基准与测试才能判定「按键有没有被紧接着的那一帧吸收」。
         stats.text_version = self.text.as_ref().map_or(0, |t| t.version().0);
-        self.last_frame = stats;
         let last = lines.last().map_or(first_doc, |l| l.line);
+        stats.last_line = last;
+        stats.known_lines = doc_count;
+        self.last_frame = stats;
         let visible = first..view_line.max(first + 1);
         let link_started = self.recording.is_some().then(Instant::now);
         self.queue_visible_links(visible.clone(), cx);
@@ -632,16 +644,20 @@ impl CodeView {
         let caret_line = comp_line.unwrap_or(sel.active.line.0);
         let mut caret_bounds = None;
         let mut selection_painted = false;
+        let measure = self.recording.is_some();
+        let mut glyph_cpu = std::time::Duration::ZERO;
         // #57：参考线按可见区间整帧算一次（跨过视口的括号对每对最多多读两行文本）。
         let visible = match (frame.lines.first(), frame.lines.last()) {
             (Some(a), Some(b)) => a.line..b.line + 1,
             _ => 0..0,
         };
+        let guides_start = measure.then(Instant::now);
         let bracket_guides = self.bracket_pair_guides(visible.clone());
         let active_indent = o
             .guides_indentation
             .then(|| self.active_indent_guide(visible))
             .flatten();
+        let guides_cpu = guides_start.map_or(std::time::Duration::ZERO, |start| start.elapsed());
 
         window.paint_quad(fill(lay.bounds, hsla(p.background)));
         window.paint_quad(fill(lay.gutter, hsla(p.gutter_background)));
@@ -821,7 +837,13 @@ impl CodeView {
                             }
                         }
                         match &l.shaped {
-                            Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
+                            Some(s) => {
+                                let start = measure.then(Instant::now);
+                                self.paint_glyphs(l, entry, s, left, y, &xs, window);
+                                if let Some(start) = start {
+                                    glyph_cpu += start.elapsed();
+                                }
+                            }
                             None => self.paint_placeholder(entry, left, y, &xs, text, window),
                         }
                         self.paint_whitespace(l, entry, &xs, left, y, window);
@@ -1028,7 +1050,13 @@ impl CodeView {
         });
 
         self.last_frame.selection_painted = selection_painted;
+        self.last_frame.glyph_cpu = glyph_cpu;
+        self.last_frame.guides_cpu = guides_cpu;
+        let gutter = measure.then(Instant::now);
         self.paint_gutter(frame, window);
+        if let Some(start) = gutter {
+            self.last_frame.gutter_cpu = start.elapsed();
+        }
         // 标尺在滑块下绘制，不透明的自定义背景也不会遮住滑块。
         let measure = self.recording.is_some().then(Instant::now);
         self.paint_overview(window);

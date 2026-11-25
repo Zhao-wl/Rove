@@ -2,7 +2,7 @@
 use crate::Inspector;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
+    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
     Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
     FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
@@ -54,6 +54,9 @@ use util::{ResultExt, measure};
 use uuid::Uuid;
 
 mod prompts;
+
+const FRAME_GLYPH_CACHE_LIMIT: usize = 4_096;
+type GlyphRaster = (Point<DevicePixels>, AtlasTile);
 
 use crate::util::atomic_incr_if_not_zero;
 pub use prompts::*;
@@ -824,6 +827,7 @@ pub struct Window {
     pub(crate) platform_window: Box<dyn PlatformWindow>,
     display_id: Option<DisplayId>,
     sprite_atlas: Arc<dyn PlatformAtlas>,
+    frame_glyphs: FxHashMap<RenderGlyphParams, Option<GlyphRaster>>,
     text_system: Arc<WindowTextSystem>,
     rem_size: Pixels,
     /// The stack of override values for the window's rem size.
@@ -1212,6 +1216,7 @@ impl Window {
             platform_window,
             display_id,
             sprite_atlas,
+            frame_glyphs: FxHashMap::default(),
             text_system,
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
@@ -1913,6 +1918,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        self.frame_glyphs.clear();
         self.invalidate_entities();
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
@@ -2973,17 +2979,31 @@ impl Window {
             is_emoji: false,
         };
 
-        let raster_bounds = self.text_system().raster_bounds(&params)?;
-        if !raster_bounds.is_zero() {
-            let tile = self
-                .sprite_atlas
-                .get_or_insert_with(&params.clone().into(), &mut || {
-                    let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
-                    Ok(Some((size, Cow::Owned(bytes))))
-                })?
-                .expect("Callback above only errors or returns Some");
+        let raster = match self.frame_glyphs.get(&params) {
+            Some(raster) => raster.clone(),
+            None => {
+                let bounds = self.text_system().raster_bounds(&params)?;
+                let raster = if bounds.is_zero() {
+                    None
+                } else {
+                    let tile = self
+                        .sprite_atlas
+                        .get_or_insert_with(&params.clone().into(), &mut || {
+                            let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
+                            Ok(Some((size, Cow::Owned(bytes))))
+                        })?
+                        .expect("Callback above only errors or returns Some");
+                    Some((bounds.origin, tile))
+                };
+                if self.frame_glyphs.len() < FRAME_GLYPH_CACHE_LIMIT {
+                    self.frame_glyphs.insert(params, raster.clone());
+                }
+                raster
+            }
+        };
+        if let Some((offset, tile)) = raster {
             let bounds = Bounds {
-                origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
+                origin: glyph_origin.map(|px| px.floor()) + offset.map(Into::into),
                 size: tile.bounds.size.map(Into::into),
             };
             let content_mask = self.content_mask().scale(scale_factor);

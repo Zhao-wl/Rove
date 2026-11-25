@@ -35,7 +35,7 @@ mod mapped;
 pub mod size;
 
 pub use mapped::{MappedText, Reload, INDEX_CHUNK_BYTES, SYNC_INDEX_BYTES};
-pub use open::{open_file, FileText, OpenedFile};
+pub use open::{open_file, open_follow_file, FileText, OpenedFile};
 pub use size::{disabled_features, session_toggle_allowed, ReducedFeature, SizePolicy};
 
 // #46 编辑核心：事务、撤销重做、选区、单词边界、剪贴板语义与改写事务。

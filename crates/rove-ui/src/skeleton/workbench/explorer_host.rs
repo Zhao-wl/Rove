@@ -130,6 +130,16 @@ impl Workbench {
                 #[cfg(not(windows))]
                 let _ = (paths, parent);
             }
+            ExplorerEvent::NameRenamed { from, to } => {
+                self.follow_workspace_renames(
+                    &[FileEvent::Renamed {
+                        from: from.clone(),
+                        to: to.clone(),
+                    }],
+                    super::edit_host::WorkspaceRenameSource::InlineNameEdit,
+                    cx,
+                );
+            }
             ExplorerEvent::UndoRecorded(steps) => {
                 self.remember_explorer_operation(steps);
             }

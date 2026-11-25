@@ -37,7 +37,21 @@ pub fn format_text(
     mode: FormatMode,
     cancel: &Cancellation,
 ) -> Result<String> {
-    format_document(language, text, options, mode, None, cancel).map(|(formatted, _)| formatted)
+    format_document(language, text, options, mode, None, usize::MAX, cancel)
+        .map(|(formatted, _)| formatted)
+}
+
+/// Format a preview using the same formatter, rejecting output that exceeds its byte budget.
+pub fn format_text_bounded(
+    language: StructuredLanguage,
+    text: &str,
+    options: FormatOptions<'_>,
+    mode: FormatMode,
+    max_output: usize,
+    cancel: &Cancellation,
+) -> Result<String> {
+    format_document(language, text, options, mode, None, max_output, cancel)
+        .map(|(formatted, _)| formatted)
 }
 
 /// Format the selected gaps using the surrounding document's indentation depth.
@@ -82,6 +96,7 @@ pub fn format_selections(
         options,
         FormatMode::Pretty,
         Some(ranges),
+        usize::MAX,
         cancel,
     )?;
     let mut input_end = 0;
@@ -107,6 +122,7 @@ fn format_document(
     options: FormatOptions<'_>,
     mode: FormatMode,
     selections: Option<&[Range<usize>]>,
+    max_output: usize,
     cancel: &Cancellation,
 ) -> Result<(String, Vec<usize>)> {
     if !matches!(options.newline, "\n" | "\r\n" | "\r")
@@ -129,7 +145,11 @@ fn format_document(
         .map(|range| range.len())
         .collect();
     if text.trim().is_empty() {
-        return Ok((text.to_owned(), lengths));
+        return if text.len() <= max_output {
+            Ok((text.to_owned(), lengths))
+        } else {
+            Err(Error::OutOfBounds)
+        };
     }
     let tree = parse_tree(language, text, None, cancel)?;
     let root = tree.root_node();
@@ -141,7 +161,10 @@ fn format_document(
     let mut formatter = Formatter {
         options,
         text,
-        output: String::with_capacity(text.len()),
+        output: FormatOutput {
+            text: String::with_capacity(text.len().min(max_output)),
+            max: max_output,
+        },
         selections,
         lengths,
         cancel,
@@ -152,7 +175,7 @@ fn format_document(
         formatter.json(root, language == StructuredLanguage::Jsonc, mode)?;
     }
     cancel.check()?;
-    Ok((formatter.output, formatter.lengths))
+    Ok((formatter.output.text, formatter.lengths))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -177,10 +200,66 @@ struct Token {
     span: Range<usize>,
 }
 
+struct FormatOutput {
+    text: String,
+    max: usize,
+}
+
+impl FormatOutput {
+    fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    fn reserve(&mut self, additional: usize) -> Result<()> {
+        let required = self
+            .len()
+            .checked_add(additional)
+            .ok_or(Error::OutOfBounds)?;
+        if required > self.max {
+            return Err(Error::OutOfBounds);
+        }
+        if required > self.text.capacity() {
+            let capacity = self
+                .text
+                .capacity()
+                .saturating_mul(2)
+                .min(self.max)
+                .max(required);
+            self.text
+                .try_reserve_exact(capacity - self.len())
+                .map_err(|_| Error::OutOfBounds)?;
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, ch: char) -> Result<()> {
+        self.reserve(ch.len_utf8())?;
+        self.text.push(ch);
+        Ok(())
+    }
+
+    fn push_str(&mut self, text: &str) -> Result<()> {
+        self.reserve(text.len())?;
+        self.text.push_str(text);
+        Ok(())
+    }
+
+    fn indent(&mut self, unit: &str, depth: usize) -> Result<()> {
+        if unit.is_empty() {
+            return Ok(());
+        }
+        self.reserve(unit.len().checked_mul(depth).ok_or(Error::OutOfBounds)?)?;
+        for _ in 0..depth {
+            self.text.push_str(unit);
+        }
+        Ok(())
+    }
+}
+
 struct Formatter<'a> {
     options: FormatOptions<'a>,
     text: &'a str,
-    output: String,
+    output: FormatOutput,
     selections: Option<&'a [Range<usize>]>,
     lengths: Vec<usize>,
     cancel: &'a Cancellation,
@@ -228,12 +307,12 @@ impl Formatter<'_> {
                 let gap = &self.text[span.clone()];
                 let selected = self.selection_for(&span);
                 if self.selections.is_some() && selected.is_none() {
-                    self.output.push_str(gap);
+                    self.output.push_str(gap)?;
                 } else {
                     let output_start = self.output.len();
                     let (previous_kind, gap) = if comments {
                         if let Some(comma) = gap.find(',') {
-                            self.output.push(',');
+                            self.output.push(',')?;
                             (TokenKind::Comma, &gap[comma + 1..])
                         } else {
                             (prev.kind, gap)
@@ -243,19 +322,19 @@ impl Formatter<'_> {
                     };
                     match mode {
                         FormatMode::Pretty => {
-                            self.pretty_gap(previous_kind, token.kind, gap, depth)
+                            self.pretty_gap(previous_kind, token.kind, gap, depth)?;
                         }
                         FormatMode::Minify if previous_kind == TokenKind::LineComment => {
-                            self.breaks(gap, 0);
+                            self.breaks(gap, 0)?;
                         }
                         FormatMode::Minify => {}
                     }
                     self.note_gap(selected, span.len(), output_start);
                 }
             } else if self.selections.is_some() {
-                self.output.push_str(&self.text[..token.span.start]);
+                self.output.push_str(&self.text[..token.span.start])?;
             }
-            self.output.push_str(&self.text[token.span.clone()]);
+            self.output.push_str(&self.text[token.span.clone()])?;
             if token.kind == TokenKind::Open {
                 depth += 1;
             }
@@ -265,46 +344,51 @@ impl Formatter<'_> {
             if let Some(last) = last {
                 let tail = &self.text[last.span.end..];
                 if self.selections.is_some() {
-                    self.output.push_str(tail);
+                    self.output.push_str(tail)?;
                 } else if tail.contains(['\r', '\n']) {
-                    self.breaks(tail, 0);
+                    self.breaks(tail, 0)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn pretty_gap(&mut self, prev: TokenKind, next: TokenKind, gap: &str, depth: usize) {
+    fn pretty_gap(
+        &mut self,
+        prev: TokenKind,
+        next: TokenKind,
+        gap: &str,
+        depth: usize,
+    ) -> Result<()> {
         use TokenKind::*;
         let has_break = gap.contains(['\r', '\n']);
         if prev == LineComment || has_break {
-            self.breaks(gap, depth);
+            self.breaks(gap, depth)?;
         } else if next.is_comment() || prev == BlockComment {
-            self.output.push(' ');
+            self.output.push(' ')?;
         } else if !self.options.keep_lines
             && (prev == Comma || (prev == Open && next != Close) || (next == Close && prev != Open))
         {
-            self.breaks(gap, depth);
+            self.breaks(gap, depth)?;
         } else if matches!(prev, Colon | Comma) {
-            self.output.push(' ');
+            self.output.push(' ')?;
         }
+        Ok(())
     }
 
-    fn breaks(&mut self, gap: &str, depth: usize) {
+    fn breaks(&mut self, gap: &str, depth: usize) -> Result<()> {
         let mut rest = gap;
         let mut found = false;
         while let Some(at) = rest.find(['\r', '\n']) {
             let end = at + if rest[at..].starts_with("\r\n") { 2 } else { 1 };
-            self.output.push_str(&rest[at..end]);
+            self.output.push_str(&rest[at..end])?;
             rest = &rest[end..];
             found = true;
         }
         if !found {
-            self.output.push_str(self.options.newline);
+            self.output.push_str(self.options.newline)?;
         }
-        for _ in 0..depth {
-            self.output.push_str(self.options.indentation);
-        }
+        self.output.indent(self.options.indentation, depth)
     }
 
     fn xml(&mut self, root: Node<'_>) -> Result<()> {
@@ -398,13 +482,13 @@ impl Formatter<'_> {
             if self.selections.is_some() && selected.is_none() {
                 continue;
             }
-            self.output.push_str(&self.text[last..gap.start]);
+            self.output.push_str(&self.text[last..gap.start])?;
             let output_start = self.output.len();
-            self.breaks(&self.text[gap.clone()], depth);
+            self.breaks(&self.text[gap.clone()], depth)?;
             self.note_gap(selected, gap.len(), output_start);
             last = gap.end;
         }
-        self.output.push_str(&self.text[last..]);
+        self.output.push_str(&self.text[last..])?;
         Ok(())
     }
 }

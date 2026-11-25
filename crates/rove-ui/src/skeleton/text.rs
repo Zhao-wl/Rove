@@ -70,6 +70,7 @@ impl VirtualSource for StaticPageSource {
 #[derive(Default)]
 struct FileCache {
     documents: BTreeMap<PathBuf, Weak<Document>>,
+    mapped: BTreeMap<DocumentId, Weak<rove_buffer::MappedText>>,
     /// 虚拟文档按资源名缓存（弱引用，由标签持有）。
     virtuals: BTreeMap<Arc<str>, Weak<Document>>,
     aliases: BTreeMap<Resource, PathBuf>,
@@ -93,6 +94,7 @@ impl FileCache {
 
     fn prune(&mut self) {
         self.documents.retain(|_, doc| doc.strong_count() > 0);
+        self.mapped.retain(|_, text| text.strong_count() > 0);
         self.virtuals.retain(|_, doc| doc.strong_count() > 0);
         self.aliases
             .retain(|_, path| self.documents.contains_key(path));
@@ -201,6 +203,11 @@ impl FileDocuments {
             .unwrap()
             .insert(document.id, loaded.detection.guessed);
         let mut index = self.cache.lock().unwrap();
+        if let Some(text) = loaded.text.mapped() {
+            index.mapped.insert(document.id, Arc::downgrade(text));
+        } else {
+            index.mapped.remove(&document.id);
+        }
         index.documents.insert(path, Arc::downgrade(&reopened));
         Ok(reopened)
     }
@@ -252,6 +259,28 @@ impl FileDocuments {
             .aliases
             .insert(document.resource.clone(), canonical.clone());
         index.documents.insert(canonical, Arc::downgrade(document));
+    }
+
+    pub(crate) fn mapped(&self, document: DocumentId) -> Option<Arc<rove_buffer::MappedText>> {
+        self.cache
+            .lock()
+            .unwrap()
+            .mapped
+            .get(&document)
+            .and_then(Weak::upgrade)
+    }
+
+    pub(crate) fn remember_mapped(
+        &self,
+        document: DocumentId,
+        text: Option<&Arc<rove_buffer::MappedText>>,
+    ) {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(text) = text {
+            cache.mapped.insert(document, Arc::downgrade(text));
+        } else {
+            cache.mapped.remove(&document);
+        }
     }
 
     /// #47：编辑后同一文档换了新快照（新的 `Arc<Document>`，身份不变）：缓存改指向它，
@@ -371,6 +400,9 @@ impl Documents for FileDocuments {
             guessed.lock().unwrap().insert(doc.id, detection_guessed);
             cancel.check()?;
             let mut index = cache.lock().unwrap();
+            if let Some(text) = loaded.text.mapped() {
+                index.mapped.insert(doc.id, Arc::downgrade(text));
+            }
             index.documents.insert(path.clone(), Arc::downgrade(&doc));
             index.aliases.insert(resource, path);
             Ok(doc)

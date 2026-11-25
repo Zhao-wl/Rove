@@ -637,6 +637,87 @@ fn filtering_expands_the_parents_of_matches_and_restores_the_tree_when_cleared(
 }
 
 #[gpui::test]
+fn r66_explorer_content_change_does_not_refresh_an_unchanged_tree(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+
+    let fx = Fixture::new("{}", &["Editor.log"]);
+    let (view, cx) = fx.open(cx);
+    focus_row(&view, 0, cx);
+    assert_eq!(selected(&view, cx), ["Editor.log"]);
+
+    let explorer = view.read_with(cx, |view, _| view.explorer.clone());
+    let notifications = Rc::new(Cell::new(0));
+    let observed = notifications.clone();
+    let _subscription =
+        cx.update(|_, cx| cx.observe(&explorer, move |_, _| observed.set(observed.get() + 1)));
+    explorer.update(cx, |explorer, cx| {
+        let log = WorkspacePath::new("Editor.log").unwrap();
+        explorer.files_changed(&[FileEvent::Changed(log)], cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), 0);
+    assert_eq!(rows(&view, cx), ["Editor.log"]);
+
+    std::fs::write(fx.path("New.log"), "new log\n").unwrap();
+    wait_until(&view, cx, "created log", |rows| {
+        rows == ["Editor.log", "New.log"]
+    });
+    assert!(notifications.get() > 0);
+    assert_eq!(selected(&view, cx), ["Editor.log"]);
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn r66_explorer_permission_changes_refresh_the_readonly_badge(cx: &mut TestAppContext) {
+    use crate::explorer::decorations::Badge;
+    use std::{cell::Cell, rc::Rc};
+
+    let fx = Fixture::new(
+        r#"{ "files.readonlyFromPermissions": true }"#,
+        &["Editor.log"],
+    );
+    let (view, cx) = fx.open(cx);
+    let explorer = view.read_with(cx, |view, _| view.explorer.clone());
+    let log = WorkspacePath::new("Editor.log").unwrap();
+    let path = fx.path(log.as_str());
+    let baseline_permissions = std::fs::metadata(&path).unwrap().permissions();
+    let notifications = Rc::new(Cell::new(0));
+    let observed = notifications.clone();
+    let _subscription =
+        cx.update(|_, cx| cx.observe(&explorer, move |_, _| observed.set(observed.get() + 1)));
+    let badge = |cx: &VisualTestContext| {
+        explorer.read_with(cx, |explorer, _| {
+            explorer
+                .decoration(&log, false)
+                .and_then(|decoration| decoration.badge)
+        })
+    };
+    assert_eq!(badge(cx), None);
+    for readonly in [true, false] {
+        let notified = notifications.get();
+        let mut permissions = baseline_permissions.clone();
+        permissions.set_readonly(readonly);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let expected = readonly.then_some(Badge::Lock);
+        let changed = loop {
+            cx.run_until_parked();
+            if badge(cx) == expected && notifications.get() > notified {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        if !changed {
+            std::fs::set_permissions(&path, baseline_permissions.clone()).unwrap();
+        }
+        assert!(changed, "no Explorer notification for readonly={readonly}");
+    }
+}
+
+#[gpui::test]
 fn external_bulk_changes_keep_the_tree_in_sync_with_disk_and_keep_marks(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}", &["Assets/keep.cs", "Other/x.cs", "Top.cs"]);
     let (view, cx) = fx.open(cx);
@@ -843,6 +924,79 @@ fn context_basket_explorer_menu_preserves_selected_files_and_follows_a_rename(
 
 #[cfg(windows)]
 #[gpui::test]
+fn r66_explorer_rename_rebinds_an_active_followed_log(cx: &mut TestAppContext) {
+    use std::io::Write as _;
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "workbench.editor.closeOnFileDelete": true }"#,
+        &["Editor.log"],
+    );
+    std::fs::write(fixture.path("Editor.log"), "old log line\n".repeat(600)).unwrap();
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("enter");
+    use super::large_file_tests::wait_tail;
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| view.active_large_file_document().is_some())
+    });
+    let original = view.read_with(cx, |view, _| view.active_large_file_document().unwrap());
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .is_some()
+        })
+    });
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "explicit move accepted", |rows| {
+        rows.iter().any(|row| row.trim() == "Renamed.log")
+    });
+    let renamed = fixture.path("Renamed.log");
+    let expected = Resource::Workspace(WorkspacePath::new("Renamed.log").unwrap());
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.open_document(original.id)
+                .is_some_and(|document| document.resource == expected)
+        })
+    });
+    assert!(!fixture.path("Editor.log").exists());
+    let suffix = "write to the confirmed target\n";
+    let size = renamed.metadata().unwrap().len();
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&renamed)
+        .unwrap();
+    writer.write_all(suffix.as_bytes()).unwrap();
+    drop(writer);
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.open_document(original.id).is_some_and(|document| {
+                document.resource == expected
+                    && document.text.byte_len() == size + suffix.len() as u64
+            })
+        })
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .unwrap()
+                .text,
+            "跟随末尾"
+        );
+    });
+}
+
+#[cfg(windows)]
+#[gpui::test]
 fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut TestAppContext) {
     let fixture = Fixture::new(
         r#"{"workbench.editor.closeOnFileDelete": true, "explorer.copyRelativePathSeparator": "/"}"#,
@@ -895,12 +1049,25 @@ fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut
     wait_until(&view, cx, "case-only rename from F2", |rows| {
         rows.iter().any(|row| row.trim() == "foo.cs")
     });
+    let renamed = Resource::Workspace(WorkspacePath::new("Src/foo.cs").unwrap());
+    // The tree can show the new name before the watcher remaps the open tab.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        let resource = view.read_with(cx, |v, _| {
+            v.editor.active().current().unwrap().resource.clone()
+        });
+        if resource == renamed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "open tab did not follow the case-only rename: {resource:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
     view.read_with(cx, |v, _| {
         let tab = v.editor.active().current().unwrap();
-        assert_eq!(
-            tab.resource,
-            Resource::Workspace(WorkspacePath::new("Src/foo.cs").unwrap())
-        );
         assert_eq!(tab.opened().unwrap().document.id, document);
         assert!(tab.dirty);
         assert_eq!(
@@ -1304,6 +1471,62 @@ fn explorer_structured_problems_ignore_echo_after_undoing_an_overwrite(cx: &mut 
             .decorate(&WorkspacePath::new("Target/Bad.json").unwrap(), false)
             .is_none());
     });
+}
+
+#[gpui::test]
+fn r66_confirmed_explorer_delete_closes_an_open_followed_log(cx: &mut TestAppContext) {
+    use super::large_file_tests::wait_tail;
+    let fixture = Fixture::new(
+        r#"{"files.enableTrash": false, "workbench.editor.closeOnFileDelete": true}"#,
+        &["Editor.log"],
+    );
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("enter");
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| view.active_large_file_document().is_some())
+    });
+    let id = view.read_with(cx, |view, _| view.active_large_file_document().unwrap().id);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .is_some()
+        })
+    });
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("shift-delete");
+    cx.run_until_parked();
+    let key = view.read_with(cx, |view, _| {
+        assert!(view.open_document(id).is_some());
+        view.shell
+            .feedback
+            .modal()
+            .expect("permanent delete confirmation")
+            .key
+            .clone()
+    });
+    assert!(fixture.path("Editor.log").exists());
+    view.update(cx, |view, _| {
+        view.shell
+            .feedback
+            .act(&key, registry::FILE_OP_CONFIRM)
+            .unwrap()
+    });
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.open_document(id).is_none()
+                && view
+                    .shell
+                    .status_bar
+                    .get(crate::follow_tail::FOLLOW_STATUS)
+                    .is_none()
+        })
+    });
+    assert!(!fixture.path("Editor.log").exists());
 }
 
 #[gpui::test]

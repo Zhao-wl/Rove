@@ -465,6 +465,7 @@ impl ExplorerView {
             let result = worker.await;
             if let Some((root, saves, ticket)) = lease {
                 let moved = rename_from
+                    .as_ref()
                     .zip(result.as_ref().ok())
                     .map(|(from, (to, _, _))| (root.join(from.as_str()), root.join(to.as_str())));
                 saves
@@ -476,6 +477,12 @@ impl ExplorerView {
                     view.close_name_edit(cx);
                     view.rename_or_create_reveal = Some(path.clone());
                     view.restore_name_slots(cx);
+                    if let Some(from) = rename_from.filter(|from| from != &path) {
+                        cx.emit(ExplorerEvent::NameRenamed {
+                            from,
+                            to: path.clone(),
+                        });
+                    }
                     if !undo.is_empty() {
                         cx.emit(ExplorerEvent::UndoRecorded(undo));
                     }

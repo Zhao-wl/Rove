@@ -2349,6 +2349,7 @@ fn render_editor_bars<T: ShellHost>(host: &T, cx: &mut Context<T>) -> Vec<AnyEle
         .map(|bar| {
             let mut row = div()
                 .id(SharedString::from(format!("editor-bar-{}", bar.key)))
+                .debug_selector(|| format!("editor-bar-{}", bar.key))
                 .w_full()
                 .min_h(shell.z(26.0))
                 .px(shell.z(12.0))
@@ -2544,6 +2545,7 @@ fn render_status_bar<T: ShellHost>(
         let tip = e.tooltip.clone().unwrap_or_else(|| text(host, &c.title));
         div()
             .id(SharedString::from(format!("status-{id}")))
+            .debug_selector(|| format!("status-{id}"))
             .h_full()
             .px(shell.z(5.0))
             .flex()

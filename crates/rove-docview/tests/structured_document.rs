@@ -1,6 +1,6 @@
 use rove_base::{ByteOffset, ByteRange, Cancellation, Error, Line, Position, Utf8Column, Version};
 use rove_docview::{
-    format::{format_text, FormatMode, FormatOptions},
+    format::{format_text, format_text_bounded, FormatMode, FormatOptions},
     structure::{ParsedStructure, ProblemKind, StructuredLanguage},
     Structure,
 };
@@ -222,6 +222,46 @@ fn diagnostics_use_editor_lines_and_utf8_columns() {
         .diagnostics(&cancel)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn bounded_preview_stops_deep_indentation_before_exceeding_the_byte_budget() {
+    let budget = 4_096;
+    let deep = format!("{}0{}", "[".repeat(512), "]".repeat(512));
+    let shallow = r#"{"entries":[1,2]}"#;
+    let options = FormatOptions::default();
+    let cancel = Cancellation::default();
+    assert!(deep.len() < budget);
+    assert!(matches!(
+        format_text_bounded(
+            StructuredLanguage::Json,
+            &deep,
+            options,
+            FormatMode::Pretty,
+            budget,
+            &cancel
+        ),
+        Err(Error::OutOfBounds)
+    ));
+    assert_eq!(
+        format_text_bounded(
+            StructuredLanguage::Json,
+            shallow,
+            options,
+            FormatMode::Pretty,
+            budget,
+            &cancel
+        )
+        .unwrap(),
+        format_text(
+            StructuredLanguage::Json,
+            shallow,
+            options,
+            FormatMode::Pretty,
+            &cancel
+        )
+        .unwrap()
+    );
 }
 
 #[test]

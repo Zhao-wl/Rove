@@ -133,6 +133,7 @@ impl Workbench {
             .h(px(settings.tab_height))
             // #29：`Placement::EditorTitle` 登记的按钮（显示源码 / 显示预览）。
             .children(self.markdown_title_actions(group, cx))
+            .children(self.follow_title_action(group, cx))
             .children(self.title_controls(group, cx));
 
         let mut tabs = div().flex_1().min_w_0().flex().flex_col();
@@ -499,6 +500,7 @@ impl Workbench {
         } else {
             self.welcome_tab_title(&tab.resource)
                 .or_else(|| self.metadata_tab_title(&tab.resource))
+                .or_else(|| self.formatted_tab_title(&tab.resource))
                 .unwrap_or_else(|| settings.tab_label(&tab.resource))
         };
         let tooltip = self.metadata_tab_tooltip(&tab.resource);

@@ -30,6 +30,9 @@ use rove_base::*;
 use crate::contracts::{LineCount, TextSource};
 use crate::line_index::{scan_chunk, LineIndex};
 
+mod backing;
+use backing::{Storage, PAGE_BYTES};
+
 /// 打开时同步索引的字节数：保证首屏立即可用。
 pub const SYNC_INDEX_BYTES: u64 = 1024 * 1024;
 /// 后台索引每次扫描并发布的字节数。
@@ -48,71 +51,12 @@ pub(crate) struct MappedEncoding {
     pub bom_len: usize,
 }
 
-/// 文本的存放方式：UTF-8 直接映射；其他编码解码后放在堆上。
-enum Storage {
-    /// `file` 留给后台索引用普通读取扫描：不经映射触页，索引过程不把整个文件拉进
-    /// 本进程的工作集，也避开逐页缺页的开销（1 GB 约 0.6 s）。
-    Mapped {
-        map: Mmap,
-        skip: usize,
-        file: File,
-    },
-    Owned(Box<[u8]>),
-}
-
-impl Storage {
-    fn bytes(&self) -> &[u8] {
-        match self {
-            Storage::Mapped { map, skip, .. } => map.get(*skip..).unwrap_or_default(),
-            Storage::Owned(bytes) => bytes,
-        }
-    }
-
-    /// 读取内容 `[from, to)`，返回实际读到的字节（文件在外部变短时可能更少）。
-    fn read<'a>(&'a self, from: u64, to: u64, buffer: &'a mut Vec<u8>) -> &'a [u8] {
-        match self {
-            Storage::Owned(bytes) => {
-                let end = (to as usize).min(bytes.len());
-                bytes.get(from as usize..end).unwrap_or_default()
-            }
-            Storage::Mapped { skip, file, .. } => {
-                buffer.resize((to - from) as usize, 0);
-                let filled = read_at(file, buffer, from + *skip as u64);
-                &buffer[..filled]
-            }
-        }
-    }
-}
-
-/// 定位读取，尽量读满；出错或到达文件末尾时返回已读字节数。
-fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> usize {
-    let mut filled = 0;
-    while filled < buffer.len() {
-        #[cfg(windows)]
-        let read = std::os::windows::fs::FileExt::seek_read(
-            file,
-            &mut buffer[filled..],
-            offset + filled as u64,
-        );
-        #[cfg(unix)]
-        let read = std::os::unix::fs::FileExt::read_at(
-            file,
-            &mut buffer[filled..],
-            offset + filled as u64,
-        );
-        match read {
-            Ok(0) | Err(_) => break,
-            Ok(read) => filled += read,
-        }
-    }
-    filled
-}
-
 /// 打开时记下的文件状态，用来判断后来是追加还是改写。
 #[derive(Clone, Debug)]
 struct FileStamp {
     len: u64,
     modified: Option<SystemTime>,
+    identity: Option<(u64, u64)>,
     head: u64,
     tail: u64,
 }
@@ -124,6 +68,7 @@ impl FileStamp {
         Ok(Self {
             len,
             modified: metadata.modified().ok(),
+            identity: crate::save::tail::file_identity(file, &metadata),
             head: sample_hash(file, 0, len.min(STAMP_SAMPLE))?,
             tail: sample_hash(file, len.saturating_sub(STAMP_SAMPLE), len)?,
         })
@@ -204,10 +149,18 @@ impl std::fmt::Debug for MappedText {
 impl MappedText {
     /// 映射（或按非 UTF-8 编码解码）并同步索引头部 1 MiB，然后在后台索引其余部分。
     pub(crate) fn open(path: &Path, encoding: MappedEncoding) -> Result<Arc<Self>> {
+        Self::open_with_shared_reads(path, encoding, false)
+    }
+
+    pub(crate) fn open_with_shared_reads(
+        path: &Path,
+        encoding: MappedEncoding,
+        shared_reads: bool,
+    ) -> Result<Arc<Self>> {
         let mut file = File::open(path)?;
         let stamp = FileStamp::read(&mut file)?;
-        let storage = Arc::new(load_storage(&file, stamp.len, encoding)?);
-        let len = storage.bytes().len() as u64;
+        let storage = Arc::new(load_storage(path, &file, &stamp, encoding, shared_reads)?);
+        let len = storage.len();
         Ok(Self::start(
             path.to_path_buf(),
             encoding,
@@ -230,7 +183,13 @@ impl MappedText {
     ) -> Arc<Self> {
         let sync_end = from.saturating_add(SYNC_INDEX_BYTES).min(len);
         if from < sync_end {
-            index.scan(storage.bytes(), from, sync_end);
+            let window_start = from.saturating_sub(1);
+            let window_end = sync_end.saturating_add(1).min(len);
+            let mut starts = Vec::new();
+            let trailing_cr = storage.with_range(window_start..window_end, |window| {
+                scan_chunk(window, window_start, from, sync_end, len, &mut starts)
+            });
+            index.publish(&starts, sync_end, trailing_cr);
         }
         if sync_end >= len {
             index.complete = true;
@@ -278,9 +237,28 @@ impl MappedText {
         &self.path
     }
 
-    /// 内容是否直接来自内存映射（UTF-8）；否则是解码后放在堆上的副本。
+    /// 内容是否仍由内存映射提供。其余快照使用文件读取或堆上的解码副本。
     pub fn is_memory_mapped(&self) -> bool {
-        matches!(*self.storage, Storage::Mapped { .. })
+        self.storage.is_mapped()
+    }
+
+    /// The physical file length captured for this snapshot, including a BOM if present.
+    pub fn raw_byte_len(&self) -> u64 {
+        self.stamp.len
+    }
+
+    /// Stop keeping a file mapping open, so a writer can truncate it even while this
+    /// snapshot is held by an editor. An existing read can briefly defer unmapping.
+    pub fn enable_shared_reads(&self) -> bool {
+        self.storage.enable_shared_reads()
+    }
+
+    /// Warm the last two shared-read pages on a worker before publishing a followed snapshot.
+    pub fn warm_tail(&self) {
+        if self.len != 0 && self.storage.has_disk_bytes() && !self.storage.is_mapped() {
+            self.storage.byte(self.len - 1);
+            self.storage.byte(self.len.saturating_sub(PAGE_BYTES));
+        }
     }
 
     /// 行索引本身占用的堆内存（字节）。不含映射的文件页：那些页由系统按需换入、可回收。
@@ -322,31 +300,61 @@ impl MappedText {
     /// 追加时新快照复用本快照已有的索引（冻结段共享），只扫描新增部分；本快照不受影响。
     /// 非 UTF-8 编码的超大文件（内容是解码副本）不做增量，按改写处理。
     pub fn reload(&self) -> Result<Reload> {
+        self.reload_with_replacement(true, true)?
+            .ok_or(Error::NotReady)
+    }
+
+    /// Check the append fast path without creating a replacement snapshot. The caller can
+    /// run the normal open pipeline and detect encoding on the new file when this is `None`.
+    pub fn reload_append(&self, track_truncation: bool) -> Result<Option<Reload>> {
+        self.reload_with_replacement(false, track_truncation)
+    }
+
+    fn reload_with_replacement(&self, replace: bool, append: bool) -> Result<Option<Reload>> {
         let mut file = File::open(&self.path)?;
         let metadata = file.metadata()?;
         let len = metadata.len();
         let old = &self.stamp;
         let head_len = old.len.min(STAMP_SAMPLE);
-        let head_same = len >= head_len && sample_hash(&mut file, 0, head_len)? == old.head;
+        let same_file = old
+            .identity
+            .zip(crate::save::tail::file_identity(&file, &metadata))
+            .is_none_or(|(old, new)| old == new);
+        let head_same =
+            same_file && len >= head_len && sample_hash(&mut file, 0, head_len)? == old.head;
         if len == old.len && metadata.modified().ok() == old.modified && head_same {
-            return Ok(Reload::Unchanged);
+            return Ok(Some(Reload::Unchanged));
         }
-        let appended = len > old.len
+        let appended = append
+            && len > old.len
             && head_same
             && sample_hash(&mut file, old.len.saturating_sub(STAMP_SAMPLE), old.len)? == old.tail
-            && self.is_memory_mapped();
+            && self.storage.has_disk_bytes();
+        if !appended && !replace {
+            return Ok(None);
+        }
         let stamp = FileStamp::read(&mut file)?;
-        let storage = Arc::new(load_storage(&file, stamp.len, self.encoding)?);
-        let new_len = storage.bytes().len() as u64;
+        let storage = Arc::new(load_storage(
+            &self.path,
+            &file,
+            &stamp,
+            self.encoding,
+            self.storage.uses_shared_reads(),
+        )?);
+        let new_len = storage.len();
         if appended && new_len >= self.len {
             let mut index = self.shared.read().clone();
             let from = if index.complete {
-                index.resume_after_append(storage.bytes())
+                let next = index
+                    .trailing_cr
+                    .then(|| storage.byte(index.scanned))
+                    .flatten();
+                index.resume_after_append(next)
             } else {
                 index.scanned
             };
             index.complete = false;
-            return Ok(Reload::Appended(Self::start(
+            return Ok(Some(Reload::Appended(Self::start(
                 self.path.clone(),
                 self.encoding,
                 stamp,
@@ -354,9 +362,12 @@ impl MappedText {
                 new_len,
                 index,
                 from,
-            )));
+            ))));
         }
-        Ok(Reload::Replaced(Self::start(
+        if !replace {
+            return Ok(None);
+        }
+        Ok(Some(Reload::Replaced(Self::start(
             self.path.clone(),
             self.encoding,
             stamp,
@@ -364,26 +375,71 @@ impl MappedText {
             new_len,
             LineIndex::new(),
             0,
-        )))
+        ))))
     }
 
     /// 内容开头至多 `len` 个字节（打开时的二进制判定与换行符统计用）。
-    pub(crate) fn head(&self, len: usize) -> &[u8] {
-        let bytes = self.bytes();
-        &bytes[..len.min(bytes.len())]
-    }
-
-    fn bytes(&self) -> &[u8] {
-        let bytes = self.storage.bytes();
-        &bytes[..(self.len as usize).min(bytes.len())]
+    pub(crate) fn with_head<T>(&self, len: u64, use_bytes: impl FnOnce(&[u8]) -> T) -> T {
+        self.storage.with_range(0..len.min(self.len), use_bytes)
     }
 
     fn is_boundary(&self, offset: usize) -> bool {
-        let bytes = self.bytes();
-        offset == bytes.len() || bytes.get(offset).is_some_and(|&b| (b & 0xC0) != 0x80)
+        let offset = offset as u64;
+        offset == self.len
+            || self
+                .storage
+                .byte(offset)
+                .is_some_and(|b| (b & 0xC0) != 0x80)
     }
 
     /// 第 `line` 行内容的字节区间（不含终止符）。
+    fn visit_decoded(
+        &self,
+        start: usize,
+        end: usize,
+        mut visitor: impl FnMut(&str) -> bool,
+    ) -> Result<()> {
+        let mut from = start as u64;
+        let end = end as u64;
+        while from < end {
+            let boundary = (from / PAGE_BYTES + 1) * PAGE_BYTES;
+            let mut to = end.min(boundary);
+            if to < end {
+                let limit = from.max(to.saturating_sub(3));
+                while to > limit && !self.is_boundary(to as usize) {
+                    to -= 1;
+                }
+                if to == from {
+                    to = end.min(from + 4);
+                }
+            }
+            let keep_going = self.storage.with_range(from..to, |bytes| {
+                if bytes.len() as u64 != to - from {
+                    return Err(Error::NotReady);
+                }
+                for chunk in bytes.utf8_chunks() {
+                    if !chunk.valid().is_empty() && !visitor(chunk.valid()) {
+                        return Ok(false);
+                    }
+                    let mut invalid = chunk.invalid().len();
+                    while invalid > 0 {
+                        let count = invalid.min(SUBSTITUTE.len());
+                        if !visitor(&SUBSTITUTE[..count]) {
+                            return Ok(false);
+                        }
+                        invalid -= count;
+                    }
+                }
+                Ok(true)
+            })?;
+            if !keep_going {
+                break;
+            }
+            from = to;
+        }
+        Ok(())
+    }
+
     fn line_bytes(&self, line: u64) -> Result<(usize, usize)> {
         let index = self.shared.read();
         let starts = index.starts();
@@ -415,8 +471,7 @@ impl MappedText {
 
     /// `next` 之前的行终止符长度。内容被外部改写时可能为 0，调用方不能假定 > 0。
     fn terminator_len(&self, start: u64, next: u64) -> u64 {
-        let bytes = self.bytes();
-        let at = |offset: u64| bytes.get(offset as usize).copied();
+        let at = |offset: u64| self.storage.byte(offset);
         match next.checked_sub(1).and_then(at) {
             Some(b'\n') if next >= start + 2 && at(next - 2) == Some(b'\r') => 2,
             Some(b'\n' | b'\r') => 1,
@@ -426,26 +481,59 @@ impl MappedText {
     }
 }
 
-fn load_storage(file: &File, file_len: u64, encoding: MappedEncoding) -> Result<Storage> {
+fn load_storage(
+    path: &Path,
+    file: &File,
+    stamp: &FileStamp,
+    encoding: MappedEncoding,
+    shared_reads: bool,
+) -> Result<Storage> {
+    let file_len = stamp.len;
     let skip = encoding.bom_len.min(file_len as usize);
     if file_len == 0 {
-        return Ok(Storage::Owned(Box::default()));
+        return Ok(Storage::owned(Box::default(), shared_reads));
     }
-    // SAFETY: 映射是只读的；文件在外部被改写时内容可能变化，所有读取都做边界检查，
-    // 不依赖内容是合法 UTF-8，也不依赖索引与内容一致。Windows 上被映射的文件不能被截断。
+    if shared_reads && encoding.encoding == UTF_8 {
+        return Ok(Storage::disk(
+            path.to_owned(),
+            file.try_clone()?,
+            stamp.identity,
+            skip as u64,
+            file_len - skip as u64,
+            None,
+        ));
+    }
+    if shared_reads {
+        let mut input = Vec::new();
+        let mut file = file.try_clone()?;
+        file.seek(SeekFrom::Start(skip as u64))?;
+        file.read_to_end(&mut input)?;
+        let (text, _) = encoding.encoding.decode_without_bom_handling(&input);
+        return Ok(Storage::owned(
+            text.into_owned().into_bytes().into_boxed_slice(),
+            true,
+        ));
+    }
+    // SAFETY: the mapping is read-only. Readers check byte boundaries and tolerate
+    // invalid text. A following editor switches to shared reads before allowing truncation.
     let map = unsafe { Mmap::map(file)? };
     if encoding.encoding == UTF_8 {
-        return Ok(Storage::Mapped {
-            map,
-            skip,
-            file: file.try_clone()?,
-        });
+        let len = map.len().saturating_sub(skip) as u64;
+        return Ok(Storage::disk(
+            path.to_owned(),
+            file.try_clone()?,
+            stamp.identity,
+            skip as u64,
+            len,
+            Some(map),
+        ));
     }
     let (text, _) = encoding
         .encoding
         .decode_without_bom_handling(map.get(skip..).unwrap_or_default());
-    Ok(Storage::Owned(
+    Ok(Storage::owned(
         text.into_owned().into_bytes().into_boxed_slice(),
+        false,
     ))
 }
 
@@ -557,22 +645,17 @@ impl TextSource for MappedText {
     fn visit_chunks(&self, range: ByteRange, visitor: &mut dyn FnMut(&str)) -> Result<()> {
         let start = usize::try_from(range.start().0).map_err(|_| Error::OutOfBounds)?;
         let end = usize::try_from(range.end().0).map_err(|_| Error::OutOfBounds)?;
-        let bytes = self.bytes();
-        if start > end || end > bytes.len() || !self.is_boundary(start) || !self.is_boundary(end) {
+        if start > end
+            || end as u64 > self.len
+            || !self.is_boundary(start)
+            || !self.is_boundary(end)
+        {
             return Err(Error::OutOfBounds);
         }
-        for chunk in bytes[start..end].utf8_chunks() {
-            if !chunk.valid().is_empty() {
-                visitor(chunk.valid());
-            }
-            let mut invalid = chunk.invalid().len();
-            while invalid > 0 {
-                let take = invalid.min(SUBSTITUTE.len());
-                visitor(&SUBSTITUTE[..take]);
-                invalid -= take;
-            }
-        }
-        Ok(())
+        self.visit_decoded(start, end, |chunk| {
+            visitor(chunk);
+            true
+        })
     }
 
     fn offset(&self, position: Position) -> Result<ByteOffset> {
@@ -618,26 +701,21 @@ impl TextSource for MappedText {
         if target == 0 {
             return Ok(Utf8Column(0));
         }
-        for chunk in self.bytes()[start..end].utf8_chunks() {
-            for character in chunk.valid().chars() {
+        let mut result = Err(Error::OutOfBounds);
+        self.visit_decoded(start, end, |chunk| {
+            for character in chunk.chars() {
                 units += character.len_utf16() as u64;
                 bytes += character.len_utf8();
                 if units >= target {
-                    return if units == target {
-                        Ok(Utf8Column(bytes as u64))
-                    } else {
-                        Err(Error::OutOfBounds)
-                    };
+                    if units == target {
+                        result = Ok(Utf8Column(bytes as u64));
+                    }
+                    return false;
                 }
             }
-            let invalid = chunk.invalid().len() as u64;
-            if units + invalid >= target {
-                return Ok(Utf8Column(bytes as u64 + (target - units)));
-            }
-            units += invalid;
-            bytes += invalid as usize;
-        }
-        Err(Error::OutOfBounds)
+            true
+        })?;
+        result
     }
 
     fn utf8_to_utf16(&self, line: Line, column: Utf8Column) -> Result<Utf16Column> {
@@ -648,15 +726,14 @@ impl TextSource for MappedText {
             return Err(Error::OutOfBounds);
         }
         let mut units = 0u64;
-        for chunk in self.bytes()[start..byte].utf8_chunks() {
-            // 合法 UTF-8：每个非续字节是一个字符，4 字节字符（首字节 ≥ 0xF0）占两个码元。
+        self.visit_decoded(start, byte, |chunk| {
+            // 合法 UTF-8：每个非续字节是一个字符，4 字节字符占两个码元。
             units += chunk
-                .valid()
                 .bytes()
                 .map(|b| u64::from((b & 0xC0) != 0x80) + u64::from(b >= 0xF0))
                 .sum::<u64>();
-            units += chunk.invalid().len() as u64;
-        }
+            true
+        })?;
         Ok(Utf16Column(units))
     }
 }
@@ -690,6 +767,75 @@ mod tests {
 
     fn span(start: u64, end: u64) -> ByteRange {
         Span::new(ByteOffset(start), ByteOffset(end)).unwrap()
+    }
+
+    #[test]
+    fn shared_reads_release_the_original_file_mapping_before_truncation() {
+        use std::io::Write as _;
+        let original = "before rotation\r\n".repeat(128);
+        let (_dir, text) = open(original.as_bytes());
+        let still_open = text.clone();
+        assert!(text.is_memory_mapped());
+        assert!(text.enable_shared_reads());
+        assert!(!still_open.is_memory_mapped());
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(text.path())
+            .unwrap();
+        writer.set_len(0).unwrap();
+        writer.write_all(b"replacement\n").unwrap();
+        writer.flush().unwrap();
+        let Reload::Replaced(next) = text.reload().unwrap() else {
+            panic!("the new generation must rebuild");
+        };
+        assert!(!next.is_memory_mapped());
+        assert_eq!(collect(&*next, span(0, next.byte_len())), "replacement\n");
+        assert_eq!(next.lines().known, 2);
+    }
+
+    #[test]
+    fn decoded_snapshots_keep_their_open_policy_across_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("utf16.log");
+        std::fs::write(&path, [b'a', 0, b'\n', 0]).unwrap();
+        let ordinary = MappedText::open(
+            &path,
+            MappedEncoding {
+                encoding: encoding_rs::UTF_16LE,
+                bom_len: 0,
+            },
+        )
+        .unwrap();
+        assert!(!ordinary.storage.uses_shared_reads());
+        std::fs::write(&path, [b'b', 0, b'\n', 0, b'c', 0]).unwrap();
+        let Reload::Replaced(reloaded) = ordinary.reload().unwrap() else {
+            panic!("the decoded input needs to be reloaded");
+        };
+        assert!(!reloaded.storage.uses_shared_reads());
+        assert!(reloaded.enable_shared_reads());
+        std::fs::write(&path, [b'd', 0, b'\n', 0]).unwrap();
+        let Reload::Replaced(followed) = reloaded.reload().unwrap() else {
+            panic!("the followed input needs to be reloaded");
+        };
+        assert!(followed.storage.uses_shared_reads());
+    }
+
+    #[test]
+    fn shared_reader_preserves_a_scalar_across_cached_page_boundaries() {
+        let prefix = "a".repeat(PAGE_BYTES as usize - 1);
+        let text = format!("{prefix}😀in the next page\r\n雪");
+        let rope = crate::RopeText::from_text(&text);
+        let (_dir, shared) = open(text.as_bytes());
+        assert!(shared.enable_shared_reads());
+        assert_eq!(collect(&*shared, span(0, shared.byte_len())), text);
+        assert_eq!(shared.line_range(Line(1)), rope.line_range(Line(1)));
+        for delta in 0..=4 {
+            let column = Utf16Column(PAGE_BYTES - 2 + delta);
+            assert_eq!(
+                shared.utf16_to_utf8(Line(0), column),
+                rope.utf16_to_utf8(Line(0), column)
+            );
+        }
     }
 
     #[test]

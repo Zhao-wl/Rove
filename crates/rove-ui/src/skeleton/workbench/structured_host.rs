@@ -1375,7 +1375,7 @@ impl OwnedFormatOptions {
     }
 }
 
-fn document_text(
+pub(super) fn document_text(
     source: &dyn TextSource,
     range: Option<ByteRange>,
     cancel: &Cancellation,

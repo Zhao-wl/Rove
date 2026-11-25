@@ -20,6 +20,12 @@ use rove_buffer::{DocumentMetadata, SizeClass, TextSource};
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
+pub(super) enum WorkspaceRenameSource {
+    Filesystem,
+    ConfirmedOperation,
+    InlineNameEdit,
+}
+
 /// 窗口的编辑与保存状态。
 #[derive(Default)]
 pub(super) struct Editing {
@@ -391,7 +397,7 @@ impl Workbench {
         let Some(current) = self.open_document(document) else {
             return;
         };
-        let (snapshot, line_endings, selection) = {
+        let (snapshot, encoding, bom, line_endings, selection) = {
             let saves = self.editing.saves.borrow();
             let Some(file) = saves.file(document) else {
                 return;
@@ -403,7 +409,13 @@ impl Workbench {
                 .ok()
                 .zip(snapshot.position(primary.active).ok())
                 .map(|(a, b)| Selection::new(a, b));
-            (snapshot, file.line_endings().clone(), selection)
+            (
+                snapshot,
+                file.encoding().clone(),
+                file.bom(),
+                file.line_endings().clone(),
+                selection,
+            )
         };
         if snapshot.version() == current.text.version() {
             return;
@@ -413,6 +425,8 @@ impl Workbench {
             id: current.id,
             resource: current.resource.clone(),
             metadata: DocumentMetadata {
+                encoding,
+                bom,
                 line_endings,
                 ..current.metadata.clone()
             },
@@ -872,9 +886,24 @@ impl Workbench {
     pub(super) fn follow_workspace_renames(
         &mut self,
         events: &[FileEvent],
+        source: WorkspaceRenameSource,
         cx: &mut Context<Self>,
     ) {
         use rove_workspace::file_operations::path_after_rename;
+        if !events
+            .iter()
+            .any(|event| matches!(event, FileEvent::Renamed { .. }))
+        {
+            return;
+        }
+        let followed = if matches!(source, WorkspaceRenameSource::ConfirmedOperation) {
+            Vec::new()
+        } else {
+            self.followed_resources()
+        };
+        if matches!(source, WorkspaceRenameSource::InlineNameEdit) && followed.is_empty() {
+            return;
+        }
         let root = self.root.clone();
         let canonical_root = self
             .explorer
@@ -895,6 +924,14 @@ impl Workbench {
                 continue;
             };
             let map = |resource: &Resource| {
+                let eligible = match source {
+                    WorkspaceRenameSource::Filesystem => !followed.contains(resource),
+                    WorkspaceRenameSource::ConfirmedOperation => true,
+                    WorkspaceRenameSource::InlineNameEdit => followed.contains(resource),
+                };
+                if !eligible {
+                    return None;
+                }
                 let target = match resource {
                     Resource::Workspace(path) => {
                         path_after_rename(path, from, to).map(Resource::Workspace)
@@ -919,6 +956,7 @@ impl Workbench {
                         .saves
                         .borrow_mut()
                         .follow_rename(document.id, &from, &to);
+                    self.rebind_followed_document(&document, &to);
                     if let (Some(files), Some(relative)) = (&self.editing.files, under_root(&to)) {
                         files.follow_rename(
                             &original,
@@ -949,7 +987,10 @@ impl Workbench {
                     FileEvent::RescanRequired => Vec::new(),
                 };
                 for p in paths {
-                    saves.note_change(&self.root.join(p.as_str()), now);
+                    let path = self.root.join(p.as_str());
+                    if !self.follows_disk_path(&path) {
+                        saves.note_change(&path, now);
+                    }
                 }
             }
         }

@@ -77,6 +77,11 @@ pub enum ExplorerEvent {
     /// 空状态按钮的命令 ID（`workbench.action.files.openFolder`）。
     Command(Arc<str>),
     AddToBasket(Vec<WorkspacePath>),
+    /// The inline filesystem rename completed successfully.
+    NameRenamed {
+        from: WorkspacePath,
+        to: WorkspacePath,
+    },
     UndoRecorded(Vec<ExplorerUndo>),
     MoveDropped {
         paths: Vec<WorkspacePath>,
@@ -589,6 +594,17 @@ impl ExplorerView {
     /// 文件事件的增量应用：只重新装填受影响的节点，展开状态与选中项按 ID 保留。
     pub fn files_changed(&mut self, events: &[FileEvent], cx: &mut Context<Self>) {
         if self.branch_filter.enabled {
+            return;
+        }
+        // Changed also carries file attributes. Preserve permission badges and
+        // keep using events to restore pending inline edits or reveals.
+        if !self.settings.readonly_from_permissions
+            && self.rename_or_create_reveal.is_none()
+            && self.render.borrow().name_edit.is_none()
+            && events
+                .iter()
+                .all(|event| matches!(event, FileEvent::Changed(_)))
+        {
             return;
         }
         let Some(source) = self.source.clone() else {

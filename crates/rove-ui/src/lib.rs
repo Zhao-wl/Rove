@@ -72,5 +72,6 @@ mod file_icons;
 
 // #66: context basket model, tracking, export and persistence.
 pub(crate) mod context_basket;
+pub(crate) mod follow_tail;
 // #71: graphical editor for the shared user settings.
 pub mod settings_ui;

@@ -378,14 +378,20 @@ fn preview_to_side_and_title_button(cx: &mut TestAppContext) {
     });
     // 标题栏按钮：源码组显示“显示预览”，预览组显示“显示源码”。
     view.read_with(cx, |v, _| {
-        let entries: Vec<_> = v
-            .shell
-            .contributions
-            .entries()
-            .filter(|(_, c)| matches!(c.placement, crate::contributions::Placement::EditorTitle))
-            .map(|(id, _)| id.to_string())
-            .collect();
-        assert_eq!(entries.len(), 2);
+        for id in [
+            crate::markdown::registry::TITLE_SHOW_SOURCE,
+            crate::markdown::registry::TITLE_SHOW_PREVIEW,
+        ] {
+            let entry = v
+                .shell
+                .contributions
+                .get(id)
+                .expect("registered Markdown title action");
+            assert!(matches!(
+                entry.placement,
+                crate::contributions::Placement::EditorTitle
+            ));
+        }
     });
     let preview_group = view.read_with(cx, |v, _| {
         *v.editor

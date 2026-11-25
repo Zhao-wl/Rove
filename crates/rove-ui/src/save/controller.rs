@@ -217,7 +217,7 @@ impl SaveController {
         self.file_operations.remove(&ticket);
     }
 
-    fn path_is_reserved(&self, path: &Path) -> bool {
+    pub(crate) fn path_is_reserved(&self, path: &Path) -> bool {
         self.file_operations
             .values()
             .flatten()

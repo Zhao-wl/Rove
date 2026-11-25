@@ -117,6 +117,7 @@ pub fn default_commands() -> Result<CommandCenter> {
     crate::about::registry::register_commands(&mut registry)?;
     // #149：检查更新 / 重启以更新。
     crate::update::registry::register_commands(&mut registry)?;
+    crate::follow_tail::register_commands(&mut registry)?;
     let mut center = CommandCenter::default();
     for (id, command) in registry.entries() {
         center.register(id, command.clone())?;
@@ -176,6 +177,7 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         .or_else(|| crate::about::registry::action_for(id))
         // #149：检查更新 / 重启以更新（窗口在 `update_host` 里处理）。
         .or_else(|| crate::update::registry::action_for(id))
+        .or_else(|| crate::follow_tail::action_for(id))
 }
 
 /// Whether the module that owns `id` implements it, i.e. it provides a GPUI action

@@ -9,6 +9,7 @@ use crate::status_items::registry::READ_ONLY;
 // #27 删掉了骨架的固定状态栏内容，`workbench.rs` 不再导入 `StatusEntry`。
 use crate::shell::status::StatusEntry;
 use gpui::{TestAppContext, VisualTestContext};
+use rove_base::{ByteOffset, ByteRange, Span};
 use rove_config::{SettingsOptions, SettingsService};
 
 /// 阈值调到 4 KB：下面的文件都按“超大文件”处理。
@@ -76,7 +77,7 @@ fn settle(cx: &mut VisualTestContext) {
     }
 }
 
-fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
+pub(super) fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
     view.update(cx, |v, cx| {
         v.open_documents()
             .open(
@@ -93,7 +94,7 @@ fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
     refresh(cx);
 }
 
-fn document(view: &Entity<Workbench>, cx: &VisualTestContext) -> Arc<Document> {
+pub(super) fn document(view: &Entity<Workbench>, cx: &VisualTestContext) -> Arc<Document> {
     view.read_with(cx, |v, _| v.active_large_file_document().unwrap())
 }
 
@@ -862,4 +863,700 @@ impl rove_buffer::TextSource for Pending {
     ) -> rove_base::Result<rove_base::Utf16Column> {
         self.inner.utf8_to_utf16(l, c)
     }
+}
+
+#[track_caller]
+pub(super) fn wait_tail(
+    cx: &mut VisualTestContext,
+    mut condition: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        refresh(cx);
+        if condition(cx) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "tail did not converge");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn disk_append(path: &std::path::Path, suffix: &str) {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    file.write_all(suffix.as_bytes()).unwrap();
+    file.flush().unwrap();
+}
+
+fn decoded(document: &Document, range: ByteRange) -> String {
+    let mut text = String::new();
+    document
+        .text
+        .visit_chunks(range, &mut |chunk| text.push_str(chunk))
+        .unwrap();
+    text
+}
+
+fn tail_has_line(document: &Document, line: &str) -> bool {
+    let last = document.text.lines().known.saturating_sub(2);
+    document
+        .text
+        .line_range(Line(last))
+        .is_ok_and(|range| decoded(document, range) == line)
+}
+
+#[gpui::test]
+fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut TestAppContext) {
+    use crate::follow_tail as tail;
+    let fixture = Fixture::new(SETTINGS);
+    let path = fixture.folder.path().join("big.log");
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    let original = document(&view, cx);
+    wait_tail(cx, |cx| {
+        original.text.lines().complete && document(&view, cx).text.lines().complete
+    });
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    let group = view.read_with(cx, |view, _| view.editor.focused);
+    let button = match group.0 {
+        0 => "editor-title-follow-0",
+        1 => "editor-title-follow-1",
+        _ => panic!("unexpected initial group"),
+    };
+    let button = cx
+        .debug_bounds(button)
+        .expect("follow title button")
+        .center();
+    cx.simulate_click(button, gpui::Modifiers::default());
+    settle(cx);
+    let menu = cx
+        .debug_bounds("editor-title-follow-menu-action")
+        .expect("follow title menu action")
+        .center();
+    cx.simulate_click(menu, gpui::Modifiers::default());
+    wait_tail(cx, |cx| {
+        code.read_with(cx, |code, _| code.scroll_position().top > 0.0)
+    });
+    assert_eq!(
+        status(&view, tail::FOLLOW_STATUS, cx).unwrap().text,
+        "跟随末尾"
+    );
+    assert!(status(&view, READ_ONLY, cx).is_some());
+    let baseline_reopens = view.read_with(cx, |view, _| view.follow_tail.counts.reopens);
+
+    disk_append(&path, "first append\n");
+    wait_tail(cx, |cx| tail_has_line(&document(&view, cx), "first append"));
+    let (first_end, first_line, point) = cx.update(|window, app| {
+        window.draw(app).clear();
+        let code = code.read(app);
+        (
+            code.scroll_position().top,
+            code.last_frame().first_line,
+            code.layout.text.center(),
+        )
+    });
+    assert!(first_end > 5_000.0);
+
+    code.update(cx, |code, _| code.record_frames(true));
+    let first_scroll_frame = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let observed_frame = first_scroll_frame.clone();
+    let observed_view = view.clone();
+    // GPUI delivers the viewport event after drawing, before another frame can replace it.
+    let subscription = cx.update(|window, app| {
+        let window = window.window_handle();
+        app.subscribe(&code, move |code, event: &CodeViewEvent, app| {
+            if !matches!(event, CodeViewEvent::ViewportChanged(_))
+                || observed_frame.borrow().is_some()
+            {
+                return;
+            }
+            let status = observed_view
+                .read(app)
+                .shell
+                .status_bar
+                .get(tail::FOLLOW_STATUS)
+                .map(|entry| entry.text.clone());
+            let painted = window
+                .update(app, |_, window, _| {
+                    window
+                        .debug_painted_bounds("status-rove.status.followTail")
+                        .is_some()
+                })
+                .unwrap();
+            let frames = code.update(app, |code, _| code.take_frame_samples());
+            *observed_frame.borrow_mut() = Some((status, painted, frames));
+        })
+    });
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: point,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 8.0)),
+        ..Default::default()
+    });
+    drop(subscription);
+    code.update(cx, |code, _| code.record_frames(false));
+
+    let (first_status, painted, frames) = first_scroll_frame
+        .borrow_mut()
+        .take()
+        .expect("the first scrolled editor frame was painted");
+    assert_eq!(first_status.as_deref(), Some("已暂停跟随"));
+    assert!(painted, "the paused status belongs to that painted frame");
+    assert_eq!(frames.len(), 1, "expected the first editor frame");
+    assert!(frames[0].first_line < first_line);
+    let paused = code.read_with(cx, |code, _| code.scroll_position().top);
+    assert!(paused < first_end);
+
+    disk_append(&path, "second append\n");
+    wait_tail(cx, |cx| {
+        tail_has_line(&document(&view, cx), "second append")
+    });
+    assert_eq!(
+        code.read_with(cx, |code, _| code.scroll_position().top),
+        paused
+    );
+    let resume = cx
+        .debug_bounds("status-rove.status.followTail")
+        .expect("follow status is rendered")
+        .center();
+    cx.simulate_click(resume, gpui::Modifiers::default());
+    wait_tail(cx, |cx| {
+        code.read_with(cx, |code, _| code.scroll_position().top > paused)
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.follow_tail.counts.appends, 2);
+        assert_eq!(view.follow_tail.counts.reopens, baseline_reopens);
+    });
+
+    assert!(cx.update(|window, cx| code.focus_handle(cx).is_focused(window)));
+    cx.simulate_keystrokes("ctrl-home");
+    wait_tail(cx, |cx| {
+        status(&view, tail::FOLLOW_STATUS, cx).is_some_and(|entry| entry.text == "已暂停跟随")
+    });
+    cx.simulate_keystrokes("ctrl-end");
+    wait_tail(cx, |cx| {
+        status(&view, tail::FOLLOW_STATUS, cx).is_some_and(|entry| entry.text == "跟随末尾")
+    });
+
+    // Rename the live Windows file while the previous snapshot is retained.
+    // The replacement at the original path must decode its new UTF-16 BOM.
+    std::fs::rename(&path, fixture.folder.path().join("archived.log")).unwrap();
+    let mut replacement = vec![0xff, 0xfe];
+    replacement.extend("rotated\n".encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(&path, replacement).unwrap();
+    wait_tail(cx, |cx| {
+        let replacement = document(&view, cx);
+        replacement.text.lines().complete
+            && replacement.text.byte_len() == 8
+            && tail_has_line(&replacement, "rotated")
+    });
+    let replacement = document(&view, cx);
+    assert_eq!(replacement.id, original.id);
+    assert_eq!(replacement.resource, original.resource);
+    assert!(replacement.metadata.bom);
+    assert_ne!(replacement.metadata.encoding, original.metadata.encoding);
+    let retained_reasons: Vec<_> = original
+        .metadata
+        .read_only
+        .iter()
+        .filter(|reason| !matches!(reason, ReadOnlyReason::HugeFile))
+        .cloned()
+        .collect();
+    assert_eq!(replacement.metadata.read_only.as_ref(), retained_reasons);
+    assert!(view.read_with(cx, |view, _| view.follow_tail.counts.reopens) > 0);
+
+    open_file(&view, "small.txt", cx);
+    assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
+    open_file(&view, "big.log", cx);
+    assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
+}
+
+#[gpui::test]
+fn r66_followed_logs_in_two_groups_keep_independent_state(cx: &mut TestAppContext) {
+    use crate::follow_tail as tail;
+
+    let fixture = Fixture::new(SETTINGS);
+    let left_path = fixture.folder.path().join("big.log");
+    let right_path = fixture.folder.path().join("other.log");
+    std::fs::copy(&left_path, &right_path).unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    let left = view.read_with(cx, |view, _| view.editor.focused);
+    let left_resource = document(&view, cx).resource.clone();
+
+    view.update(cx, |view, cx| view.command(tail::FOLLOW, cx));
+    wait_tail(cx, |cx| status(&view, tail::FOLLOW_STATUS, cx).is_some());
+    cx.simulate_keystrokes("ctrl-\\");
+    settle(cx);
+    open_file(&view, "other.log", cx);
+    let right = view.read_with(cx, |view, _| view.editor.focused);
+    let right_resource = document(&view, cx).resource.clone();
+    assert_ne!(left, right);
+    assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
+
+    view.update(cx, |view, cx| view.command(tail::FOLLOW, cx));
+    wait_tail(cx, |cx| status(&view, tail::FOLLOW_STATUS, cx).is_some());
+    view.read_with(cx, |view, _| {
+        let followed = view.followed_resources();
+        assert_eq!(followed.len(), 2);
+        assert!(followed.contains(&left_resource) && followed.contains(&right_resource));
+    });
+
+    let shows_tail = |cx: &VisualTestContext, group, expected| {
+        view.read_with(cx, |view, cx| {
+            let Some(document) = view.shown_document(group, false) else {
+                return false;
+            };
+            let count = document.text.lines().known;
+            tail_has_line(&document, expected)
+                && view
+                    .group_code(group, false)
+                    .and_then(|code| code.read(cx).viewport())
+                    .is_some_and(|viewport| viewport.last_line + 1 >= count)
+        })
+    };
+    disk_append(&left_path, "left group append\n");
+    disk_append(&right_path, "right group append\n");
+    wait_tail(cx, |cx| {
+        shows_tail(cx, left, "left group append") && shows_tail(cx, right, "right group append")
+    });
+
+    view.update(cx, |view, cx| {
+        view.command("workbench.action.closeActiveEditor", cx)
+    });
+    settle(cx);
+    view.read_with(cx, |view, _| {
+        assert!(!view
+            .editor
+            .in_group(right)
+            .iter()
+            .any(|tab| tab.resource == right_resource));
+        assert_eq!(view.followed_resources(), [left_resource]);
+    });
+    disk_append(&left_path, "still followed after closing other group\n");
+    wait_tail(cx, |cx| {
+        shows_tail(cx, left, "still followed after closing other group")
+    });
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn r66_tracks_a_fast_same_handle_truncation_that_preserves_both_samples(cx: &mut TestAppContext) {
+    use std::io::Write as _;
+    let fixture = Fixture::new(SETTINGS);
+    let path = fixture.folder.path().join("big.log");
+    let original = format!(
+        "{}before rotation\n{}",
+        "identical leading rows\n".repeat(450),
+        "identical trailing rows\n".repeat(450),
+    );
+    let replacement =
+        original.replace("before rotation", "after! rotation") + "final rotated row\n";
+    assert_eq!(&original[..4096], &replacement[..4096]);
+    assert_eq!(
+        &original[original.len() - 4096..],
+        &replacement[original.len() - 4096..original.len()]
+    );
+    std::fs::write(&path, original).unwrap();
+
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    let old = document(&view, cx);
+    assert_eq!(old.metadata.size, rove_buffer::SizeClass::Huge);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+    });
+
+    let baseline_reopens = view.read_with(cx, |view, _| view.follow_tail.counts.reopens);
+    // Even with a previous TextSource reference alive, Windows must let the
+    // same writer handle truncate and write back a file longer than the old one.
+    let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    writer.set_len(0).unwrap();
+    writer.write_all(replacement.as_bytes()).unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+    wait_tail(cx, |cx| {
+        let current = document(&view, cx);
+        current.text.lines().complete && tail_has_line(&current, "final rotated row")
+    });
+    let current = document(&view, cx);
+    assert_eq!(current.id, old.id);
+    assert_eq!(current.resource, old.resource);
+    let range = Span::new(ByteOffset(0), ByteOffset(current.text.byte_len())).unwrap();
+    assert_eq!(decoded(&current, range), replacement);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.follow_tail.counts.appends, 0);
+        assert!(view.follow_tail.counts.reopens > baseline_reopens);
+    });
+}
+
+#[gpui::test]
+fn r66_formatted_copy_uses_the_real_truncation_action_and_preserves_disk(cx: &mut TestAppContext) {
+    use crate::follow_tail as tail;
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 65536, "editor.stopRenderingLineAfter": 400 }"#,
+    );
+    let path = fixture.folder.path().join("min.json");
+    let before = std::fs::read(&path).unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "small.txt", cx);
+    cx.simulate_keystrokes("ctrl-shift-p");
+    cx.simulate_input("格式化后查看");
+    settle(cx);
+    view.read_with(cx, |view, app| {
+        let palette = view.quick.view.as_ref().expect("command palette").read(app);
+        let list = &palette.service.active().expect("opened palette").list;
+        assert!(!list
+            .display_rows(0..list.len())
+            .iter()
+            .any(|row| { row.label.contains("格式化后查看") }));
+    });
+    cx.simulate_keystrokes("escape");
+    open_file(&view, "min.json", cx);
+    let source = document(&view, cx);
+    view.read_with(cx, |view, _| {
+        assert!(view.follow_command_visible(tail::FORMATTED))
+    });
+
+    // Cancel from the same UI turn before a result can open, then use the line-end action.
+    view.update(cx, |view, cx| {
+        view.command(tail::FORMATTED, cx);
+        assert!(view.shell.status_bar.get(tail::FORMAT_STATUS).is_some());
+        assert!(view.cancel_formatted_preview(cx));
+    });
+    settle(cx);
+    assert_eq!(document(&view, cx).id, source.id);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    let ([_, action], _) = truncation_points(&code, cx);
+    cx.simulate_click(action, gpui::Modifiers::default());
+    wait_tail(cx, |cx| document(&view, cx).id != source.id);
+    let preview = document(&view, cx);
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.formatted_tab_title(&preview.resource).as_deref(),
+            Some("min.json（格式化后）")
+        );
+        assert!(view.open_document(source.id).is_some());
+    });
+    assert!(!preview.metadata.read_only.is_empty());
+    assert!(status(&view, READ_ONLY, cx)
+        .unwrap()
+        .tooltip
+        .unwrap()
+        .contains("格式化后的只读副本"));
+    let range = Span::new(ByteOffset(0), ByteOffset(preview.text.byte_len())).unwrap();
+    assert!(decoded(&preview, range).starts_with("{\n    \"a\": \""));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[gpui::test]
+fn r66_ordinary_tail_appends_and_custom_command_bindings_work(cx: &mut TestAppContext) {
+    use crate::follow_tail as tail;
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 65536, "editor.stopRenderingLineAfter": 400 }"#,
+    );
+    let path = fixture.folder.path().join("small.txt");
+    std::fs::write(&path, "log line\r\n".repeat(150)).unwrap();
+    let keybindings = fixture._user.path().join("keybindings.json");
+    std::fs::write(
+        &keybindings,
+        r#"[{"key":"ctrl+alt+t","command":"rove.editor.followTail"},
+            {"key":"ctrl+alt+j","command":"rove.editor.viewFormatted"}]"#,
+    )
+    .unwrap();
+    cx.update(|cx| crate::keys::watch_user_file(keybindings, cx));
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "small.txt", cx);
+    let initial = document(&view, cx);
+    assert_ne!(initial.metadata.size, rove_buffer::SizeClass::Huge);
+    cx.simulate_keystrokes("ctrl-alt-t");
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.follow_tail.has_ordinary_baseline(initial.id)
+        })
+    });
+    disk_append(&path, "ordinary append\r\n");
+    wait_tail(cx, |cx| {
+        tail_has_line(&document(&view, cx), "ordinary append")
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.follow_tail.counts.appends, 1);
+        assert_eq!(view.follow_tail.counts.reopens, 0);
+        assert!(!view.editing.saves.borrow().is_dirty(initial.id));
+    });
+    std::fs::write(&path, "after truncation\n").unwrap();
+    wait_tail(cx, |cx| {
+        tail_has_line(&document(&view, cx), "after truncation")
+    });
+    assert_eq!(document(&view, cx).id, initial.id);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.follow_tail.counts.reopens),
+        1
+    );
+
+    view.update(cx, |view, cx| {
+        view.command("workbench.action.closeActiveEditor", cx)
+    });
+    settle(cx);
+    assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
+    open_file(&view, "min.json", cx);
+    let source = document(&view, cx);
+    cx.simulate_keystrokes("ctrl-alt-j");
+    wait_tail(cx, |cx| document(&view, cx).id != source.id);
+    let preview = document(&view, cx);
+    assert!(view.read_with(cx, |view, _| {
+        view.formatted_tab_title(&preview.resource).is_some()
+    }));
+}
+
+#[gpui::test]
+fn r66_external_parent_rotation_keeps_the_log_path_and_updates_other_tabs(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "workbench.editor.closeOnFileDelete": true, "workbench.editor.enablePreview": false }"#,
+    );
+    let parent = fixture.folder.path().join("Logs");
+    let archive = fixture.folder.path().join("Archive");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::write(parent.join("Editor.log"), "old log line\n".repeat(600)).unwrap();
+    std::fs::write(parent.join("notes.txt"), "notes\n").unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "Logs/notes.txt", cx);
+    let notes = document(&view, cx).id;
+    open_file(&view, "small.txt", cx);
+    let removed = document(&view, cx).id;
+    open_file(&view, "Logs/Editor.log", cx);
+    let original = document(&view, cx);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+            && document(&view, cx).text.lines().complete
+    });
+
+    std::fs::rename(&parent, &archive).unwrap();
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::write(parent.join("Editor.log"), "replacement log\n".repeat(600)).unwrap();
+    std::fs::remove_file(fixture.folder.path().join("small.txt")).unwrap();
+    let workspace = |path| WorkspacePath::new(path).unwrap();
+    view.update(cx, |view, cx| {
+        view.apply_explorer_workspace_events(
+            vec![
+                FileEvent::Renamed {
+                    from: workspace("Logs"),
+                    to: workspace("Archive"),
+                },
+                FileEvent::Removed(workspace("Logs/Editor.log")),
+                FileEvent::Created(workspace("Logs/Editor.log")),
+                FileEvent::Removed(workspace("small.txt")),
+            ],
+            cx,
+        );
+    });
+    wait_tail(cx, |cx| {
+        tail_has_line(&document(&view, cx), "replacement log")
+    });
+    let log = document(&view, cx);
+    assert_eq!(log.id, original.id);
+    assert_eq!(
+        log.resource,
+        Resource::Workspace(workspace("Logs/Editor.log"))
+    );
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.open_document(notes).unwrap().resource,
+            Resource::Workspace(workspace("Archive/notes.txt"))
+        );
+        assert!(view.open_document(removed).is_none());
+    });
+}
+
+#[gpui::test]
+fn r66_same_turn_follow_exit_allows_an_external_rename(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "workbench.editor.enablePreview": false }"#,
+    );
+    std::fs::copy(
+        fixture.folder.path().join("big.log"),
+        fixture.folder.path().join("other.log"),
+    )
+    .unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "small.txt", cx);
+    let other_tab = view.read_with(cx, |view, _| view.editor.active().current().unwrap().id);
+
+    for (source, target, switch_tab) in [
+        ("big.log", "archived-big.log", false),
+        ("other.log", "archived-other.log", true),
+    ] {
+        open_file(&view, source, cx);
+        let original = document(&view, cx).id;
+        view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+        wait_tail(cx, |cx| {
+            status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+        });
+        std::fs::rename(
+            fixture.folder.path().join(source),
+            fixture.folder.path().join(target),
+        )
+        .unwrap();
+        let from = WorkspacePath::new(source).unwrap();
+        let to = WorkspacePath::new(target).unwrap();
+        view.update(cx, |view, cx| {
+            if switch_tab {
+                view.switch_tab(view.editor.focused, other_tab);
+            } else {
+                view.command(crate::follow_tail::FOLLOW, cx);
+            }
+            view.apply_explorer_workspace_events(
+                vec![FileEvent::Renamed {
+                    from,
+                    to: to.clone(),
+                }],
+                cx,
+            );
+            assert_eq!(
+                view.open_document(original).unwrap().resource,
+                Resource::Workspace(to)
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn r66_follow_status_and_readonly_notice_coexist_with_index_progress(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(SETTINGS);
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+    });
+    let current = document(&view, cx);
+
+    view.update(cx, |view, cx| {
+        // Keep indexing at 45% until the workbench has drawn its status items and bar.
+        let indexing = Arc::new(Document {
+            text: Arc::new(Pending::new(22)),
+            ..(*current).clone()
+        });
+        assert!(view.editor.replace_document(indexing, None));
+        cx.notify();
+    });
+    cx.update(|window, app| {
+        window.draw(app).clear();
+        let view = view.read(app);
+        assert!(view
+            .shell
+            .status_bar
+            .get(lf::INDEX_STATUS)
+            .unwrap()
+            .text
+            .contains("45%"));
+        assert_eq!(
+            view.shell.status_bar.get(READ_ONLY).unwrap().text,
+            "超大文件 · 只读"
+        );
+        assert_eq!(
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .unwrap()
+                .text,
+            "跟随末尾"
+        );
+
+        let notice = view.shell.feedback.all_editor_bars();
+        assert_eq!(notice.len(), 1);
+        let selectors = [
+            format!("status-{}", crate::follow_tail::FOLLOW_STATUS),
+            format!("status-{}", lf::INDEX_STATUS),
+            format!("status-{READ_ONLY}"),
+            format!("editor-bar-{}", notice[0].key),
+        ];
+        let bounds = selectors.each_ref().map(|selector| {
+            let bounds = window
+                .debug_painted_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} was not painted"));
+            assert!(bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.));
+            bounds
+        });
+        for (i, item) in bounds.iter().enumerate() {
+            for (j, other) in bounds.iter().enumerate().skip(i + 1) {
+                assert!(
+                    !item.intersects(other),
+                    "{} overlaps {}",
+                    selectors[i],
+                    selectors[j]
+                );
+            }
+        }
+        let status_bar = window.debug_painted_bounds("statusbar").unwrap();
+        for item in &bounds[..3] {
+            assert!(item.origin.x >= status_bar.origin.x);
+            assert!(item.origin.y >= status_bar.origin.y);
+            assert!(item.right() <= status_bar.right());
+            assert!(item.bottom() <= status_bar.bottom());
+        }
+        assert!(bounds[3].bottom() <= status_bar.origin.y);
+    });
+    view.update(cx, |view, cx| {
+        assert!(view.editor.replace_document(current, None));
+        view.sync_views(cx);
+    });
+}
+
+#[gpui::test]
+fn r66_preview_refuses_input_over_the_configured_threshold(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(SETTINGS);
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "min.json", cx);
+    let original = document(&view, cx);
+    view.update(cx, |view, cx| {
+        view.command(crate::follow_tail::FORMATTED, cx)
+    });
+    settle(cx);
+    assert_eq!(document(&view, cx).id, original.id);
+    assert!(view
+        .read_with(cx, |view, _| view.status())
+        .contains("无法格式化后查看"));
+}
+
+#[gpui::test]
+#[ignore = "requires ROVE_TAIL_JSON_FIXTURE pointing to a minified real Unity manifest"]
+fn r66_real_unity_manifest_opens_a_formatted_readonly_copy(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 65536, "editor.stopRenderingLineAfter": 400 }"#,
+    );
+    let path = PathBuf::from(std::env::var_os("ROVE_TAIL_JSON_FIXTURE").expect("real manifest"));
+    let before = std::fs::read(&path).unwrap();
+    assert!(!before.contains(&b'\n'));
+    let input = fixture.folder.path().join("manifest.json");
+    std::fs::write(&input, &before).unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "manifest.json", cx);
+    let source = document(&view, cx);
+    let code = view.read_with(cx, |view, _| view.code_view().clone());
+    let ([_, format], _) = truncation_points(&code, cx);
+    cx.simulate_click(format, gpui::Modifiers::default());
+    wait_tail(cx, |cx| document(&view, cx).id != source.id);
+    let preview = document(&view, cx);
+    assert!(preview
+        .metadata
+        .read_only
+        .contains(&ReadOnlyReason::Metadata));
+    assert!(preview.text.lines().known > 2);
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.formatted_tab_title(&preview.resource).as_deref(),
+            Some("manifest.json（格式化后）")
+        );
+        assert!(view.open_document(source.id).is_some());
+    });
+    let range = Span::new(ByteOffset(0), ByteOffset(preview.text.byte_len())).unwrap();
+    let pretty = decoded(&preview, range);
+    assert!(pretty.starts_with("{\n"));
+    assert!(pretty.contains("\n    \"dependencies\": {"));
+    let input_hash = rove_buffer::save::content_hash(&before);
+    assert_eq!(std::fs::read(input).unwrap(), before);
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    println!("R66_UNITY_MANIFEST source_bytes={} preview_bytes={} unchanged_disk_fnv64={input_hash:016x}", before.len(), preview.text.byte_len());
 }

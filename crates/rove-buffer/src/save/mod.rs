@@ -17,6 +17,7 @@ pub mod encode;
 pub mod file;
 pub mod settings;
 pub mod stamp;
+pub mod tail;
 pub mod transforms;
 pub mod watch;
 pub mod write;

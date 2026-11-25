@@ -101,6 +101,12 @@ pub enum CodeViewEvent {
         source: SelectionSource,
     },
     ViewportChanged(Viewport),
+    /// A gesture or navigation key moved (or tried to move) the viewport vertically.
+    UserScrolled {
+        old_top: f64,
+        new_top: f64,
+        at_end: bool,
+    },
     /// 文本源被替换（新文档或新快照）。
     TextChanged,
     /// 折叠状态变了（#20）；宿主把它写回标签的 `ViewState::folds`。
@@ -236,8 +242,16 @@ pub struct FrameStats {
     pub cpu: Duration,
     /// 其中布局（prepaint）部分。
     pub layout: Duration,
+    /// Time between this view's prepaint and paint callbacks.
+    pub paint_gap: Duration,
+    /// This view's paint callback, including editor input and hit testing.
+    pub paint: Duration,
+    pub guides_cpu: Duration,
     /// Cache lookup and dispatch time for viewport link detection.
     pub links_cpu: Duration,
+    /// Time spent emitting shaped text glyphs and painting the line-number gutter.
+    pub glyph_cpu: Duration,
+    pub gutter_cpu: Duration,
     /// 缩略图与概览标尺在本帧 UI 线程上的布局和绘制耗时。
     pub minimap_cpu: Duration,
     pub minimap_cache_hit: bool,
@@ -253,6 +267,9 @@ pub struct FrameStats {
     /// 首个可见行相对文本区顶边的 y（像素）。占位与正式结果替换前后必须相同。
     pub first_line_y: f32,
     pub first_line: u64,
+    /// 最后一个绘制的文档行以及预绘制时该快照的已知行数。
+    pub last_line: u64,
+    pub known_lines: u64,
     /// 本帧是否绘制了与正文相交的选区背景，用于扩选按键的帧吸收测量。
     pub selection_painted: bool,
     /// #215：本帧**实际绘制所用**文本快照的版本（`TextSource::version()`，prepaint 时取）。
@@ -904,6 +921,23 @@ impl CodeView {
         keep_view_state: bool,
         cx: &mut Context<Self>,
     ) {
+        self.replace_text(text, keep_view_state, false, cx);
+    }
+
+    /// Publish verified tail growth while the workbench is preparing this frame.
+    /// Preserve unaffected rows and let that frame draw the new snapshot.
+    pub(crate) fn set_appended_text(&mut self, text: Arc<dyn TextSource>, cx: &mut Context<Self>) {
+        self.replace_text(Some(text), true, true, cx);
+    }
+
+    fn replace_text(
+        &mut self,
+        text: Option<Arc<dyn TextSource>>,
+        keep_view_state: bool,
+        appended: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let old_lines = self.doc_line_count();
         let changed = self.text.as_ref().map(|text| text.version())
             != text.as_ref().map(|text| text.version());
         let discard_semantics = changed && !self.semantic.borrow().is_empty();
@@ -918,10 +952,18 @@ impl CodeView {
         self.minimap.clear(cx);
         self.clear_minimap_document_marks();
         self.links.reset();
-        self.lines.clear();
-        self.content_width = 0.0;
-        self.overlay_width = 0.0;
-        self.wrap.content_width = 0.0;
+        if appended {
+            // The previous final line, and its trailing CR/empty/partial neighbor,
+            // can be completed by the newly appended bytes.
+            for line in old_lines.saturating_sub(2)..old_lines {
+                self.lines.remove(&line);
+            }
+        } else {
+            self.lines.clear();
+            self.content_width = 0.0;
+            self.overlay_width = 0.0;
+            self.wrap.content_width = 0.0;
+        }
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
         self.column_select = None;
@@ -967,7 +1009,9 @@ impl CodeView {
         self.recompute_folds(cx);
         self.update_highlights(cx);
         cx.emit(CodeViewEvent::TextChanged);
-        cx.notify();
+        if !appended {
+            cx.notify();
+        }
     }
 
     pub fn text(&self) -> Option<&Arc<dyn TextSource>> {
@@ -1948,6 +1992,50 @@ impl CodeView {
 
     // ------------------------------------------------------------------ 滚动定位
 
+    fn follow_top(&self, document_line: u64, metrics: &Metrics) -> f64 {
+        let visual = self.view_line(document_line)
+            + u64::from(self.visual_map().span(document_line).saturating_sub(1));
+        (metrics.line_top(visual, &self.zones) + 1.0 - metrics.viewport_lines()).max(0.0)
+    }
+
+    pub(crate) fn follow_end(
+        &mut self,
+        document_line: u64,
+        frame_pending: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.wrap.map.doc_lines() != self.doc_line_count() {
+            self.sync_fold_map();
+        }
+        if let Some(metrics) = self.metrics() {
+            let top = self.follow_top(document_line, &metrics);
+            self.set_scroll_target(
+                ScrollPosition {
+                    top,
+                    x: self.scroll.x,
+                },
+                false,
+            );
+            if !frame_pending {
+                cx.notify();
+            }
+        } else {
+            self.reveal_line(document_line, Reveal::Nearest, cx);
+        }
+    }
+
+    fn emit_user_scroll(&self, old_top: f64, cx: &mut Context<Self>) {
+        let Some(metrics) = self.metrics() else {
+            return;
+        };
+        let last = self.doc_line_count().saturating_sub(1);
+        cx.emit(CodeViewEvent::UserScrolled {
+            old_top,
+            new_top: self.scroll.top,
+            at_end: self.scroll.top + 0.01 >= self.follow_top(last, &metrics),
+        });
+    }
+
     pub fn scroll_position(&self) -> ScrollPosition {
         self.scroll
     }
@@ -1990,6 +2078,11 @@ impl CodeView {
         animate: bool,
         cx: &mut Context<Self>,
     ) {
+        self.set_scroll_target(p, animate);
+        cx.notify();
+    }
+
+    fn set_scroll_target(&mut self, p: ScrollPosition, animate: bool) {
         let mut target = match self.metrics() {
             Some(m) => p.clamped(&m, &self.zones),
             None => ScrollPosition {
@@ -2013,7 +2106,6 @@ impl CodeView {
             self.animation = None;
             self.scroll = target;
         }
-        cx.notify();
     }
 
     /// 动画中的实际顶边位置（`scroll.top` 始终是目标位置）。
@@ -2183,6 +2275,31 @@ impl CodeView {
 
     /// 按 VS Code 命令 ID 执行（#14 的命令桥调用这里）。未知 ID 返回 `false`。
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let old_top = self.scroll.top;
+        let handled = self.execute_command(id, window, cx);
+        if handled
+            && matches!(
+                id,
+                "cursorTop"
+                    | "cursorTopSelect"
+                    | "cursorBottom"
+                    | "cursorBottomSelect"
+                    | "cursorPageUp"
+                    | "cursorPageUpSelect"
+                    | "cursorPageDown"
+                    | "cursorPageDownSelect"
+                    | "scrollLineUp"
+                    | "scrollLineDown"
+                    | "scrollPageUp"
+                    | "scrollPageDown"
+            )
+        {
+            self.emit_user_scroll(old_top, cx);
+        }
+        handled
+    }
+
+    fn execute_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.execute_smart_selection(id, window, cx) {
             return true;
         }
@@ -2782,7 +2899,11 @@ impl CodeView {
             let total = m.content_width + m.beyond_last_column;
             p.x = scroll::pos_for_thumb(track, m.viewport_width, total, at - thumb_len / 2.0);
         }
+        let old_top = self.scroll.top;
         self.set_scroll_position(p, false, cx);
+        if vertical {
+            self.emit_user_scroll(old_top, cx);
+        }
     }
 
     pub(crate) fn scrollbar_drag(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
@@ -2794,6 +2915,7 @@ impl CodeView {
                 let total = m.total_lines(&self.zones);
                 let top =
                     scroll::pos_for_thumb(bar.size.height.to_f64(), m.viewport_lines(), total, at);
+                let old_top = self.scroll.top;
                 self.set_scroll_position(
                     ScrollPosition {
                         top,
@@ -2802,6 +2924,7 @@ impl CodeView {
                     false,
                     cx,
                 );
+                self.emit_user_scroll(old_top, cx);
             }
             Some(Drag::HThumb { grab }) => {
                 let Some(bar) = self.layout.hbar else { return };
@@ -2852,7 +2975,11 @@ impl CodeView {
             x: self.scroll.x - dx,
         };
         let pixel_precise = matches!(delta, gpui::ScrollDelta::Pixels(_));
+        let old_top = self.scroll.top;
         self.set_scroll_position(p, !pixel_precise, cx);
+        if dy != 0.0 {
+            self.emit_user_scroll(old_top, cx);
+        }
     }
 
     // ------------------------------------------------------------------ 焦点与插入符闪烁

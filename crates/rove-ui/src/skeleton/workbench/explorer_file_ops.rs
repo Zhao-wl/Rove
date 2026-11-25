@@ -1,7 +1,7 @@
 //! Filesystem deletion and its undo receipt. Confirmation stays on the UI
 //! thread, while the workspace and Shell operations run in the background.
 
-use super::Workbench;
+use super::{edit_host::WorkspaceRenameSource, Workbench};
 use crate::context_basket::model::{at_or_below, same_path};
 use crate::explorer::{registry, view::ExplorerUndo};
 use crate::feedback::FeedbackAction;
@@ -163,7 +163,7 @@ impl Workbench {
             events = ready;
         }
         self.reconcile_move_notifications(&mut events);
-        self.apply_explorer_document_changes(events, cx);
+        self.apply_explorer_document_changes(events, 0, None, cx);
     }
 
     fn reconcile_move_notifications(&self, events: &mut Vec<FileEvent>) {
@@ -212,11 +212,32 @@ impl Workbench {
         });
     }
 
-    fn apply_explorer_document_changes(&mut self, events: Vec<FileEvent>, cx: &mut Context<Self>) {
+    fn apply_explorer_document_changes(
+        &mut self,
+        events: Vec<FileEvent>,
+        confirmed_renames: usize,
+        operation: Option<&Outcome>,
+        cx: &mut Context<Self>,
+    ) {
+        let (confirmed, external) = events.split_at(confirmed_renames);
+        self.follow_workspace_renames(confirmed, WorkspaceRenameSource::ConfirmedOperation, cx);
+        if let Some(operation) = operation {
+            self.close_confirmed_explorer_removals(operation, cx);
+            // A successfully restored directory or file gets a new disk identity.
+            // Late native notifications may describe only the earlier removal.
+            let restored: Vec<_> = operation
+                .restored
+                .iter()
+                .cloned()
+                .map(FileEvent::Created)
+                .collect();
+            self.follow_workspace_events(&restored);
+        }
         if events.is_empty() {
             return;
         }
-        self.follow_workspace_renames(&events, cx);
+        self.follow_workspace_renames(external, WorkspaceRenameSource::Filesystem, cx);
+        self.follow_workspace_events(&events);
         self.note_disk_events(&events, cx);
         self.refresh_workspace_images(&events, cx);
         self.basket_workspace_files_changed(&events, cx);
@@ -224,9 +245,9 @@ impl Workbench {
             let mut changed = false;
             for event in events {
                 if let FileEvent::Removed(path) = event {
-                    changed |= self
-                        .editor
-                        .file_removed(&rove_base::Resource::Workspace(path));
+                    if !self.follows_workspace_path(&path) {
+                        changed |= self.editor.file_removed(&Resource::Workspace(path));
+                    }
                 }
             }
             if changed {
@@ -235,11 +256,60 @@ impl Workbench {
         }
     }
 
-    fn finish_explorer_workspace_files(&mut self, moves: &[FileMove], cx: &mut Context<Self>) {
+    fn close_confirmed_explorer_removals(&mut self, operation: &Outcome, cx: &mut Context<Self>) {
+        if operation.removed.is_empty() || !self.editor.settings.close_on_delete {
+            return;
+        }
+        let resources: Vec<_> = self
+            .editor
+            .groups
+            .values()
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| {
+                let relative = match &tab.resource {
+                    Resource::Workspace(path) => path.clone(),
+                    Resource::File(path) => workspace_path(&self.root, path)?,
+                    Resource::Virtual(_) => return None,
+                };
+                if !operation
+                    .removed
+                    .iter()
+                    .any(|path| at_or_below(&relative, path))
+                {
+                    return None;
+                }
+                if operation
+                    .restored
+                    .iter()
+                    .any(|path| same_path(&relative, path))
+                {
+                    return None;
+                }
+                if operation
+                    .restored
+                    .iter()
+                    .any(|path| at_or_below(&relative, path))
+                    && !matches!(self.root.join(relative.as_str()).try_exists(), Ok(false))
+                {
+                    return None;
+                }
+                Some(tab.resource.clone())
+            })
+            .collect();
+        let mut changed = false;
+        for resource in resources {
+            changed |= self.editor.file_removed(&resource);
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn finish_explorer_workspace_files(&mut self, operation: &Outcome, cx: &mut Context<Self>) {
         self.file_operations.watched_paths.clear();
         let mut logical = Vec::new();
         let mut completed = Vec::new();
-        for movement in moves {
+        for movement in &operation.moves {
             if let (Some(from), Some(to)) = (
                 workspace_path(&self.root, &movement.from),
                 workspace_path(&self.root, &movement.to),
@@ -265,8 +335,9 @@ impl Workbench {
                 matches!(logical, FileEvent::Renamed { from: old, to: new } if old == from && new == to)
             })
         });
+        let confirmed_renames = logical.len();
         logical.append(&mut deferred);
-        self.apply_explorer_document_changes(logical, cx);
+        self.apply_explorer_document_changes(logical, confirmed_renames, Some(operation), cx);
     }
 
     fn remember_workspace_moves(&mut self, moves: Vec<WorkspaceMove>) {
@@ -299,7 +370,7 @@ impl Workbench {
     }
 }
 
-fn workspace_path(root: &Path, absolute: &Path) -> Option<WorkspacePath> {
+pub(super) fn workspace_path(root: &Path, absolute: &Path) -> Option<WorkspacePath> {
     let relative = relative_path(absolute, root)?;
     WorkspacePath::new(&relative.to_str()?.replace('\\', "/")).ok()
 }
@@ -601,7 +672,7 @@ impl Workbench {
                     .saves
                     .borrow_mut()
                     .complete_file_operation(ticket, &save_moves);
-                view.finish_explorer_workspace_files(&result.moves, cx);
+                view.finish_explorer_workspace_files(&result, cx);
                 if !result.undo.is_empty()
                     && ENABLE_UNDO
                         .read(&*view.settings, &Scope::default())
@@ -668,6 +739,8 @@ fn button(id: &'static str, label: &'static str) -> FeedbackAction {
 struct Outcome {
     undo: Vec<UndoStep>,
     moves: Vec<FileMove>,
+    removed: Vec<WorkspacePath>,
+    restored: Vec<WorkspacePath>,
     fallback: Option<Deletion>,
     failure: Option<Failure>,
 }
@@ -712,10 +785,13 @@ fn delete(folder: &Folder, mut plan: Deletion) -> Outcome {
             .map_err(operation_io)
             .and_then(|path| recycle(&path));
         match result {
-            Ok(item) => outcome.undo.push(UndoStep::Trashed(Receipt {
-                path: selected.path,
-                item,
-            })),
+            Ok(item) => {
+                outcome.removed.push(selected.path.clone());
+                outcome.undo.push(UndoStep::Trashed(Receipt {
+                    path: selected.path,
+                    item,
+                }));
+            }
             Err(error) if unavailable(&error) => {
                 plan.fallback = true;
                 plan.permanent.push_back(selected);
@@ -735,6 +811,7 @@ fn delete(folder: &Folder, mut plan: Deletion) -> Outcome {
             outcome.failure = Some(Failure::io(operation_io(error), Request::Delete(plan)));
             return outcome;
         }
+        outcome.removed.push(selected.path);
     }
     outcome
 }
@@ -820,6 +897,15 @@ fn restore(folder: &Folder, root: &Path, mut items: Vec<UndoStep>) -> Outcome {
                     stamp: Some(stamp.clone()),
                 });
             }
+            _ => {}
+        }
+        match step {
+            UndoStep::Explorer(ExplorerUndo::Created { path, .. }) => {
+                outcome.removed.push(path.clone())
+            }
+            #[cfg(windows)]
+            UndoStep::Pasted { path, .. } => outcome.removed.push(path.clone()),
+            UndoStep::Trashed(receipt) => outcome.restored.push(receipt.path.clone()),
             _ => {}
         }
         items.pop();

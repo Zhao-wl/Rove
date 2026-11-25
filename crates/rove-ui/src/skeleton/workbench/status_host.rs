@@ -199,6 +199,15 @@ impl Workbench {
             Vec::new()
         };
         let strings = &self.strings;
+        let mut read_only =
+            model::read_only_entry(strings, snapshot.size, &snapshot.read_only, &disabled);
+        if let Some(entry) = read_only.as_mut().filter(|_| {
+            document
+                .as_ref()
+                .is_some_and(|document| self.formatted_tab_title(&document.resource).is_some())
+        }) {
+            entry.tooltip = Some(self.label(crate::follow_tail::READONLY_REASON, &[]));
+        }
         let entries = [
             (ids::CURSOR, Some(model::cursor_entry(strings, &cursors))),
             (
@@ -222,10 +231,7 @@ impl Workbench {
                 ids::LANGUAGE,
                 Some(model::language_entry(strings, &snapshot.language)),
             ),
-            (
-                ids::READ_ONLY,
-                model::read_only_entry(strings, snapshot.size, &snapshot.read_only, &disabled),
-            ),
+            (ids::READ_ONLY, read_only),
         ];
         let shell = &mut self.shell;
         for (id, entry) in entries {
