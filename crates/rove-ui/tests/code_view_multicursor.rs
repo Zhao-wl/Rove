@@ -278,6 +278,50 @@ fn alt_drag_adds_a_whole_selection(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn alt_drag_continues_the_merged_selection_like_vscode(cx: &mut TestAppContext) {
+    let mut f = lf("abcdefghij\n", cx);
+    // VS Code 1.146.0：并集与拖选范围相等、以及并集延伸到拖选范围之外。
+    for (primary, crossing_column, merged_end) in [
+        (Selection::caret(pos(0, 5)), 8, 8),
+        (Selection::new(pos(0, 4), pos(0, 9)), 6, 9),
+    ] {
+        f.set(vec![primary]);
+        let [start, crossing, back] = f.view.update(f.cx, |view, _| {
+            [2, crossing_column, 3].map(|column| view.point_for_position(pos(0, column)).unwrap())
+        });
+        f.cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: start,
+            modifiers: alt(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert_eq!(f.selections(), [primary, Selection::caret(pos(0, 2))]);
+
+        for (position, active_column) in [(crossing, merged_end), (back, 3)] {
+            f.cx.simulate_event(gpui::MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: alt(),
+            });
+            assert_eq!(
+                f.selections(),
+                [Selection::new(pos(0, 2), pos(0, active_column))]
+            );
+        }
+
+        f.cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: back,
+            modifiers: alt(),
+            click_count: 1,
+        });
+        settle(f.cx);
+        assert_eq!(f.selections(), [Selection::new(pos(0, 2), pos(0, 3))]);
+    }
+}
+
+#[gpui::test]
 fn keyboard_adds_cursors_above_below_and_at_line_ends(cx: &mut TestAppContext) {
     let mut f = lf("one\ntwo\nthree\nfour\n", cx);
     f.caret(1, 1);

@@ -2783,13 +2783,21 @@ impl CodeView {
                     };
                     let selection = Selection::new(origin, p);
                     *item = selection;
+                    let before_merge = items.len();
                     let merged = self.normalize_selections(items);
-                    if let Some(index) = merged.iter().rposition(|s| *s == selection) {
-                        self.drag = Some(Drag::AddedText { origin, index });
+                    // 次选区被合并后，鼠标继续延展承接了这段范围的选区。
+                    // 未合并时按原下标找，允许关闭重叠合并时存在相同范围。
+                    let retained = if merged.len() == before_merge {
+                        Some(index)
                     } else {
-                        // 该选区已经并入已有选区，后续移动不能延展别的光标。
-                        self.drag = None;
-                    }
+                        merged.iter().position(|s| {
+                            s.start() <= selection.start() && selection.end() <= s.end()
+                        })
+                    };
+                    self.drag = retained.map(|index| Drag::AddedText {
+                        origin: merged[index].anchor,
+                        index,
+                    });
                     self.apply_selections(merged);
                     self.selection_changed(SelectionSource::Mouse, cx);
                 }
