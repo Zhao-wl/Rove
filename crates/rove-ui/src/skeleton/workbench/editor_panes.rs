@@ -196,15 +196,14 @@ impl Workbench {
             .min_w_0()
             .overflow_hidden()
             .bg(self.ui_color("editorPane.background"))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |v, _, _, cx| {
-                    // The code view takes keyboard focus itself; this only selects the group.
+            .capture_any_mouse_down(cx.listener(move |v, event: &gpui::MouseDownEvent, _, cx| {
+                if event.button == MouseButton::Left {
+                    // The code view takes keyboard focus and stops the click from bubbling.
                     v.editor.focus(group);
                     v.focus_group = Some(group);
                     cx.notify();
-                }),
-            )
+                }
+            }))
             // 拖动标签经过编辑器正文：按光标离哪条边近决定落点（见 `tab_drop_zone`），
             // 预览层画出新组会占的那一半（移进本组时是整块）。
             .on_drag_move(

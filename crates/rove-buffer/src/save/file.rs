@@ -388,6 +388,7 @@ impl TextFile {
             undo,
             tab_index,
             active,
+            cursor: None,
         })
     }
 

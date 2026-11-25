@@ -178,8 +178,8 @@ impl Workbench {
     /// 后台读盘建 `TextFile`（编码识别同打开路径），回到窗口后挂到控制器，并把文件的快照换进文档。
     fn load_text_file(&mut self, document: Arc<Document>, path: PathBuf, cx: &mut Context<Self>) {
         // #50：这个路径有待恢复的热退出备份时不读盘，内容直接取自备份（标记为脏）。
-        if let Some(file) = self.take_restored_file(document.id, &path) {
-            self.attach_text_file(document, file, cx);
+        if let Some((file, cursor)) = self.take_restored_file(document.id, &path) {
+            self.attach_text_file(document, file, cursor, cx);
             self.finish_restore_if_done(cx);
             return;
         }
@@ -203,7 +203,7 @@ impl Workbench {
                     cx.notify();
                     return;
                 }
-                view.attach_text_file(current, file, cx);
+                view.attach_text_file(current, file, None, cx);
             });
         })
         .detach();
@@ -213,6 +213,7 @@ impl Workbench {
         &mut self,
         document: Arc<Document>,
         mut file: TextFile,
+        restore_cursor: Option<Position>,
         cx: &mut Context<Self>,
     ) {
         let reasons = self.read_only_of(&document);
@@ -233,6 +234,7 @@ impl Workbench {
             text: snapshot,
         });
         self.editor.rebase_document(replaced.clone());
+        self.restore_hot_exit_cursor(document.id, restore_cursor);
         if let Some(files) = &self.editing.files {
             files.replace(&replaced);
         }
@@ -341,12 +343,15 @@ impl Workbench {
             files.replace(&replaced);
         }
         let version = edited.after.version();
+        let mut origin_shown = None;
         let mut others = Vec::new();
         for views in self.views.values_mut() {
             for slot in std::iter::once(&mut views.primary).chain(views.secondary.as_mut()) {
                 if let Some(shown) = slot.shown.as_mut().filter(|s| s.document == document.id) {
                     shown.version = version;
-                    if slot.code != origin {
+                    if slot.code == origin {
+                        origin_shown = Some(*shown);
+                    } else {
                         others.push(slot.code.clone());
                     }
                 }
@@ -381,7 +386,10 @@ impl Workbench {
         }
         let dirty = self.editing.saves.borrow().is_dirty(document.id);
         self.editor.set_dirty(document.id, dirty);
-        // #50：持续备份按编辑去抖（不是只在退出时备份）。
+        // #50：持续备份按编辑去抖。选区替换后光标可能仍在原处，也要记住输入来自哪个视图。
+        if let Some(shown) = origin_shown {
+            self.remember_hot_exit_cursor(group, shown, secondary);
+        }
         self.note_hot_exit_edit(document.id, cx);
         // #73：只有无标题文档随正文变化重新检测，工作区文件在打开时确定语言。
         self.detect_untitled_language(&replaced, cx);

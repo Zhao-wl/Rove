@@ -627,7 +627,11 @@ fn opening_an_already_open_document_locates_synchronously(cx: &mut TestAppContex
         let tab = v.editor.active().current().unwrap();
         assert!(matches!(tab.content, Content::Ready(_)), "同步就绪");
         assert_eq!(tab.view.cursor, at);
-        assert!(tab.reveal, "等代码视图把目标行置入视口");
+        assert_eq!(
+            tab.reveal,
+            Some(TabReveal::OpenLocation),
+            "等代码视图把目标行置入视口"
+        );
         assert!(!tab.show_progress());
         cx.notify();
     });

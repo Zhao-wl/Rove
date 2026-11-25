@@ -11,7 +11,7 @@ use crate::{
         actions as editor_actions,
         settings::{EditorKind, EditorSettings},
         syntax::SyntaxJob,
-        Axis, Content, Direction, EditorService, Layout, OpenJob, Tab, TabId, ViewState,
+        Axis, Content, Direction, EditorService, Layout, OpenJob, Tab, TabId, TabReveal, ViewState,
     },
     list_widget::widget::{ListWidget, RowHeight},
     lists::ListModel,
@@ -31,8 +31,8 @@ use gpui::{
 #[cfg(test)]
 use rove_base::Line;
 use rove_base::{
-    Cancellation, DocumentId, Error, Resource, Result as CoreResult, TextRange, Value, Version,
-    WorkspacePath,
+    Cancellation, DocumentId, Error, Position, Resource, Result as CoreResult, TextRange, Value,
+    Version, WorkspacePath,
 };
 use rove_buffer::{Document, ReadOnlyReason};
 use rove_commands::{center::CommandCenter, CommandExecutor, CommandRegistry, Invocation};
@@ -1241,6 +1241,12 @@ impl Workbench {
             return;
         };
         let Some(shown) = slot.shown else { return };
+        if let CodeViewEvent::SelectionChanged { selection, .. } = event {
+            let code = slot.code.read(cx);
+            if code.version() != shown.version || code.selection() != *selection {
+                return;
+            }
+        }
         let Some(pane) = self.editor.groups.get_mut(&group) else {
             return;
         };
@@ -1262,12 +1268,16 @@ impl Workbench {
         };
         match event {
             CodeViewEvent::SelectionChanged { selection, .. } => {
+                let moved = state.cursor != selection.active;
                 state.cursor = selection.active;
                 state.selection = if selection.is_empty() {
                     None
                 } else {
                     TextRange::new(selection.start(), selection.end()).ok()
                 };
+                if moved && self.remember_hot_exit_cursor(group, shown, secondary) {
+                    self.note_hot_exit_edit(shown.document, cx);
+                }
             }
             CodeViewEvent::ViewportChanged(viewport) => {
                 state.scroll = viewport.top;
@@ -1473,8 +1483,11 @@ impl Workbench {
                 version: opened.document.text.version(),
             }
         });
-        let reveal = !secondary && tab.as_ref().is_some_and(|tab| tab.reveal);
-        if slot.shown == target && !reveal {
+        let reveal = tab
+            .as_ref()
+            .filter(|_| !secondary)
+            .and_then(|tab| tab.reveal);
+        if slot.shown == target && reveal.is_none() {
             return false;
         }
         let previous = std::mem::replace(&mut slot.shown, target);
@@ -1495,7 +1508,9 @@ impl Workbench {
             tab.view.clone()
         };
         let search_range = tab.search_range();
-        tab.reveal &= secondary;
+        if !secondary {
+            tab.reveal = None;
+        }
         // A new snapshot of the document already shown keeps the live view state.
         let same = matches!((previous, target), (Some(p), Some(t)) if p.tab == t.tab && p.document == t.document);
         let changed = previous != target;
@@ -1520,12 +1535,12 @@ impl Workbench {
                         false,
                         cx,
                     );
-                    if !reveal {
+                    if reveal.is_none() {
                         code.set_selection(selection_of(&state), None, cx);
                     }
                 }
             }
-            if changed || reveal {
+            if changed || reveal.is_some() {
                 use crate::code_view::minimap::{Marker, MarkerKind};
                 let markers = search_range
                     .into_iter()
@@ -1536,11 +1551,16 @@ impl Workbench {
                     .collect();
                 code.set_minimap_markers("searchResult", markers, cx);
             }
-            if reveal {
+            if reveal.is_some() {
                 code.set_selection(selection_of(&state), Some(Reveal::CenterIfOutside), cx);
             }
         });
-        reveal
+        if let Some(shown) = target.filter(|_| reveal == Some(TabReveal::OpenLocation)) {
+            if self.remember_hot_exit_cursor(group, shown, false) {
+                self.note_hot_exit_edit(shown.document, cx);
+            }
+        }
+        reveal.is_some()
     }
 
     /// A background analysis of `document` finished: hand the new snapshot to the code views
