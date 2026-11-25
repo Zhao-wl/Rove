@@ -843,6 +843,79 @@ fn context_basket_explorer_menu_preserves_selected_files_and_follows_a_rename(
 
 #[cfg(windows)]
 #[gpui::test]
+fn r66_explorer_rename_rebinds_an_active_followed_log(cx: &mut TestAppContext) {
+    use std::io::Write as _;
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "workbench.editor.closeOnFileDelete": true }"#,
+        &["Editor.log"],
+    );
+    std::fs::write(fixture.path("Editor.log"), "old log line\n".repeat(600)).unwrap();
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("enter");
+    use super::large_file_tests::wait_tail;
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| view.active_large_file_document().is_some())
+    });
+    let original = view.read_with(cx, |view, _| view.active_large_file_document().unwrap());
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .is_some()
+        })
+    });
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "explicit move accepted", |rows| {
+        rows.iter().any(|row| row.trim() == "Renamed.log")
+    });
+    let renamed = fixture.path("Renamed.log");
+    let expected = Resource::Workspace(WorkspacePath::new("Renamed.log").unwrap());
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.open_document(original.id)
+                .is_some_and(|document| document.resource == expected)
+        })
+    });
+    assert!(!fixture.path("Editor.log").exists());
+    let suffix = "write to the confirmed target\n";
+    let size = renamed.metadata().unwrap().len();
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&renamed)
+        .unwrap();
+    writer.write_all(suffix.as_bytes()).unwrap();
+    drop(writer);
+    wait_tail(cx, |cx| {
+        view.read_with(cx, |view, _| {
+            view.open_document(original.id).is_some_and(|document| {
+                document.resource == expected
+                    && document.text.byte_len() == size + suffix.len() as u64
+            })
+        })
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .unwrap()
+                .text,
+            "跟随末尾"
+        );
+    });
+}
+
+#[cfg(windows)]
+#[gpui::test]
 fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut TestAppContext) {
     let fixture = Fixture::new(
         r#"{"workbench.editor.closeOnFileDelete": true, "explorer.copyRelativePathSeparator": "/"}"#,

@@ -866,7 +866,7 @@ impl rove_buffer::TextSource for Pending {
 }
 
 #[track_caller]
-fn wait_tail(
+pub(super) fn wait_tail(
     cx: &mut VisualTestContext,
     mut condition: impl FnMut(&mut VisualTestContext) -> bool,
 ) {
@@ -1194,6 +1194,66 @@ fn r66_ordinary_tail_appends_and_custom_command_bindings_work(cx: &mut TestAppCo
     assert!(view.read_with(cx, |view, _| {
         view.formatted_tab_title(&preview.resource).is_some()
     }));
+}
+
+#[gpui::test]
+fn r66_external_parent_rotation_keeps_the_log_path_and_updates_other_tabs(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{ "rove.largeFile.threshold": 4096, "workbench.editor.closeOnFileDelete": true, "workbench.editor.enablePreview": false }"#,
+    );
+    let parent = fixture.folder.path().join("Logs");
+    let archive = fixture.folder.path().join("Archive");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::write(parent.join("Editor.log"), "old log line\n".repeat(600)).unwrap();
+    std::fs::write(parent.join("notes.txt"), "notes\n").unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "Logs/notes.txt", cx);
+    let notes = document(&view, cx).id;
+    open_file(&view, "small.txt", cx);
+    let removed = document(&view, cx).id;
+    open_file(&view, "Logs/Editor.log", cx);
+    let original = document(&view, cx);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+            && document(&view, cx).text.lines().complete
+    });
+
+    std::fs::rename(&parent, &archive).unwrap();
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::write(parent.join("Editor.log"), "replacement log\n".repeat(600)).unwrap();
+    std::fs::remove_file(fixture.folder.path().join("small.txt")).unwrap();
+    let workspace = |path| WorkspacePath::new(path).unwrap();
+    view.update(cx, |view, cx| {
+        view.apply_explorer_workspace_events(
+            vec![
+                FileEvent::Renamed {
+                    from: workspace("Logs"),
+                    to: workspace("Archive"),
+                },
+                FileEvent::Removed(workspace("Logs/Editor.log")),
+                FileEvent::Created(workspace("Logs/Editor.log")),
+                FileEvent::Removed(workspace("small.txt")),
+            ],
+            cx,
+        );
+    });
+    wait_tail(cx, |cx| {
+        tail_has_line(&document(&view, cx), "replacement log")
+    });
+    let log = document(&view, cx);
+    assert_eq!(log.id, original.id);
+    assert_eq!(
+        log.resource,
+        Resource::Workspace(workspace("Logs/Editor.log"))
+    );
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.open_document(notes).unwrap().resource,
+            Resource::Workspace(workspace("Archive/notes.txt"))
+        );
+        assert!(view.open_document(removed).is_none());
+    });
 }
 
 #[gpui::test]

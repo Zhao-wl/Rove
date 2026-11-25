@@ -880,9 +880,21 @@ impl Workbench {
     pub(super) fn follow_workspace_renames(
         &mut self,
         events: &[FileEvent],
+        confirmed: bool,
         cx: &mut Context<Self>,
     ) {
         use rove_workspace::file_operations::path_after_rename;
+        if !events
+            .iter()
+            .any(|event| matches!(event, FileEvent::Renamed { .. }))
+        {
+            return;
+        }
+        let keep_at_original_path = if confirmed {
+            Vec::new()
+        } else {
+            self.followed_resources()
+        };
         let root = self.root.clone();
         let canonical_root = self
             .explorer
@@ -903,6 +915,9 @@ impl Workbench {
                 continue;
             };
             let map = |resource: &Resource| {
+                if keep_at_original_path.contains(resource) {
+                    return None;
+                }
                 let target = match resource {
                     Resource::Workspace(path) => {
                         path_after_rename(path, from, to).map(Resource::Workspace)
@@ -927,6 +942,7 @@ impl Workbench {
                         .saves
                         .borrow_mut()
                         .follow_rename(document.id, &from, &to);
+                    self.rebind_followed_document(&document, &to);
                     if let (Some(files), Some(relative)) = (&self.editing.files, under_root(&to)) {
                         files.follow_rename(
                             &original,

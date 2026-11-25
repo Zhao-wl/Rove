@@ -163,7 +163,7 @@ impl Workbench {
             events = ready;
         }
         self.reconcile_move_notifications(&mut events);
-        self.apply_explorer_document_changes(events, cx);
+        self.apply_explorer_document_changes(events, 0, cx);
     }
 
     fn reconcile_move_notifications(&self, events: &mut Vec<FileEvent>) {
@@ -212,11 +212,19 @@ impl Workbench {
         });
     }
 
-    fn apply_explorer_document_changes(&mut self, events: Vec<FileEvent>, cx: &mut Context<Self>) {
+    fn apply_explorer_document_changes(
+        &mut self,
+        events: Vec<FileEvent>,
+        confirmed_renames: usize,
+        cx: &mut Context<Self>,
+    ) {
         if events.is_empty() {
             return;
         }
-        self.follow_workspace_renames(&events, cx);
+        let (confirmed, external) = events.split_at(confirmed_renames);
+        self.follow_workspace_renames(confirmed, true, cx);
+        self.follow_workspace_renames(external, false, cx);
+        self.follow_workspace_events(&events);
         self.note_disk_events(&events, cx);
         self.refresh_workspace_images(&events, cx);
         self.basket_workspace_files_changed(&events, cx);
@@ -224,9 +232,9 @@ impl Workbench {
             let mut changed = false;
             for event in events {
                 if let FileEvent::Removed(path) = event {
-                    changed |= self
-                        .editor
-                        .file_removed(&rove_base::Resource::Workspace(path));
+                    if !self.follows_workspace_path(&path) {
+                        changed |= self.editor.file_removed(&Resource::Workspace(path));
+                    }
                 }
             }
             if changed {
@@ -265,8 +273,9 @@ impl Workbench {
                 matches!(logical, FileEvent::Renamed { from: old, to: new } if old == from && new == to)
             })
         });
+        let confirmed_renames = logical.len();
         logical.append(&mut deferred);
-        self.apply_explorer_document_changes(logical, cx);
+        self.apply_explorer_document_changes(logical, confirmed_renames, cx);
     }
 
     fn remember_workspace_moves(&mut self, moves: Vec<WorkspaceMove>) {
@@ -299,7 +308,7 @@ impl Workbench {
     }
 }
 
-fn workspace_path(root: &Path, absolute: &Path) -> Option<WorkspacePath> {
+pub(super) fn workspace_path(root: &Path, absolute: &Path) -> Option<WorkspacePath> {
     let relative = relative_path(absolute, root)?;
     WorkspacePath::new(&relative.to_str()?.replace('\\', "/")).ok()
 }

@@ -77,6 +77,11 @@ pub enum ExplorerEvent {
     /// 空状态按钮的命令 ID（`workbench.action.files.openFolder`）。
     Command(Arc<str>),
     AddToBasket(Vec<WorkspacePath>),
+    /// The inline filesystem rename completed successfully.
+    NameRenamed {
+        from: WorkspacePath,
+        to: WorkspacePath,
+    },
     UndoRecorded(Vec<ExplorerUndo>),
     MoveDropped {
         paths: Vec<WorkspacePath>,

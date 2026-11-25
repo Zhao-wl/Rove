@@ -321,10 +321,7 @@ impl Workbench {
             let path = self
                 .disk_path(&document.resource)
                 .expect("followable disk path");
-            let workspace_path = match &document.resource {
-                Resource::Workspace(path) => Some(path.clone()),
-                _ => None,
-            };
+            let workspace_path = self.follow_workspace_path(&document.resource);
             self.follow_tail.views.insert(
                 tab,
                 FollowView {
@@ -458,7 +455,7 @@ impl Workbench {
         )
     }
 
-    pub(super) fn follow_workspace_events(&mut self, events: &[FileEvent], cx: &mut Context<Self>) {
+    pub(super) fn follow_workspace_events(&mut self, events: &[FileEvent]) {
         for follow in self.follow_tail.documents.values_mut() {
             let Some(path) = follow.workspace_path.as_ref() else {
                 continue;
@@ -479,9 +476,48 @@ impl Workbench {
                     .request(path_request(path.as_str(), path_event));
             }
         }
-        if !self.follow_tail.documents.is_empty() {
-            cx.notify();
+        // The existing poll drains the requests. Until it reads a changed
+        // snapshot, disk events alone do not invalidate the editor frame.
+    }
+
+    fn follow_workspace_path(&self, resource: &Resource) -> Option<WorkspacePath> {
+        match resource {
+            Resource::Workspace(path) => Some(path.clone()),
+            Resource::File(path) => super::explorer_file_ops::workspace_path(&self.root, path),
+            Resource::Virtual(_) => None,
         }
+    }
+
+    pub(super) fn followed_resources(&self) -> Vec<Resource> {
+        self.follow_tail
+            .documents
+            .keys()
+            .filter_map(|&id| {
+                self.open_document(id)
+                    .map(|document| document.resource.clone())
+            })
+            .collect()
+    }
+
+    pub(super) fn rebind_followed_document(&mut self, document: &Document, path: &std::path::Path) {
+        let workspace_path = self.follow_workspace_path(&document.resource);
+        let Some(follow) = self.follow_tail.documents.get_mut(&document.id) else {
+            return;
+        };
+        follow.path = path.to_owned();
+        follow.workspace_path = workspace_path;
+        follow.queue = ReloadQueue::default();
+        follow.queue.request(ReloadRequest::ReopenPath);
+        follow.watch = PathWatch::default();
+        follow.ordinary = None;
+        follow.ready = None;
+    }
+
+    fn follow_path_reserved(&self, id: DocumentId) -> bool {
+        self.follow_tail
+            .documents
+            .get(&id)
+            .is_some_and(|follow| self.editing.saves.borrow().path_is_reserved(&follow.path))
     }
 
     pub(super) fn follows_workspace_path(&self, path: &WorkspacePath) -> bool {
@@ -601,6 +637,9 @@ impl Workbench {
     }
 
     fn start_follow_read(&mut self, id: DocumentId, cx: &mut Context<Self>) {
+        if self.follow_path_reserved(id) {
+            return;
+        }
         let Some(document) = self.open_document(id) else {
             return;
         };
@@ -672,9 +711,15 @@ impl Workbench {
         result: ReadResult,
         cx: &mut Context<Self>,
     ) {
+        let reserved = self.follow_path_reserved(id);
         let Some(follow) = self.follow_tail.documents.get_mut(&id) else {
             return;
         };
+        if reserved && follow.queue.accepts(token) {
+            follow.queue.complete(token);
+            follow.queue.request(ReloadRequest::ReopenPath);
+            return;
+        }
         if !follow.queue.complete(token) {
             return;
         }
