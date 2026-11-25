@@ -638,6 +638,39 @@ fn line_operations_each_produce_one_undo_unit(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn deleting_disconnected_lines_moves_primary_to_the_top_join_keeps_it(cx: &mut TestAppContext) {
+    let original = "aa\nbb\ncc\ndd\nee";
+    let original_selections = vec![Selection::caret(pos(3, 1)), Selection::caret(pos(0, 1))];
+    for (command, expected, primary, secondary) in [
+        ("editor.action.deleteLines", "bb\ncc\nee", (0, 1), (2, 1)),
+        (
+            "editor.action.joinLines",
+            "aa bb\ncc\ndd ee",
+            (2, 2),
+            (0, 2),
+        ),
+    ] {
+        let mut fixture = lf(original, cx);
+        fixture.set(original_selections.clone());
+        assert_eq!(fixture.selections(), original_selections);
+        assert!(fixture.run(command), "{command}");
+        assert_eq!(fixture.contents(), expected, "{command}");
+        assert_eq!(
+            fixture.selections(),
+            [
+                Selection::caret(pos(primary.0, primary.1)),
+                Selection::caret(pos(secondary.0, secondary.1)),
+            ],
+            "{command}"
+        );
+        assert_eq!(fixture.edit_count(), 1, "{command}");
+        assert!(fixture.run("undo"));
+        assert_eq!(fixture.contents(), original, "{command}");
+        assert_eq!(fixture.selections(), original_selections, "{command}");
+    }
+}
+
+#[gpui::test]
 fn line_commands_keep_positions_mixed_endings_and_one_undo(cx: &mut TestAppContext) {
     let cases = [
         (

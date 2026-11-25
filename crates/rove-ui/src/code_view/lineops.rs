@@ -69,7 +69,7 @@ pub struct LineOpContext {
 #[derive(Clone, Debug)]
 pub struct LinePlan {
     pub transaction: Transaction,
-    /// 事务之后每个选区的位置（顺序与传入的选区一致）。`None` 表示按事务自动映射。
+    /// 事务后的选区。删除行按文档顺序，其余显式映射保留原主选区。`None` 表示按事务自动映射。
     pub selections: Option<Vec<Selection>>,
     /// 行号的搬动：`(首行, 末行（含）, 平移量)`，没列出的行行号不变。移动行 / 复制行用它让
     /// 折叠状态跟着行走（#171）；其他操作为空。
@@ -372,26 +372,36 @@ fn adjacent_endings(
     text: &dyn TextSource,
     range: &rove_base::ByteRange,
     count: u64,
+    covered_end: Option<ByteOffset>,
 ) -> Result<rove_base::ByteRange> {
-    let from = text.position(range.start())?;
-    let to = text.position(range.end())?;
     let mut start = range.start();
-    if from.column.0 == 0 {
-        for line in (0..from.line.0).rev() {
-            let previous = text.line_range(Line(line))?;
-            start = previous.end();
-            if previous.start() != previous.end() {
-                break;
+    // Sorted edits often share one long run of empty lines. A covered endpoint
+    // can be merged directly, so each original terminator is scanned at most
+    // once in each direction instead of once per cursor.
+    if covered_end.is_none_or(|covered| start > covered) {
+        let from = text.position(start)?;
+        if from.column.0 == 0 {
+            for line in (0..from.line.0).rev() {
+                let previous = text.line_range(Line(line))?;
+                start = previous.end();
+                if previous.start() != previous.end()
+                    || covered_end.is_some_and(|covered| start <= covered)
+                {
+                    break;
+                }
             }
         }
     }
     let mut end = range.end();
-    if text.line_range(to.line)?.end() == end {
-        for line in to.line.0 + 1..count {
-            let next = text.line_range(Line(line))?;
-            end = next.start();
-            if next.start() != next.end() {
-                break;
+    if covered_end.is_none_or(|covered| end > covered) {
+        let to = text.position(end)?;
+        if text.line_range(to.line)?.end() == end {
+            for line in to.line.0 + 1..count {
+                let next = text.line_range(Line(line))?;
+                end = next.start();
+                if next.start() != next.end() {
+                    break;
+                }
             }
         }
     }
@@ -452,7 +462,8 @@ fn finish_line_edits(
 ) -> Result<Transaction> {
     let mut groups: Vec<(rove_base::ByteRange, Vec<LineReplacement>)> = Vec::new();
     for edit in edits {
-        let context = adjacent_endings(text, &edit.range, count)?;
+        let covered_end = groups.last().map(|(range, _)| range.end());
+        let context = adjacent_endings(text, &edit.range, count, covered_end)?;
         if let Some((covered, changes)) = groups.last_mut() {
             if context.start() <= covered.end() {
                 *covered = Span::new(
@@ -546,7 +557,7 @@ fn delete_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Optio
             parts: Vec::new(),
         });
         let first = ordered.partition_point(|(_, selection)| block_of(selection).0 < lo);
-        let (index, selection) = ordered[first];
+        let (_, selection) = ordered[first];
         let active = selection.active;
         let column = utf16_column(&line_str(text, active.line.0), active.column.0);
         let (line, byte) = if lo == 0 && hi + 1 == count {
@@ -555,21 +566,16 @@ fn delete_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Optio
             let new_line = if hi + 1 < count { lo } else { target } - removed;
             (new_line, utf8_column(&line_str(text, target), column))
         };
-        cursors.push((index, Selection::caret(pos(line, byte))));
+        // VS Code chooses the topmost resulting caret as primary for Delete Lines.
+        cursors.push(Selection::caret(pos(line, byte)));
         removed += hi - lo + 1;
     }
     if edits.is_empty() {
         return Ok(None);
     }
-    cursors.sort_unstable_by_key(|(index, _)| *index);
     Ok(Some(LinePlan {
         transaction: finish_line_edits(text, count, edits)?,
-        selections: Some(
-            cursors
-                .into_iter()
-                .map(|(_, selection)| selection)
-                .collect(),
-        ),
+        selections: Some(cursors),
         line_map: Vec::new(),
     }))
 }
@@ -1380,7 +1386,7 @@ mod tests {
             &[caret(5, 2), caret(1, 1)],
         );
         assert_eq!(out, "head\r\n😀x\rkeep-long\néa");
-        assert_eq!(cursors, [caret(3, 3), caret(1, 0)]);
+        assert_eq!(cursors, [caret(1, 0), caret(3, 3)]);
 
         let (out, cursors) = run("abc\r\n中a", LineOp::Delete, &[caret(0, 1)]);
         assert_eq!(out, "中a");
@@ -1388,6 +1394,90 @@ mod tests {
         let (out, cursors) = run("abc\r\nx", LineOp::Delete, &[caret(0, 2)]);
         assert_eq!(out, "x");
         assert_eq!(cursors, [caret(0, 1)]);
+    }
+
+    #[test]
+    fn distant_deletions_share_the_scan_of_a_long_empty_line_run() {
+        use rove_base::{ByteRange, Utf16Column, Version};
+        use rove_buffer::LineCount;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingText {
+            text: Arc<RopeText>,
+            reads: AtomicUsize,
+            limit: usize,
+        }
+
+        impl TextSource for CountingText {
+            fn version(&self) -> Version {
+                self.text.version()
+            }
+
+            fn byte_len(&self) -> u64 {
+                self.text.byte_len()
+            }
+
+            fn lines(&self) -> LineCount {
+                self.text.lines()
+            }
+
+            fn line_range(&self, line: Line) -> Result<ByteRange> {
+                let reads = self.reads.fetch_add(1, Ordering::Relaxed) + 1;
+                assert!(
+                    reads <= self.limit,
+                    "line_range calls exceeded the linear bound"
+                );
+                self.text.line_range(line)
+            }
+
+            fn visit_chunks(&self, range: ByteRange, visitor: &mut dyn FnMut(&str)) -> Result<()> {
+                self.text.visit_chunks(range, visitor)
+            }
+
+            fn offset(&self, position: Position) -> Result<ByteOffset> {
+                self.text.offset(position)
+            }
+
+            fn position(&self, offset: ByteOffset) -> Result<Position> {
+                self.text.position(offset)
+            }
+
+            fn utf16_to_utf8(&self, line: Line, column: Utf16Column) -> Result<Utf8Column> {
+                self.text.utf16_to_utf8(line, column)
+            }
+
+            fn utf8_to_utf16(&self, line: Line, column: Utf8Column) -> Result<Utf16Column> {
+                self.text.utf8_to_utf16(line, column)
+            }
+        }
+
+        let blank_lines = 50_000;
+        let cursors = 5_000;
+        let original = format!("head\n{}tail", "\n".repeat(blank_lines));
+        let mut buffer = buffer(&original);
+        let snapshot = buffer.snapshot();
+        let text = CountingText {
+            text: snapshot,
+            reads: AtomicUsize::new(0),
+            limit: blank_lines + 6 * cursors + 32,
+        };
+        let selections: Vec<_> = (0..cursors)
+            .map(|index| caret(2 * index as u64 + 1, 0))
+            .collect();
+        let result = plan(LineOp::Delete, &text, &selections, &ctx())
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.transaction.edits().len(), cursors);
+        let reads = text.reads.load(Ordering::Relaxed);
+        assert!(reads >= blank_lines);
+        eprintln!(
+            "line_range calls for {blank_lines} empty lines and {cursors} deletions: {reads}"
+        );
+        buffer.apply(&result.transaction).unwrap();
+        assert_eq!(
+            buffer.contents(),
+            format!("head\n{}tail", "\n".repeat(blank_lines - cursors))
+        );
     }
 
     #[test]
