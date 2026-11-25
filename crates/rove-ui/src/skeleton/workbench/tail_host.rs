@@ -45,7 +45,10 @@ pub(super) fn preview_overlay() -> TruncationAction {
         label_key: reg::FORMAT_LABEL,
         applies: |code| {
             code.language.as_deref().and_then(format_language).is_some()
-                && code.text().is_some_and(|text| text.lines().known == 1)
+                && code.text().is_some_and(|text| {
+                    let lines = text.lines();
+                    lines.complete && lines.known == 1
+                })
         },
     }
 }
@@ -268,7 +271,7 @@ impl Workbench {
 }
 
 use super::{
-    tail_read::{self, Change as TailChange, OrdinaryBaseline, ReadJob, ReadResult},
+    tail_read::{self, Change as TailChange, OrdinaryBaseline, PathWatch, ReadJob, ReadResult},
     tail_state::{path_request, FollowMode, PathEvent, Refresh, ReloadQueue, ReloadRequest},
 };
 use rove_buffer::{Encoding, FileText};
@@ -283,7 +286,9 @@ struct FollowDocument {
     path: PathBuf,
     workspace_path: Option<WorkspacePath>,
     queue: ReloadQueue,
+    watch: PathWatch,
     ordinary: Option<OrdinaryBaseline>,
+    storage_ready: bool,
     ready: Option<(Refresh, ReadResult)>,
 }
 
@@ -335,7 +340,9 @@ impl Workbench {
                     path,
                     workspace_path,
                     queue,
+                    watch: PathWatch::default(),
                     ordinary: None,
+                    storage_ready: false,
                     ready: None,
                 }
             });
@@ -557,7 +564,13 @@ impl Workbench {
         self.follow_views_to_end(cx);
         let mode = self
             .follow_tab(self.editor.focused)
-            .and_then(|(tab, _)| self.follow_tail.views.get(&tab.id))
+            .and_then(|(tab, document)| {
+                self.follow_tail
+                    .documents
+                    .get(&document.id)
+                    .filter(|read| read.storage_ready)?;
+                self.follow_tail.views.get(&tab.id)
+            })
             .map(|follow| follow.mode);
         self.publish_follow_status(mode);
     }
@@ -618,6 +631,7 @@ impl Workbench {
                 optimize: policy.optimize,
             },
             request: token.request,
+            watch: follow.watch.clone(),
             mapped: self.metadata.files.mapped(id),
             ordinary: follow.ordinary.take(),
             saved,
@@ -671,7 +685,22 @@ impl Workbench {
             self.request_follow_retry(id);
             return;
         }
-        self.follow_tail.documents.get_mut(&id).unwrap().ordinary = result.baseline;
+        let follow = self.follow_tail.documents.get_mut(&id).unwrap();
+        let watch_changed = result.watch.generation() != result.generation;
+        follow.watch = result.watch;
+        if watch_changed {
+            self.request_follow_retry(id);
+            return;
+        }
+        if result.storage_ready && !matches!(&result.change, Ok(TailChange::Missing) | Err(_)) {
+            follow.watch.accepted = result.generation;
+            follow.watch.has_baseline = true;
+            if !follow.storage_ready {
+                follow.storage_ready = true;
+                cx.notify();
+            }
+        }
+        follow.ordinary = result.baseline;
         match result.change {
             Ok(TailChange::Unchanged | TailChange::Missing) | Err(_) => {}
             Ok(TailChange::MappedAppend(mapped)) => {
@@ -680,6 +709,7 @@ impl Workbench {
                     &current,
                     FileText::Mapped(mapped),
                     current.metadata.clone(),
+                    true,
                     cx,
                 );
             }
@@ -697,7 +727,7 @@ impl Workbench {
                     }
                 }
                 metadata.read_only = reasons.into();
-                self.publish_tail_text(&current, opened.text, metadata, cx);
+                self.publish_tail_text(&current, opened.text, metadata, false, cx);
             }
             Ok(TailChange::OrdinaryAppend {
                 base,
@@ -760,6 +790,7 @@ impl Workbench {
         current: &Document,
         text: FileText,
         metadata: rove_buffer::DocumentMetadata,
+        appended: bool,
         cx: &mut Context<Self>,
     ) {
         let next = Arc::new(Document {
@@ -774,6 +805,22 @@ impl Workbench {
             }
             self.metadata.files.remember_mapped(next.id, text.mapped());
             self.metadata.files.replace(&next);
+            if appended {
+                for group in self.views.values_mut() {
+                    for slot in std::iter::once(&mut group.primary).chain(group.secondary.as_mut())
+                    {
+                        let Some(shown) = slot.shown.as_mut().filter(|shown| {
+                            shown.document == current.id && shown.version == current.text.version()
+                        }) else {
+                            continue;
+                        };
+                        shown.version = next.text.version();
+                        let text = next.text.clone();
+                        slot.code
+                            .update(cx, |code, cx| code.set_appended_text(text, cx));
+                    }
+                }
+            }
             self.sync_views(cx);
         }
     }
@@ -790,6 +837,9 @@ impl Workbench {
                     return None;
                 }
                 let document = &tab.opened()?.document;
+                if !self.follow_tail.documents.get(&document.id)?.storage_ready {
+                    return None;
+                }
                 let end = (
                     document.text.version(),
                     document.text.lines().known.saturating_sub(1),

@@ -123,7 +123,7 @@ I/O 错误保留 ErrorKind 和诊断文字，支持从 std::io::Error 转换。�
 | 视图/状态栏贡献 | rove-ui/src/contributions.rs / ContributionRegistry | #16（#2 装配） | 各视图负责方；空 Registry |
 | C# 导航 | rove-lang-cs/src/query.rs / CsQueries | #38；#32–#37 提供数据 | #40、#41、#58、#59；EmptyCsQueries |
 | 文档结构树 | rove-docview/src/contracts.rs / Structure | R60（#61） | `ParsedStructure` 为生产提供方，`EmptyStructure` 用于空模型与契约测试；大纲、面包屑共用版本化节点 |
-| 跟随文件末尾、格式化后查看 | rove-ui/src/skeleton/workbench/tail_host.rs | R66（#67） | 每个编辑器保存跟随状态；工作区事件触发 #8 的增量索引；格式化副本通过 #17 打开并调用 #61 的 JSON/JSONC/XML 格式化 |
+| 跟随文件末尾、格式化后查看 | rove-ui/src/skeleton/workbench/tail_host.rs | R66（#67） | 每个编辑器保存跟随状态；工作区事件与后台检查触发 #8 的增量索引，Windows 以共享有界读取和文件尺寸通知处理原地轮转。扩展通知不可用时，大文件有变化会重开，普通缓冲验证旧前缀。格式化副本通过 #17 打开并调用 #61 的 JSON/JSONC/XML 格式化 |
 
 每个接口的语义、线程、复杂度/预算和错误说明见对应 trait 的 rustdoc；就近消费示例测试展示注册、读取、失效、取消或不可用分支。替身的“空/Unsupported/NotReady”不表示正式功能已实现，#2 必须替换主链所需的提供器。正式文件扫描、JSONC 解析、主题算法、命令解析和界面绘制均留给表中负责 issue。
 

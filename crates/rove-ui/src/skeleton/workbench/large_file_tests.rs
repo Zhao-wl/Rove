@@ -942,6 +942,7 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
         "跟随末尾"
     );
     assert!(status(&view, READ_ONLY, cx).is_some());
+    let baseline_reopens = view.read_with(cx, |view, _| view.follow_tail.counts.reopens);
 
     disk_append(&path, "first append\n");
     wait_tail(cx, |cx| tail_has_line(&document(&view, cx), "first append"));
@@ -978,7 +979,7 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
     });
     view.read_with(cx, |view, _| {
         assert_eq!(view.follow_tail.counts.appends, 2);
-        assert_eq!(view.follow_tail.counts.reopens, 0);
+        assert_eq!(view.follow_tail.counts.reopens, baseline_reopens);
     });
 
     assert!(cx.update(|window, cx| code.focus_handle(cx).is_focused(window)));
@@ -1008,12 +1009,65 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
     assert_eq!(replacement.resource, original.resource);
     assert!(replacement.metadata.bom);
     assert_ne!(replacement.metadata.encoding, original.metadata.encoding);
+    assert!(replacement.metadata.read_only.is_empty());
     assert!(view.read_with(cx, |view, _| view.follow_tail.counts.reopens) > 0);
 
     open_file(&view, "small.txt", cx);
     assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
     open_file(&view, "big.log", cx);
     assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn r66_tracks_a_fast_same_handle_truncation_that_preserves_both_samples(cx: &mut TestAppContext) {
+    use std::io::Write as _;
+    let fixture = Fixture::new(SETTINGS);
+    let path = fixture.folder.path().join("big.log");
+    let original = format!(
+        "{}before rotation\n{}",
+        "identical leading rows\n".repeat(450),
+        "identical trailing rows\n".repeat(450),
+    );
+    let replacement =
+        original.replace("before rotation", "after! rotation") + "final rotated row\n";
+    assert_eq!(&original[..4096], &replacement[..4096]);
+    assert_eq!(
+        &original[original.len() - 4096..],
+        &replacement[original.len() - 4096..original.len()]
+    );
+    std::fs::write(&path, original).unwrap();
+
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    let old = document(&view, cx);
+    assert_eq!(old.metadata.size, rove_buffer::SizeClass::Huge);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+    });
+
+    let baseline_reopens = view.read_with(cx, |view, _| view.follow_tail.counts.reopens);
+    // Even with a previous TextSource reference alive, Windows must let the
+    // same writer handle truncate and write back a file longer than the old one.
+    let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    writer.set_len(0).unwrap();
+    writer.write_all(replacement.as_bytes()).unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+    wait_tail(cx, |cx| {
+        let current = document(&view, cx);
+        current.text.lines().complete && tail_has_line(&current, "final rotated row")
+    });
+    let current = document(&view, cx);
+    assert_eq!(current.id, old.id);
+    assert_eq!(current.resource, old.resource);
+    let range = Span::new(ByteOffset(0), ByteOffset(current.text.byte_len())).unwrap();
+    assert_eq!(decoded(&current, range), replacement);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.follow_tail.counts.appends, 0);
+        assert!(view.follow_tail.counts.reopens > baseline_reopens);
+    });
 }
 
 #[gpui::test]
@@ -1133,6 +1187,54 @@ fn r66_ordinary_tail_appends_and_custom_command_bindings_work(cx: &mut TestAppCo
     assert!(view.read_with(cx, |view, _| {
         view.formatted_tab_title(&preview.resource).is_some()
     }));
+}
+
+#[gpui::test]
+fn r66_follow_status_and_readonly_notice_coexist_with_index_progress(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(SETTINGS);
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    view.update(cx, |view, cx| view.command(crate::follow_tail::FOLLOW, cx));
+    wait_tail(cx, |cx| {
+        status(&view, crate::follow_tail::FOLLOW_STATUS, cx).is_some()
+    });
+    let current = document(&view, cx);
+
+    view.update_in(cx, |view, window, cx| {
+        // Drive the real status assembly with a stable 20/44-byte indexed
+        // snapshot rather than racing the background index on a tiny fixture.
+        let indexing = Arc::new(Document {
+            text: Arc::new(Pending::new(22)),
+            ..(*current).clone()
+        });
+        view.editor.replace_document(indexing, None);
+        view.sync_views(cx);
+        view.sync_large_files(cx);
+        view.sync_follow_tail(cx);
+        view.sync_status(window, cx);
+        assert!(view
+            .shell
+            .status_bar
+            .get(lf::INDEX_STATUS)
+            .unwrap()
+            .text
+            .contains("45%"));
+        assert_eq!(
+            view.shell.status_bar.get(READ_ONLY).unwrap().text,
+            "超大文件 · 只读"
+        );
+        assert_eq!(
+            view.shell
+                .status_bar
+                .get(crate::follow_tail::FOLLOW_STATUS)
+                .unwrap()
+                .text,
+            "跟随末尾"
+        );
+        assert_eq!(view.shell.feedback.all_editor_bars().len(), 1);
+        view.editor.replace_document(current.clone(), None);
+        view.sync_views(cx);
+    });
 }
 
 #[gpui::test]

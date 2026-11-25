@@ -134,9 +134,28 @@ pub struct OpenedFile {
 ///   不做全文猜测；二进制判定与换行符统计只看头部 1 MiB。
 /// - 其余文件：与 [`open_path`] 相同，然后按字节数与行数判定普通/大文件。
 pub fn open_file(path: &Path, options: &LoadOptions<'_>, policy: SizePolicy) -> Result<OpenedFile> {
+    open_file_impl(path, options, policy, false)
+}
+
+/// Open the active path used by Follow Tail without holding a file mapping that
+/// would disable in-place log truncation on Windows.
+pub fn open_follow_file(
+    path: &Path,
+    options: &LoadOptions<'_>,
+    policy: SizePolicy,
+) -> Result<OpenedFile> {
+    open_file_impl(path, options, policy, true)
+}
+
+fn open_file_impl(
+    path: &Path,
+    options: &LoadOptions<'_>,
+    policy: SizePolicy,
+    shared_reads: bool,
+) -> Result<OpenedFile> {
     let file_len = std::fs::metadata(path)?.len();
     if policy.is_huge(file_len) {
-        return open_huge(path, options);
+        return open_huge(path, options, shared_reads);
     }
     let mut loaded = open_path(path, options)?;
     loaded.metadata.size = policy.classify(file_len, Some(loaded.text.lines().known));
@@ -147,7 +166,7 @@ pub fn open_file(path: &Path, options: &LoadOptions<'_>, policy: SizePolicy) -> 
     })
 }
 
-fn open_huge(path: &Path, options: &LoadOptions<'_>) -> Result<OpenedFile> {
+fn open_huge(path: &Path, options: &LoadOptions<'_>, shared_reads: bool) -> Result<OpenedFile> {
     use std::io::Read;
     let preferences = Preferences::read(options.settings, options.language);
     let mut head = [0u8; 4];
@@ -162,16 +181,23 @@ fn open_huge(path: &Path, options: &LoadOptions<'_>) -> Result<OpenedFile> {
     drop(file);
     let (encoding, bom_len) =
         decode::huge_file_encoding(&head[..filled], &preferences, options.explicit_encoding)?;
-    let text = MappedText::open(path, MappedEncoding { encoding, bom_len })?;
-    let sample = text.head(crate::mapped::SYNC_INDEX_BYTES as usize);
-    if !options.force_open && memchr::memchr(0, sample).is_some() {
-        return Err(Error::Unsupported);
-    }
-    let valid = match std::str::from_utf8(sample) {
-        Ok(valid) => valid,
-        // 头部样本可能在多字节字符中间截断，也可能本身含非法字节：只统计合法前缀。
-        Err(error) => std::str::from_utf8(&sample[..error.valid_up_to()]).unwrap_or_default(),
+    let encoding_choice = MappedEncoding { encoding, bom_len };
+    let text = if shared_reads {
+        MappedText::open_with_shared_reads(path, encoding_choice, true)?
+    } else {
+        MappedText::open(path, encoding_choice)?
     };
+    let line_endings = text.with_head(crate::mapped::SYNC_INDEX_BYTES, |sample| {
+        if !options.force_open && memchr::memchr(0, sample).is_some() {
+            return Err(Error::Unsupported);
+        }
+        let valid = match std::str::from_utf8(sample) {
+            Ok(valid) => valid,
+            // 样本可能截断字符，只统计合法前缀。
+            Err(error) => std::str::from_utf8(&sample[..error.valid_up_to()]).unwrap_or_default(),
+        };
+        Ok(decode::detect_line_endings(valid))
+    })?;
     let mut read_only = options.read_only.to_vec();
     if !read_only.contains(&ReadOnlyReason::HugeFile) {
         read_only.push(ReadOnlyReason::HugeFile);
@@ -185,7 +211,7 @@ fn open_huge(path: &Path, options: &LoadOptions<'_>) -> Result<OpenedFile> {
         language: Arc::from(options.language),
         encoding: detection.encoding.clone(),
         bom: detection.bom,
-        line_endings: decode::detect_line_endings(valid),
+        line_endings,
         read_only: Arc::from(read_only),
         size: SizeClass::Huge,
     };

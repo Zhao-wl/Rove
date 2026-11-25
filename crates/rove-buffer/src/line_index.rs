@@ -159,6 +159,7 @@ impl LineIndex {
     }
 
     /// 扫描内存中的 `data[from..to)`（`data` 是整个快照），把行起点写进索引。
+    #[cfg(test)]
     pub(crate) fn scan(&mut self, data: &[u8], from: u64, to: u64) {
         let mut starts = Vec::new();
         let window_start = from.saturating_sub(1);
@@ -187,10 +188,10 @@ impl LineIndex {
     /// 从已完成的旧快照延续：文件在末尾增长后，旧快照末尾单独的 CR 可能与新内容
     /// 开头的 LF 组成 CRLF。返回继续扫描的位置（总是旧快照的末尾：那个 LF 由
     /// [`scan_chunk`] 归给前面的 CR，不会再算一次）。
-    pub(crate) fn resume_after_append(&mut self, data: &[u8]) -> u64 {
+    pub(crate) fn resume_after_append(&mut self, next_byte: Option<u8>) -> u64 {
         let position = self.scanned;
         if self.trailing_cr {
-            let crlf = data.get(position as usize) == Some(&b'\n');
+            let crlf = next_byte == Some(b'\n');
             self.push(position + u64::from(crlf));
             self.trailing_cr = false;
         }
@@ -350,14 +351,14 @@ mod tests {
     fn resume_joins_a_trailing_cr_with_an_appended_lf() {
         let mut index = build(b"a\r");
         let data = b"a\r\nb";
-        let next = index.resume_after_append(data);
+        let next = index.resume_after_append(data.get(index.scanned as usize).copied());
         assert_eq!(next, 2);
         index.scan(data, next, data.len() as u64);
         assert_eq!(starts(&index), [0, 3]);
 
         let mut index = build(b"a\r");
         let data = b"a\rb";
-        let next = index.resume_after_append(data);
+        let next = index.resume_after_append(data.get(index.scanned as usize).copied());
         assert_eq!(next, 2);
         index.scan(data, next, data.len() as u64);
         assert_eq!(starts(&index), [0, 2]);

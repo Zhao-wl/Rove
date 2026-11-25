@@ -1,6 +1,10 @@
 //! Incremental observation of a followed ordinary text file.
 //! Huge files continue to use the existing MappedText::reload path.
 mod decode;
+#[cfg(windows)]
+mod watch;
+#[cfg(windows)]
+pub use watch::TailSizeWatch;
 
 pub use decode::{extend_disk_hash, utf8_append, LineEndingCounts, Utf8Append};
 
@@ -111,6 +115,21 @@ impl TailFingerprint {
                 .is_some_and(|(old, new)| old != new)
     }
 
+    /// Validate the complete prior prefix when reliable truncation notifications are unavailable.
+    pub fn matches_prefix(&self, file: &mut File, expected_hash: u64) -> io::Result<bool> {
+        let mut remaining = self.len;
+        let mut hash = super::content_hash(&[]);
+        let mut chunk = [0u8; 32 * 1024];
+        file.seek(SeekFrom::Start(0))?;
+        while remaining != 0 {
+            let count = remaining.min(chunk.len() as u64) as usize;
+            file.read_exact(&mut chunk[..count])?;
+            hash = extend_disk_hash(hash, &chunk[..count]);
+            remaining -= count as u64;
+        }
+        Ok(hash == expected_hash)
+    }
+
     pub fn is_replaced(&self, file: &File) -> io::Result<bool> {
         Ok(self.object_changed(file, &file.metadata()?))
     }
@@ -204,6 +223,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    fn fallback_prefix_validation_rejects_an_in_place_rewrite_with_matching_samples() {
+        let mut original = vec![b'a'; 24_576];
+        let fixture = Fixture::new(&original);
+        let known_hash = super::super::content_hash(&original);
+        let state = TailFingerprint::capture(&mut fixture.read()).unwrap();
+        original[8_192] = b'b';
+        original.extend_from_slice(b"late row\n");
+        let mut writer = OpenOptions::new().write(true).open(&fixture.0).unwrap();
+        writer.set_len(0).unwrap();
+        writer.write_all(&original).unwrap();
+        drop(writer);
+        assert!(matches!(
+            state
+                .read_change(&mut fixture.read(), false, u64::MAX)
+                .unwrap(),
+            ReadChange::Appended { .. }
+        ));
+        assert!(!state
+            .matches_prefix(&mut fixture.read(), known_hash)
+            .unwrap());
     }
 
     #[test]

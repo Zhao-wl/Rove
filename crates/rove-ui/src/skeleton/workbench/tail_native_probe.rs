@@ -55,21 +55,38 @@ fn r66_native_tail_replay() {
             let executor = cx.background_executor().clone();
             let initial = Instant::now();
             let outcome: Result<Vec<f64>, String> = async {
-                let (base_version, base_bytes, base_lines) = loop {
-                    let value = window.update(cx, |view, _, _| {
-                        let doc = view.active_large_file_document()?;
-                        let lines = doc.text.lines();
-                        lines.complete.then(|| (doc.text.version(), doc.text.byte_len(), lines.known))
-                    }).map_err(|e| e.to_string())?;
-                    if let Some(value) = value { break value; }
+                loop {
+                    let opened = window.update(cx, |view, _, _| view.active_large_file_document().is_some())
+                        .map_err(|e| e.to_string())?;
+                    if opened { break; }
                     if initial.elapsed() >= Duration::from_secs(30) {
                         return Err("initial mapping did not finish indexing".to_owned());
                     }
                     executor.timer(Duration::from_millis(20)).await;
-                };
-                window.update(cx, |view, window, cx| {
+                }
+                window.update(cx, |_, window, cx| {
                     let action = crate::keys::action_for(crate::follow_tail::FOLLOW).unwrap();
                     window.dispatch_action(action, cx);
+                }).map_err(|e| e.to_string())?;
+                let (base_version, base_bytes, base_lines, base_appends, base_reopens) = loop {
+                    let value = window.update(cx, |view, _, cx| {
+                        let doc = view.active_large_file_document()?;
+                        let lines = doc.text.lines();
+                        let follows = view.shell.status_bar.get(crate::follow_tail::FOLLOW_STATUS).is_some();
+                        let at_end = view.code_view().read(cx).viewport()
+                            .is_some_and(|viewport| viewport.last_line + 1 >= lines.known);
+                        (lines.complete && follows && at_end).then(|| (
+                            doc.text.version(), doc.text.byte_len(), lines.known,
+                            view.follow_tail.counts.appends, view.follow_tail.counts.reopens,
+                        ))
+                    }).map_err(|e| e.to_string())?;
+                    if let Some(value) = value { break value; }
+                    if initial.elapsed() >= Duration::from_secs(30) {
+                        return Err("armed follow baseline did not finish indexing and displaying".to_owned());
+                    }
+                    executor.timer(Duration::from_millis(20)).await;
+                };
+                window.update(cx, |view, _, cx| {
                     view.code_view().update(cx, |code, _| code.record_frames(true));
                 }).map_err(|e| e.to_string())?;
                 executor.timer(Duration::from_millis(350)).await;
@@ -100,6 +117,8 @@ fn r66_native_tail_replay() {
                             let frames = code.update(cx, |code, _| code.take_frame_samples());
                             (frames, lines, document.text.byte_len(), follows, view.follow_tail.counts.appends, view.follow_tail.counts.reopens, at_end)
                         }).map_err(|e| e.to_string())?;
+                    let appended = appended - base_appends;
+                    let reopened = reopened - base_reopens;
                     let writing = child.try_wait().map_err(|e| e.to_string())?.is_none();
                     for frame in frames {
                         if frame.text_version <= base_version.0 {

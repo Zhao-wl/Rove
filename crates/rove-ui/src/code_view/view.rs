@@ -913,6 +913,22 @@ impl CodeView {
         keep_view_state: bool,
         cx: &mut Context<Self>,
     ) {
+        self.replace_text(text, keep_view_state, false, cx);
+    }
+
+    /// Publish verified tail growth without discarding unaffected row layout.
+    pub(crate) fn set_appended_text(&mut self, text: Arc<dyn TextSource>, cx: &mut Context<Self>) {
+        self.replace_text(Some(text), true, true, cx);
+    }
+
+    fn replace_text(
+        &mut self,
+        text: Option<Arc<dyn TextSource>>,
+        keep_view_state: bool,
+        appended: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let old_lines = self.doc_line_count();
         let changed = self.text.as_ref().map(|text| text.version())
             != text.as_ref().map(|text| text.version());
         let discard_semantics = changed && !self.semantic.borrow().is_empty();
@@ -927,10 +943,18 @@ impl CodeView {
         self.minimap.clear(cx);
         self.clear_minimap_document_marks();
         self.links.reset();
-        self.lines.clear();
-        self.content_width = 0.0;
-        self.overlay_width = 0.0;
-        self.wrap.content_width = 0.0;
+        if appended {
+            // The previous final line, and its trailing CR/empty/partial neighbor,
+            // can be completed by the newly appended bytes.
+            for line in old_lines.saturating_sub(2)..old_lines {
+                self.lines.remove(&line);
+            }
+        } else {
+            self.lines.clear();
+            self.content_width = 0.0;
+            self.overlay_width = 0.0;
+            self.wrap.content_width = 0.0;
+        }
         // #52：文本换了，`Ctrl+D` 会话与列选择状态都作废。
         self.match_session = None;
         self.column_select = None;

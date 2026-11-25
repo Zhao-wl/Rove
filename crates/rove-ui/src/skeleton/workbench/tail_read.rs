@@ -3,7 +3,7 @@ use std::{fs::File, path::PathBuf, sync::Arc};
 
 use rove_base::{ByteOffset, Error, Result, Span, Version};
 use rove_buffer::{
-    open_file,
+    open_follow_file,
     save::{
         tail::{
             extend_disk_hash, utf8_append, LineEndingCounts, ReadChange, TailFingerprint,
@@ -23,12 +23,54 @@ pub(super) struct OrdinaryBaseline {
     endings: Option<LineEndingCounts>,
 }
 
+#[derive(Clone, Default)]
+pub(super) struct PathWatch {
+    initialized: bool,
+    pub accepted: Option<u64>,
+    pub has_baseline: bool,
+    #[cfg(windows)]
+    handle: Option<Arc<rove_buffer::save::tail::TailSizeWatch>>,
+}
+
+impl PathWatch {
+    fn initialize(&mut self, path: &std::path::Path) {
+        if self.initialized {
+            return;
+        }
+        self.initialized = true;
+        #[cfg(windows)]
+        {
+            let initial_len = path.metadata().map_or(0, |metadata| metadata.len());
+            self.handle = rove_buffer::save::tail::TailSizeWatch::start(path, initial_len)
+                .ok()
+                .map(Arc::new);
+        }
+        #[cfg(not(windows))]
+        let _ = path;
+    }
+
+    pub fn generation(&self) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            self.handle
+                .as_ref()
+                .filter(|watch| watch.is_live())
+                .map(|watch| watch.generation())
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+}
+
 pub(super) struct ReadJob {
     pub document: Arc<Document>,
     pub path: PathBuf,
     pub settings: Arc<dyn Settings>,
     pub policy: SizePolicy,
     pub request: ReloadRequest,
+    pub watch: PathWatch,
     pub mapped: Option<Arc<MappedText>>,
     pub ordinary: Option<OrdinaryBaseline>,
     pub saved: Option<DiskStamp>,
@@ -53,12 +95,32 @@ pub(super) enum Change {
 
 pub(super) struct ReadResult {
     pub origin: Version,
+    pub storage_ready: bool,
+    pub watch: PathWatch,
+    pub generation: Option<u64>,
     pub baseline: Option<OrdinaryBaseline>,
     pub change: Result<Change>,
 }
 
 pub(super) fn read(mut job: ReadJob) -> ReadResult {
-    let changes = apply(&mut job);
+    job.watch.initialize(&job.path);
+    let generation = job.watch.generation();
+    if !job.watch.has_baseline || job.watch.accepted != generation {
+        job.request = ReloadRequest::ReopenPath;
+    }
+    let storage_ready = job.mapped.as_ref().is_none_or(|mapped| {
+        let was_mapped = mapped.is_memory_mapped();
+        let ready = mapped.enable_shared_reads();
+        if was_mapped && ready {
+            mapped.warm_tail();
+        }
+        ready
+    });
+    let changes = if storage_ready {
+        apply(&mut job)
+    } else {
+        Ok(Change::Unchanged)
+    };
     let change = match changes {
         Err(Error::Io {
             kind: std::io::ErrorKind::NotFound,
@@ -68,6 +130,9 @@ pub(super) fn read(mut job: ReadJob) -> ReadResult {
     };
     ReadResult {
         origin: job.document.text.version(),
+        storage_ready,
+        watch: job.watch,
+        generation,
         baseline: job.ordinary,
         change,
     }
@@ -77,10 +142,11 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
     let force = job.request == ReloadRequest::ReopenPath;
     if let Some(mapped) = job.mapped.as_ref() {
         if !force {
-            match mapped.reload_append()? {
+            match mapped.reload_append(job.watch.generation().is_some())? {
                 Some(Reload::Unchanged) => return Ok(Change::Unchanged),
                 Some(Reload::Appended(next)) => {
                     next.wait_complete(std::time::Duration::from_millis(50));
+                    next.warm_tail();
                     return Ok(Change::MappedAppend(next));
                 }
                 // Reopen through the regular detector to read the new file's encoding and BOM.
@@ -97,7 +163,13 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
     }
     if force {
         job.ordinary = None;
-        return ordinary_full(job);
+        let change = ordinary_full(job)?;
+        if let Change::Disk(stamp, _) = &change {
+            if job.saved.as_ref() == Some(stamp) && stamp.same_metadata(&metadata) {
+                job.ordinary = capture_ordinary_baseline(job, &mut file, stamp)?;
+            }
+        }
+        return Ok(change);
     }
     let Some(saved) = job.saved.as_ref() else {
         return Ok(Change::Unchanged);
@@ -144,23 +216,10 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
         if !saved.same_metadata(&metadata) {
             return ordinary_full(job);
         }
-        let fingerprint = TailFingerprint::capture(&mut file)?;
-        if fingerprint.disk_stamp(saved.hash) != *saved {
+        job.ordinary = capture_ordinary_baseline(job, &mut file, saved)?;
+        if job.ordinary.is_none() {
             return ordinary_full(job);
         }
-        let mut endings = LineEndingCounts::default();
-        let text = job.document.text.as_ref();
-        text.visit_chunks(
-            Span::new(ByteOffset(0), ByteOffset(text.byte_len()))?,
-            &mut |chunk| {
-                endings.add(chunk);
-            },
-        )?;
-        job.ordinary = Some(OrdinaryBaseline {
-            stamp: saved.clone(),
-            fingerprint,
-            endings: Some(endings),
-        });
     }
     let current = job.ordinary.as_mut().unwrap();
     match current.fingerprint.read_change(
@@ -174,6 +233,14 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
             ordinary_full(job)
         }
         ReadChange::Appended { bytes, next } => {
+            if job.watch.generation().is_none()
+                && !current
+                    .fingerprint
+                    .matches_prefix(&mut file, current.stamp.hash)?
+            {
+                job.ordinary = None;
+                return ordinary_full(job);
+            }
             let text = match utf8_append(&bytes) {
                 Utf8Append::Complete(text) => text,
                 Utf8Append::Incomplete => return Ok(Change::Unchanged),
@@ -201,9 +268,45 @@ fn apply(job: &mut ReadJob) -> Result<Change> {
     }
 }
 
+fn capture_ordinary_baseline(
+    job: &ReadJob,
+    file: &mut File,
+    saved: &DiskStamp,
+) -> Result<Option<OrdinaryBaseline>> {
+    let fingerprint = TailFingerprint::capture(file)?;
+    if fingerprint.disk_stamp(saved.hash) != *saved {
+        return Ok(None);
+    }
+    let mut endings = LineEndingCounts::default();
+    if job.can_append {
+        let text = job.document.text.as_ref();
+        text.visit_chunks(
+            Span::new(ByteOffset(0), ByteOffset(text.byte_len()))?,
+            &mut |chunk| endings.add(chunk),
+        )?;
+    }
+    Ok(Some(OrdinaryBaseline {
+        stamp: saved.clone(),
+        fingerprint,
+        endings: job.can_append.then_some(endings),
+    }))
+}
+
 fn opened(job: &ReadJob) -> Result<Change> {
-    let options = LoadOptions::new(&job.document.metadata.language, job.settings.as_ref());
-    open_file(&job.path, &options, job.policy).map(Change::Reopened)
+    let mut options = LoadOptions::new(&job.document.metadata.language, job.settings.as_ref());
+    options.read_only = job
+        .document
+        .metadata
+        .read_only
+        .iter()
+        .filter(|reason| !matches!(reason, rove_buffer::ReadOnlyReason::HugeFile))
+        .cloned()
+        .collect();
+    let opened = open_follow_file(&job.path, &options, job.policy)?;
+    if let Some(mapped) = opened.text.mapped() {
+        mapped.warm_tail();
+    }
+    Ok(Change::Reopened(opened))
 }
 
 fn ordinary_full(job: &ReadJob) -> Result<Change> {
