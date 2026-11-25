@@ -249,3 +249,12 @@ paint the embedding host can read the marked bounds and the positioned tooltip
 to clip a native child window while preserving ordinary GPUI event dispatch.
 Hosts also refresh the pointer position within a visible native child after the
 platform reports mouse leave, so a tooltip can dismiss without a GPUI mouse move.
+
+## #67 — 复用当前帧的单色字形栅格
+
+`src/window.rs` 在一次绘制中缓存单色字形的栅格原点与图集条目，也缓存成功的零尺寸结果。
+缓存键沿用 `RenderGlyphParams`，包含字体、字号、字形、缩放和子像素变体。
+每个绘制调用继续计算位置、颜色、透明度和遮罩。Emoji 继续走原有路径。
+
+窗口每次绘制前清空缓存，最多保存 4096 项。达到上限后的未命中走原路径，错误不入缓存。
+升级 GPUI 后按同一规则重打补丁，并复跑 DPI、缩放、文本绘制和真实日志跟随的性能回放。
