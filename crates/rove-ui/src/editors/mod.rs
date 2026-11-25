@@ -75,6 +75,13 @@ struct Request {
     record: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabReveal {
+    OpenLocation,
+    EditorConversion,
+    HotExit,
+}
+
 pub(crate) struct Tab {
     pub(crate) id: TabId,
     pub(crate) resource: Resource,
@@ -85,7 +92,7 @@ pub(crate) struct Tab {
     pub(crate) view: ViewState,
     pub(crate) secondary: Option<ViewState>,
     /// A completed request placed the cursor; the code view still has to reveal it.
-    pub(crate) reveal: bool,
+    pub(crate) reveal: Option<TabReveal>,
     pub(crate) content: Content,
     options: OpenOptions,
     prepare: Option<OpenPreparation>,
@@ -94,6 +101,10 @@ pub(crate) struct Tab {
 }
 
 impl Tab {
+    pub(crate) fn activation_order(&self) -> u64 {
+        self.used
+    }
+
     pub(crate) fn search_range(&self) -> Option<rove_base::TextRange> {
         (self.options.source == crate::documents::OpenSource::Search)
             .then(|| self.options.selection.clone())
@@ -419,7 +430,7 @@ impl EditorService {
                 prepare: tab.prepare.clone(),
                 request: None,
                 used: id,
-                reveal: false,
+                reveal: None,
             };
             if matches!(copy.content, Content::Loading) {
                 let mut options = copy.options.clone();
@@ -853,7 +864,7 @@ impl EditorService {
             options: OpenOptions::default(),
             prepare: None,
             used: id,
-            reveal: false,
+            reveal: None,
         };
         self.count_up(&tab);
         let pane = self.groups.get_mut(&group).unwrap();
@@ -1300,7 +1311,7 @@ impl EditorService {
                     options: options.clone(),
                     prepare: None,
                     used: id.0,
-                    reveal: false,
+                    reveal: None,
                 },
             );
             id.0
@@ -1497,7 +1508,10 @@ impl EditorService {
         for (tab, event) in std::mem::take(&mut self.ready) {
             let state = self.groups.values().find_map(|pane| {
                 let entry = pane.tab(tab)?;
-                Some(pane.active == Some(tab) && (entry.kind != EditorKind::Text || !entry.reveal))
+                Some(
+                    pane.active == Some(tab)
+                        && (entry.kind != EditorKind::Text || entry.reveal.is_none()),
+                )
             });
             match (state, event) {
                 (Some(true), event) => emit.push(event),
@@ -1568,8 +1582,8 @@ impl EditorService {
                         rows,
                         loaded.opened.document.text.lines(),
                     );
+                    tab.reveal = Some(TabReveal::OpenLocation);
                 }
-                tab.reveal |= loaded.position.is_some();
                 tab.content = Content::Ready(loaded.opened);
                 if self.latest_navigation == Some(id) {
                     let to = Location {
@@ -1660,7 +1674,7 @@ impl EditorService {
                     column: rove_base::Utf8Column(0),
                 };
                 entry.view.reveal(position, None, rows, opened);
-                entry.reveal = true;
+                entry.reveal = Some(TabReveal::EditorConversion);
             }
             self.remove_tab(group, tab, activate);
             if activate || was_active {
@@ -1676,14 +1690,14 @@ impl EditorService {
             return false;
         }
         entry.kind = kind;
-        entry.reveal = false;
+        entry.reveal = None;
         if let (Some(line), Some(lines)) = (line, entry.opened().map(|o| o.document.text.lines())) {
             let position = Position {
                 line: rove_base::Line(line as u64),
                 column: rove_base::Utf8Column(0),
             };
             entry.view.reveal(position, None, rows, lines);
-            entry.reveal = true;
+            entry.reveal = Some(TabReveal::EditorConversion);
         }
         if activate {
             self.activate(group, tab, true);

@@ -41,6 +41,8 @@ pub(super) struct HotExit {
     activate: Option<PathBuf>,
     /// 已经排了一个“到期写备份”的定时器。
     timer: bool,
+    /// 最近一次操作光标的标签与代码视图。与用于回收标签的全局激活顺序相互独立。
+    caret_views: BTreeMap<DocumentId, (TabId, bool)>,
 }
 
 impl Workbench {
@@ -64,6 +66,9 @@ impl Workbench {
     /// （改成 `off` 时核心层会立刻清掉本组备份）。
     pub(super) fn hot_exit_settings_changed(&mut self) {
         let options = HotExitOptions::read(&*self.settings);
+        if !options.mode.backs_up() {
+            self.hotexit.caret_views.clear();
+        }
         if let Some(service) = self.hotexit.service.as_mut() {
             if service.options() != options {
                 service.set_options(options);
@@ -140,6 +145,7 @@ impl Workbench {
     /// 磁盘上已被删除的文档：直接放一个就绪标签，标成“已删除”。
     fn open_deleted_restored(&mut self, backup: Backup, cx: &mut Context<Self>) {
         let path = backup.path.clone();
+        let cursor = backup.cursor;
         let file = self.restored_file(backup);
         let id = DocumentId(DELETED_BASE + self.hotexit.consumed.len() as u64);
         if let Some(service) = &mut self.hotexit.service {
@@ -161,6 +167,7 @@ impl Workbench {
         self.editing.saves.borrow_mut().attach(id, file);
         self.editing.deleted.insert(id);
         self.editor.open_ready(Resource::File(path), document);
+        self.restore_hot_exit_cursor(id, cursor);
         self.editor.set_dirty(id, true);
         self.sync_views(cx);
         self.sync_editing(cx);
@@ -191,12 +198,36 @@ impl Workbench {
         &mut self,
         document: DocumentId,
         path: &Path,
-    ) -> Option<TextFile> {
+    ) -> Option<(TextFile, Option<Position>)> {
         let backup = self.hotexit.pending.remove(&hot_exit_key(path))?;
         if let Some(service) = &mut self.hotexit.service {
             service.note_restored(document, &backup.path);
         }
-        Some(self.restored_file(backup))
+        let cursor = backup.cursor;
+        Some((self.restored_file(backup), cursor))
+    }
+
+    /// 必须在标签已挂上备份文本之后定位，因为备份可能比磁盘文件多出数行。
+    pub(super) fn restore_hot_exit_cursor(
+        &mut self,
+        document: DocumentId,
+        cursor: Option<Position>,
+    ) {
+        let Some(cursor) = cursor else { return };
+        for tab in self
+            .editor
+            .groups
+            .values_mut()
+            .flat_map(|pane| &mut pane.tabs)
+        {
+            if tab.opened().is_some_and(|opened| {
+                opened.document.id == document && opened.document.text.offset(cursor).is_ok()
+            }) {
+                tab.view.cursor = cursor;
+                tab.view.selection = None;
+                tab.reveal = Some(TabReveal::HotExit);
+            }
+        }
     }
 
     /// 恢复结束：激活原来的活动标签、清理未挂载的备份、按需提示。
@@ -275,6 +306,55 @@ impl Workbench {
         self.schedule_hot_exit_backup(cx);
     }
 
+    pub(super) fn remember_hot_exit_cursor(
+        &mut self,
+        group: EditorGroupId,
+        shown: Shown,
+        secondary: bool,
+    ) -> bool {
+        if !self
+            .hotexit
+            .service
+            .as_ref()
+            .is_some_and(|service| service.options().mode.backs_up())
+        {
+            return false;
+        }
+        let Some(opened) = self
+            .editor
+            .groups
+            .get(&group)
+            .and_then(|pane| pane.tab(shown.tab))
+            .and_then(Tab::opened)
+        else {
+            return false;
+        };
+        if opened.document.id != shown.document || opened.document.text.version() != shown.version {
+            return false;
+        }
+        let Some(path) = self.disk_path(&opened.document.resource) else {
+            return false;
+        };
+        let current = self
+            .editing
+            .saves
+            .borrow()
+            .file(shown.document)
+            .is_some_and(|file| {
+                file.is_dirty()
+                    && file.session().buffer().version() == shown.version
+                    && file.path().is_some_and(|saved| {
+                        saved == path.as_path() || hot_exit_key(saved) == hot_exit_key(&path)
+                    })
+            });
+        if current {
+            self.hotexit
+                .caret_views
+                .insert(shown.document, (shown.tab, secondary));
+        }
+        current
+    }
+
     fn schedule_hot_exit_backup(&mut self, cx: &mut Context<Self>) {
         if self.hotexit.timer {
             return;
@@ -335,33 +415,50 @@ impl Workbench {
 
     /// 某个文档此刻的备份（含标签顺序与是否活动标签）。
     fn backup_of(&self, document: DocumentId) -> Option<Backup> {
-        let (index, active) = self.tab_position(document)?;
+        let (index, active, cursor) = self.tab_position(document)?;
         let saves = self.editing.saves.borrow();
         let file = saves.file(document)?;
         if !file.is_dirty() {
             return None;
         }
         let limit = self.hotexit.service.as_ref()?.undo_limit();
-        file.to_backup(limit, index, active)
+        let mut backup = file.to_backup(limit, index, active)?;
+        backup.cursor = Some(cursor);
+        Some(backup)
     }
 
-    /// 文档在窗口里的标签序号（跨编辑器组的全局序号）与是否活动标签。
-    fn tab_position(&self, document: DocumentId) -> Option<(u32, bool)> {
-        let mut index = 0u32;
-        for (group, pane) in &self.editor.groups {
-            for tab in &pane.tabs {
-                if tab.opened().is_some_and(|o| o.document.id == document) {
-                    let active = pane.active == Some(tab.id) && *group == self.editor.focused;
-                    return Some((index, active));
-                }
-                index += 1;
-            }
-        }
-        None
+    /// 一个文档只有一份备份。优先当前活动标签，其次取最近操作过光标的标签。
+    fn tab_position(&self, document: DocumentId) -> Option<(u32, bool, Position)> {
+        let recent = self.hotexit.caret_views.get(&document).copied();
+        let tabs = self.editor.groups.iter().flat_map(|(group, pane)| {
+            pane.tabs.iter().map(move |tab| {
+                let active = *group == self.editor.focused && pane.active == Some(tab.id);
+                (tab, active)
+            })
+        });
+        (0u32..)
+            .zip(tabs)
+            .filter(|(_, (tab, _))| tab.opened().is_some_and(|o| o.document.id == document))
+            .max_by_key(|(index, (tab, active))| {
+                (
+                    *active,
+                    recent.is_some_and(|(id, _)| id == tab.id),
+                    tab.activation_order(),
+                    std::cmp::Reverse(*index),
+                )
+            })
+            .map(|(index, (tab, active))| {
+                let cursor = match (recent, &tab.secondary) {
+                    (Some((id, true)), Some(state)) if id == tab.id => state.cursor,
+                    _ => tab.view.cursor,
+                };
+                (index, active, cursor)
+            })
     }
 
     /// 文档已保存 / 已关闭：出队并删掉它的备份。
     pub(super) fn discard_hot_exit_backup(&mut self, document: DocumentId) {
+        self.hotexit.caret_views.remove(&document);
         if let Some(service) = self.hotexit.service.as_mut() {
             service.discard(document);
         }

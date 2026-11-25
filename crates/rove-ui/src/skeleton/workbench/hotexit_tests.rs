@@ -30,10 +30,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(hot_exit: HotExitMode) -> Self {
+        Self::with_restore_undo_stack(hot_exit, true)
+    }
+
+    fn with_restore_undo_stack(hot_exit: HotExitMode, restore_undo_stack: bool) -> Self {
         let user = tempfile::tempdir().unwrap();
         std::fs::write(
             user.path().join("settings.json"),
-            format!("{{ \"files.hotExit\": \"{}\" }}", hot_exit.as_setting()),
+            format!(
+                "{{ \"files.hotExit\": \"{}\", \"files.restoreUndoStack\": {restore_undo_stack} }}",
+                hot_exit.as_setting()
+            ),
         )
         .unwrap();
         let mut options = SettingsOptions::new(user.path(), user.path().join("backup"));
@@ -115,6 +122,21 @@ fn open_file(view: &Entity<Workbench>, cx: &mut VisualTestContext, path: &str) -
     cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
     settle(cx);
     code
+}
+
+fn click_caret(code: &Entity<CodeView>, cx: &mut VisualTestContext, target: Position) {
+    let at = cx.update(|_, app| {
+        code.update(app, |code, _| {
+            code.point_for_position(target)
+                .expect("visible caret target")
+        })
+    });
+    cx.simulate_click(
+        point(at.x + px(1.0), at.y + px(4.0)),
+        gpui::Modifiers::default(),
+    );
+    settle(cx);
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active), target);
 }
 
 fn shown_text(code: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
@@ -258,6 +280,368 @@ fn a_crash_restores_every_dirty_document_with_its_tab_order_and_a_status_message
 }
 
 #[gpui::test]
+fn a_crash_restores_the_last_caret_move_without_an_undo_stack(cx: &mut TestAppContext) {
+    let fx = Fixture::with_restore_undo_stack(HotExitMode::OnExit, false);
+    let disk = fx.file("a.txt", "disk");
+    let moved = Position {
+        line: rove_base::Line(1),
+        column: rove_base::Utf8Column(3),
+    };
+    {
+        let (view, cx) = fx.launch(cx);
+        let code = open_file(&view, cx, "a.txt");
+        cx.simulate_input("X");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("汉YZ");
+        settle(cx);
+        assert_eq!(shown_text(&code, cx), "X\n汉YZdisk");
+        back_up_now(&view, cx);
+        let initial = fx.store().backups();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(
+            initial[0].cursor,
+            Some(code.read_with(cx, |c, _| c.selection().active))
+        );
+        assert_ne!(initial[0].cursor, Some(moved));
+        assert!(initial[0].undo.is_empty());
+
+        cx.simulate_keystrokes("left left");
+        settle(cx);
+        assert_eq!(code.read_with(cx, |c, _| c.selection().active), moved);
+        back_up_now(&view, cx);
+        let backups = fx.store().backups();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].text, initial[0].text);
+        assert_eq!(backups[0].cursor, Some(moved));
+        crash(cx);
+    }
+
+    let (view, cx) = fx.launch(cx);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    assert_eq!(shown_text(&code, cx), "X\n汉YZdisk");
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active), moved);
+    assert_eq!(fx.store().backups().len(), 1);
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input("!");
+    settle(cx);
+    assert_eq!(shown_text(&code, cx), "X\n汉!YZdisk");
+    assert_eq!(std::fs::read(&disk).unwrap(), b"disk");
+}
+
+#[gpui::test]
+fn a_split_document_restores_the_focused_or_most_recently_activated_caret(cx: &mut TestAppContext) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    let disk = fx.file("a.txt", "abcdefgh");
+    fx.file("other.txt", "clean");
+    fx.file("left-other.txt", "also clean");
+    {
+        let (view, cx) = fx.launch(cx);
+        let left_code = open_file(&view, cx, "a.txt");
+        cx.simulate_input("X");
+        settle(cx);
+        let (left, document) = view.read_with(cx, |v, _| {
+            (
+                v.editor.focused,
+                v.editor
+                    .active()
+                    .current()
+                    .unwrap()
+                    .opened()
+                    .unwrap()
+                    .document
+                    .id,
+            )
+        });
+        cx.simulate_keystrokes("ctrl-\\");
+        settle(cx);
+        let right_code = view.read_with(cx, |v, _| {
+            assert_ne!(v.editor.focused, left);
+            assert_eq!(
+                v.editor
+                    .active()
+                    .current()
+                    .unwrap()
+                    .opened()
+                    .unwrap()
+                    .document
+                    .id,
+                document
+            );
+            v.code_view().clone()
+        });
+        cx.update(|window, cx| window.focus(&right_code.focus_handle(cx)));
+        cx.simulate_keystrokes("right right");
+        cx.simulate_input("!");
+        cx.simulate_keystrokes("right");
+        settle(cx);
+        assert_eq!(
+            left_code.read_with(cx, |c, _| c.selection().active.column.0),
+            1
+        );
+        assert_eq!(
+            right_code.read_with(cx, |c, _| c.selection().active.column.0),
+            5
+        );
+        assert_eq!(shown_text(&right_code, cx), "Xab!cdefgh");
+        back_up_now(&view, cx);
+        let active = fx.store().backups();
+        assert_eq!(active.len(), 1);
+        assert!(active[0].active);
+        assert_eq!(active[0].cursor.unwrap().column.0, 5);
+
+        cx.simulate_keystrokes("left");
+        settle(cx);
+        open_file(&view, cx, "other.txt");
+        back_up_now(&view, cx);
+        let inactive = fx.store().backups();
+        assert_eq!(inactive.len(), 1);
+        assert!(!inactive[0].active);
+        assert_eq!(inactive[0].cursor.unwrap().column.0, 4);
+
+        // Clicking the left editor focuses its group but does not reactivate its tab.
+        // Its caret must win after opening another tab despite the right tab having higher MRU.
+        click_caret(
+            &left_code,
+            cx,
+            Position {
+                line: Line(0),
+                column: rove_base::Utf8Column(2),
+            },
+        );
+        view.read_with(cx, |v, _| assert_eq!(v.editor.focused, left));
+        assert_eq!(
+            left_code.read_with(cx, |c, _| c.selection().active.column.0),
+            2
+        );
+        open_file(&view, cx, "left-other.txt");
+        back_up_now(&view, cx);
+        let left_recent = fx.store().backups();
+        assert_eq!(left_recent.len(), 1);
+        assert!(!left_recent[0].active);
+        assert_eq!(left_recent[0].cursor.unwrap().column.0, 2);
+        crash(cx);
+    }
+
+    let (view, cx) = fx.launch(cx);
+    assert_eq!(tabs(&view, cx), vec![("a.txt".into(), true, true)]);
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    assert_eq!(shown_text(&code, cx), "Xab!cdefgh");
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active.column.0), 2);
+    back_up_now(&view, cx);
+    assert_eq!(view.read_with(cx, |v, _| v.hot_exit_io_stats()), (0, 0));
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input("?");
+    settle(cx);
+    assert_eq!(shown_text(&code, cx), "Xa?b!cdefgh");
+    assert_eq!(std::fs::read(&disk).unwrap(), b"abcdefgh");
+}
+
+#[gpui::test]
+fn the_in_group_second_view_caret_restores_in_the_primary_view(cx: &mut TestAppContext) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    let disk = fx.file("a.txt", "abcdefgh");
+    {
+        let (view, cx) = fx.launch(cx);
+        let primary = open_file(&view, cx, "a.txt");
+        cx.simulate_input("X");
+        settle(cx);
+        view.update(cx, |view, cx| {
+            view.command("workbench.action.splitEditorInGroup", cx)
+        });
+        settle(cx);
+        let secondary = view.read_with(cx, |v, _| {
+            v.group_code(v.editor.focused, true).unwrap().clone()
+        });
+        click_caret(
+            &secondary,
+            cx,
+            Position {
+                line: Line(0),
+                column: rove_base::Utf8Column(3),
+            },
+        );
+        cx.simulate_input("!");
+        cx.simulate_keystrokes("right");
+        settle(cx);
+        assert_eq!(
+            primary.read_with(cx, |c, _| c.selection().active.column.0),
+            1
+        );
+        assert_eq!(
+            secondary.read_with(cx, |c, _| c.selection().active.column.0),
+            5
+        );
+        assert_eq!(shown_text(&secondary, cx), "Xab!cdefgh");
+        back_up_now(&view, cx);
+        let backups = fx.store().backups();
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0].active);
+        assert_eq!(backups[0].cursor.unwrap().column.0, 5);
+        crash(cx);
+    }
+
+    let (view, cx) = fx.launch(cx);
+    let code = view.read_with(cx, |v, _| {
+        assert!(v.group_code(v.editor.focused, true).is_none());
+        v.code_view().clone()
+    });
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active.column.0), 5);
+    assert_eq!(shown_text(&code, cx), "Xab!cdefgh");
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_input("?");
+    settle(cx);
+    assert_eq!(shown_text(&code, cx), "Xab!c?defgh");
+    assert_eq!(std::fs::read(&disk).unwrap(), b"abcdefgh");
+}
+
+#[gpui::test]
+fn a_crash_restores_committed_quick_navigation_in_a_dirty_file(cx: &mut TestAppContext) {
+    for (key, query) in [("ctrl-g", "3:2"), ("ctrl-p", "a.txt:3:2")] {
+        let fx = Fixture::new(HotExitMode::OnExit);
+        let disk = fx.file("a.txt", "aaa\nbbb\nccc\nddd");
+        let target = Position {
+            line: Line(2),
+            column: rove_base::Utf8Column(1),
+        };
+        {
+            let (view, cx) = fx.launch(cx);
+            let code = open_file(&view, cx, "a.txt");
+            cx.simulate_input("X");
+            settle(cx);
+            back_up_now(&view, cx);
+            let original = fx.store().backups();
+            assert_eq!(original.len(), 1);
+            assert_ne!(original[0].cursor, Some(target));
+
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            cx.simulate_input(query);
+            settle(cx);
+            cx.simulate_keystrokes("enter");
+            settle(cx);
+            assert_eq!(
+                code.read_with(cx, |c, _| c.selection().active),
+                target,
+                "{key}"
+            );
+            back_up_now(&view, cx);
+            let updated = fx.store().backups();
+            assert_eq!(updated.len(), 1);
+            assert_eq!(updated[0].text, original[0].text);
+            assert_eq!(updated[0].cursor, Some(target), "{key}");
+            crash(cx);
+        }
+
+        let (view, cx) = fx.launch(cx);
+        let code = view.read_with(cx, |v, _| v.code_view().clone());
+        assert_eq!(
+            code.read_with(cx, |c, _| c.selection().active),
+            target,
+            "{key}"
+        );
+        back_up_now(&view, cx);
+        assert_eq!(view.read_with(cx, |v, _| v.hot_exit_io_stats()), (0, 0));
+        cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+        cx.simulate_input("!");
+        settle(cx);
+        assert_eq!(shown_text(&code, cx), "Xaaa\nbbb\nc!cc\nddd");
+        assert_eq!(std::fs::read(&disk).unwrap(), b"aaa\nbbb\nccc\nddd");
+    }
+}
+
+#[gpui::test]
+fn committed_definition_and_history_locations_update_dirty_backups(cx: &mut TestAppContext) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    fx.file("a.txt", "aaa\nbbb\nccc\nddd");
+    let (view, cx) = fx.launch(cx);
+    let code = open_file(&view, cx, "a.txt");
+    cx.simulate_input("X");
+    settle(cx);
+    back_up_now(&view, cx);
+
+    let first = Position {
+        line: Line(2),
+        column: rove_base::Utf8Column(1),
+    };
+    let second = Position {
+        line: Line(3),
+        column: rove_base::Utf8Column(1),
+    };
+    for position in [first, second] {
+        view.update(cx, |workbench, ctx| {
+            workbench
+                .open_documents()
+                .open(
+                    Resource::Workspace(WorkspacePath::new("a.txt").unwrap()),
+                    OpenOptions {
+                        source: OpenSource::CodeNavigation,
+                        location: Some(position),
+                        ..OpenOptions::default()
+                    },
+                    Cancellation::default(),
+                )
+                .unwrap();
+            ctx.notify();
+        });
+        settle(cx);
+        assert_eq!(code.read_with(cx, |c, _| c.selection().active), position);
+        back_up_now(&view, cx);
+        assert_eq!(fx.store().backups()[0].cursor, Some(position));
+    }
+
+    cx.update(|window, cx| window.focus(&code.focus_handle(cx)));
+    cx.simulate_keystrokes("alt-left");
+    settle(cx);
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active), first);
+    back_up_now(&view, cx);
+    let backups = fx.store().backups();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].cursor, Some(first));
+    assert_eq!(backups[0].text, "Xaaa\nbbb\nccc\nddd");
+}
+
+#[gpui::test]
+fn a_split_document_edit_updates_the_backup_source_without_moving_the_caret(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new(HotExitMode::OnExit);
+    fx.file("a.txt", "abcdefgh");
+    fx.file("other.txt", "clean");
+    let (view, cx) = fx.launch(cx);
+    let left = open_file(&view, cx, "a.txt");
+    cx.simulate_input("X");
+    settle(cx);
+    cx.simulate_keystrokes("ctrl-\\");
+    settle(cx);
+    let right = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| window.focus(&right.focus_handle(cx)));
+    cx.simulate_keystrokes("right right");
+    cx.simulate_input("!");
+    settle(cx);
+    back_up_now(&view, cx);
+    let previous = fx.store().backups();
+    assert_eq!(previous[0].cursor.unwrap().column.0, 4);
+
+    let left_caret = Position {
+        line: Line(0),
+        column: rove_base::Utf8Column(1),
+    };
+    assert_eq!(left.read_with(cx, |c, _| c.selection().active), left_caret);
+    click_caret(&left, cx, left_caret);
+    cx.simulate_keystrokes("delete");
+    settle(cx);
+    assert_eq!(left.read_with(cx, |c, _| c.selection().active), left_caret);
+    assert_eq!(shown_text(&left, cx), "Xb!cdefgh");
+    open_file(&view, cx, "other.txt");
+    back_up_now(&view, cx);
+    let updated = fx.store().backups();
+    assert_eq!(updated.len(), 1);
+    assert!(!updated[0].active);
+    assert_eq!(updated[0].cursor, Some(left_caret));
+    assert_eq!(updated[0].text, "Xb!cdefgh");
+}
+
+#[gpui::test]
 fn a_clean_exit_restores_silently(cx: &mut TestAppContext) {
     let fx = Fixture::new(HotExitMode::OnExit);
     fx.file("a.txt", "aaa\n");
@@ -265,6 +649,8 @@ fn a_clean_exit_restores_silently(cx: &mut TestAppContext) {
         let (view, cx) = fx.launch(cx);
         let _code = open_file(&view, cx, "a.txt");
         cx.simulate_input("X");
+        settle(cx);
+        cx.simulate_keystrokes("right");
         settle(cx);
         // 正常退出：热退出接管关闭确认，备份与退出标记一起落盘。
         assert!(quit(&view, cx), "onExit 下退出应用不询问");
@@ -276,6 +662,7 @@ fn a_clean_exit_restores_silently(cx: &mut TestAppContext) {
     assert_eq!(tabs(&view, cx), vec![("a.txt".into(), true, true)]);
     let code = view.read_with(cx, |v, _| v.code_view().clone());
     assert_eq!(shown_text(&code, cx), "Xaaa\n", "内容同样回来");
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active.column.0), 2);
     assert_ne!(
         view.read_with(cx, |v, _| v.status()),
         "已恢复上次未保存的修改",
@@ -600,6 +987,7 @@ fn a_file_deleted_while_backed_up_restores_as_a_deleted_tab(cx: &mut TestAppCont
     assert_eq!(tabs(&view, cx).len(), 1);
     let code = view.read_with(cx, |v, _| v.code_view().clone());
     assert_eq!(shown_text(&code, cx), "Xaaa\n", "内容保留");
+    assert_eq!(code.read_with(cx, |c, _| c.selection().active.column.0), 1);
     view.read_with(cx, |v, _| {
         let tab = v.editor.active().current().unwrap();
         assert!(v.tab_deleted(tab), "标签显示“已删除”");

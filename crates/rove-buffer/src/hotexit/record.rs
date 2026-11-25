@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rove_base::{ByteOffset, Span, Version};
+use rove_base::{ByteOffset, Line, Position, Span, Utf8Column, Version};
 
 use super::codec::{DecodeError, DecodeResult, Reader, Writer};
 use crate::contracts::{Encoding, Eol, LineEndings};
@@ -20,7 +20,8 @@ use crate::edit::{UndoSnapshot, UndoStep, UndoUnit};
 use crate::save::DiskStamp;
 
 pub const BACKUP_MAGIC: &[u8] = b"ROVEBAK\x01";
-pub const BACKUP_VERSION: u32 = 1;
+const LEGACY_BACKUP_VERSION: u32 = 1;
+pub const BACKUP_VERSION: u32 = 2;
 
 /// 一个脏文档的备份。
 #[derive(Clone, Debug)]
@@ -51,6 +52,8 @@ pub struct Backup {
     /// 在所在编辑器组里的标签序号与是否活动标签（恢复时保持顺序与活动标签）。
     pub tab_index: u32,
     pub active: bool,
+    /// 主光标在备份文本中的位置。旧备份没有此字段。
+    pub cursor: Option<Position>,
 }
 
 impl Backup {
@@ -69,13 +72,22 @@ impl Backup {
         w.u32(self.tab_index);
         w.bool(self.active);
         write_undo(&mut w, &self.undo);
-        // 内容放最后：读取时前面的元信息都已校验过，坏在内容上也能定位。
         w.str(&self.text);
+        w.option(self.cursor.as_ref(), |w, cursor| {
+            w.u64(cursor.line.0);
+            w.u64(cursor.column.0);
+        });
         w.into_bytes()
     }
 
     pub fn decode(bytes: &[u8]) -> DecodeResult<Self> {
-        let mut r = Reader::with_magic(bytes, BACKUP_MAGIC, BACKUP_VERSION)?;
+        let (mut r, has_cursor) = match Reader::with_magic(bytes, BACKUP_MAGIC, BACKUP_VERSION) {
+            Ok(reader) => (reader, true),
+            Err(DecodeError) => (
+                Reader::with_magic(bytes, BACKUP_MAGIC, LEGACY_BACKUP_VERSION)?,
+                false,
+            ),
+        };
         let backup = Self {
             path: r.path()?,
             language: Arc::from(r.str()?),
@@ -91,6 +103,16 @@ impl Backup {
             active: r.bool()?,
             undo: read_undo(&mut r)?,
             text: r.str()?.to_owned(),
+            cursor: if has_cursor {
+                r.option(|r| {
+                    Ok(Position {
+                        line: Line(r.u64()?),
+                        column: Utf8Column(r.u64()?),
+                    })
+                })?
+            } else {
+                None
+            },
         };
         if !r.at_end() {
             return Err(DecodeError);
@@ -315,7 +337,34 @@ mod tests {
             undo: UndoSnapshot::default(),
             tab_index: 2,
             active: true,
+            cursor: Some(Position {
+                line: Line(1),
+                column: Utf8Column(3),
+            }),
         }
+    }
+
+    #[test]
+    fn version_one_backup_retains_the_original_payload_without_a_cursor() {
+        let original = sample(
+            "未保存\r\n",
+            LineEndings::Uniform(Eol::CrLf),
+            Encoding::Utf8,
+            true,
+        );
+        let mut v1 = original.encode();
+        // V1 used the same record up to the end of the text, with no trailing caret.
+        v1.truncate(v1.len() - (1 + 2 * std::mem::size_of::<u64>()));
+        v1[BACKUP_MAGIC.len()..][..std::mem::size_of::<u32>()]
+            .copy_from_slice(&LEGACY_BACKUP_VERSION.to_le_bytes());
+
+        let restored = Backup::decode(&v1).unwrap();
+        assert_eq!(restored.text, original.text);
+        assert_eq!(restored.disk, original.disk);
+        assert_eq!(restored.saved_marker, original.saved_marker);
+        assert_eq!(restored.cursor, None);
+        v1.push(0);
+        assert!(Backup::decode(&v1).is_err());
     }
 
     #[test]
@@ -343,6 +392,7 @@ mod tests {
             assert_eq!(decoded.disk, backup.disk);
             assert_eq!(decoded.tab_index, 2);
             assert!(decoded.active);
+            assert_eq!(decoded.cursor, backup.cursor);
             match (&decoded.line_endings, &backup.line_endings) {
                 (LineEndings::Uniform(a), LineEndings::Uniform(b)) => assert_eq!(a, b),
                 (LineEndings::Mixed { preferred: a }, LineEndings::Mixed { preferred: b }) => {
