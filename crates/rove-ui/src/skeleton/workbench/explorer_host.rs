@@ -136,7 +136,7 @@ impl Workbench {
                         from: from.clone(),
                         to: to.clone(),
                     }],
-                    true,
+                    super::edit_host::WorkspaceRenameSource::InlineNameEdit,
                     cx,
                 );
             }

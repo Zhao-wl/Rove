@@ -1,7 +1,7 @@
 //! Filesystem deletion and its undo receipt. Confirmation stays on the UI
 //! thread, while the workspace and Shell operations run in the background.
 
-use super::Workbench;
+use super::{edit_host::WorkspaceRenameSource, Workbench};
 use crate::context_basket::model::{at_or_below, same_path};
 use crate::explorer::{registry, view::ExplorerUndo};
 use crate::feedback::FeedbackAction;
@@ -220,7 +220,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let (confirmed, external) = events.split_at(confirmed_renames);
-        self.follow_workspace_renames(confirmed, true, cx);
+        self.follow_workspace_renames(confirmed, WorkspaceRenameSource::ConfirmedOperation, cx);
         if let Some(operation) = operation {
             self.close_confirmed_explorer_removals(operation, cx);
             // A successfully restored directory or file gets a new disk identity.
@@ -236,7 +236,7 @@ impl Workbench {
         if events.is_empty() {
             return;
         }
-        self.follow_workspace_renames(external, false, cx);
+        self.follow_workspace_renames(external, WorkspaceRenameSource::Filesystem, cx);
         self.follow_workspace_events(&events);
         self.note_disk_events(&events, cx);
         self.refresh_workspace_images(&events, cx);

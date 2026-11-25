@@ -20,6 +20,12 @@ use rove_buffer::{DocumentMetadata, SizeClass, TextSource};
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
+pub(super) enum WorkspaceRenameSource {
+    Filesystem,
+    ConfirmedOperation,
+    InlineNameEdit,
+}
+
 /// 窗口的编辑与保存状态。
 #[derive(Default)]
 pub(super) struct Editing {
@@ -880,7 +886,7 @@ impl Workbench {
     pub(super) fn follow_workspace_renames(
         &mut self,
         events: &[FileEvent],
-        confirmed: bool,
+        source: WorkspaceRenameSource,
         cx: &mut Context<Self>,
     ) {
         use rove_workspace::file_operations::path_after_rename;
@@ -890,11 +896,14 @@ impl Workbench {
         {
             return;
         }
-        let keep_at_original_path = if confirmed {
+        let followed = if matches!(source, WorkspaceRenameSource::ConfirmedOperation) {
             Vec::new()
         } else {
             self.followed_resources()
         };
+        if matches!(source, WorkspaceRenameSource::InlineNameEdit) && followed.is_empty() {
+            return;
+        }
         let root = self.root.clone();
         let canonical_root = self
             .explorer
@@ -915,7 +924,12 @@ impl Workbench {
                 continue;
             };
             let map = |resource: &Resource| {
-                if keep_at_original_path.contains(resource) {
+                let eligible = match source {
+                    WorkspaceRenameSource::Filesystem => !followed.contains(resource),
+                    WorkspaceRenameSource::ConfirmedOperation => true,
+                    WorkspaceRenameSource::InlineNameEdit => followed.contains(resource),
+                };
+                if !eligible {
                     return None;
                 }
                 let target = match resource {

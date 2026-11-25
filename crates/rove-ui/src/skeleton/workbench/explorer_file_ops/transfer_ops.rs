@@ -620,7 +620,7 @@ mod tests {
             view.update(cx, |view, cx| {
                 let folder = view.explorer.read(cx).operations_folder().unwrap();
                 let batch = prepare(
-                    &folder,
+                    folder,
                     vec![source],
                     None,
                     Transfer::Copy,
