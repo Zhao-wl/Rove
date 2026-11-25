@@ -159,7 +159,7 @@ impl MappedText {
     ) -> Result<Arc<Self>> {
         let mut file = File::open(path)?;
         let stamp = FileStamp::read(&mut file)?;
-        let storage = Arc::new(load_storage(&file, stamp.len, encoding, shared_reads)?);
+        let storage = Arc::new(load_storage(path, &file, &stamp, encoding, shared_reads)?);
         let len = storage.len();
         Ok(Self::start(
             path.to_path_buf(),
@@ -237,7 +237,7 @@ impl MappedText {
         &self.path
     }
 
-    /// 内容是否直接来自内存映射（UTF-8）；否则是解码后放在堆上的副本。
+    /// 内容是否仍由内存映射提供。其余快照使用文件读取或堆上的解码副本。
     pub fn is_memory_mapped(&self) -> bool {
         self.storage.is_mapped()
     }
@@ -335,8 +335,9 @@ impl MappedText {
         }
         let stamp = FileStamp::read(&mut file)?;
         let storage = Arc::new(load_storage(
+            &self.path,
             &file,
-            stamp.len,
+            &stamp,
             self.encoding,
             self.storage.uses_shared_reads(),
         )?);
@@ -481,18 +482,22 @@ impl MappedText {
 }
 
 fn load_storage(
+    path: &Path,
     file: &File,
-    file_len: u64,
+    stamp: &FileStamp,
     encoding: MappedEncoding,
     shared_reads: bool,
 ) -> Result<Storage> {
+    let file_len = stamp.len;
     let skip = encoding.bom_len.min(file_len as usize);
     if file_len == 0 {
         return Ok(Storage::owned(Box::default(), shared_reads));
     }
     if shared_reads && encoding.encoding == UTF_8 {
         return Ok(Storage::disk(
+            path.to_owned(),
             file.try_clone()?,
+            stamp.identity,
             skip as u64,
             file_len - skip as u64,
             None,
@@ -515,7 +520,9 @@ fn load_storage(
     if encoding.encoding == UTF_8 {
         let len = map.len().saturating_sub(skip) as u64;
         return Ok(Storage::disk(
+            path.to_owned(),
             file.try_clone()?,
+            stamp.identity,
             skip as u64,
             len,
             Some(map),

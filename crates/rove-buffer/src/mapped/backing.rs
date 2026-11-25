@@ -3,6 +3,7 @@ use std::{
     collections::VecDeque,
     fs::File,
     ops::Range,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, Weak,
@@ -22,30 +23,47 @@ pub(super) enum Storage {
 }
 
 pub(super) struct DiskBytes {
-    file: File,
+    path: PathBuf,
+    identity: Option<(u64, u64)>,
     skip: u64,
     len: u64,
-    // Existing snapshots can begin using the same shared handle without
-    // leaving their old mapping alive in other editor or worker references.
+    shared: AtomicBool,
+    // All copies of a snapshot switch backing together, so an editor or
+    // worker cannot keep the old mapping alive after its current read ends.
     mapping: Mutex<Mapping>,
     pages: Mutex<VecDeque<(u64, Arc<[u8]>)>>,
 }
 
 enum Mapping {
-    Active(Arc<Mmap>),
-    Releasing(Weak<Mmap>),
+    Active { map: Arc<Mmap>, file: Arc<File> },
+    Releasing { map: Weak<Mmap>, file: Weak<File> },
     SharedRead,
 }
 
 impl Storage {
-    pub(super) fn disk(file: File, skip: u64, len: u64, map: Option<Mmap>) -> Self {
+    pub(super) fn disk(
+        path: PathBuf,
+        file: File,
+        identity: Option<(u64, u64)>,
+        skip: u64,
+        len: u64,
+        map: Option<Mmap>,
+    ) -> Self {
+        let shared = map.is_none();
+        let mapping = match map {
+            Some(map) => Mapping::Active {
+                map: Arc::new(map),
+                file: Arc::new(file),
+            },
+            None => Mapping::SharedRead,
+        };
         Self::File(Box::new(DiskBytes {
-            file,
+            path,
+            identity,
             skip,
             len,
-            mapping: Mutex::new(
-                map.map_or(Mapping::SharedRead, |map| Mapping::Active(Arc::new(map))),
-            ),
+            shared: AtomicBool::new(shared),
+            mapping: Mutex::new(mapping),
             pages: Mutex::default(),
         }))
     }
@@ -60,13 +78,7 @@ impl Storage {
     pub(super) fn uses_shared_reads(&self) -> bool {
         match self {
             Self::Owned { shared_reads, .. } => shared_reads.load(Ordering::Relaxed),
-            Self::File(disk) => !matches!(
-                &*disk
-                    .mapping
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()),
-                Mapping::Active(_)
-            ),
+            Self::File(disk) => disk.shared.load(Ordering::Acquire),
         }
     }
 
@@ -84,8 +96,8 @@ impl Storage {
     pub(super) fn is_mapped(&self) -> bool {
         let Self::File(disk) = self else { return false };
         match &*disk.mapping.lock().unwrap_or_else(|e| e.into_inner()) {
-            Mapping::Active(_) => true,
-            Mapping::Releasing(old) => old.strong_count() > 0,
+            Mapping::Active { .. } => true,
+            Mapping::Releasing { map, .. } => map.strong_count() > 0,
             Mapping::SharedRead => false,
         }
     }
@@ -99,10 +111,16 @@ impl Storage {
             }
         };
         let mut state = disk.mapping.lock().unwrap_or_else(|e| e.into_inner());
-        if let Mapping::Active(map) = &*state {
-            *state = Mapping::Releasing(Arc::downgrade(map));
+        if let Mapping::Active { map, file } = &*state {
+            *state = Mapping::Releasing {
+                map: Arc::downgrade(map),
+                file: Arc::downgrade(file),
+            };
+            disk.shared.store(true, Ordering::Release);
         }
-        if matches!(&*state, Mapping::Releasing(old) if old.strong_count() != 0) {
+        if matches!(&*state, Mapping::Releasing { map, file }
+            if map.strong_count() != 0 || file.strong_count() != 0)
+        {
             return false;
         }
         *state = Mapping::SharedRead;
@@ -119,11 +137,7 @@ impl Storage {
             };
             return visitor(slice(bytes, range));
         };
-        let map = match &*disk.mapping.lock().unwrap_or_else(|e| e.into_inner()) {
-            Mapping::Active(map) => Some(map.clone()),
-            Mapping::Releasing(_) | Mapping::SharedRead => None,
-        };
-        if let Some(map) = map {
+        if let Some(map) = disk.mapping_handle() {
             let raw = range.start + disk.skip..range.end + disk.skip;
             return visitor(slice(&map, raw));
         }
@@ -142,14 +156,14 @@ impl Storage {
         })
     }
 
-    // Indexing always reads directly from the shared handle using its own
-    // scratch buffer. It does not populate the small viewport cache.
+    // The indexer reads directly into its scratch buffer without populating
+    // the small viewport cache.
     pub(super) fn read<'a>(&'a self, from: u64, to: u64, buffer: &'a mut Vec<u8>) -> &'a [u8] {
         match self {
             Self::Owned { bytes, .. } => slice(bytes, from..to),
             Self::File(disk) => {
                 buffer.resize((to - from) as usize, 0);
-                let filled = read_at(&disk.file, buffer, from + disk.skip);
+                let filled = disk.read_at(buffer, from + disk.skip);
                 &buffer[..filled]
             }
         }
@@ -157,8 +171,59 @@ impl Storage {
 }
 
 impl DiskBytes {
+    fn mapping_handle(&self) -> Option<Arc<Mmap>> {
+        if self.shared.load(Ordering::Acquire) {
+            return None;
+        }
+        match &*self
+            .mapping
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            Mapping::Active { map, .. } => Some(map.clone()),
+            Mapping::Releasing { .. } | Mapping::SharedRead => None,
+        }
+    }
+
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> usize {
+        let retained = if self.shared.load(Ordering::Acquire) {
+            None
+        } else {
+            match &*self
+                .mapping
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+            {
+                Mapping::Active { file, .. } => Some(file.clone()),
+                Mapping::Releasing { .. } | Mapping::SharedRead => None,
+            }
+        };
+        if let Some(file) = retained {
+            return read_at(&file, buffer, offset);
+        }
+        // A persistent child handle can block rename of an ancestor on Windows
+        // even when it shares deletion. Only keep the handle for an actual read.
+        let Ok(file) = File::open(&self.path) else {
+            return 0;
+        };
+        if let Some(expected) = self.identity {
+            let Ok(metadata) = file.metadata() else {
+                return 0;
+            };
+            if crate::save::tail::file_identity(&file, &metadata) != Some(expected) {
+                return 0;
+            }
+        }
+        read_at(&file, buffer, offset)
+    }
+
     fn page(&self, base: u64, end: u64) -> Arc<[u8]> {
         let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((offset, bytes)) = pages.front() {
+            if *offset == base && bytes.len() as u64 >= end - base {
+                return bytes.clone();
+            }
+        }
         if let Some(index) = pages
             .iter()
             .position(|(offset, bytes)| *offset == base && (bytes.len() as u64) >= end - base)
@@ -172,7 +237,7 @@ impl DiskBytes {
         // most one page and enough right context to keep UTF-8 chunks intact.
         let end = (base + PAGE_BYTES + UTF8_LOOKAHEAD).min(self.len);
         let mut bytes = vec![0; end.saturating_sub(base) as usize];
-        let count = read_at(&self.file, &mut bytes, base + self.skip);
+        let count = self.read_at(&mut bytes, base + self.skip);
         bytes.truncate(count);
         let bytes: Arc<[u8]> = bytes.into();
         pages.retain(|(offset, _)| *offset != base);

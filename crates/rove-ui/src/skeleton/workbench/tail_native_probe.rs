@@ -1,4 +1,4 @@
-//! Native Windows measurement of a mapped log while a separate process appends to it.
+//! Native Windows measurement of a large followed log while a separate process appends to it.
 use super::*;
 use std::{
     process::{Command, Stdio},
@@ -12,7 +12,8 @@ fn r66_native_tail_replay() {
         PathBuf::from(std::env::var_os("ROVE_TAIL_PROBE_FIXTURE").expect("fixture directory"));
     let temp = tempfile::tempdir_in(&fixture).expect("disposable fixture on the same drive");
     let source = fixture.join("Editor.scale.log");
-    assert!(source.metadata().unwrap().len() >= 200 * 1024 * 1024);
+    let source_bytes = source.metadata().unwrap().len();
+    assert!(source_bytes >= 200 * 1024 * 1024);
     let path = temp.path().join("replay-rove.log");
     std::fs::copy(source, &path).expect("copy the immutable fixture");
     let writer = temp.path().join("append-log.py");
@@ -54,13 +55,13 @@ fn r66_native_tail_replay() {
         cx.spawn(async move |cx| {
             let executor = cx.background_executor().clone();
             let initial = Instant::now();
-            let outcome: Result<Vec<f64>, String> = async {
+            let outcome: Result<Vec<(crate::code_view::FrameStats, bool)>, String> = async {
                 loop {
                     let opened = window.update(cx, |view, _, _| view.active_large_file_document().is_some())
                         .map_err(|e| e.to_string())?;
                     if opened { break; }
                     if initial.elapsed() >= Duration::from_secs(30) {
-                        return Err("initial mapping did not finish indexing".to_owned());
+                        return Err("initial large file did not open".to_owned());
                     }
                     executor.timer(Duration::from_millis(20)).await;
                 }
@@ -70,22 +71,26 @@ fn r66_native_tail_replay() {
                 }).map_err(|e| e.to_string())?;
                 let (base_version, base_bytes, base_lines, base_appends, base_reopens) = loop {
                     let value = window.update(cx, |view, _, cx| {
-                        let doc = view.active_large_file_document()?;
+                        let Some(doc) = view.active_large_file_document() else { return (None, "no active large file".to_owned()) };
                         let lines = doc.text.lines();
                         let follows = view.shell.status_bar.get(crate::follow_tail::FOLLOW_STATUS).is_some();
                         let at_end = view.code_view().read(cx).viewport()
                             .is_some_and(|viewport| viewport.last_line + 1 >= lines.known);
-                        (lines.complete && follows && at_end).then(|| (
+                        let state = (lines.complete && follows && at_end).then(|| (
                             doc.text.version(), doc.text.byte_len(), lines.known,
                             view.follow_tail.counts.appends, view.follow_tail.counts.reopens,
-                        ))
+                        ));
+                        (state, format!("lines={lines:?}, follows={follows}, at_end={at_end}, reopens={}", view.follow_tail.counts.reopens))
                     }).map_err(|e| e.to_string())?;
-                    if let Some(value) = value { break value; }
+                    if let (Some(value), _) = value { break value; }
                     if initial.elapsed() >= Duration::from_secs(30) {
-                        return Err("armed follow baseline did not finish indexing and displaying".to_owned());
+                        return Err(format!("armed follow baseline did not finish indexing and displaying: {}", value.1));
                     }
                     executor.timer(Duration::from_millis(20)).await;
                 };
+                if base_bytes != source_bytes || base_lines < 1_000_000 {
+                    return Err(format!("unexpected fixture baseline: {base_bytes} bytes, {base_lines} lines"));
+                }
                 window.update(cx, |view, _, cx| {
                     view.code_view().update(cx, |code, _| code.record_frames(true));
                 }).map_err(|e| e.to_string())?;
@@ -124,9 +129,10 @@ fn r66_native_tail_replay() {
                         if frame.text_version <= base_version.0 {
                             continue;
                         }
-                        samples.push(frame.cpu.as_secs_f64() * 1_000.);
+                        let new_snapshot = previous_version != frame.text_version;
+                        samples.push((frame, new_snapshot));
                         off_tail_frames += usize::from(frame.last_line + 1 < frame.known_lines);
-                        if previous_version != frame.text_version {
+                        if new_snapshot {
                             observed_updates += 1;
                             previous_version = frame.text_version;
                             if writing {
@@ -172,13 +178,38 @@ fn r66_native_tail_replay() {
         "insufficient measured frames: {}",
         samples.len()
     );
-    samples.sort_by(f64::total_cmp);
-    let p50 = samples[samples.len() / 2];
-    let p99 = samples[(samples.len() - 1) * 99 / 100];
-    let max = *samples.last().unwrap();
+    samples.sort_by_key(|(frame, _)| frame.cpu);
+    let ms = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+    let p50 = ms(samples[samples.len() / 2].0.cpu);
+    let p99 = ms(samples[(samples.len() - 1) * 99 / 100].0.cpu);
+    let max = ms(samples.last().unwrap().0.cpu);
+    let over = samples
+        .iter()
+        .filter(|(frame, _)| ms(frame.cpu) >= 1.0)
+        .count();
+    let over_on_new_snapshot = samples
+        .iter()
+        .filter(|(frame, new_snapshot)| *new_snapshot && ms(frame.cpu) >= 1.0)
+        .count();
     println!(
-        "R66_NATIVE_FRAMES frames={} p50_ms={p50:.3} p99_ms={p99:.3} max_ms={max:.3}",
+        "R66_NATIVE_FRAMES frames={} p50_ms={p50:.3} p99_ms={p99:.3} max_ms={max:.3} over_budget={over} over_budget_on_new_snapshot={over_on_new_snapshot}",
         samples.len()
     );
+    for (frame, new_snapshot) in samples.iter().rev().take(5) {
+        println!(
+            "R66_NATIVE_SLOW_FRAME cpu_ms={:.3} layout_ms={:.3} paint_ms={:.3} glyph_ms={:.3} gutter_ms={:.3} links_ms={:.3} glyphs={} visible_lines={} shaped={} placeholders={} missing={} new_snapshot={new_snapshot}",
+            ms(frame.cpu),
+            ms(frame.layout),
+            ms(frame.cpu.saturating_sub(frame.layout)),
+            ms(frame.glyph_cpu),
+            ms(frame.gutter_cpu),
+            ms(frame.links_cpu),
+            frame.glyphs,
+            frame.visible_lines,
+            frame.shaped,
+            frame.placeholders,
+            frame.missing,
+        );
+    }
     assert!(max < 1.0, "continuous following frame CPU max {max:.3} ms");
 }

@@ -702,7 +702,10 @@ impl Workbench {
         }
         follow.ordinary = result.baseline;
         match result.change {
-            Ok(TailChange::Unchanged | TailChange::Missing) | Err(_) => {}
+            // Indexing can advance the same snapshot without any disk change
+            // or a workbench render. Only move views whose known tail changed.
+            Ok(TailChange::Unchanged) => self.follow_views_to_end(cx),
+            Ok(TailChange::Missing) | Err(_) => {}
             Ok(TailChange::MappedAppend(mapped)) => {
                 self.follow_tail.counts.appends += 1;
                 self.publish_tail_text(

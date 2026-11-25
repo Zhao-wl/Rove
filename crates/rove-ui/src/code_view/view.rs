@@ -244,6 +244,9 @@ pub struct FrameStats {
     pub layout: Duration,
     /// Cache lookup and dispatch time for viewport link detection.
     pub links_cpu: Duration,
+    /// Time spent emitting shaped text glyphs and painting the line-number gutter.
+    pub glyph_cpu: Duration,
+    pub gutter_cpu: Duration,
     /// 缩略图与概览标尺在本帧 UI 线程上的布局和绘制耗时。
     pub minimap_cpu: Duration,
     pub minimap_cache_hit: bool,

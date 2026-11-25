@@ -634,6 +634,8 @@ impl CodeView {
         let caret_line = comp_line.unwrap_or(sel.active.line.0);
         let mut caret_bounds = None;
         let mut selection_painted = false;
+        let measure = self.recording.is_some();
+        let mut glyph_cpu = std::time::Duration::ZERO;
         // #57：参考线按可见区间整帧算一次（跨过视口的括号对每对最多多读两行文本）。
         let visible = match (frame.lines.first(), frame.lines.last()) {
             (Some(a), Some(b)) => a.line..b.line + 1,
@@ -823,7 +825,13 @@ impl CodeView {
                             }
                         }
                         match &l.shaped {
-                            Some(s) => self.paint_glyphs(l, entry, s, left, y, &xs, window),
+                            Some(s) => {
+                                let start = measure.then(Instant::now);
+                                self.paint_glyphs(l, entry, s, left, y, &xs, window);
+                                if let Some(start) = start {
+                                    glyph_cpu += start.elapsed();
+                                }
+                            }
                             None => self.paint_placeholder(entry, left, y, &xs, text, window),
                         }
                         self.paint_whitespace(l, entry, &xs, left, y, window);
@@ -1030,7 +1038,12 @@ impl CodeView {
         });
 
         self.last_frame.selection_painted = selection_painted;
+        self.last_frame.glyph_cpu = glyph_cpu;
+        let gutter = measure.then(Instant::now);
         self.paint_gutter(frame, window);
+        if let Some(start) = gutter {
+            self.last_frame.gutter_cpu = start.elapsed();
+        }
         // 标尺在滑块下绘制，不透明的自定义背景也不会遮住滑块。
         let measure = self.recording.is_some().then(Instant::now);
         self.paint_overview(window);

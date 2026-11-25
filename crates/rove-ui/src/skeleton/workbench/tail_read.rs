@@ -40,10 +40,14 @@ impl PathWatch {
         self.initialized = true;
         #[cfg(windows)]
         {
-            let initial_len = path.metadata().map_or(0, |metadata| metadata.len());
-            self.handle = rove_buffer::save::tail::TailSizeWatch::start(path, initial_len)
-                .ok()
-                .map(Arc::new);
+            match rove_buffer::save::tail::TailSizeWatch::start(path) {
+                Ok(watch) => self.handle = Some(Arc::new(watch)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // A replaced directory may be missing until the next poll.
+                    self.initialized = false;
+                }
+                Err(_) => {}
+            }
         }
         #[cfg(not(windows))]
         let _ = path;
@@ -51,7 +55,7 @@ impl PathWatch {
 
     #[cfg(windows)]
     fn synchronize_baseline(
-        &self,
+        &mut self,
         path: &std::path::Path,
         generation: Option<u64>,
         change: &Change,
@@ -59,6 +63,15 @@ impl PathWatch {
         let (Some(watch), Some(generation)) = (&self.handle, generation) else {
             return Ok(());
         };
+        if matches!(change, Change::Unchanged | Change::Missing) {
+            return Ok(());
+        }
+        if !watch.still_watches_parent(path).unwrap_or(false) {
+            // Validation at publication will reject this result. Re-arm the new
+            // directory, then read a full baseline under the new monitor.
+            *self = Self::default();
+            return Ok(());
+        }
         let length = match change {
             Change::Disk(stamp, _) => stamp.len,
             Change::Reopened(opened) => match opened.text.mapped() {
@@ -345,4 +358,76 @@ fn ordinary_full(job: &ReadJob) -> Result<Change> {
         return Ok(Change::Missing);
     };
     Ok(Change::Disk(stamp, bytes))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn replaced_parent_is_rearmed_before_its_next_tail_snapshot() {
+        let folder = tempfile::tempdir().unwrap();
+        let parent = folder.path().join("Logs");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("Editor.log");
+        std::fs::write(&path, vec![b'a'; 8_192]).unwrap();
+        let mut watch = PathWatch::default();
+        watch.initialize(&path);
+        let Some(before) = watch.generation() else {
+            eprintln!("已跳过：扩展文件尺寸通知不可用");
+            return;
+        };
+        let settings = rove_config::DefaultSettings(crate::app_settings::registry().unwrap());
+        let old_reader = rove_buffer::open_file(
+            &path,
+            &LoadOptions::new("plaintext", &settings),
+            SizePolicy {
+                huge_bytes: 1,
+                optimize: true,
+            },
+        )
+        .unwrap();
+        let old_snapshot = old_reader.text.mapped().unwrap();
+        assert!(old_snapshot.enable_shared_reads());
+        std::fs::rename(&parent, folder.path().join("Logs-archive")).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        let new_contents = vec![b'b'; 16_384];
+        std::fs::write(&path, &new_contents).unwrap();
+        let range = Span::new(ByteOffset(0), ByteOffset(1)).unwrap();
+        let mut read_replacement_through_old_snapshot = false;
+        assert!(
+            rove_buffer::TextSource::visit_chunks(&**old_snapshot, range, &mut |_| {
+                read_replacement_through_old_snapshot = true;
+            })
+            .is_err()
+        );
+        assert!(!read_replacement_through_old_snapshot);
+        let (stamp, body) = DiskStamp::read(&path).unwrap().unwrap();
+        watch
+            .synchronize_baseline(&path, Some(before), &Change::Disk(stamp, body))
+            .unwrap();
+        assert!(watch.generation().is_none());
+        assert!(!watch.has_baseline);
+        watch.initialize(&path);
+        let current = watch.generation().expect("monitor of the new parent");
+        let (stamp, body) = DiskStamp::read(&path).unwrap().unwrap();
+        watch
+            .synchronize_baseline(&path, Some(current), &Change::Disk(stamp, body))
+            .unwrap();
+        assert_eq!(watch.generation(), Some(current));
+
+        let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        writer.set_len(0).unwrap();
+        writer.write_all(&[b'c'; 20_480]).unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while watch.generation() == Some(current) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(watch.generation().is_some_and(|value| value > current));
+        drop(old_reader);
+    }
 }

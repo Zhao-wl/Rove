@@ -25,8 +25,8 @@ use windows_sys::Win32::{
         FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED, FILE_ACTION_RENAMED_NEW_NAME,
         FILE_ACTION_RENAMED_OLD_NAME, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED,
         FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
-        FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_EXTENDED_INFORMATION, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_EXTENDED_INFORMATION, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     },
     System::{
         LibraryLoader::{GetModuleHandleW, GetProcAddress},
@@ -84,7 +84,7 @@ struct State {
 
 struct Target {
     filenames: Vec<Vec<u16>>,
-    last_len: u64,
+    last_len: Option<u64>,
 }
 
 /// Watches one followed path for a transient decrease in on-disk size.
@@ -94,22 +94,15 @@ struct Target {
 pub struct TailSizeWatch {
     stop: Arc<OwnedHandle>,
     state: Arc<State>,
+    parent_identity: (u64, u64),
 }
 
 impl TailSizeWatch {
     /// Opens the parent directory and arms the first read. Do this off the UI thread.
-    pub fn start(path: &Path, initial_len: u64) -> io::Result<Self> {
+    pub fn start(path: &Path) -> io::Result<Self> {
         let filenames = filename_aliases(path)?;
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let directory = OpenOptions::new()
-            .read(true)
-            .access_mode(FILE_LIST_DIRECTORY)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
-            .open(parent)?;
+        let directory = open_parent(path)?;
+        let parent_identity = directory_identity(&directory)?;
         let stop = Arc::new(event()?);
         let ready = event()?;
         let state = Arc::new(State {
@@ -117,7 +110,7 @@ impl TailSizeWatch {
             live: AtomicBool::new(false),
             target: Mutex::new(Target {
                 filenames,
-                last_len: initial_len,
+                last_len: None,
             }),
         });
         let (armed, wait_armed) = mpsc::sync_channel(1);
@@ -131,7 +124,11 @@ impl TailSizeWatch {
         wait_armed
             .recv()
             .map_err(|_| io::Error::other("file size watcher exited"))??;
-        Ok(Self { stop, state })
+        Ok(Self {
+            stop,
+            state,
+            parent_identity,
+        })
     }
 
     /// Synchronize the physical length and aliases from a baseline read after the
@@ -148,9 +145,14 @@ impl TailSizeWatch {
         }
         *target = Target {
             filenames,
-            last_len: raw_len,
+            last_len: Some(target.last_len.map_or(raw_len, |seen| seen.max(raw_len))),
         };
         Ok(true)
+    }
+
+    /// Detect replacement of the directory object the original monitor is watching.
+    pub fn still_watches_parent(&self, path: &Path) -> io::Result<bool> {
+        Ok(directory_identity(&open_parent(path)?)? == self.parent_identity)
     }
 
     pub fn generation(&self) -> u64 {
@@ -167,6 +169,25 @@ impl Drop for TailSizeWatch {
         // SAFETY: the Arc keeps the event valid until this call returns.
         unsafe { SetEvent(self.stop.as_raw_handle()) };
     }
+}
+
+fn open_parent(path: &Path) -> io::Result<File> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    OpenOptions::new()
+        .read(true)
+        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
+        .open(parent)
+}
+
+fn directory_identity(directory: &File) -> io::Result<(u64, u64)> {
+    let metadata = directory.metadata()?;
+    super::file_identity(directory, &metadata)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "directory identity unavailable"))
 }
 
 fn event() -> io::Result<OwnedHandle> {
@@ -268,15 +289,19 @@ fn watch(
             last_len,
         } = &mut *target;
         let changed = if bytes == 0 || bytes as usize > BUFFER_BYTES {
-            true
+            None
         } else {
             // SAFETY: the aligned byte storage is initialized and the OS is done
             // writing it. Only the reported range is exposed.
             let records =
                 unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), bytes as usize) };
-            invalidated(records, filenames, last_len).unwrap_or(true)
+            invalidated(records, filenames, last_len)
         };
-        if changed {
+        if changed.is_none() {
+            // An overflow provides no trustworthy length for the new generation.
+            *last_len = None;
+        }
+        if changed != Some(false) {
             state.generation.fetch_add(1, Ordering::Release);
         }
         drop(target);
@@ -288,7 +313,11 @@ fn watch(
     state.live.store(false, Ordering::Release);
 }
 
-fn invalidated(mut records: &[u8], filenames: &[Vec<u16>], last_len: &mut u64) -> Option<bool> {
+fn invalidated(
+    mut records: &[u8],
+    filenames: &[Vec<u16>],
+    last_len: &mut Option<u64>,
+) -> Option<bool> {
     let mut changed = false;
     loop {
         let offset = read_u32(records, 0)? as usize;
@@ -330,7 +359,7 @@ fn invalidated(mut records: &[u8], filenames: &[Vec<u16>], last_len: &mut u64) -
                     read_u32(record, offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, Action))?;
                 if matches!(action, FILE_ACTION_REMOVED | FILE_ACTION_RENAMED_OLD_NAME) {
                     changed = true;
-                    *last_len = 0;
+                    *last_len = None;
                 } else {
                     let field = offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileSize);
                     let size = u64::try_from(i64::from_le_bytes(
@@ -338,11 +367,13 @@ fn invalidated(mut records: &[u8], filenames: &[Vec<u16>], last_len: &mut u64) -
                     ))
                     .ok()?;
                     match action {
-                        FILE_ACTION_MODIFIED => changed |= size == 0 || size < *last_len,
+                        FILE_ACTION_MODIFIED => {
+                            changed |= size == 0 || last_len.is_some_and(|previous| size < previous)
+                        }
                         FILE_ACTION_ADDED | FILE_ACTION_RENAMED_NEW_NAME => changed = true,
                         _ => return None,
                     }
-                    *last_len = size;
+                    *last_len = Some(size);
                 }
             }
         }
@@ -418,7 +449,51 @@ mod tests {
         for (target, code) in bytes[NAME..].chunks_exact_mut(2).zip(&name) {
             target.copy_from_slice(&code.to_le_bytes());
         }
-        assert_eq!(invalidated(&bytes, &[name], &mut 0), Some(true));
+        assert_eq!(invalidated(&bytes, &[name], &mut Some(0)), Some(true));
+    }
+
+    #[test]
+    fn accepting_an_older_read_does_not_lower_the_observed_size() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Editor.log");
+        std::fs::write(&path, vec![b'a'; 8_192]).unwrap();
+        let Ok(watch) = TailSizeWatch::start(&path) else {
+            eprintln!("已跳过：扩展文件尺寸通知不可用");
+            return;
+        };
+        let generation = watch.generation();
+        assert!(watch.accept_baseline(&path, generation, 8_192).unwrap());
+        let mut append = OpenOptions::new().append(true).open(&path).unwrap();
+        append.write_all(&[b'b'; 8_192]).unwrap();
+        append.sync_all().unwrap();
+        drop(append);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let observed = watch.state.target.lock().unwrap().last_len;
+            if observed == Some(16_384) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "append size notification did not arrive"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(watch.generation(), generation);
+        assert!(watch.accept_baseline(&path, generation, 8_192).unwrap());
+
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer.set_len(12_288).unwrap();
+        writer.sync_all().unwrap();
+        writer.write_all(&[b'c'; 20_480]).unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while watch.generation() == generation && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(watch.generation() > generation);
     }
 
     #[test]
@@ -426,7 +501,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("Editor.log");
         std::fs::write(&path, vec![b'a'; 12_288]).unwrap();
-        let watch = match TailSizeWatch::start(&path, 0) {
+        let watch = match TailSizeWatch::start(&path) {
             Ok(watch) => watch,
             Err(error) => {
                 eprintln!("已跳过：扩展文件尺寸通知不可用：{error}");
