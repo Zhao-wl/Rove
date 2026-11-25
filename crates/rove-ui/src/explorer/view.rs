@@ -596,6 +596,16 @@ impl ExplorerView {
         if self.branch_filter.enabled {
             return;
         }
+        // Content-only events do not change tree rows. Pending inline edits and
+        // reveals can still use the event to retry restoring their UI state.
+        if self.rename_or_create_reveal.is_none()
+            && self.render.borrow().name_edit.is_none()
+            && events
+                .iter()
+                .all(|event| matches!(event, FileEvent::Changed(_)))
+        {
+            return;
+        }
         let Some(source) = self.source.clone() else {
             return;
         };

@@ -637,6 +637,36 @@ fn filtering_expands_the_parents_of_matches_and_restores_the_tree_when_cleared(
 }
 
 #[gpui::test]
+fn r66_explorer_content_change_does_not_refresh_an_unchanged_tree(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+
+    let fx = Fixture::new("{}", &["Editor.log"]);
+    let (view, cx) = fx.open(cx);
+    focus_row(&view, 0, cx);
+    assert_eq!(selected(&view, cx), ["Editor.log"]);
+
+    let explorer = view.read_with(cx, |view, _| view.explorer.clone());
+    let notifications = Rc::new(Cell::new(0));
+    let observed = notifications.clone();
+    let _subscription =
+        cx.update(|_, cx| cx.observe(&explorer, move |_, _| observed.set(observed.get() + 1)));
+    explorer.update(cx, |explorer, cx| {
+        let log = WorkspacePath::new("Editor.log").unwrap();
+        explorer.files_changed(&[FileEvent::Changed(log)], cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), 0);
+    assert_eq!(rows(&view, cx), ["Editor.log"]);
+
+    std::fs::write(fx.path("New.log"), "new log\n").unwrap();
+    wait_until(&view, cx, "created log", |rows| {
+        rows == ["Editor.log", "New.log"]
+    });
+    assert!(notifications.get() > 0);
+    assert_eq!(selected(&view, cx), ["Editor.log"]);
+}
+
+#[gpui::test]
 fn external_bulk_changes_keep_the_tree_in_sync_with_disk_and_keep_marks(cx: &mut TestAppContext) {
     let fx = Fixture::new("{}", &["Assets/keep.cs", "Other/x.cs", "Top.cs"]);
     let (view, cx) = fx.open(cx);
