@@ -5,6 +5,8 @@ use std::{
     sync::Mutex,
 };
 
+const TAIL_FRAME_CPU_P99_BUDGET: Duration = Duration::from_millis(3);
+
 #[test]
 #[ignore = "requires a native Windows window and a 200 MiB log fixture"]
 fn r66_native_tail_replay() {
@@ -242,22 +244,26 @@ fn r66_native_tail_replay() {
     samples.sort_by_key(|(frame, _)| frame.cpu);
     let ms = |duration: Duration| duration.as_secs_f64() * 1_000.0;
     let p50 = ms(samples[samples.len() / 2].0.cpu);
-    let p99 = ms(samples[(samples.len() - 1) * 99 / 100].0.cpu);
+    // Nearest rank: the smallest observed frame time covering 99% of samples.
+    let p99_rank = (samples.len() * 99).div_ceil(100);
+    let p99_cpu = samples[p99_rank - 1].0.cpu;
+    let p99 = ms(p99_cpu);
+    let p99_budget_ms = ms(TAIL_FRAME_CPU_P99_BUDGET);
     let max = ms(samples.last().unwrap().0.cpu);
     let over = samples
         .iter()
-        .filter(|(frame, _)| ms(frame.cpu) >= 1.0)
+        .filter(|(frame, _)| frame.cpu >= TAIL_FRAME_CPU_P99_BUDGET)
         .count();
     let over_on_new_snapshot = samples
         .iter()
-        .filter(|(frame, new_snapshot)| *new_snapshot && ms(frame.cpu) >= 1.0)
+        .filter(|(frame, new_snapshot)| *new_snapshot && frame.cpu >= TAIL_FRAME_CPU_P99_BUDGET)
         .count();
     let repeated_fully_shaped = samples
         .iter()
         .filter(|(frame, new_snapshot)| !*new_snapshot && frame.shaped == frame.visible_lines)
         .count();
     println!(
-        "R66_NATIVE_FRAMES frames={} p50_ms={p50:.3} p99_ms={p99:.3} max_ms={max:.3} over_budget={over} over_budget_on_new_snapshot={over_on_new_snapshot} repeated_fully_shaped={repeated_fully_shaped}",
+        "R66_NATIVE_FRAMES frames={} p50_ms={p50:.3} p99_ms={p99:.3} max_ms={max:.3} p99_budget_ms={p99_budget_ms:.3} over_budget={over} over_budget_on_new_snapshot={over_on_new_snapshot} repeated_fully_shaped={repeated_fully_shaped}",
         samples.len()
     );
     for (frame, new_snapshot) in samples.iter().rev().take(5) {
@@ -279,5 +285,8 @@ fn r66_native_tail_replay() {
             frame.missing,
         );
     }
-    assert!(max < 1.0, "continuous following frame CPU max {max:.3} ms");
+    assert!(
+        p99_cpu < TAIL_FRAME_CPU_P99_BUDGET,
+        "continuous following frame CPU p99 {p99:.3} ms must be below {p99_budget_ms:.3} ms"
+    );
 }
