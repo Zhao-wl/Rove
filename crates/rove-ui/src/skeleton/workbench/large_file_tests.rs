@@ -1025,6 +1025,74 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
     assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
 }
 
+#[gpui::test]
+fn r66_followed_logs_in_two_groups_keep_independent_state(cx: &mut TestAppContext) {
+    use crate::follow_tail as tail;
+
+    let fixture = Fixture::new(SETTINGS);
+    let left_path = fixture.folder.path().join("big.log");
+    let right_path = fixture.folder.path().join("other.log");
+    std::fs::copy(&left_path, &right_path).unwrap();
+    let (view, cx) = fixture.open(cx);
+    open_file(&view, "big.log", cx);
+    let left = view.read_with(cx, |view, _| view.editor.focused);
+    let left_resource = document(&view, cx).resource.clone();
+
+    view.update(cx, |view, cx| view.command(tail::FOLLOW, cx));
+    wait_tail(cx, |cx| status(&view, tail::FOLLOW_STATUS, cx).is_some());
+    cx.simulate_keystrokes("ctrl-\\");
+    settle(cx);
+    open_file(&view, "other.log", cx);
+    let right = view.read_with(cx, |view, _| view.editor.focused);
+    let right_resource = document(&view, cx).resource.clone();
+    assert_ne!(left, right);
+    assert!(status(&view, tail::FOLLOW_STATUS, cx).is_none());
+
+    view.update(cx, |view, cx| view.command(tail::FOLLOW, cx));
+    wait_tail(cx, |cx| status(&view, tail::FOLLOW_STATUS, cx).is_some());
+    view.read_with(cx, |view, _| {
+        let followed = view.followed_resources();
+        assert_eq!(followed.len(), 2);
+        assert!(followed.contains(&left_resource) && followed.contains(&right_resource));
+    });
+
+    let shows_tail = |cx: &VisualTestContext, group, expected| {
+        view.read_with(cx, |view, cx| {
+            let Some(document) = view.shown_document(group, false) else {
+                return false;
+            };
+            let count = document.text.lines().known;
+            tail_has_line(&document, expected)
+                && view
+                    .group_code(group, false)
+                    .and_then(|code| code.read(cx).viewport())
+                    .is_some_and(|viewport| viewport.last_line + 1 >= count)
+        })
+    };
+    disk_append(&left_path, "left group append\n");
+    disk_append(&right_path, "right group append\n");
+    wait_tail(cx, |cx| {
+        shows_tail(cx, left, "left group append") && shows_tail(cx, right, "right group append")
+    });
+
+    view.update(cx, |view, cx| {
+        view.command("workbench.action.closeActiveEditor", cx)
+    });
+    settle(cx);
+    view.read_with(cx, |view, _| {
+        assert!(!view
+            .editor
+            .in_group(right)
+            .iter()
+            .any(|tab| tab.resource == right_resource));
+        assert_eq!(view.followed_resources(), [left_resource]);
+    });
+    disk_append(&left_path, "still followed after closing other group\n");
+    wait_tail(cx, |cx| {
+        shows_tail(cx, left, "still followed after closing other group")
+    });
+}
+
 #[cfg(windows)]
 #[gpui::test]
 fn r66_tracks_a_fast_same_handle_truncation_that_preserves_both_samples(cx: &mut TestAppContext) {
