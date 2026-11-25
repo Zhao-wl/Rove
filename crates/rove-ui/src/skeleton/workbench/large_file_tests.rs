@@ -946,18 +946,63 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
 
     disk_append(&path, "first append\n");
     wait_tail(cx, |cx| tail_has_line(&document(&view, cx), "first append"));
-    let first_end = code.read_with(cx, |code, _| code.scroll_position().top);
+    let (first_end, first_line, point) = cx.update(|window, app| {
+        window.draw(app).clear();
+        let code = code.read(app);
+        (
+            code.scroll_position().top,
+            code.last_frame().first_line,
+            code.layout.text.center(),
+        )
+    });
     assert!(first_end > 5_000.0);
 
-    let point = code.read_with(cx, |code, _| code.layout.text.center());
+    code.update(cx, |code, _| code.record_frames(true));
+    let first_scroll_frame = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let observed_frame = first_scroll_frame.clone();
+    let observed_view = view.clone();
+    // GPUI delivers the viewport event after drawing, before another frame can replace it.
+    let subscription = cx.update(|window, app| {
+        let window = window.window_handle();
+        app.subscribe(&code, move |code, event: &CodeViewEvent, app| {
+            if !matches!(event, CodeViewEvent::ViewportChanged(_))
+                || observed_frame.borrow().is_some()
+            {
+                return;
+            }
+            let status = observed_view
+                .read(app)
+                .shell
+                .status_bar
+                .get(tail::FOLLOW_STATUS)
+                .map(|entry| entry.text.clone());
+            let painted = window
+                .update(app, |_, window, _| {
+                    window
+                        .debug_painted_bounds("status-rove.status.followTail")
+                        .is_some()
+                })
+                .unwrap();
+            let frames = code.update(app, |code, _| code.take_frame_samples());
+            *observed_frame.borrow_mut() = Some((status, painted, frames));
+        })
+    });
     cx.simulate_event(gpui::ScrollWheelEvent {
         position: point,
         delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 8.0)),
         ..Default::default()
     });
-    wait_tail(cx, |cx| {
-        status(&view, tail::FOLLOW_STATUS, cx).is_some_and(|entry| entry.text == "已暂停跟随")
-    });
+    drop(subscription);
+    code.update(cx, |code, _| code.record_frames(false));
+
+    let (first_status, painted, frames) = first_scroll_frame
+        .borrow_mut()
+        .take()
+        .expect("the first scrolled editor frame was painted");
+    assert_eq!(first_status.as_deref(), Some("已暂停跟随"));
+    assert!(painted, "the paused status belongs to that painted frame");
+    assert_eq!(frames.len(), 1, "expected the first editor frame");
+    assert!(frames[0].first_line < first_line);
     let paused = code.read_with(cx, |code, _| code.scroll_position().top);
     assert!(paused < first_end);
 
@@ -1387,18 +1432,18 @@ fn r66_follow_status_and_readonly_notice_coexist_with_index_progress(cx: &mut Te
     });
     let current = document(&view, cx);
 
-    view.update_in(cx, |view, window, cx| {
-        // Drive the real status assembly with a stable 20/44-byte indexed
-        // snapshot rather than racing the background index on a tiny fixture.
+    view.update(cx, |view, cx| {
+        // Keep indexing at 45% until the workbench has drawn its status items and bar.
         let indexing = Arc::new(Document {
             text: Arc::new(Pending::new(22)),
             ..(*current).clone()
         });
-        view.editor.replace_document(indexing, None);
-        view.sync_views(cx);
-        view.sync_large_files(cx);
-        view.sync_follow_tail(cx);
-        view.sync_status(window, cx);
+        assert!(view.editor.replace_document(indexing, None));
+        cx.notify();
+    });
+    cx.update(|window, app| {
+        window.draw(app).clear();
+        let view = view.read(app);
         assert!(view
             .shell
             .status_bar
@@ -1418,8 +1463,43 @@ fn r66_follow_status_and_readonly_notice_coexist_with_index_progress(cx: &mut Te
                 .text,
             "跟随末尾"
         );
-        assert_eq!(view.shell.feedback.all_editor_bars().len(), 1);
-        view.editor.replace_document(current.clone(), None);
+
+        let notice = view.shell.feedback.all_editor_bars();
+        assert_eq!(notice.len(), 1);
+        let selectors = [
+            format!("status-{}", crate::follow_tail::FOLLOW_STATUS),
+            format!("status-{}", lf::INDEX_STATUS),
+            format!("status-{READ_ONLY}"),
+            format!("editor-bar-{}", notice[0].key),
+        ];
+        let bounds = selectors.each_ref().map(|selector| {
+            let bounds = window
+                .debug_painted_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} was not painted"));
+            assert!(bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.));
+            bounds
+        });
+        for (i, item) in bounds.iter().enumerate() {
+            for (j, other) in bounds.iter().enumerate().skip(i + 1) {
+                assert!(
+                    !item.intersects(other),
+                    "{} overlaps {}",
+                    selectors[i],
+                    selectors[j]
+                );
+            }
+        }
+        let status_bar = window.debug_painted_bounds("statusbar").unwrap();
+        for item in &bounds[..3] {
+            assert!(item.origin.x >= status_bar.origin.x);
+            assert!(item.origin.y >= status_bar.origin.y);
+            assert!(item.right() <= status_bar.right());
+            assert!(item.bottom() <= status_bar.bottom());
+        }
+        assert!(bounds[3].bottom() <= status_bar.origin.y);
+    });
+    view.update(cx, |view, cx| {
+        assert!(view.editor.replace_document(current, None));
         view.sync_views(cx);
     });
 }
