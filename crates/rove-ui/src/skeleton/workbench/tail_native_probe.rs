@@ -69,7 +69,7 @@ fn r66_native_tail_replay() {
                     let action = crate::keys::action_for(crate::follow_tail::FOLLOW).unwrap();
                     window.dispatch_action(action, cx);
                 }).map_err(|e| e.to_string())?;
-                let (base_version, base_bytes, base_lines, base_appends, base_reopens) = loop {
+                let (base_document, base_version, base_bytes, base_lines, base_appends, base_reopens) = loop {
                     let value = window.update(cx, |view, _, cx| {
                         let Some(doc) = view.active_large_file_document() else { return (None, "no active large file".to_owned()) };
                         let lines = doc.text.lines();
@@ -77,7 +77,7 @@ fn r66_native_tail_replay() {
                         let at_end = view.code_view().read(cx).viewport()
                             .is_some_and(|viewport| viewport.last_line + 1 >= lines.known);
                         let state = (lines.complete && follows && at_end).then(|| (
-                            doc.text.version(), doc.text.byte_len(), lines.known,
+                            doc.id, doc.text.version(), doc.text.byte_len(), lines.known,
                             view.follow_tail.counts.appends, view.follow_tail.counts.reopens,
                         ));
                         (state, format!("lines={lines:?}, follows={follows}, at_end={at_end}, reopens={}", view.follow_tail.counts.reopens))
@@ -97,8 +97,8 @@ fn r66_native_tail_replay() {
                 executor.timer(Duration::from_millis(350)).await;
                 let started = Instant::now();
                 let mut child = Command::new("python")
-                    .arg(writer)
-                    .arg(path)
+                    .arg(&writer)
+                    .arg(&path)
                     .args(["--seconds", "10"])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
@@ -161,6 +161,67 @@ fn r66_native_tail_replay() {
                         return Err(format!("tail did not settle: {lines} vs {}; follows={follows} at_end={at_end}; writer={}", base_lines + 10_000, String::from_utf8_lossy(&output.stderr)));
                     }
                 }
+                window.update(cx, |view, _, cx| {
+                    view.code_view().update(cx, |code, _| code.record_frames(false));
+                }).map_err(|e| e.to_string())?;
+                let mut rotation = Command::new("python")
+                    .arg(writer)
+                    .arg(&path)
+                    .args(["--seconds", "4", "--rotation", "rename-create"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| e.to_string())?;
+                let limit = Instant::now() + Duration::from_secs(12);
+                loop {
+                    if rotation.try_wait().map_err(|e| e.to_string())?.is_some() {
+                        break;
+                    }
+                    if Instant::now() >= limit {
+                        let _ = rotation.kill();
+                        let _ = rotation.wait();
+                        return Err("native rotation writer timed out".into());
+                    }
+                    executor.timer(Duration::from_millis(40)).await;
+                }
+                let output = rotation.wait_with_output().map_err(|e| e.to_string())?;
+                if !output.status.success() {
+                    return Err(format!("native rotation writer failed: {}", String::from_utf8_lossy(&output.stderr)));
+                }
+                let disk = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                if !disk.starts_with("ROTATED_LOG ") || !disk.lines().last().is_some_and(|line| line.starts_with("TAIL_PROBE 0000003999 ")) {
+                    return Err("rotation script did not install the expected file".into());
+                }
+                loop {
+                    let converged = window.update(cx, |view, _, cx| {
+                        let Some(document) = view.active_large_file_document() else { return false; };
+                        let expected = Resource::Workspace(WorkspacePath::new("replay-rove.log").unwrap());
+                        let follows = view.shell.status_bar.get(crate::follow_tail::FOLLOW_STATUS)
+                            .is_some_and(|entry| entry.text == "跟随末尾");
+                        let lines = document.text.lines();
+                        let at_end = view.code_view().read(cx).viewport()
+                            .is_some_and(|viewport| viewport.last_line + 1 >= lines.known);
+                        if document.id != base_document || document.resource != expected
+                            || !follows || !at_end || !lines.complete
+                            || view.follow_tail.counts.reopens <= base_reopens
+                            || document.text.byte_len() != disk.len() as u64
+                        {
+                            return false;
+                        }
+                        let mut text = String::new();
+                        let range = rove_base::Span::new(rove_base::ByteOffset(0), rove_base::ByteOffset(disk.len() as u64)).unwrap();
+                        document.text.visit_chunks(range, &mut |chunk| text.push_str(chunk)).is_ok()
+                            && text == disk
+                    }).map_err(|e| e.to_string())?;
+                    if converged {
+                        println!("R66_NATIVE_ROTATION {}", String::from_utf8_lossy(&output.stdout).trim());
+                        break;
+                    }
+                    if Instant::now() >= limit {
+                        return Err("the original followed path did not converge to the replacement's bytes and visible tail".into());
+                    }
+                    executor.timer(Duration::from_millis(40)).await;
+                }
                 Ok(samples)
             }.await;
             *report.lock().unwrap() = Some(outcome);
@@ -191,8 +252,12 @@ fn r66_native_tail_replay() {
         .iter()
         .filter(|(frame, new_snapshot)| *new_snapshot && ms(frame.cpu) >= 1.0)
         .count();
+    let repeated_fully_shaped = samples
+        .iter()
+        .filter(|(frame, new_snapshot)| !*new_snapshot && frame.shaped == frame.visible_lines)
+        .count();
     println!(
-        "R66_NATIVE_FRAMES frames={} p50_ms={p50:.3} p99_ms={p99:.3} max_ms={max:.3} over_budget={over} over_budget_on_new_snapshot={over_on_new_snapshot}",
+        "R66_NATIVE_FRAMES frames={} p50_ms={p50:.3} p99_ms={p99:.3} max_ms={max:.3} over_budget={over} over_budget_on_new_snapshot={over_on_new_snapshot} repeated_fully_shaped={repeated_fully_shaped}",
         samples.len()
     );
     for (frame, new_snapshot) in samples.iter().rev().take(5) {
