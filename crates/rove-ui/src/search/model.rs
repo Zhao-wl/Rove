@@ -5,7 +5,7 @@
 //! O(log 文件数 + 可见行)，所以几万条结果也只为可见行生成 `Row`（验收：1 万条以上滚动流畅）。
 
 use crate::lists::{ItemId, ListModel, Row};
-use rove_base::{Error, Result, Version, WorkspacePath};
+use rove_base::{DocumentId, Error, Result, Version, WorkspacePath};
 use rove_search::settings::{Collapse, SortOrder};
 use rove_search::{FileMatches, LineMatch};
 use std::cmp::Ordering;
@@ -23,6 +23,7 @@ const SEP: char = '\u{1}';
 pub struct FileNode {
     pub path: WorkspacePath,
     pub lines: Vec<LineMatch>,
+    pub(crate) open_result: Option<DocumentId>,
     starts: Vec<usize>,
     count: usize,
 }
@@ -32,6 +33,7 @@ impl FileNode {
         let mut node = Self {
             path,
             lines,
+            open_result: None,
             starts: vec![],
             count: 0,
         };
@@ -169,7 +171,13 @@ impl Results {
 
     /// 流式到达的一个文件：插入到排序位置。同一文件不会在一次搜索里出现两次。
     pub fn add(&mut self, file: FileMatches) {
-        let node = Arc::new(FileNode::new(file.path, file.lines));
+        self.add_with_origin(file, None);
+    }
+
+    pub(crate) fn add_with_origin(&mut self, file: FileMatches, open_result: Option<DocumentId>) {
+        let mut node = FileNode::new(file.path, file.lines);
+        node.open_result = open_result;
+        let node = Arc::new(node);
         self.matches += node.count();
         let sort = self.sort;
         let at = self

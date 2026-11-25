@@ -27,7 +27,7 @@
 
 use crate::query::{self, SearchQuery};
 use crate::settings::SearchConfig;
-use grep_matcher::{LineTerminator, Matcher};
+use grep_matcher::{Captures, LineTerminator, Matcher};
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -183,8 +183,8 @@ struct Shared {
 }
 
 impl Shared {
-    /// 为一处可报告的匹配申请配额。最后一处配额用完后，通知其余工作线程停止。
-    fn claim_match(&self) -> bool {
+    /// 为一处可报告的匹配申请配额。跨文件搜索耗尽后停止全部工作线程。
+    fn claim_match(&self, cancel_on_limit: bool) -> bool {
         let Some(budget) = &self.budget else {
             return true;
         };
@@ -195,7 +195,9 @@ impl Shared {
             .unwrap_or_default();
         if remaining <= 1 {
             self.limit_hit.store(true, Ordering::Relaxed);
-            self.cancel.cancel();
+            if cancel_on_limit {
+                self.cancel.cancel();
+            }
         }
         remaining != 0
     }
@@ -467,18 +469,102 @@ fn visit(
     }
 }
 
-/// 读取并解码一个文件，然后分块搜索。二进制文件返回 `Unsupported`（计入跳过）。
-///
-/// 读取顺序（#133 的测量结论）：**先读开头一段，再决定要不要问文件大小**。Unity 大型项目里
-/// 七成以上的文件读不满 8 KiB，这些文件一次 `read` 就已经拿到全部内容，`metadata`（Windows 上的
-/// `GetFileInformationByHandle`）纯属多余；每个文件省掉一次系统调用，16 万个文件的全量搜索快约 9%。
-/// 顺带不再按文件大小预分配：判成二进制的文件（本机 2.7 万个）不会为了只读 8 KiB 先申请十几 MB。
+/// 一处替换候选。显示列可能在行尾被截短，bytes 与捕获组保留完整的 UTF-8 字节区间。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplacementMatch {
+    pub line: u64,
+    pub columns: Range<u32>,
+    pub bytes: Range<usize>,
+    pub groups: Vec<Option<Range<usize>>>,
+}
+
+/// 对单文件快照重跑搜索匹配，用于核对结果坐标并规划替换。
+/// 同一批文件复用编译结果，写入时仍须验证快照。
+pub struct ReplacementMatcher {
+    shared: Shared,
+    searcher: Searcher,
+    max_results: Option<usize>,
+}
+
+impl ReplacementMatcher {
+    pub fn new(query: &SearchQuery, config: &SearchConfig, cancel: Cancellation) -> Result<Self> {
+        let multi_line = query.is_multiline();
+        Ok(Self {
+            shared: Shared {
+                matcher: query::compile(query, config.smart_case)?,
+                multi_line,
+                ascii_literal: false,
+                cancel,
+                budget: config.max_results.map(AtomicUsize::new),
+                limit_hit: AtomicBool::new(false),
+                files_searched: AtomicU64::new(0),
+                skipped: AtomicU64::new(0),
+                settings: config.settings.clone(),
+            },
+            searcher: searcher(multi_line),
+            max_results: config.max_results,
+        })
+    }
+
+    /// 返回同一搜索引擎计算出的显示结果，以及位置对应的完整匹配。
+    pub fn scan(&mut self, text: &str) -> Result<(Vec<LineMatch>, Vec<ReplacementMatch>)> {
+        self.scan_decoded(text.as_bytes())
+    }
+
+    /// 对只读文件复用全局搜索的内存映射和解码。回调只在映射或解码快照有效时访问命中字节。
+    pub fn scan_file<T>(
+        &mut self,
+        path: &Path,
+        visit: impl FnOnce(&[u8], &[LineMatch], Vec<ReplacementMatch>) -> T,
+    ) -> Result<Option<T>> {
+        self.shared.cancel.check()?;
+        with_search_file(path, |bytes, _| {
+            let text = decode(bytes, &self.shared)?;
+            let (lines, exact) = self.scan_decoded(&text)?;
+            Ok(visit(&text, &lines, exact))
+        })
+    }
+
+    fn scan_decoded(&mut self, text: &[u8]) -> Result<(Vec<LineMatch>, Vec<ReplacementMatch>)> {
+        self.shared.cancel.check()?;
+        // 预览只需还原已报告的结果。分文件重置上限，某个文件到顶不应取消整批预览。
+        self.shared.budget = self.max_results.map(AtomicUsize::new);
+        *self.shared.limit_hit.get_mut() = false;
+        let mut lines = Vec::new();
+        let mut exact = Vec::new();
+        search_text(
+            text,
+            &self.shared,
+            &mut self.searcher,
+            &mut lines,
+            Some(&mut exact),
+        )?;
+        Ok((lines, exact))
+    }
+}
+
 fn search_file(
     path: &Path,
     shared: &Shared,
     searcher: &mut Searcher,
     out: &mut Vec<LineMatch>,
 ) -> Result<()> {
+    with_search_file(path, |bytes, utf16| {
+        search_bytes(bytes, utf16, shared, searcher, out)
+    })
+    .map(|_| ())
+}
+
+/// 读取或只读映射一个文件。二进制文件返回 `Unsupported`，空文件不执行回调。
+///
+/// 读取顺序（#133 的测量结论）：**先读开头一段，再决定要不要问文件大小**。Unity 大型项目里
+/// 七成以上的文件读不满 8 KiB，这些文件一次 `read` 就已经拿到全部内容，`metadata`（Windows 上的
+/// `GetFileInformationByHandle`）纯属多余；每个文件省掉一次系统调用，16 万个文件的全量搜索快约 9%。
+/// 顺带不再按文件大小预分配：判成二进制的文件（本机 2.7 万个）不会为了只读 8 KiB 先申请十几 MB。
+fn with_search_file<T>(
+    path: &Path,
+    visit: impl FnOnce(&[u8], bool) -> Result<T>,
+) -> Result<Option<T>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     // 二进制判定必须在字面量扫描与读取正文之前：Unity 项目里贴图、模型、程序集占了绝大多数字节，
@@ -489,7 +575,7 @@ fn search_file(
         .take(BINARY_PROBE as u64)
         .read_to_end(&mut bytes)?;
     if bytes.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let utf16 = bytes.starts_with(b"\xFF\xFE") || bytes.starts_with(b"\xFE\xFF");
     if !utf16 && memchr::memchr(0, &bytes).is_some() {
@@ -497,7 +583,7 @@ fn search_file(
     }
     if bytes.len() < BINARY_PROBE {
         // 读不满探测块 = 已经到文件末尾，内容全在手里，不必再问大小。
-        return search_bytes(&bytes, utf16, shared, searcher, out);
+        return visit(&bytes, utf16).map(Some);
     }
     // 还有剩下的内容：现在才需要知道文件有多大（决定走内存映射还是读进内存、预留多少容量）。
     let len = file.metadata()?.len();
@@ -505,12 +591,11 @@ fn search_file(
         // SAFETY: 只读映射；文件在搜索期间被别人截断属于外部竞争，最坏结果是这次读到的内容不完整，
         // 与 ripgrep 的取舍相同。映射从文件开头起，与上面读过探测块无关。
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        // 大文件也做 UTF-8 校验与编码识别（#145）：校验只是一次顺序扫描，真的不是 UTF-8 才解码。
-        return search_bytes(&map, utf16, shared, searcher, out);
+        return visit(&map, utf16).map(Some);
     }
     bytes.reserve_exact((len as usize + 1).saturating_sub(bytes.len()));
     file.read_to_end(&mut bytes)?;
-    search_bytes(&bytes, utf16, shared, searcher, out)
+    visit(&bytes, utf16).map(Some)
 }
 
 /// 已经读进来（或映射好）的一个文件：ASCII 字面量的快速路径 → 解码 → 分块搜索。
@@ -526,7 +611,7 @@ fn search_bytes(
         return Ok(());
     }
     let text = decode(bytes, shared)?;
-    search_text(&text, shared, searcher, out)
+    search_text(&text, shared, searcher, out, None)
 }
 
 /// 字节 → 用来搜索的 UTF-8 文本。
@@ -579,9 +664,10 @@ fn search_text(
     shared: &Shared,
     searcher: &mut Searcher,
     out: &mut Vec<LineMatch>,
+    mut exact: Option<&mut Vec<ReplacementMatch>>,
 ) -> Result<()> {
     if shared.multi_line || text.len() <= CHUNK {
-        return search_chunk(text, 0, shared, searcher, out);
+        return search_chunk(text, 0, 0, shared, searcher, out, exact);
     }
     let mut start = 0;
     let mut base_line = 0u64;
@@ -595,7 +681,18 @@ fn search_text(
             };
         }
         let chunk = &text[start..end];
-        search_chunk(chunk, base_line, shared, searcher, out)?;
+        search_chunk(
+            chunk,
+            start,
+            base_line,
+            shared,
+            searcher,
+            out,
+            exact.as_deref_mut(),
+        )?;
+        if shared.limit_hit.load(Ordering::Relaxed) {
+            break;
+        }
         // 块在 `\n` 之后切开，`\r\n` 不会被切断；行号按编辑器口径累加（独立 `\r` 也是一行）。
         base_line += line_breaks(chunk);
         start = end;
@@ -605,14 +702,18 @@ fn search_text(
 
 fn search_chunk(
     chunk: &[u8],
+    base_byte: usize,
     base_line: u64,
     shared: &Shared,
     searcher: &mut Searcher,
     out: &mut Vec<LineMatch>,
+    exact: Option<&mut Vec<ReplacementMatch>>,
 ) -> Result<()> {
     let mut sink = Collect {
         shared,
+        base_byte,
         base_line,
+        exact,
         chunk,
         scanned: 0,
         lone_cr: 0,
@@ -626,7 +727,9 @@ fn search_chunk(
 
 struct Collect<'a> {
     shared: &'a Shared,
+    base_byte: usize,
     base_line: u64,
+    exact: Option<&'a mut Vec<ReplacementMatch>>,
     /// 本块的全部字节：用来把搜索器只认 `\n` 的行号补成编辑器口径。
     chunk: &'a [u8],
     /// `chunk` 中已经数过独立 `\r` 的前缀长度（匹配按位置递增到达，只向前扫一遍）。
@@ -676,8 +779,42 @@ impl Sink for Collect<'_> {
         };
         // (行在 bytes 中的起止, 行号, 区间)。这里的“行”已经按独立 `\r` 切开。
         let mut per_line: Vec<(usize, usize, u64, Vec<Range<u32>>)> = Vec::new();
-        let _ = self.shared.matcher.find_iter(bytes, |m| {
-            if self.shared.cancel.check().is_err() {
+        let matcher = &self.shared.matcher;
+        let cancel_on_limit = self.exact.is_none();
+        let keep_scanning =
+            || self.shared.cancel.check().is_ok() && !self.shared.limit_hit.load(Ordering::Relaxed);
+        let mut captures = self
+            .exact
+            .as_ref()
+            .map(|_| matcher.new_captures())
+            .transpose()
+            .map_err(std::io::Error::other)?;
+        let mut record = |line, columns, found: grep_matcher::Match| {
+            let Some((exact, captures)) = self.exact.as_deref_mut().zip(captures.as_mut()) else {
+                return;
+            };
+            let base = self.base_byte + offset;
+            let mut groups = Vec::new();
+            if matcher
+                .captures_at(bytes, found.start(), captures)
+                .unwrap_or(false)
+                && captures.get(0) == Some(found)
+            {
+                groups.extend((0..captures.len().min(100)).map(|i| {
+                    captures
+                        .get(i)
+                        .map(|group| base + group.start()..base + group.end())
+                }));
+            }
+            exact.push(ReplacementMatch {
+                line,
+                columns,
+                bytes: base + found.start()..base + found.end(),
+                groups,
+            });
+        };
+        let _ = matcher.find_iter(bytes, |m| {
+            if !keep_scanning() {
                 return false;
             }
             // 零宽命中（`^` / `$` / `\b`）保留为空区间；`find_iter` 遇到空匹配会前进一个字节。
@@ -685,14 +822,16 @@ impl Sink for Collect<'_> {
             if m.start() == m.end() && m.start() == bytes.len() && bytes.ends_with(b"\n") {
                 return true;
             }
-            if !self.shared.claim_match() {
+            if !self.shared.claim_match(cancel_on_limit) {
                 return false;
             }
             // 命中按位置递增。同一编辑器行内复用边界，避免密集命中时反复扫描整行。
-            if let Some((start, end, _, ranges)) = per_line.last_mut() {
+            if let Some((start, end, line, ranges)) = per_line.last_mut() {
                 if m.start() <= *end {
-                    ranges.push((m.start() - *start) as u32..(m.end().min(*end) - *start) as u32);
-                    return self.shared.cancel.check().is_ok();
+                    let range = (m.start() - *start) as u32..(m.end().min(*end) - *start) as u32;
+                    record(*line, range.clone(), m);
+                    ranges.push(range);
+                    return keep_scanning();
                 }
             }
             let lf_start = memchr::memrchr(b'\n', &bytes[..m.start()]).map_or(0, |i| i + 1);
@@ -705,6 +844,7 @@ impl Sink for Collect<'_> {
             let cr_index = memchr::memchr_iter(b'\r', &bytes[lf_start..start]).count() as u64;
             let end = memchr::memchr(b'\r', &bytes[start..lf_end]).map_or(lf_end, |i| start + i);
             let range = (pos - start) as u32..(m.end().min(end).max(pos) - start) as u32;
+            record(first_line + lf_index + cr_index, range.clone(), m);
             match per_line.last_mut() {
                 Some((s, _, _, ranges)) if *s == start => ranges.push(range),
                 _ => per_line.push((
@@ -715,12 +855,12 @@ impl Sink for Collect<'_> {
                 )),
             }
             // 最后一处配额已经存入，停止本轮枚举并保留这些已获配额的结果。
-            self.shared.cancel.check().is_ok()
+            keep_scanning()
         });
         for (start, end, line, ranges) in per_line {
             self.out.push(preview(line, &bytes[start..end], ranges));
         }
-        Ok(self.shared.cancel.check().is_ok())
+        Ok(keep_scanning())
     }
 }
 
@@ -778,6 +918,26 @@ fn floor_boundary(text: &str, mut index: usize) -> usize {
 #[allow(clippy::single_range_in_vec_init)] // 一行一处匹配本来就是只有一个区间的 Vec
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_matcher_resets_search_limit_without_cancelling_the_preview() {
+        let settings = Arc::new(crate::settings::default_settings());
+        let mut config = SearchConfig::from_settings(settings);
+        config.max_results = Some(2);
+        let cancel = Cancellation::default();
+        let mut replacement =
+            ReplacementMatcher::new(&SearchQuery::new("needle"), &config, cancel.clone()).unwrap();
+        let dense = "needle\n".repeat(CHUNK);
+        for source in [dense.as_str(), "needle needle needle"] {
+            let (lines, exact) = replacement.scan(source).unwrap();
+            assert_eq!(lines.iter().map(|line| line.ranges.len()).sum::<usize>(), 2);
+            assert_eq!(exact.len(), 2);
+            assert_eq!(&source[exact[1].bytes.clone()], "needle");
+            assert!(cancel.check().is_ok());
+        }
+        cancel.cancel();
+        assert!(matches!(replacement.scan("needle"), Err(Error::Cancelled)));
+    }
 
     #[test]
     fn preview_trims_indentation_and_maps_ranges() {
@@ -877,6 +1037,36 @@ mod tests {
         assert_eq!(out.len(), 2, "两行都有「速度」");
         assert_eq!(&*out[1].preview, "float 速度 = 1;");
         assert_eq!(out[1].ranges, vec![6..12]);
+    }
+
+    #[test]
+    fn read_only_replacement_scans_mapped_gbk_with_bounded_multiline_captures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Preview.cs");
+        let matched = "变量\r\n值";
+        let source = format!("{matched}\n{}", "// 中文填充\n".repeat(1200));
+        let (gbk, _, errors) = encoding_rs::GBK.encode(&source);
+        assert!(!errors && gbk.len() > BINARY_PROBE);
+        std::fs::write(&path, &gbk).unwrap();
+        let _guard = MmapThresholdGuard::new(BINARY_PROBE as u64);
+        let mut query = SearchQuery::new(r"(变量)\r?\n(值)");
+        query.is_regex = true;
+        let mut config = SearchConfig::from_settings(Arc::new(crate::settings::default_settings()));
+        config.max_results = Some(1);
+        let cancel = Cancellation::default();
+        let mut matcher = ReplacementMatcher::new(&query, &config, cancel.clone()).unwrap();
+
+        let found = matcher
+            .scan_file(&path, |text, lines, exact| {
+                assert_eq!(lines[0].line, 0);
+                assert_eq!(exact.len(), 1);
+                let one = &exact[0];
+                assert_eq!(&text[one.bytes.clone()], matched.as_bytes());
+                assert_eq!(&text[one.groups[1].clone().unwrap()], "变量".as_bytes());
+                assert_eq!(&text[one.groups[2].clone().unwrap()], "值".as_bytes());
+            })
+            .unwrap();
+        assert!(found.is_some() && cancel.check().is_ok());
     }
 
     /// 内存映射分支的 ASCII 字面量快速路径：在文件里的要照常报，不在的才短路。

@@ -4,8 +4,7 @@
 //!   本模块不重复登记；视图被显示后由宿主把焦点交给查询框；
 //! - 设置项 `search.*` 由 `rove_search::settings::register_settings` 登记（`app_settings` 装配）；
 //! - 默认键位来自 #14 生成的 VS Code 默认键位表（`f4`、`alt+c`、`delete`…），不重复登记；
-//! - **不登记**替换相关命令（`search.action.replace*`、`workbench.action.replaceInFiles`、
-//!   `toggleSearchPreserveCase`，属于 R61）与搜索编辑器（P2）。
+//! - #62 的替换命令在同一注册表登记。搜索编辑器属于 P2。
 use crate::contributions::{Contribution, ContributionRegistry, Placement};
 use gpui::Action;
 use rove_base::{Error, Result};
@@ -39,6 +38,14 @@ pub const TOGGLE_WORD: &str = "toggleSearchWholeWord";
 pub const TOGGLE_REGEX: &str = "toggleSearchRegex";
 /// #52：`ctrl+shift+l`，把结果列表里当前文件的匹配变成编辑器里的多光标。
 pub const ADD_CURSORS: &str = "addCursorsAtSearchResults";
+pub const REPLACE_IN_FILES: &str = "workbench.action.replaceInFiles";
+pub const CLOSE_REPLACE: &str = "closeReplaceInFilesWidget";
+pub const PRESERVE_CASE: &str = "toggleSearchPreserveCase";
+pub const REPLACE_MATCH: &str = "search.action.replace";
+pub const REPLACE_FILE: &str = "search.action.replaceAllInFile";
+pub const REPLACE_FOLDER: &str = "search.action.replaceAllInFolder";
+pub const REPLACE_ALL: &str = "search.action.replaceAll";
+pub const UNDO_REPLACE: &str = "rove.search.undoReplaceAll";
 
 /// 发布在搜索视图上的 VS Code 上下文键（默认键位的 when 子句用到）。
 pub mod context {
@@ -51,12 +58,16 @@ pub mod context {
     pub const SEARCH_INPUT_FOCUS: &str = "searchInputBoxFocus";
     pub const FILE_OR_MATCH_FOCUS: &str = "fileMatchOrMatchFocus";
     pub const FILE_FOCUS: &str = "fileMatchFocus";
+    pub const FOLDER_FOCUS: &str = "folderMatchFocus";
     pub const MATCH_FOCUS: &str = "matchFocus";
     pub const FIRST_MATCH_FOCUS: &str = "firstMatchFocus";
     pub const FILE_OR_FOLDER_RESOURCE_FOCUS: &str = "fileMatchOrFolderMatchWithResourceFocus";
     pub const FOLDER_RESOURCE_FOCUS: &str = "folderMatchWithResourceFocus";
     /// `searchState`：`0` 空闲、`1` 正在搜索（VS Code 的 `SearchUIState`）。
     pub const STATE: &str = "searchState";
+    pub const REPLACE_ACTIVE: &str = "replaceActive";
+    pub const REPLACE_INPUT_FOCUS: &str = "replaceInputBoxFocus";
+    pub const EDITABLE_ITEM: &str = "isEditableItem";
 }
 
 /// (命令 ID, 标题字符串 key, 中文标题)
@@ -111,6 +122,18 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "search.command.addCursorsAtSearchResults",
         "在搜索结果处添加光标",
     ),
+    (REPLACE_IN_FILES, "search.replace.open", "在文件中替换"),
+    (CLOSE_REPLACE, "search.replace.close", "关闭替换框"),
+    (PRESERVE_CASE, "search.replace.case", "保留大小写"),
+    (REPLACE_MATCH, "search.replace.match", "替换此处"),
+    (REPLACE_FILE, "search.replace.file", "替换此文件中的匹配"),
+    (
+        REPLACE_FOLDER,
+        "search.replace.folder",
+        "替换此文件夹中的匹配",
+    ),
+    (REPLACE_ALL, "search.replace.all", "全部替换"),
+    (UNDO_REPLACE, "search.replace.undo", "撤销批量替换"),
 ];
 
 /// 命令分类（命令面板里显示为“搜索: …”）。
@@ -144,6 +167,34 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("search.invalidRegex", "正则表达式无效。"),
     ("search.cancelled", "已取消搜索。"),
     ("search.lineNumber", "{line}:"),
+    ("search.replace.placeholder", "替换为"),
+    (
+        "search.replace.summary",
+        "将在 {files} 个文件中替换 {matches} 处",
+    ),
+    (
+        "search.replace.applied",
+        "已在 {files} 个文件中替换 {matches} 处",
+    ),
+    (
+        "search.replace.skipped",
+        "已跳过 {files} 个只读或过大的文件",
+    ),
+    ("search.replace.failure", "未能修改 {files} 个文件：{paths}"),
+    ("search.replace.busyFiles", "文件被占用：{paths}"),
+    ("search.replace.readOnlyFiles", "文件为只读：{paths}"),
+    (
+        "search.replace.limit",
+        "搜索结果已截断，无法全部替换。请缩小搜索范围。",
+    ),
+    ("search.replace.preparing", "正在核对替换预览…"),
+    ("search.replace.applying", "正在分文件替换…"),
+    ("search.replace.cancel", "取消"),
+    (
+        "search.replace.cancelled",
+        "已取消。已成功的替换仍可一起撤销。",
+    ),
+    ("search.replace.undone", "已撤销批量替换"),
 ];
 
 /// 视图用到的颜色键（均为 VS Code 颜色；默认值取 #10 的默认值表）。
@@ -257,10 +308,18 @@ mod tests {
             assert!(registry.get(id).is_some(), "{id}");
             assert!(strings.text(&Message::key(*title)).is_ok(), "{title}");
         }
-        assert!(
-            !COMMANDS.iter().any(|(id, _, _)| id.contains("replace")),
-            "替换属于 R61"
-        );
+        for id in [
+            REPLACE_IN_FILES,
+            CLOSE_REPLACE,
+            PRESERVE_CASE,
+            REPLACE_MATCH,
+            REPLACE_FILE,
+            REPLACE_FOLDER,
+            REPLACE_ALL,
+            UNDO_REPLACE,
+        ] {
+            assert!(registry.get(id).is_some(), "{id}");
+        }
     }
 
     #[test]

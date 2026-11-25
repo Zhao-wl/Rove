@@ -152,6 +152,10 @@ impl Colors {
     }
 }
 
+mod replace_view;
+use replace_view::ReplacementState;
+pub(crate) use replace_view::{RemainingLines, ReplacementEvent, Report};
+
 fn paint(c: Option<Hsla>) -> Hsla {
     c.unwrap_or_else(gpui::transparent_black)
 }
@@ -163,6 +167,9 @@ pub struct SearchView {
     theme: Arc<dyn Theme>,
     colors: Colors,
     pub query: Entity<TextInput>,
+    pub(crate) replace_input: Entity<TextInput>,
+    replace: ReplacementState,
+    replace_folder_focus: FocusHandle,
     pub includes: Entity<TextInput>,
     pub excludes: Entity<TextInput>,
     pub list: Entity<ListView>,
@@ -215,6 +222,8 @@ impl SearchView {
             })
         };
         let query = input(text("search.placeholder"), cx);
+        let replace_input = input(text("search.replace.placeholder"), cx);
+        let replace = ReplacementState::default();
         let includes = input(text("search.includes.placeholder"), cx);
         let excludes = input(text("search.excludes.placeholder"), cx);
         let view = ViewSettings::read(&*settings);
@@ -224,7 +233,12 @@ impl SearchView {
             open_mode: OpenMode::SingleClick,
             ..ListOptions::read(&*settings)
         };
-        let renderer = row_renderer(rows.clone(), colors.clone(), view.clone());
+        let renderer = row_renderer(
+            rows.clone(),
+            colors.clone(),
+            view.clone(),
+            replace.rendered.clone(),
+        );
         let initial: Arc<dyn crate::lists::ListModel> = rows.borrow().clone();
         let list = cx.new(|cx| {
             let widget = ListWidget::new(initial, RowHeight::Fixed(22.0), options);
@@ -242,6 +256,14 @@ impl SearchView {
                 }),
             );
         }
+        subscriptions.push(cx.subscribe(
+            &replace_input,
+            |v: &mut Self, _, event: &TextInputEvent, cx| {
+                if matches!(event, TextInputEvent::Changed { .. }) {
+                    v.schedule_replace_preview(cx);
+                }
+            },
+        ));
         subscriptions.push(cx.subscribe(&list, |v: &mut Self, _, e: &ListEvent, cx| {
             v.list_event(e, cx)
         }));
@@ -252,6 +274,9 @@ impl SearchView {
             theme,
             colors,
             query,
+            replace_input,
+            replace,
+            replace_folder_focus: cx.focus_handle(),
             includes,
             excludes,
             list,
@@ -289,7 +314,12 @@ impl SearchView {
         self.view = ViewSettings::read(&*self.settings);
         self.results
             .set_view_options(self.view.sort_order, self.view.collapse);
-        let renderer = row_renderer(self.rows.clone(), self.colors.clone(), self.view.clone());
+        let renderer = row_renderer(
+            self.rows.clone(),
+            self.colors.clone(),
+            self.view.clone(),
+            self.replace.rendered.clone(),
+        );
         self.list.update(cx, |l, _| l.set_renderer(renderer));
         self.refresh_rows(cx);
     }
@@ -335,6 +365,7 @@ impl SearchView {
     }
 
     fn input_changed(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_replace_preview();
         if !self.view.search_on_type {
             return;
         }
@@ -461,6 +492,7 @@ impl SearchView {
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
         let rows = self.results.rows();
         *self.rows.borrow_mut() = rows.clone();
+        self.schedule_replace_preview(cx);
         self.list.update(cx, |l, cx| {
             l.widget.set_model(rows);
             if l.widget.focus().is_none() && !l.widget.is_empty() {
@@ -597,6 +629,9 @@ impl SearchView {
 
     /// 宿主转来的命令（`search.action.*`、`toggleSearch*`）。
     pub fn command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.replace_command(id, window, cx) {
+            return;
+        }
         match id {
             reg::TOGGLE_CASE => self.flip(|t| t.case_sensitive = !t.case_sensitive, cx),
             reg::TOGGLE_WORD => self.flip(|t| t.whole_word = !t.whole_word, cx),
@@ -682,12 +717,15 @@ impl SearchView {
 
     /// `ctrl+down` / `ctrl+up`：查询框 → 包含 → 排除 → 结果列表。
     fn cycle_input(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let handles = [
-            self.query.focus_handle(cx),
+        let mut handles = vec![self.query.focus_handle(cx)];
+        if self.replace.open {
+            handles.push(self.replace_input.focus_handle(cx));
+        }
+        handles.extend([
             self.includes.focus_handle(cx),
             self.excludes.focus_handle(cx),
             self.list.focus_handle(cx),
-        ];
+        ]);
         let current = handles.iter().position(|h| h.is_focused(window));
         let next = match (current, forward) {
             (Some(i), true) => (i + 1).min(handles.len() - 1),
@@ -846,6 +884,7 @@ impl SearchView {
                 k.add(ck::FIRST_MATCH_FOCUS);
             }
         }
+        self.replace_context(&mut k, window, cx);
         k
     }
 
@@ -958,7 +997,7 @@ impl SearchView {
         on: bool,
         tip: String,
         command: &'static str,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement {
         let c = &self.colors;
         let glyph = icons::codepoint(icon).unwrap_or('?');
@@ -1063,6 +1102,7 @@ fn row_renderer(
     rows: Rc<RefCell<Arc<ResultRows>>>,
     colors: Colors,
     view: ViewSettings,
+    replacements: replace_view::Rendered,
 ) -> RowRenderer {
     Rc::new(move |ctx: &RowContext, _: &mut Window, _: &mut App| {
         let rows = rows.borrow();
@@ -1078,6 +1118,7 @@ fn row_renderer(
             .min_w_0()
             .overflow_hidden()
             .pl(px(ctx.indent));
+        let preview = replacements.borrow();
         match target {
             Some(Target::File(path)) => {
                 let Some(file) = rows.file(&path) else {
@@ -1130,6 +1171,33 @@ fn row_renderer(
                 let Some(l) = file.lines.get(line) else {
                     return base.into_any_element();
                 };
+                if let Some((old, new)) = preview
+                    .as_ref()
+                    .and_then(|plans| plans.get(&path))
+                    .and_then(|plan| plan.comparison(l.line, l.ranges.get(range)?))
+                {
+                    let old = old.replace(['\r', '\n'], " ");
+                    let new = new.replace(['\r', '\n'], " ");
+                    let comparison = base
+                        .pl(px(ctx.indent + 20.0))
+                        .when(view.show_line_numbers, |el| {
+                            el.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_color(paint(colors.description))
+                                    .child(format!("{}:", l.line + 1)),
+                            )
+                        })
+                        .child(
+                            div()
+                                .line_through()
+                                .text_color(paint(colors.description))
+                                .child(old),
+                        )
+                        .child("→")
+                        .child(div().text_color(paint(colors.fg)).child(new));
+                    return comparison.into_any_element();
+                }
                 let preview = SharedString::from(l.preview.to_string());
                 let highlight = model::ResultRows::highlight(file, line, range).filter(|r| {
                     preview.is_char_boundary(r.start) && preview.is_char_boundary(r.end)
@@ -1286,7 +1354,14 @@ impl gpui::Render for SearchView {
             .gap(px(6.0))
             .px(px(12.0))
             .py(px(6.0))
-            .child(query_row)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(self.replace_toggle(cx))
+                    .child(div().flex_1().min_w_0().child(query_row)),
+            )
+            .children(self.render_replacement(window, cx))
             .child(glob_row(&self.includes, "search.includes", self))
             .child(glob_row(&self.excludes, "search.excludes", self))
             .child(exclude_toggle);

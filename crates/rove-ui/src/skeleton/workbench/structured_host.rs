@@ -18,12 +18,27 @@ use rove_docview::{
     Structure, StructureNode, StructureNodeId,
 };
 
+#[derive(Clone, Copy)]
+enum ParseCause {
+    Outline,
+    Replacement,
+}
+
 impl Workbench {
     pub(super) fn retain_structured_documents(
         &mut self,
         open: &std::collections::HashSet<DocumentId>,
         cx: &mut Context<Self>,
     ) {
+        self.structured
+            .replacement_parses
+            .retain(|id, (_, cancel)| {
+                let remains_open = open.contains(id);
+                if !remains_open {
+                    cancel.cancel();
+                }
+                remains_open
+            });
         let closed: Vec<_> = self
             .structured
             .documents
@@ -92,8 +107,13 @@ impl Workbench {
                     .pending
                     .as_ref()
                     .is_some_and(|(pending, revision, _)| *pending == id && *revision == version)
+                && !self
+                    .structured
+                    .replacement_parses
+                    .get(&id)
+                    .is_some_and(|(revision, _)| *revision == version)
             {
-                self.request_structured_parse(document.clone(), language, cx);
+                self.request_structured_parse(document.clone(), language, ParseCause::Outline, cx);
             }
         }
         true
@@ -145,31 +165,72 @@ impl Workbench {
         crate::code_view::options::json_item_limit(self.settings.as_ref())
     }
 
-    pub(super) fn structured_limit_changed(&mut self) {
+    pub(super) fn structured_limit_changed(&mut self, cx: &mut Context<Self>) {
         if let Some((_, _, cancel)) = self.structured.pending.take() {
             cancel.cancel();
         }
         self.structured.failed = None;
         self.clear_structured_tree();
+        for (id, (version, cancel)) in std::mem::take(&mut self.structured.replacement_parses) {
+            cancel.cancel();
+            if self
+                .open_document(id)
+                .is_some_and(|doc| doc.text.version() == version)
+            {
+                self.refresh_replaced_structure(id, cx);
+            }
+        }
+    }
+
+    pub(super) fn refresh_replaced_structure(&mut self, id: DocumentId, cx: &mut Context<Self>) {
+        let Some(document) = self.open_document(id) else {
+            return;
+        };
+        let Some(language) = StructuredLanguage::from_id(&document.metadata.language) else {
+            return;
+        };
+        if document.metadata.size != SizeClass::Huge {
+            self.request_structured_parse(document, language, ParseCause::Replacement, cx);
+        }
     }
 
     fn request_structured_parse(
         &mut self,
         document: Arc<Document>,
         language: StructuredLanguage,
+        cause: ParseCause,
         cx: &mut Context<Self>,
     ) {
-        if let Some((_, _, old)) = self.structured.pending.take() {
-            old.cancel();
-        }
         let id = document.id;
         let version = document.text.version();
+        let outline_superseded = matches!(cause, ParseCause::Outline)
+            || self
+                .structured
+                .pending
+                .as_ref()
+                .is_some_and(|(pending, _, _)| *pending == id);
+        if let Some((_, _, old)) = outline_superseded
+            .then(|| self.structured.pending.take())
+            .flatten()
+        {
+            old.cancel();
+        }
+        if let Some((_, old)) = self.structured.replacement_parses.remove(&id) {
+            old.cancel();
+        }
         if let Some((_, cancel)) = self.structured.diagnostics.remove(&id) {
             cancel.cancel();
         }
         let limit = self.structure_limit(language);
         let cancel = Cancellation::default();
-        self.structured.pending = Some((id, version, cancel.clone()));
+        match cause {
+            ParseCause::Outline => self.structured.pending = Some((id, version, cancel.clone())),
+            ParseCause::Replacement => {
+                self.structured
+                    .replacement_parses
+                    .insert(id, (version, cancel.clone()));
+            }
+        }
         let completion = cancel.clone();
         let incremental = self.structured.edits.remove(&id).and_then(|edit| {
             self.structured
@@ -198,7 +259,7 @@ impl Workbench {
             let result = task.await;
             let _ = weak.update(cx, |view, cx| {
                 if completion.check().is_ok() && view.structure_limit(language) == limit {
-                    view.finish_structured_parse(id, version, result, cx);
+                    view.finish_structured_parse(id, version, cause, result, cx);
                 }
             });
         })
@@ -209,34 +270,53 @@ impl Workbench {
         &mut self,
         id: DocumentId,
         version: Version,
+        cause: ParseCause,
         result: CoreResult<Entry>,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .structured
-            .pending
-            .as_ref()
-            .is_some_and(|(doc, rev, _)| *doc == id && *rev == version)
-        {
-            return;
+        match cause {
+            ParseCause::Outline
+                if self
+                    .structured
+                    .pending
+                    .as_ref()
+                    .is_some_and(|(doc, rev, _)| *doc == id && *rev == version) =>
+            {
+                self.structured.pending = None;
+            }
+            ParseCause::Replacement
+                if self
+                    .structured
+                    .replacement_parses
+                    .get(&id)
+                    .is_some_and(|(rev, _)| *rev == version) =>
+            {
+                self.structured.replacement_parses.remove(&id);
+            }
+            _ => return,
         }
-        self.structured.pending = None;
-        if self
+        let Some(document) = self
             .open_document(id)
-            .is_none_or(|doc| doc.text.version() != version)
-        {
+            .filter(|doc| doc.text.version() == version)
+        else {
             return;
-        }
+        };
         match result {
-            Ok(entry) => {
+            Ok(mut entry) => {
+                entry.resource = document.resource.clone();
                 let snapshot = entry.snapshot.clone();
                 self.publish_problem_decorations(&entry.resource, 0, cx);
                 self.structured.documents.insert(id, entry);
                 self.update_problem_count();
                 self.analyze_structured_diagnostics(id, version, snapshot, cx);
             }
-            Err(Error::Cancelled | Error::Stale) => {}
-            Err(_) => self.structured.failed = Some((id, version)),
+            Err(error) => {
+                if matches!(cause, ParseCause::Outline)
+                    && !matches!(error, Error::Cancelled | Error::Stale)
+                {
+                    self.structured.failed = Some((id, version));
+                }
+            }
         }
         cx.notify();
     }

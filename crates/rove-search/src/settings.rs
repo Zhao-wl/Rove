@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const SEARCH_EXCLUDE: &str = "search.exclude";
+pub const USE_REPLACE_PREVIEW: &str = "search.useReplacePreview";
 pub const FOLLOW_SYMLINKS: &str = "search.followSymlinks";
 pub const MAX_RESULTS: &str = "search.maxResults";
 pub const MAX_THREADS: &str = "search.ripgrep.maxThreads";
@@ -48,6 +49,7 @@ fn object(pairs: &[(&str, bool)]) -> Value {
 /// 本 crate 读取的 `search.*` 键与 VS Code 默认值。
 pub fn defaults() -> Vec<(&'static str, Value)> {
     vec![
+        (USE_REPLACE_PREVIEW, Value::Bool(true)),
         (SEARCH_EXCLUDE, object(SEARCH_EXCLUDE_DEFAULT)),
         (FOLLOW_SYMLINKS, Value::Bool(true)),
         (MAX_RESULTS, Value::Number(DEFAULT_MAX_RESULTS as f64)),
