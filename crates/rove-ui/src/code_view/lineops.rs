@@ -4,7 +4,7 @@
 //! [`Transaction`] 交给 [`EditSession::edit`](rove_buffer::edit::EditSession::edit) 执行，
 //! 所以**一次行操作只产生一次撤销**，多光标在多行上执行同一个行操作也只有一次撤销。
 //!
-//! 换行符：移动行 / 复制行 / 排序把**每行连同它自己的行终止符**一起搬动，事务用
+//! 换行符：移动行 / 复制行连同原有终止符搬动，排序保留各位置的终止符。事务用
 //! [`Transaction::verbatim`]（不做主换行符归一），因此混合换行符的文件不会被统一；
 //! 区间之外的字节一个都不动。只有“文件最后一行没有终止符”这一处需要补 / 去终止符
 //! （补的时候用文档的主换行符）。
@@ -69,7 +69,7 @@ pub struct LineOpContext {
 #[derive(Clone, Debug)]
 pub struct LinePlan {
     pub transaction: Transaction,
-    /// 事务之后每个选区的位置（顺序与传入的选区一致）。`None` 表示按事务自动映射。
+    /// 事务后的选区。删除行按文档顺序，其余显式映射保留原主选区。`None` 表示按事务自动映射。
     pub selections: Option<Vec<Selection>>,
     /// 行号的搬动：`(首行, 末行（含）, 平移量)`，没列出的行行号不变。移动行 / 复制行用它让
     /// 折叠状态跟着行走（#171）；其他操作为空。
@@ -105,8 +105,8 @@ pub fn plan(
         LineOp::Delete => delete_lines(text, selections),
         LineOp::DuplicateSelection => duplicate_selection(text, selections, ctx),
         LineOp::JoinLines => join_lines(text, selections),
-        LineOp::SortAscending => sort_lines(text, selections, ctx, false),
-        LineOp::SortDescending => sort_lines(text, selections, ctx, true),
+        LineOp::SortAscending => sort_lines(text, selections, false),
+        LineOp::SortDescending => sort_lines(text, selections, true),
         LineOp::Transpose => transpose(text, selections),
         LineOp::TransposeLetters => transpose_letters(text, selections),
         LineOp::TrimTrailingWhitespace => Ok(
@@ -360,32 +360,222 @@ fn copy_lines(
     }))
 }
 
+/// Carries each intended line terminator until the final bytes are assembled.
+struct LineReplacement {
+    range: rove_base::ByteRange,
+    parts: Vec<String>,
+}
+
+/// Expand to the contiguous terminators next to a changed span, without
+/// including any neighbouring nonempty line content.
+fn adjacent_endings(
+    text: &dyn TextSource,
+    range: &rove_base::ByteRange,
+    count: u64,
+    covered_end: Option<ByteOffset>,
+) -> Result<rove_base::ByteRange> {
+    let mut start = range.start();
+    // Sorted edits often share one long run of empty lines. A covered endpoint
+    // can be merged directly, so each original terminator is scanned at most
+    // once in each direction instead of once per cursor.
+    if covered_end.is_none_or(|covered| start > covered) {
+        let from = text.position(start)?;
+        if from.column.0 == 0 {
+            for line in (0..from.line.0).rev() {
+                let previous = text.line_range(Line(line))?;
+                start = previous.end();
+                if previous.start() != previous.end()
+                    || covered_end.is_some_and(|covered| start <= covered)
+                {
+                    break;
+                }
+            }
+        }
+    }
+    let mut end = range.end();
+    if covered_end.is_none_or(|covered| end > covered) {
+        let to = text.position(end)?;
+        if text.line_range(to.line)?.end() == end {
+            for line in to.line.0 + 1..count {
+                let next = text.line_range(Line(line))?;
+                end = next.start();
+                if next.start() != next.end() {
+                    break;
+                }
+            }
+        }
+    }
+    Span::new(start, end)
+}
+
+#[derive(Default)]
+struct LineEndingWriter {
+    output: String,
+    pending_cr: usize,
+    repaired: bool,
+}
+
+impl LineEndingWriter {
+    fn finish_cr(&mut self) {
+        self.output
+            .extend(std::iter::repeat_n('\r', self.pending_cr));
+        self.pending_cr = 0;
+    }
+
+    fn push(&mut self, part: &str) {
+        match part {
+            "" => {}
+            "\r" => self.pending_cr += 1,
+            "\n" => {
+                // An empty row can join two previously separate terminators.
+                // LF before bare CR is unambiguous; each still occupies one UTF-16 unit.
+                self.repaired |= self.pending_cr > 0;
+                self.output.push('\n');
+            }
+            _ => {
+                self.finish_cr();
+                self.output.push_str(part);
+            }
+        }
+    }
+
+    fn push_original(&mut self, text: &dyn TextSource, span: rove_base::ByteRange) -> Result<()> {
+        let mut original = String::new();
+        text.visit_chunks(span, &mut |chunk| original.push_str(chunk))?;
+        let mut tail = original.as_str();
+        while let Some(offset) = tail.find(['\r', '\n']) {
+            self.push(&tail[..offset]);
+            tail = &tail[offset..];
+            let width = if tail.starts_with("\r\n") { 2 } else { 1 };
+            self.push(&tail[..width]);
+            tail = &tail[width..];
+        }
+        self.push(tail);
+        Ok(())
+    }
+}
+
+fn finish_line_edits(
+    text: &dyn TextSource,
+    count: u64,
+    edits: Vec<LineReplacement>,
+) -> Result<Transaction> {
+    let mut groups: Vec<(rove_base::ByteRange, Vec<LineReplacement>)> = Vec::new();
+    for edit in edits {
+        let covered_end = groups.last().map(|(range, _)| range.end());
+        let context = adjacent_endings(text, &edit.range, count, covered_end)?;
+        if let Some((covered, changes)) = groups.last_mut() {
+            if context.start() <= covered.end() {
+                *covered = Span::new(
+                    covered.start().min(context.start()),
+                    covered.end().max(context.end()),
+                )?;
+                changes.push(edit);
+                continue;
+            }
+        }
+        groups.push((context, vec![edit]));
+    }
+
+    let mut replacements = Vec::new();
+    for (covered, changes) in groups {
+        let mut writer = LineEndingWriter::default();
+        let mut cursor = covered.start();
+        for edit in &changes {
+            writer.push_original(text, Span::new(cursor, edit.range.start())?)?;
+            for part in &edit.parts {
+                writer.push(part);
+            }
+            cursor = edit.range.end();
+        }
+        writer.push_original(text, Span::new(cursor, covered.end())?)?;
+        writer.finish_cr();
+        if writer.repaired {
+            replacements.push(Replacement::new(covered, writer.output));
+        } else {
+            // Preserve each original edit range when the neighbouring terminators need no change.
+            replacements.extend(
+                changes
+                    .into_iter()
+                    .map(|edit| Replacement::new(edit.range, edit.parts.concat())),
+            );
+        }
+    }
+    Ok(Transaction::new(replacements)?.verbatim())
+}
+
+/// Converts a valid UTF-8 byte column to the editor's UTF-16 column.
+fn utf16_column(line: &str, column: u64) -> usize {
+    let column = usize::try_from(column).unwrap_or(usize::MAX);
+    line.char_indices()
+        .take_while(|(byte, ch)| byte + ch.len_utf8() <= column)
+        .map(|(_, ch)| ch.len_utf16())
+        .sum()
+}
+
+/// Clamps past the end of the line and rounds a split surrogate pair down.
+fn utf8_column(line: &str, column: usize) -> u64 {
+    let mut remaining = column;
+    for (byte, ch) in line.char_indices() {
+        if remaining < ch.len_utf16() {
+            return byte as u64;
+        }
+        remaining -= ch.len_utf16();
+    }
+    line.len() as u64
+}
+
 fn delete_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Option<LinePlan>> {
     let count = line_count(text)?;
+    let mut ordered: Vec<_> = selections.iter().enumerate().collect();
+    ordered.sort_by_key(|(index, selection)| (block_of(selection), *index));
     let mut edits = Vec::new();
+    let mut cursors = Vec::new();
+    let mut removed = 0;
     for (lo, hi) in blocks(selections, &[]) {
+        let target = if hi + 1 < count {
+            hi + 1
+        } else {
+            lo.saturating_sub(1)
+        };
         let range = if hi + 1 < count {
-            // 整行 + 终止符。
             Span::new(line_start(text, lo)?, line_start(text, hi + 1)?)?
         } else if lo > 0 {
             // 删到文件末尾：连同上一行的终止符一起删，不留空行。
             Span::new(
-                text.line_range(Line(lo - 1))?.end(),
+                text.line_range(Line(target))?.end(),
                 text.line_range(Line(hi))?.end(),
             )?
         } else {
             Span::new(line_start(text, lo)?, text.line_range(Line(hi))?.end())?
         };
-        if range.start() != range.end() {
-            edits.push(Replacement::delete(range));
+        if range.start() == range.end() {
+            continue;
         }
+        edits.push(LineReplacement {
+            range,
+            parts: Vec::new(),
+        });
+        let first = ordered.partition_point(|(_, selection)| block_of(selection).0 < lo);
+        let (_, selection) = ordered[first];
+        let active = selection.active;
+        let column = utf16_column(&line_str(text, active.line.0), active.column.0);
+        let (line, byte) = if lo == 0 && hi + 1 == count {
+            (0, 0)
+        } else {
+            let new_line = if hi + 1 < count { lo } else { target } - removed;
+            (new_line, utf8_column(&line_str(text, target), column))
+        };
+        // VS Code chooses the topmost resulting caret as primary for Delete Lines.
+        cursors.push(Selection::caret(pos(line, byte)));
+        removed += hi - lo + 1;
     }
     if edits.is_empty() {
         return Ok(None);
     }
     Ok(Some(LinePlan {
-        transaction: Transaction::new(edits)?.verbatim(),
-        selections: None,
+        transaction: finish_line_edits(text, count, edits)?,
+        selections: Some(cursors),
         line_map: Vec::new(),
     }))
 }
@@ -428,110 +618,335 @@ fn duplicate_selection(
 
 // ------------------------------------------------------------------ 合并行
 
+fn last_joined_line(selection: &Selection, count: u64) -> u64 {
+    let end = selection.end().line.0;
+    if selection.start().line.0 == end {
+        (end + 1).min(count - 1)
+    } else {
+        end
+    }
+}
+
 fn join_lines(text: &dyn TextSource, selections: &[Selection]) -> Result<Option<LinePlan>> {
     let count = line_count(text)?;
-    let mut edits = Vec::new();
-    for (lo, mut hi) in blocks(selections, &[]) {
-        if lo == hi {
-            // 只有一行：与下一行合并。
-            if hi + 1 >= count {
+    let mut ordered: Vec<_> = selections.iter().copied().enumerate().collect();
+    ordered.sort_by_key(|(index, selection)| (selection.start(), selection.end(), *index));
+    let mut groups: Vec<(usize, Selection)> = Vec::new();
+    for (index, selection) in ordered {
+        if let Some((owner, previous)) = groups.last_mut() {
+            if selection.start().line.0 <= last_joined_line(previous, count) {
+                *owner = (*owner).min(index);
+                // Two carets on this line denote one join, not the text between the carets.
+                *previous =
+                    if previous.is_empty() && previous.start().line == selection.start().line {
+                        selection
+                    } else {
+                        Selection::new(previous.start(), previous.end().max(selection.end()))
+                    };
                 continue;
             }
-            hi += 1;
         }
-        let items = read_block(text, lo, hi, count)?;
-        let mut joined = items[0].0.clone();
-        for (content, _) in &items[1..] {
-            let first = content
-                .find(|c: char| c != ' ' && c != '\t')
-                .unwrap_or(content.len());
-            let rest = &content[first..];
+        groups.push((index, selection));
+    }
+
+    let mut edits = Vec::new();
+    let mut mapped = Vec::new();
+    let mut removed = 0;
+    for (index, selection) in groups {
+        let lo = selection.start().line.0;
+        let hi = last_joined_line(&selection, count);
+        let mut joined = line_str(text, lo);
+        let mut seam = joined.len();
+        for line in lo + 1..=hi {
+            let content = line_str(text, line);
+            let rest = content.trim_start_matches([' ', '\t']);
             if rest.is_empty() {
+                seam = joined.len();
                 continue;
             }
-            let mut insert_space = !joined.is_empty();
-            if insert_space && joined.ends_with([' ', '\t']) {
-                // 上一行本来就以空白结尾：折成一个空格，不再另加（VS Code `JoinLinesAction`）。
-                insert_space = false;
-                joined = format!("{} ", joined.trim_end_matches([' ', '\t']));
-            }
-            if insert_space {
+            if joined.ends_with([' ', '\t']) {
+                joined.truncate(
+                    joined
+                        .trim_end_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+                        .len(),
+                );
                 joined.push(' ');
+                seam = joined.len();
+            } else {
+                seam = joined.len();
+                if !joined.is_empty() {
+                    joined.push(' ');
+                }
             }
             joined.push_str(rest);
         }
         let range = Span::new(line_start(text, lo)?, text.line_range(Line(hi))?.end())?;
-        edits.push(Replacement::new(range, joined));
+        let line = lo - removed;
+        let adjusted = if selection.is_empty() {
+            Selection::caret(pos(line, seam as u64))
+        } else if selection.end().line.0 == lo {
+            // An existing same-line selection keeps its columns.
+            Selection::new(
+                pos(line, selection.start().column.0),
+                pos(line, selection.end().column.0),
+            )
+        } else {
+            // Preserve the input end's distance from the end of the last source line.
+            let last = line_str(text, hi);
+            let end = utf16_column(&last, selection.end().column.0);
+            let tail = last.encode_utf16().count() - end;
+            let end = utf8_column(&joined, joined.encode_utf16().count().saturating_sub(tail));
+            let first = line_str(text, lo);
+            let start = utf16_column(&first, selection.start().column.0);
+            Selection::new(pos(line, utf8_column(&joined, start)), pos(line, end))
+        };
+        if range.start() != range.end() {
+            edits.push(LineReplacement {
+                range,
+                parts: vec![joined],
+            });
+        }
+        mapped.push((index, adjusted));
+        removed += hi - lo;
     }
     if edits.is_empty() {
         return Ok(None);
     }
+    mapped.sort_unstable_by_key(|(index, _)| *index);
     Ok(Some(LinePlan {
-        transaction: Transaction::new(edits)?.verbatim(),
-        selections: None,
+        transaction: finish_line_edits(text, count, edits)?,
+        selections: Some(mapped.into_iter().map(|(_, selection)| selection).collect()),
         line_map: Vec::new(),
     }))
 }
 
 // ------------------------------------------------------------------ 排序
 
+fn sort_order(items: &[(String, String)], descending: bool) -> Vec<usize> {
+    let mut order: Vec<_> = (0..items.len()).collect();
+    #[cfg(windows)]
+    let keys = windows_collation::keys(items);
+    #[cfg(not(windows))]
+    let keys: Option<Vec<Vec<u8>>> = None;
+    if let Some(keys) = keys {
+        order.sort_by(|&a, &b| keys[a].cmp(&keys[b]));
+    } else {
+        // Windows releases without system ICU and non-Windows builds retain the portable order.
+        order.sort_by_cached_key(|&index| (items[index].0.to_lowercase(), &items[index].0));
+    }
+    if descending {
+        order.reverse();
+    }
+    order
+}
+
+fn row_offsets<'a>(rows: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<usize> {
+    let mut offset = 0;
+    rows.map(|(content, ending)| {
+        let start = offset;
+        offset += content.encode_utf16().count() + ending.len();
+        start
+    })
+    .collect()
+}
+
 fn sort_lines(
     text: &dyn TextSource,
     selections: &[Selection],
-    ctx: &LineOpContext,
     descending: bool,
 ) -> Result<Option<LinePlan>> {
     let count = line_count(text)?;
-    // VS Code：选区只占一行（或是光标）时排序整个文件。与 VS Code 的差异：文件以换行结尾时
-    // 末尾那个空行不参与排序（VS Code 会把它排到最前面，留下一个开头的空行）。
-    let ranges: Vec<(u64, u64)> = if selections.iter().all(|s| block_of(s).0 == block_of(s).1) {
-        let last = if count > 1 && line_str(text, count - 1).is_empty() {
-            count - 2
-        } else {
-            count - 1
-        };
-        vec![(0, last)]
-    } else {
-        blocks(selections, &[])
-    };
+    let mut mapped = selections.to_vec();
+    if let [selection] = &mut mapped[..] {
+        if selection.start().line == selection.end().line {
+            let last = count - 1;
+            *selection = Selection::new(pos(0, 0), pos(last, line_str(text, last).len() as u64));
+        }
+    }
+    let mut ranges: Vec<_> = mapped.iter().map(block_of).collect();
+    ranges.sort_unstable();
     let mut edits = Vec::new();
+    let mut previous_end = None;
     for (lo, hi) in ranges {
-        if lo >= hi {
-            continue;
+        if lo >= hi || previous_end.is_some_and(|end| lo <= end) {
+            return Ok(None);
         }
+        previous_end = Some(hi);
         let items = read_block(text, lo, hi, count)?;
-        let mut sorted: Vec<&(String, String)> = items.iter().collect();
-        // 稳定排序：内容相同的行保持原来的先后（与 VS Code 的 Array.sort 一致）。
-        sorted.sort_by(|a, b| {
-            a.0.to_lowercase()
-                .cmp(&b.0.to_lowercase())
-                .then(a.0.cmp(&b.0))
-        });
-        if descending {
-            sorted.reverse();
+        let order = sort_order(&items, descending);
+        if order
+            .iter()
+            .enumerate()
+            .all(|(old, &new)| items[old].0 == items[new].0)
+        {
+            return Ok(None);
         }
-        if sorted.iter().zip(&items).all(|(a, b)| std::ptr::eq(*a, b)) {
-            continue;
-        }
-        // 内容按新顺序，终止符按位置留在原处：文件末行始终没有终止符。
-        let reordered: Vec<(String, String)> = sorted
+        // Sort the contents. Keep CR/LF/CRLF at each original row position.
+        let reordered: Vec<_> = order
             .iter()
             .zip(&items)
-            .map(|(new, old)| (new.0.clone(), old.1.clone()))
+            .map(|(&new, (_, ending))| (items[new].0.clone(), ending.clone()))
             .collect();
-        edits.push(Replacement::new(
-            block_range(text, lo, hi, count)?,
-            join_block(&reordered, hi + 1 >= count, &ctx.eol),
-        ));
+        let before = row_offsets(
+            items
+                .iter()
+                .map(|(content, ending)| (content.as_str(), ending.as_str())),
+        );
+        let after = row_offsets(
+            reordered
+                .iter()
+                .map(|(content, ending)| (content.as_str(), ending.as_str())),
+        );
+        let map = |p: Position| {
+            if !(lo..=hi).contains(&p.line.0) {
+                return p;
+            }
+            let original = (p.line.0 - lo) as usize;
+            let offset = before[original] + utf16_column(&items[original].0, p.column.0);
+            let new = after.partition_point(|&start| start <= offset) - 1;
+            pos(
+                lo + new as u64,
+                utf8_column(&reordered[new].0, offset - after[new]),
+            )
+        };
+        for selection in &mut mapped {
+            *selection = Selection::new(map(selection.anchor), map(selection.active));
+        }
+        edits.push(LineReplacement {
+            range: block_range(text, lo, hi, count)?,
+            parts: reordered
+                .into_iter()
+                .flat_map(|(line, ending)| [line, ending])
+                .collect(),
+        });
     }
     if edits.is_empty() {
         return Ok(None);
     }
     Ok(Some(LinePlan {
-        transaction: Transaction::new(edits)?.verbatim(),
-        selections: None,
+        transaction: finish_line_edits(text, count, edits)?,
+        selections: Some(mapped),
         line_map: Vec::new(),
     }))
+}
+
+#[cfg(windows)]
+mod windows_collation {
+    use std::ffi::{c_char, c_void};
+    use std::ptr::{null, null_mut, NonNull};
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{
+        GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    };
+
+    type Open = unsafe extern "C" fn(*const c_char, *mut i32) -> *mut c_void;
+    type Close = unsafe extern "C" fn(*mut c_void);
+    type SortKey = unsafe extern "C" fn(*const c_void, *const u16, i32, *mut u8, i32) -> i32;
+
+    struct Icu {
+        open: Open,
+        close: Close,
+        sort_key: SortKey,
+    }
+
+    impl Icu {
+        fn load() -> Option<Self> {
+            // SAFETY: System32-only lookup, with an explicitly NUL-terminated DLL name.
+            let library = unsafe {
+                LoadLibraryExW(
+                    windows_sys::w!("icu.dll"),
+                    null_mut(),
+                    LOAD_LIBRARY_SEARCH_SYSTEM32,
+                )
+            };
+            if library.is_null() {
+                return None;
+            }
+            // SAFETY: These exports have the documented C ABI and signatures from icu.h.
+            unsafe {
+                let open = GetProcAddress(library, c"ucol_open".as_ptr().cast());
+                let close = GetProcAddress(library, c"ucol_close".as_ptr().cast());
+                let sort_key = GetProcAddress(library, c"ucol_getSortKey".as_ptr().cast());
+                if let (Some(open), Some(close), Some(sort_key)) = (open, close, sort_key) {
+                    // Keep this one DLL reference for the process lifetime with the stored exports.
+                    Some(Self {
+                        open: std::mem::transmute::<unsafe extern "system" fn() -> isize, Open>(
+                            open,
+                        ),
+                        close: std::mem::transmute::<unsafe extern "system" fn() -> isize, Close>(
+                            close,
+                        ),
+                        sort_key: std::mem::transmute::<
+                            unsafe extern "system" fn() -> isize,
+                            SortKey,
+                        >(sort_key),
+                    })
+                } else {
+                    FreeLibrary(library);
+                    None
+                }
+            }
+        }
+    }
+
+    struct Collator<'a> {
+        icu: &'a Icu,
+        handle: NonNull<c_void>,
+    }
+
+    impl Collator<'_> {
+        fn key(&self, text: &str, utf16: &mut Vec<u16>) -> Option<Vec<u8>> {
+            utf16.clear();
+            utf16.extend(text.encode_utf16());
+            let len = i32::try_from(utf16.len()).ok()?;
+            // SAFETY: Handle is owned by self; the input is valid for len UTF-16 units.
+            // A null result / zero capacity asks ICU for the required number of bytes.
+            let size = unsafe {
+                (self.icu.sort_key)(self.handle.as_ptr(), utf16.as_ptr(), len, null_mut(), 0)
+            };
+            if size <= 0 {
+                return None;
+            }
+            let mut key = vec![0; usize::try_from(size).ok()?];
+            // SAFETY: As above, with a writable output buffer of exactly size bytes.
+            let written = unsafe {
+                (self.icu.sort_key)(
+                    self.handle.as_ptr(),
+                    utf16.as_ptr(),
+                    len,
+                    key.as_mut_ptr(),
+                    size,
+                )
+            };
+            (written == size).then_some(key)
+        }
+    }
+
+    impl Drop for Collator<'_> {
+        fn drop(&mut self) {
+            // SAFETY: Only this Collator owns the successful ucol_open handle.
+            unsafe { (self.icu.close)(self.handle.as_ptr()) };
+        }
+    }
+
+    pub(super) fn keys(items: &[(String, String)]) -> Option<Vec<Vec<u8>>> {
+        static ICU: OnceLock<Option<Icu>> = OnceLock::new();
+        let icu = ICU.get_or_init(Icu::load).as_ref()?;
+        let mut status = 0;
+        // SAFETY: A null locale selects the system default; status points at a UErrorCode.
+        let handle = NonNull::new(unsafe { (icu.open)(null(), &mut status) })?;
+        let collator = Collator { icu, handle };
+        if status > 0 {
+            return None;
+        }
+        let mut utf16 = Vec::new();
+        items
+            .iter()
+            .map(|(line, _)| collator.key(line, &mut utf16))
+            .collect()
+    }
 }
 
 // ------------------------------------------------------------------ 字符对调
@@ -964,6 +1379,108 @@ mod tests {
     }
 
     #[test]
+    fn delete_lines_keeps_utf16_columns_at_successor_and_eof() {
+        let (out, cursors) = run(
+            "head\r\nABCD\n😀x\rkeep-long\néa\nzz",
+            LineOp::Delete,
+            &[caret(5, 2), caret(1, 1)],
+        );
+        assert_eq!(out, "head\r\n😀x\rkeep-long\néa");
+        assert_eq!(cursors, [caret(1, 0), caret(3, 3)]);
+
+        let (out, cursors) = run("abc\r\n中a", LineOp::Delete, &[caret(0, 1)]);
+        assert_eq!(out, "中a");
+        assert_eq!(cursors, [caret(0, 3)]);
+        let (out, cursors) = run("abc\r\nx", LineOp::Delete, &[caret(0, 2)]);
+        assert_eq!(out, "x");
+        assert_eq!(cursors, [caret(0, 1)]);
+    }
+
+    #[test]
+    fn distant_deletions_share_the_scan_of_a_long_empty_line_run() {
+        use rove_base::{ByteRange, Utf16Column, Version};
+        use rove_buffer::LineCount;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingText {
+            text: Arc<RopeText>,
+            reads: AtomicUsize,
+            limit: usize,
+        }
+
+        impl TextSource for CountingText {
+            fn version(&self) -> Version {
+                self.text.version()
+            }
+
+            fn byte_len(&self) -> u64 {
+                self.text.byte_len()
+            }
+
+            fn lines(&self) -> LineCount {
+                self.text.lines()
+            }
+
+            fn line_range(&self, line: Line) -> Result<ByteRange> {
+                let reads = self.reads.fetch_add(1, Ordering::Relaxed) + 1;
+                assert!(
+                    reads <= self.limit,
+                    "line_range calls exceeded the linear bound"
+                );
+                self.text.line_range(line)
+            }
+
+            fn visit_chunks(&self, range: ByteRange, visitor: &mut dyn FnMut(&str)) -> Result<()> {
+                self.text.visit_chunks(range, visitor)
+            }
+
+            fn offset(&self, position: Position) -> Result<ByteOffset> {
+                self.text.offset(position)
+            }
+
+            fn position(&self, offset: ByteOffset) -> Result<Position> {
+                self.text.position(offset)
+            }
+
+            fn utf16_to_utf8(&self, line: Line, column: Utf16Column) -> Result<Utf8Column> {
+                self.text.utf16_to_utf8(line, column)
+            }
+
+            fn utf8_to_utf16(&self, line: Line, column: Utf8Column) -> Result<Utf16Column> {
+                self.text.utf8_to_utf16(line, column)
+            }
+        }
+
+        let blank_lines = 50_000;
+        let cursors = 5_000;
+        let original = format!("head\n{}tail", "\n".repeat(blank_lines));
+        let mut buffer = buffer(&original);
+        let snapshot = buffer.snapshot();
+        let text = CountingText {
+            text: snapshot,
+            reads: AtomicUsize::new(0),
+            limit: blank_lines + 6 * cursors + 32,
+        };
+        let selections: Vec<_> = (0..cursors)
+            .map(|index| caret(2 * index as u64 + 1, 0))
+            .collect();
+        let result = plan(LineOp::Delete, &text, &selections, &ctx())
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.transaction.edits().len(), cursors);
+        let reads = text.reads.load(Ordering::Relaxed);
+        assert!(reads >= blank_lines);
+        eprintln!(
+            "line_range calls for {blank_lines} empty lines and {cursors} deletions: {reads}"
+        );
+        buffer.apply(&result.transaction).unwrap();
+        assert_eq!(
+            buffer.contents(),
+            format!("head\n{}tail", "\n".repeat(blank_lines - cursors))
+        );
+    }
+
+    #[test]
     fn multiple_cursors_share_one_transaction() {
         let text = "a\nb\nc\nd\ne";
         let plan = plan(
@@ -1003,6 +1520,101 @@ mod tests {
             &[Selection::new(pos(0, 0), pos(2, 1))],
         );
         assert_eq!(out, "a b c\nd");
+    }
+
+    #[test]
+    fn join_lines_keeps_independent_carets_at_the_seams() {
+        let (out, cursors) = run(
+            "a   \r\n  b\nkeep\rc\n 😀d",
+            LineOp::JoinLines,
+            &[caret(3, 1), caret(0, 0)],
+        );
+        assert_eq!(out, "a b\nkeep\rc 😀d");
+        assert_eq!(cursors, [caret(2, 1), caret(0, 2)]);
+
+        let (out, cursors) = run(
+            "abcd\n    xyz",
+            LineOp::JoinLines,
+            &[caret(0, 1), caret(0, 2)],
+        );
+        assert_eq!(out, "abcd xyz");
+        assert_eq!(cursors, [caret(0, 4)]);
+
+        let (out, cursors) = run("a\r\nb", LineOp::JoinLines, &[caret(1, 0)]);
+        assert_eq!(out, "a\r\nb");
+        assert_eq!(cursors, [caret(1, 1)]);
+    }
+
+    #[test]
+    fn join_lines_maps_the_end_of_a_multiline_selection() {
+        let (out, cursors) = run(
+            "a\r\n  中b\n  😀c\rd",
+            LineOp::JoinLines,
+            &[Selection::new(pos(0, 1), pos(2, 6))],
+        );
+        assert_eq!(out, "a 中b 😀c\rd");
+        assert_eq!(cursors, [Selection::new(pos(0, 1), pos(0, 11))]);
+        let (out, _) = run(
+            "a\nb\nc",
+            LineOp::JoinLines,
+            &[Selection::new(pos(0, 0), pos(2, 0))],
+        );
+        assert_eq!(out, "a b c");
+    }
+
+    #[test]
+    fn sorting_preserves_relative_utf16_selection_and_mixed_line_endings() {
+        let selection = Selection::new(pos(2, 3), pos(0, 1));
+        let (out, cursors) = run("z😀x\r\n\rA long\nend", LineOp::SortAscending, &[selection]);
+        assert_eq!(out, "\r\nA long\rz😀x\nend");
+        assert_eq!(cursors, [Selection::new(pos(2, 1), pos(0, 0))]);
+    }
+
+    #[test]
+    fn line_edits_keep_adjacent_lf_and_bare_cr_as_separate_terminators() {
+        let (out, cursors) = run(
+            "z\r\rq\n",
+            LineOp::SortDescending,
+            &[Selection::new(pos(0, 1), pos(2, 1))],
+        );
+        assert_eq!(out, "z\rq\n\r");
+        assert_eq!(cursors, [Selection::new(pos(0, 1), pos(2, 0))]);
+        let (out, _) = run(
+            "first\rz\n\nnext",
+            LineOp::SortAscending,
+            &[Selection::new(pos(1, 0), pos(3, 0))],
+        );
+        assert_eq!(out, "first\n\rz\nnext");
+
+        let (out, cursors) = run("first\rdelete\n\nnext", LineOp::Delete, &[caret(1, 4)]);
+        assert_eq!(out, "first\n\rnext");
+        assert_eq!(cursors, [caret(1, 0)]);
+        let (out, cursors) = run("first\r\r  \nnext", LineOp::JoinLines, &[caret(1, 0)]);
+        assert_eq!(out, "first\n\rnext");
+        assert_eq!(cursors, [caret(1, 0)]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn system_collation_orders_csharp_using_punctuation_like_vscode() {
+        let command = LineOp::SortDescending;
+        let lines = [
+            ("using System.Runtime.CompilerServices;".into(), "\n".into()),
+            ("using System;".into(), "\n".into()),
+            ("using System.Collections.Generic;".into(), "".into()),
+        ];
+        if windows_collation::keys(&lines).is_none() {
+            eprintln!("system ICU unavailable; skipped locale-specific collation");
+            return;
+        }
+        let text = lines
+            .iter()
+            .map(|(content, eol)| format!("{content}{eol}"))
+            .collect::<String>();
+        let (out, _) = run(&text, command, &[caret(0, 0)]);
+        assert_eq!(out, "using System.Runtime.CompilerServices;\nusing System.Collections.Generic;\nusing System;");
+        let (out, _) = run(&out, LineOp::SortAscending, &[caret(0, 0)]);
+        assert_eq!(out, "using System;\nusing System.Collections.Generic;\nusing System.Runtime.CompilerServices;");
     }
 
     #[test]

@@ -638,6 +638,110 @@ fn line_operations_each_produce_one_undo_unit(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn deleting_disconnected_lines_moves_primary_to_the_top_join_keeps_it(cx: &mut TestAppContext) {
+    let original = "aa\nbb\ncc\ndd\nee";
+    let original_selections = vec![Selection::caret(pos(3, 1)), Selection::caret(pos(0, 1))];
+    for (command, expected, primary, secondary) in [
+        ("editor.action.deleteLines", "bb\ncc\nee", (0, 1), (2, 1)),
+        (
+            "editor.action.joinLines",
+            "aa bb\ncc\ndd ee",
+            (2, 2),
+            (0, 2),
+        ),
+    ] {
+        let mut fixture = lf(original, cx);
+        fixture.set(original_selections.clone());
+        assert_eq!(fixture.selections(), original_selections);
+        assert!(fixture.run(command), "{command}");
+        assert_eq!(fixture.contents(), expected, "{command}");
+        assert_eq!(
+            fixture.selections(),
+            [
+                Selection::caret(pos(primary.0, primary.1)),
+                Selection::caret(pos(secondary.0, secondary.1)),
+            ],
+            "{command}"
+        );
+        assert_eq!(fixture.edit_count(), 1, "{command}");
+        assert!(fixture.run("undo"));
+        assert_eq!(fixture.contents(), original, "{command}");
+        assert_eq!(fixture.selections(), original_selections, "{command}");
+    }
+}
+
+#[gpui::test]
+fn line_commands_keep_positions_mixed_endings_and_one_undo(cx: &mut TestAppContext) {
+    let cases = [
+        (
+            "editor.action.deleteLines",
+            "head\r\nlong\n中a\rkeep\nlast",
+            vec![Selection::caret(pos(1, 4))],
+            "head\r\n中a\rkeep\nlast",
+            vec![Selection::caret(pos(1, 4))],
+        ),
+        (
+            "editor.action.joinLines",
+            "one\r\n  中b\nkeep\rlast",
+            vec![Selection::caret(pos(0, 0))],
+            "one 中b\nkeep\rlast",
+            vec![Selection::caret(pos(0, 3))],
+        ),
+        (
+            "editor.action.joinLines",
+            "abcd\n    xyz",
+            vec![Selection::caret(pos(0, 1)), Selection::caret(pos(0, 2))],
+            "abcd xyz",
+            vec![Selection::caret(pos(0, 4))],
+        ),
+        (
+            "editor.action.sortLinesAscending",
+            "z😀x\r\n\rA long\nend",
+            vec![Selection::new(pos(2, 3), pos(0, 1))],
+            "\r\nA long\rz😀x\nend",
+            vec![Selection::new(pos(2, 1), pos(0, 0))],
+        ),
+        (
+            "editor.action.sortLinesDescending",
+            "z\r\rq\n",
+            vec![Selection::new(pos(0, 1), pos(2, 1))],
+            "z\rq\n\r",
+            vec![Selection::new(pos(0, 1), pos(2, 0))],
+        ),
+        (
+            "editor.action.deleteLines",
+            "first\rdelete\n\nnext",
+            vec![Selection::caret(pos(1, 4))],
+            "first\n\rnext",
+            vec![Selection::caret(pos(1, 0))],
+        ),
+        (
+            "editor.action.joinLines",
+            "first\r\r  \nnext",
+            vec![Selection::caret(pos(1, 0))],
+            "first\n\rnext",
+            vec![Selection::caret(pos(1, 0))],
+        ),
+    ];
+    for (command, before, selections_before, after, selections_after) in cases {
+        let mut fixture = open(
+            cx,
+            before,
+            LineEndings::Mixed { preferred: Eol::Lf },
+            vec![],
+        );
+        fixture.set(selections_before.clone());
+        assert!(fixture.run(command), "{command}");
+        assert_eq!(fixture.contents(), after, "{command}");
+        assert_eq!(fixture.selections(), selections_after, "{command}");
+        assert_eq!(fixture.edit_count(), 1, "{command}");
+        fixture.run("undo");
+        assert_eq!(fixture.contents(), before, "{command}");
+        assert_eq!(fixture.selections(), selections_before, "{command}");
+    }
+}
+
+#[gpui::test]
 fn move_lines_stops_at_the_file_edges_and_moves_whole_selections(cx: &mut TestAppContext) {
     let mut f = lf("a\nb\nc", cx);
     f.caret(0, 0);
