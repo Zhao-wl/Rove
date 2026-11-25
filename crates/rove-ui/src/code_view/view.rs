@@ -393,9 +393,10 @@ pub(crate) enum Drag {
         granularity: Granularity,
         origin: (Position, Position),
     },
-    /// #52：按住多光标修饰键拖动添加的那一段选区（它是主选区，`origin` 是按下时的位置）。
+    /// #52：只延展本次按下追加的选区。
     AddedText {
         origin: Position,
+        index: usize,
     },
     /// #52：`Shift+Alt+拖动`的列选择。
     Column {
@@ -2542,8 +2543,9 @@ impl CodeView {
         let Some(p) = self.position_for_point(point) else {
             return;
         };
-        self.add_cursor_at(p, cx);
-        self.drag = Some(Drag::AddedText { origin: p });
+        self.drag = self
+            .add_cursor_at(p, cx)
+            .map(|index| Drag::AddedText { origin: p, index });
     }
 
     /// #52：`Shift+Alt+拖动`按下：开始列选择。
@@ -2772,11 +2774,22 @@ impl CodeView {
                 }
                 return;
             }
-            Some(Drag::AddedText { origin }) => {
+            Some(Drag::AddedText { origin, index }) => {
                 if let Some(p) = self.position_for_point(point) {
                     let mut items = self.selections();
-                    items[0] = Selection::new(origin, p);
+                    let Some(item) = items.get_mut(index).filter(|s| s.anchor == origin) else {
+                        self.drag = None;
+                        return;
+                    };
+                    let selection = Selection::new(origin, p);
+                    *item = selection;
                     let merged = self.normalize_selections(items);
+                    if let Some(index) = merged.iter().rposition(|s| *s == selection) {
+                        self.drag = Some(Drag::AddedText { origin, index });
+                    } else {
+                        // 该选区已经并入已有选区，后续移动不能延展别的光标。
+                        self.drag = None;
+                    }
                     self.apply_selections(merged);
                     self.selection_changed(SelectionSource::Mouse, cx);
                 }
