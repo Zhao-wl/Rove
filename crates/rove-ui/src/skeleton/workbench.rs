@@ -66,7 +66,9 @@ mod hotexit_tests;
 // #23：资源管理器（文件树）的装配。
 #[cfg(test)]
 mod editor_tests;
+mod explorer_file_ops;
 mod explorer_host;
+mod explorer_path_host;
 #[cfg(test)]
 mod explorer_tests;
 #[cfg(test)]
@@ -247,6 +249,7 @@ pub struct Workbench {
     explorer_events: Option<rove_base::Subscription>,
     /// 自动定位最近一次处理的活动标签。
     explorer_revealed: Option<TabId>,
+    file_operations: explorer_file_ops::FileOperations,
     editor: EditorService,
     root: PathBuf,
     basket: basket_host::WindowBasket,
@@ -526,6 +529,7 @@ impl Workbench {
             explorer,
             explorer_events: None,
             explorer_revealed: None,
+            file_operations: explorer_file_ops::FileOperations::default(),
             editor: EditorService::new(
                 files.clone(),
                 {
@@ -889,6 +893,11 @@ impl Workbench {
         self.workspace = Some(workspace.clone());
         self.explorer.update(cx, |explorer, _| {
             explorer.set_branch_root(folder.root().to_owned());
+            explorer.set_operations_folder(
+                folder.clone(),
+                self.root.clone(),
+                self.editing.saves.clone(),
+            );
         });
         self.show_workspace(&workspace, cx);
         let wait =
@@ -927,7 +936,6 @@ impl Workbench {
         })));
         cx.spawn(async move |this, cx| {
             while let Ok(first) = receive.recv().await {
-                let mut removed = BTreeSet::new();
                 let mut changes = Vec::new();
                 // #24：快速打开的文件列表按事件增量更新。
                 let mut quick = Vec::new();
@@ -939,34 +947,14 @@ impl Workbench {
                     quick.push((batch.revision.0, batch.events.clone()));
                     nav.extend(batch.events.iter().cloned());
                     changes.extend(batch.events.iter().map(index_change));
-                    for event in batch.events.iter() {
-                        if let FileEvent::Removed(path) | FileEvent::Renamed { from: path, .. } =
-                            event
-                        {
-                            removed.insert(path.clone());
-                        }
-                    }
                 }
                 if this
                     .update(cx, |view, cx| {
                         // #36：源文件变化标记过期，项目配置变化触发重建。
                         view.index_files_changed(&changes);
                         view.quick_files_changed(quick, cx);
-                        // #47：打开中的文档在磁盘上被修改 / 删除。
-                        view.note_disk_events(&nav, cx);
-                        view.refresh_workspace_images(&nav, cx);
-                        view.basket_workspace_files_changed(&nav, cx);
                         view.nav_files_changed(&nav, cx);
-                        if !view.editor.settings.close_on_delete {
-                            return;
-                        }
-                        let mut changed = false;
-                        for path in removed {
-                            changed |= view.editor.file_removed(&Resource::Workspace(path));
-                        }
-                        if changed {
-                            cx.notify();
-                        }
+                        view.apply_explorer_workspace_events(nav, cx);
                     })
                     .is_err()
                 {
@@ -1748,6 +1736,18 @@ impl Workbench {
             while let Ok(event) = receive.recv().await {
                 let (key, action) = match event {
                     FeedbackEvent::Action { key, action } => (key, action),
+                    FeedbackEvent::Dismissed { key }
+                        if key.starts_with(crate::explorer::registry::FILE_OP_FEEDBACK_PREFIX) =>
+                    {
+                        if this
+                            .update(cx, |view, _| view.file_operation_dismissed(&key))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+
                     // #140：保存失败的通知 / 模态框被关掉，那次保存就此作罢，忘掉记住的请求。
                     FeedbackEvent::Dismissed { key } if key.starts_with("save.") => {
                         if this
@@ -1760,6 +1760,16 @@ impl Workbench {
                     }
                     _ => continue,
                 };
+                if key.starts_with(crate::explorer::registry::FILE_OP_FEEDBACK_PREFIX) {
+                    if this
+                        .update(cx, |view, cx| view.file_operation_choice(&key, &action, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
                 // #47：#49 的通知、模态框与提示条按钮。
                 if key.starts_with("save.") {
                     if this
@@ -1990,6 +2000,32 @@ impl ShellHost for Workbench {
     }
     fn run_external_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.problem_panel_command(id, window, cx) {
+            return;
+        }
+        #[cfg(windows)]
+        if crate::explorer::registry::is_clipboard_command(id) {
+            self.explorer_clipboard_command(id, window, cx);
+            return;
+        }
+        if explorer_file_ops::handles(id) {
+            self.file_operation(id, cx);
+            return;
+        }
+
+        if crate::explorer::registry::is_name_command(id) {
+            self.explorer
+                .update(cx, |explorer, cx| explorer.name_command(id, window, cx));
+            return;
+        }
+        if id == crate::explorer::registry::REFRESH_FILES {
+            if self.has_folder {
+                self.scan(self.root.clone(), cx);
+            }
+            return;
+        }
+        if explorer_path_host::handles(id) {
+            let from_tree = self.explorer.focus_handle(cx).contains_focused(window, cx);
+            self.explorer_path_command(id, from_tree, cx);
             return;
         }
         // #28：欢迎页与首选项入口（齿轮菜单、命令面板）。

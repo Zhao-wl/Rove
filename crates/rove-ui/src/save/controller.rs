@@ -85,6 +85,8 @@ pub struct SaveController {
     pending: BTreeMap<DocumentId, SaveRequest>,
     /// 同一文档只运行一次写盘。值表示结果是否仍属于当前挂接的文档实例。
     saving: BTreeMap<DocumentId, bool>,
+    next_file_operation: u64,
+    file_operations: BTreeMap<u64, Vec<PathBuf>>,
     close_after_save: BTreeSet<DocumentId>,
     own: SelfWrites,
     coalescer: ChangeCoalescer,
@@ -104,6 +106,8 @@ impl SaveController {
             files: BTreeMap::new(),
             pending: BTreeMap::new(),
             saving: BTreeMap::new(),
+            next_file_operation: 0,
+            file_operations: BTreeMap::new(),
             close_after_save: BTreeSet::new(),
             own: SelfWrites::default(),
             coalescer: ChangeCoalescer::default(),
@@ -150,6 +154,76 @@ impl SaveController {
         self.files.get_mut(&document)
     }
 
+    pub(crate) fn follow_rename(&mut self, document: DocumentId, from: &Path, to: &Path) {
+        if let Some(file) = self.files.get_mut(&document) {
+            file.follow_rename(to.to_path_buf());
+            // An external rename can arrive while a write to the old location
+            // is finishing. Never let the obsolete result restore the old path.
+            if let Some(current) = self.saving.get_mut(&document) {
+                *current = false;
+            }
+        }
+        if let Some(request) = self.pending.get_mut(&document) {
+            if request.save_as.as_deref() == Some(from) {
+                request.save_as = Some(to.to_path_buf());
+            }
+        }
+    }
+
+    pub(crate) fn reserve_file_operation(&mut self, paths: Vec<PathBuf>) -> Option<u64> {
+        let overlaps = |other: &Path| {
+            paths.iter().any(|path| {
+                relative_path(other, path).is_some() || relative_path(path, other).is_some()
+            })
+        };
+        let busy = self.saving.keys().any(|id| {
+            self.files
+                .get(id)
+                .and_then(TextFile::path)
+                .is_some_and(overlaps)
+                || self
+                    .pending
+                    .get(id)
+                    .and_then(|request| request.save_as.as_deref())
+                    .is_some_and(overlaps)
+        });
+        if busy
+            || self
+                .file_operations
+                .values()
+                .flatten()
+                .any(|path| overlaps(path))
+        {
+            return None;
+        }
+        self.next_file_operation += 1;
+        self.file_operations.insert(self.next_file_operation, paths);
+        Some(self.next_file_operation)
+    }
+
+    pub(crate) fn complete_file_operation(&mut self, ticket: u64, moves: &[(PathBuf, PathBuf)]) {
+        for (from, to) in moves {
+            for file in self.files.values_mut() {
+                if let Some(suffix) = file.path().and_then(|path| relative_path(path, from)) {
+                    let target = if suffix.as_os_str().is_empty() {
+                        to.clone()
+                    } else {
+                        to.join(suffix)
+                    };
+                    file.follow_rename(target);
+                }
+            }
+        }
+        self.file_operations.remove(&ticket);
+    }
+
+    fn path_is_reserved(&self, path: &Path) -> bool {
+        self.file_operations
+            .values()
+            .flatten()
+            .any(|root| relative_path(path, root).is_some())
+    }
+
     pub fn documents(&self) -> impl Iterator<Item = DocumentId> + '_ {
         self.files.keys().copied()
     }
@@ -192,7 +266,17 @@ impl SaveController {
         feedback: &mut FeedbackHub,
         now: Instant,
     ) -> std::result::Result<SaveJob, Vec<Effect>> {
-        if self.saving.contains_key(&document) {
+        if self.saving.contains_key(&document)
+            || self
+                .files
+                .get(&document)
+                .and_then(TextFile::path)
+                .is_some_and(|path| self.path_is_reserved(path))
+            || request
+                .save_as
+                .as_deref()
+                .is_some_and(|path| self.path_is_reserved(path))
+        {
             return Err(Vec::new());
         }
         let write = self.write.clone();
@@ -771,6 +855,19 @@ fn actions(buttons: &[(&str, &str)]) -> Arc<[FeedbackAction]> {
 }
 
 /// 文档在界面上的名字：文件名或 `Untitled-1`。
+pub(crate) fn relative_path(path: &Path, root: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    for expected in root.components() {
+        let found = components.next()?;
+        if rove_buffer::save::path_key(Path::new(found.as_os_str()))
+            != rove_buffer::save::path_key(Path::new(expected.as_os_str()))
+        {
+            return None;
+        }
+    }
+    Some(components.as_path().to_path_buf())
+}
+
 pub fn display_name(file: &TextFile) -> String {
     match (file.path(), file.untitled_name()) {
         (Some(path), _) => file_name(path),

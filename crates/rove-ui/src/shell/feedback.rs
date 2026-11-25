@@ -112,6 +112,15 @@ pub struct Modal {
     pub key: Arc<str>,
     pub message: Message,
     pub actions: Arc<[FeedbackAction]>,
+    pub(crate) checkbox: Option<ModalCheckbox>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModalCheckbox {
+    pub label: Message,
+    pub alternate_action: Arc<str>,
+    primary_action: Arc<str>,
+    pub checked: bool,
 }
 
 type Listener = Arc<dyn Fn(FeedbackEvent) + Send + Sync>;
@@ -342,11 +351,54 @@ impl FeedbackHub {
         self.modal.as_ref()
     }
 
+    /// Renders an alternate action as a checkbox alongside the normal
+    /// confirmation button. The existing action event remains unchanged.
+    pub(crate) fn add_modal_checkbox(
+        &mut self,
+        key: &str,
+        label: Message,
+        primary_action: &'static str,
+        alternate_action: &'static str,
+    ) {
+        if let Some(modal) = self
+            .modal
+            .iter_mut()
+            .chain(&mut self.queued_modals)
+            .find(|modal| modal.key.as_ref() == key)
+        {
+            modal.checkbox = Some(ModalCheckbox {
+                label,
+                primary_action: primary_action.into(),
+                alternate_action: alternate_action.into(),
+                checked: false,
+            });
+        }
+    }
+
+    pub(crate) fn toggle_modal_checkbox(&mut self, key: &str) {
+        if let Some(checkbox) = self
+            .modal
+            .as_mut()
+            .filter(|modal| modal.key.as_ref() == key)
+            .and_then(|modal| modal.checkbox.as_mut())
+        {
+            checkbox.checked = !checkbox.checked;
+        }
+    }
+
     /// 用户点击了某个按钮（通知、提示条或模态框）：发出事件并关闭该反馈。
     pub fn act(&mut self, key: &str, action: &str) -> Result<()> {
         if action == NEVER_SHOW_AGAIN {
             return self.never_show_again(key);
         }
+        let alternate = self
+            .modal
+            .as_ref()
+            .filter(|modal| modal.key.as_ref() == key)
+            .and_then(|modal| modal.checkbox.as_ref())
+            .filter(|checkbox| checkbox.checked && checkbox.primary_action.as_ref() == action)
+            .map(|checkbox| checkbox.alternate_action.clone());
+        let action = alternate.as_deref().unwrap_or(action);
         let known = |actions: &[FeedbackAction]| actions.iter().any(|a| a.id.as_ref() == action);
         let found = if let Some(m) = self.modal.as_ref().filter(|m| m.key.as_ref() == key) {
             known(&m.actions).then(|| {
@@ -473,6 +525,7 @@ impl FeedbackService for FeedbackHub {
                     key: f.key,
                     message: f.message,
                     actions: f.actions,
+                    checkbox: None,
                 };
                 if self.modal.as_ref().is_some_and(|m| m.key == modal.key) {
                     self.modal = Some(modal);

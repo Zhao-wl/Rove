@@ -11,7 +11,11 @@ rove-config.workspace = true
 globset.workspace = true
 ignore.workspace = true
 notify.workspace = true
+tempfile = "3"
 
 [dev-dependencies]
 rove-test-support.workspace = true
-tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }

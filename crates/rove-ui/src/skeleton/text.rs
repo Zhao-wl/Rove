@@ -237,6 +237,23 @@ impl FileDocuments {
     }
 }
 impl FileDocuments {
+    pub(super) fn follow_rename(
+        &self,
+        original: &Resource,
+        canonical: PathBuf,
+        document: &Arc<Document>,
+    ) {
+        let mut index = self.cache.lock().unwrap();
+        if let Some(old) = index.aliases.remove(original) {
+            index.documents.remove(&old);
+            index.aliases.retain(|_, path| *path != old);
+        }
+        index
+            .aliases
+            .insert(document.resource.clone(), canonical.clone());
+        index.documents.insert(canonical, Arc::downgrade(document));
+    }
+
     /// #47：编辑后同一文档换了新快照（新的 `Arc<Document>`，身份不变）：缓存改指向它，
     /// 之后再打开同一文件仍得到这个文档（不会读盘另建一个）。
     pub fn replace(&self, document: &Arc<Document>) {

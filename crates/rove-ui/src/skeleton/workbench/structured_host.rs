@@ -59,6 +59,25 @@ impl Workbench {
         }
     }
 
+    pub(super) fn follow_structured_rename(
+        &mut self,
+        original: &Resource,
+        document: &Document,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((resource, _, _)) = &mut self.structured.pending_marker {
+            if resource == original {
+                *resource = document.resource.clone();
+            }
+        }
+        if let Some(entry) = self.structured.documents.get_mut(&document.id) {
+            let previous = std::mem::replace(&mut entry.resource, document.resource.clone());
+            let errors = entry.problems.len();
+            self.publish_problem_decorations(&previous, 0, cx);
+            self.publish_problem_decorations(&document.resource, errors, cx);
+        }
+    }
+
     /// Returns true when this document uses the structured outline.
     pub(super) fn sync_structured_outline(
         &mut self,
@@ -248,18 +267,13 @@ impl Workbench {
                 let text = document_text(&*document.text, None, &cancel)?;
                 ParsedStructure::parse(language, version, text.into(), limit, &cancel)?
             };
-            Ok::<_, Error>(Entry {
-                snapshot,
-                limit,
-                resource: document.resource.clone(),
-                problems: Vec::new(),
-            })
+            Ok::<_, Error>(snapshot)
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |view, cx| {
                 if completion.check().is_ok() && view.structure_limit(language) == limit {
-                    view.finish_structured_parse(id, version, cause, result, cx);
+                    view.finish_structured_parse(id, version, limit, cause, result, cx);
                 }
             });
         })
@@ -270,8 +284,9 @@ impl Workbench {
         &mut self,
         id: DocumentId,
         version: Version,
+        limit: usize,
         cause: ParseCause,
-        result: CoreResult<Entry>,
+        result: CoreResult<ParsedStructure>,
         cx: &mut Context<Self>,
     ) {
         match cause {
@@ -302,11 +317,17 @@ impl Workbench {
             return;
         };
         match result {
-            Ok(mut entry) => {
-                entry.resource = document.resource.clone();
-                let snapshot = entry.snapshot.clone();
-                self.publish_problem_decorations(&entry.resource, 0, cx);
-                self.structured.documents.insert(id, entry);
+            Ok(snapshot) => {
+                self.publish_problem_decorations(&document.resource, 0, cx);
+                self.structured.documents.insert(
+                    id,
+                    Entry {
+                        snapshot: snapshot.clone(),
+                        limit,
+                        resource: document.resource.clone(),
+                        problems: Vec::new(),
+                    },
+                );
                 self.update_problem_count();
                 self.analyze_structured_diagnostics(id, version, snapshot, cx);
             }

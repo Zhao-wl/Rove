@@ -107,8 +107,34 @@ impl Workbench {
                 }
                 cx.notify();
             }
+            ExplorerEvent::Command(command) if super::explorer_path_host::handles(command) => {
+                self.explorer_path_command(command, true, cx);
+            }
+            ExplorerEvent::Command(command) if super::explorer_file_ops::handles(command) => {
+                self.file_operation(command, cx);
+            }
+            ExplorerEvent::Command(command)
+                if command.as_ref() == registry::UNDO_FILE_OPERATION =>
+            {
+                self.undo_file_operation(cx);
+            }
+
+            ExplorerEvent::Command(command) if command.as_ref() == registry::REFRESH_FILES => {
+                if self.has_folder {
+                    self.scan(self.root.clone(), cx);
+                }
+            }
+            ExplorerEvent::MoveDropped { paths, parent } => {
+                #[cfg(windows)]
+                self.move_explorer_drop(paths, parent.clone(), cx);
+                #[cfg(not(windows))]
+                let _ = (paths, parent);
+            }
+            ExplorerEvent::UndoRecorded(steps) => {
+                self.remember_explorer_operation(steps);
+            }
             ExplorerEvent::Command(command) => self.command(command, cx),
-            ExplorerEvent::FileContext(paths) => {
+            ExplorerEvent::AddToBasket(paths) => {
                 let targets = paths
                     .iter()
                     .cloned()
@@ -118,7 +144,7 @@ impl Workbench {
                         symbol: None,
                     })
                     .collect();
-                self.show_basket_sources_menu(targets, Vec::new(), cx);
+                self.add_basket_sources(targets, None, cx);
             }
         }
     }
@@ -140,6 +166,20 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         match action.0 {
+            id if super::explorer_path_host::handles(id) => {
+                self.explorer_path_command(id, false, cx);
+            }
+            #[cfg(windows)]
+            id if registry::is_clipboard_command(id) => {
+                self.explorer_clipboard_command(id, window, cx);
+            }
+            id if super::explorer_file_ops::handles(id) => {
+                self.file_operation(id, cx);
+            }
+
+            id if registry::is_name_command(id) => self
+                .explorer
+                .update(cx, |explorer, cx| explorer.name_command(id, window, cx)),
             registry::SHOW_ACTIVE_FILE => {
                 let Some((_, path)) = self.active_workspace_path() else {
                     return;
@@ -157,6 +197,8 @@ impl Workbench {
 
     /// 每帧：活动编辑器换了就在树中定位（`explorer.autoReveal`）；显示资源管理器后把焦点交给树。
     pub(super) fn sync_explorer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(windows)]
+        self.sync_explorer_clipboard(cx);
         let active = self.active_workspace_path();
         let tab = active.as_ref().map(|(tab, _)| *tab);
         if tab != self.explorer_revealed {

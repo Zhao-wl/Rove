@@ -758,34 +758,690 @@ fn files_that_fail_to_open_do_not_break_the_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn context_basket_explorer_context_collects_multiple_entire_files(cx: &mut TestAppContext) {
-    let fixture = Fixture::new("{}", &["A.cs", "B.cs"]);
-    std::fs::write(fixture.path("A.cs"), "class A {}\n// two").unwrap();
+fn context_basket_explorer_menu_preserves_selected_files_and_follows_a_rename(
+    cx: &mut TestAppContext,
+) {
+    use crate::context_basket::registry as basket;
+
+    let fixture = Fixture::new("{}", &["Folder/A.cs", "B.cs"]);
+    std::fs::write(fixture.path("Folder/A.cs"), "class A {}\n// two").unwrap();
     std::fs::write(fixture.path("B.cs"), "class B {}\n// two\n// three").unwrap();
     let (view, cx) = fixture.open(cx);
     view.update(cx, |view, _| view.basket.use_test_state());
-    let list = list(&view, cx);
-    cx.update(|window, cx| {
-        window.focus(&list.focus_handle(cx));
-        list.update(cx, |view, cx| {
-            view.widget.set_focus(Some(0));
-            view.widget.set_selection(vec![0, 1]);
-            cx.notify();
-        });
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("right");
+    wait_until(&view, cx, "expanded fixture folder", |rows| {
+        rows == ["Folder/", "  A.cs", "B.cs"]
     });
+    let list = list(&view, cx);
+    list.update(cx, |view, cx| {
+        view.widget.set_focus(Some(0));
+        view.widget.set_selection(vec![0, 1, 2]);
+        cx.notify();
+    });
+
     cx.simulate_keystrokes("shift-f10");
-    super::basket_tests::click_basket_menu(cx, 0);
+    assert!(cx.debug_bounds(registry::NEW_FILE).is_some());
+    assert!(cx.debug_bounds(registry::RENAME_FILE).is_some());
+    let add = cx
+        .debug_bounds(basket::ADD)
+        .expect("basket entry in Explorer menu");
+    cx.simulate_click(add.center(), Modifiers::default());
+    cx.run_until_parked();
     view.read_with(cx, |view, _| {
         let [a, b] = view.basket.contents.items() else {
-            panic!("two selected files are expected");
+            panic!("the selected descendant and the sibling file must both be collected");
         };
         assert_eq!(
             (a.path.as_str(), a.lines.first(), a.lines.last()),
-            ("A.cs", 1, 2)
+            ("Folder/A.cs", 1, 2)
         );
         assert_eq!(
             (b.path.as_str(), b.lines.first(), b.lines.last()),
             ("B.cs", 1, 3)
         );
+    });
+
+    focus_row(&view, 1, cx);
+    cx.simulate_keystrokes("shift-f10");
+    assert!(cx.debug_bounds(basket::ADD).is_some());
+    let rename = cx
+        .debug_bounds(registry::RENAME_FILE)
+        .expect("rename entry in the same Explorer menu");
+    cx.simulate_click(rename.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "rename from the shared context menu", |rows| {
+        rows == ["Folder/", "  Renamed.cs", "B.cs"]
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        let moved = view.read_with(cx, |view, _| {
+            view.basket.contents.items().first().is_some_and(|item| {
+                item.path.as_str() == "Folder/Renamed.cs"
+                    && item.availability == crate::context_basket::model::Availability::Current
+                    && item.lines.first() == 1
+                    && item.lines.last() == 2
+            })
+        });
+        if moved {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the basket did not follow the file rename"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!fixture.path("Folder/A.cs").exists());
+    assert!(fixture.path("Folder/Renamed.cs").is_file());
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete": true, "explorer.copyRelativePathSeparator": "/"}"#,
+        &["Seed.txt"],
+    );
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(ExplorerAction(registry::NEW_FILE)), cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_input("Src/Foo.cs");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "new file added by the watcher", |rows| {
+        rows.iter().any(|row| row.trim() == "Foo.cs")
+    });
+    assert!(fixture.path("Src/Foo.cs").is_file());
+    let document = view.read_with(cx, |v, _| {
+        v.editor
+            .active()
+            .current()
+            .unwrap()
+            .opened()
+            .unwrap()
+            .document
+            .id
+    });
+
+    let code = view.read_with(cx, |v, _| v.code_view().clone());
+    cx.update(|window, cx| {
+        window.focus(&code.read(cx).focus_handle(cx));
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_input("edited");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.editor.active().current().unwrap().dirty));
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim() == "Foo.cs")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("foo");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "case-only rename from F2", |rows| {
+        rows.iter().any(|row| row.trim() == "foo.cs")
+    });
+    view.read_with(cx, |v, _| {
+        let tab = v.editor.active().current().unwrap();
+        assert_eq!(
+            tab.resource,
+            Resource::Workspace(WorkspacePath::new("Src/foo.cs").unwrap())
+        );
+        assert_eq!(tab.opened().unwrap().document.id, document);
+        assert!(tab.dirty);
+        assert_eq!(
+            v.editing.saves.borrow().file(document).unwrap().path(),
+            Some(fixture.path("Src/foo.cs").as_path())
+        );
+    });
+
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(ExplorerAction(registry::COPY_RELATIVE_PATH)), cx);
+    });
+    cx.run_until_parked();
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("Src/foo.cs"));
+
+    cx.update(|window, cx| {
+        window.focus(&code.read(cx).focus_handle(cx));
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-s");
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Src/foo.cs")).unwrap(),
+        "edited"
+    );
+}
+
+#[cfg(windows)]
+fn wait_for_structured_problems(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    expected: Option<&Resource>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let problems = view.read_with(cx, |v, cx| v.listed_problem_positions(cx));
+        let ready = match expected {
+            Some(resource) => {
+                !problems.is_empty() && problems.iter().all(|(path, _)| path == resource)
+            }
+            None => problems.is_empty(),
+        };
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected structured problems for {expected:?}, got {problems:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(windows)]
+fn open_structured_fixture(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    path: &WorkspacePath,
+) -> DocumentId {
+    let resource = Resource::Workspace(path.clone());
+    view.update(cx, |v, cx| {
+        v.open_documents()
+            .open(
+                resource.clone(),
+                OpenOptions {
+                    preview_tab: false,
+                    ..OpenOptions::default()
+                },
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    wait_for_structured_problems(view, cx, Some(&resource));
+    view.read_with(cx, |v, _| v.focused_text().unwrap().1.id)
+}
+
+#[cfg(windows)]
+#[gpui::test]
+fn explorer_structured_problems_follow_rename_move_undo_and_delete(cx: &mut TestAppContext) {
+    use crate::explorer::decorations::DecorationProvider;
+
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDragAndDrop":false}"#,
+        &[
+            "Bad.json",
+            "Target/Seed.txt",
+            "Other.txt",
+            "OtherTarget/Seed.txt",
+        ],
+    );
+    std::fs::write(fixture.path("Bad.json"), r#"{"value": [ }"#).unwrap();
+    let (view, cx) = fixture.open(cx);
+    let original = WorkspacePath::new("Bad.json").unwrap();
+    let document = open_structured_fixture(&view, cx, &original);
+    let version = view.read_with(cx, |v, _| v.open_document(document).unwrap().text.version());
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row == "Bad.json")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    let renamed = WorkspacePath::new("Renamed.json").unwrap();
+    wait_for_structured_problems(&view, cx, Some(&Resource::Workspace(renamed.clone())));
+    view.read_with(cx, |v, cx| {
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&original, false).is_none());
+        assert!(explorer.problems().decorate(&renamed, false).is_some());
+    });
+
+    let target = WorkspacePath::new("Target").unwrap();
+    let explorer = view.read_with(cx, |v, _| v.explorer.clone());
+    explorer.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::MoveDropped {
+            paths: vec![renamed.clone()],
+            parent: Some(target.clone()),
+        });
+    });
+    let moved = WorkspacePath::new("Target/Renamed.json").unwrap();
+    let resource = Resource::Workspace(moved.clone());
+    wait_for_structured_problems(&view, cx, Some(&resource));
+    assert!(!fixture.path("Renamed.json").exists());
+    assert!(fixture.path("Target/Renamed.json").is_file());
+    view.read_with(cx, |v, cx| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(current.resource, resource);
+        assert_eq!(current.text.version(), version);
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&renamed, false).is_none());
+        assert!(explorer.problems().decorate(&moved, false).is_some());
+        assert!(explorer.problems().decorate(&target, true).is_some());
+    });
+
+    // A queued removal belongs to the previous occupant of the moved path.
+    view.update(cx, |v, cx| {
+        v.apply_explorer_workspace_events(vec![FileEvent::Removed(moved.clone())], cx);
+    });
+    wait_for_structured_problems(&view, cx, Some(&resource));
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim_end_matches('/') == "Target")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    let restored = Resource::Workspace(renamed.clone());
+    wait_for_structured_problems(&view, cx, Some(&restored));
+    assert!(!fixture.path("Target/Renamed.json").exists());
+    assert!(fixture.path("Renamed.json").is_file());
+    view.read_with(cx, |v, cx| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(current.resource, restored);
+        assert_eq!(current.text.version(), version);
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&target, true).is_none());
+        assert!(explorer.problems().decorate(&renamed, false).is_some());
+    });
+
+    // Complete a real, unrelated operation before the old notification arrives.
+    let other = WorkspacePath::new("Other.txt").unwrap();
+    view.update(cx, |v, cx| {
+        v.open_documents()
+            .open(
+                Resource::Workspace(other.clone()),
+                OpenOptions {
+                    preview_tab: false,
+                    ..OpenOptions::default()
+                },
+                Cancellation::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert!(v.open_document(document).is_some()));
+    explorer.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::MoveDropped {
+            paths: vec![other],
+            parent: Some(WorkspacePath::new("OtherTarget").unwrap()),
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if tabs(&view, cx)
+            .iter()
+            .any(|(path, _, _)| path == "OtherTarget/Other.txt")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "unrelated move did not finish");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(fixture.path("OtherTarget/Other.txt").is_file());
+
+    let forward = FileEvent::Renamed {
+        from: renamed.clone(),
+        to: moved.clone(),
+    };
+    view.update(cx, |v, cx| {
+        v.apply_explorer_workspace_events(vec![forward.clone()], cx);
+    });
+    view.read_with(cx, |v, _| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(
+            current.resource, restored,
+            "a late forward event cannot undo the undo"
+        );
+        assert_eq!(current.text.version(), version);
+    });
+    wait_for_structured_problems(&view, cx, Some(&restored));
+
+    // An actual series of renames can leave the same path pair and existence pattern.
+    // The replacement at the original path is a different filesystem object.
+    let next = WorkspacePath::new("Target/Next.json").unwrap();
+    view.update(cx, |v, cx| {
+        let source = fixture.path("Renamed.json");
+        let intermediate = fixture.path("Target/Renamed.json");
+        std::fs::rename(&source, &intermediate).unwrap();
+        std::fs::rename(&intermediate, fixture.path("Target/Next.json")).unwrap();
+        std::fs::write(source, "{}").unwrap();
+        v.apply_explorer_workspace_events(
+            vec![
+                forward,
+                FileEvent::Renamed {
+                    from: moved.clone(),
+                    to: next.clone(),
+                },
+            ],
+            cx,
+        );
+    });
+    let recent = Resource::Workspace(next.clone());
+    wait_for_structured_problems(&view, cx, Some(&recent));
+    view.read_with(cx, |v, _| {
+        let current = v.open_document(document).unwrap();
+        assert_eq!(current.resource, recent);
+        assert_eq!(current.text.version(), version);
+    });
+    std::fs::write(fixture.path("Unrelated.txt"), "external").unwrap();
+    wait_until(
+        &view,
+        cx,
+        "unrelated external creation is visible",
+        |rows| rows.iter().any(|row| row == "Unrelated.txt"),
+    );
+    std::fs::remove_file(fixture.path("Target/Next.json")).unwrap();
+    wait_for_structured_problems(&view, cx, None);
+    assert!(!fixture.path("Target/Next.json").exists());
+    view.read_with(cx, |v, cx| {
+        assert!(v.open_document(document).is_none());
+        let explorer = v.explorer.read(cx);
+        assert!(explorer.problems().decorate(&next, false).is_none());
+        assert!(explorer.problems().decorate(&target, true).is_none());
+    });
+}
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_structured_problems_clear_on_recycle_and_return_after_undo(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDelete":false,"files.enableTrash":true}"#,
+        &["Bad.json", "Seed.txt"],
+    );
+    std::fs::write(fixture.path("Bad.json"), r#"{"value": [ }"#).unwrap();
+    let (view, cx) = fixture.open(cx);
+    let path = WorkspacePath::new("Bad.json").unwrap();
+    let document = open_structured_fixture(&view, cx, &path);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("delete");
+    wait_for_structured_problems(&view, cx, None);
+    assert!(!fixture.path("Bad.json").exists());
+    view.read_with(cx, |v, _| assert!(v.open_document(document).is_none()));
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(&view, cx, "structured file restored by undo", |rows| {
+        rows.iter().any(|row| row == "Bad.json")
+    });
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Bad.json")).unwrap(),
+        r#"{"value": [ }"#
+    );
+    open_structured_fixture(&view, cx, &path);
+}
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_structured_problems_ignore_echo_after_undoing_an_overwrite(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"workbench.editor.closeOnFileDelete":true,"explorer.confirmDragAndDrop":false,"explorer.confirmUndo":"light"}"#,
+        &["Bad.json", "Target/Bad.json"],
+    );
+    let payload = r#"{"value": [ }"#;
+    let old_target = r#"{"old":true}"#;
+    std::fs::write(fixture.path("Bad.json"), payload).unwrap();
+    std::fs::write(fixture.path("Target/Bad.json"), old_target).unwrap();
+
+    let (view, cx) = fixture.open(cx);
+    let source = WorkspacePath::new("Bad.json").unwrap();
+    let target = WorkspacePath::new("Target/Bad.json").unwrap();
+    let document = open_structured_fixture(&view, cx, &source);
+    let (version, original_source, original_target) = view.read_with(cx, |v, cx| {
+        let explorer = v.explorer.read(cx);
+        let folder = explorer.operations_folder().unwrap();
+        (
+            v.open_document(document).unwrap().text.version(),
+            folder.entry_stamp(&source).unwrap(),
+            folder.entry_stamp(&target).unwrap(),
+        )
+    });
+
+    let explorer = view.read_with(cx, |v, _| v.explorer.clone());
+    explorer.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::MoveDropped {
+            paths: vec![source.clone()],
+            parent: Some(WorkspacePath::new("Target").unwrap()),
+        });
+    });
+    cx.run_until_parked();
+    let confirm = view.read_with(cx, |v, _| {
+        let modal = v.shell.feedback.modal().expect("replace confirmation");
+        assert_eq!(modal.message.key.as_ref(), "explorer.paste.replace");
+        modal.key.clone()
+    });
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Bad.json")).unwrap(),
+        payload
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Target/Bad.json")).unwrap(),
+        old_target
+    );
+    view.update(cx, |v, _| {
+        v.shell
+            .feedback
+            .act(&confirm, registry::FILE_OP_CONFIRM)
+            .unwrap()
+    });
+    wait_for_structured_problems(&view, cx, Some(&Resource::Workspace(target.clone())));
+    assert!(!fixture.path("Bad.json").exists());
+    assert!(original_source
+        .matches_path(&fixture.path("Target/Bad.json"))
+        .unwrap());
+
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row.trim_end_matches('/') == "Target")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    let restored = Resource::Workspace(source.clone());
+    wait_for_structured_problems(&view, cx, Some(&restored));
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Bad.json")).unwrap(),
+        payload
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("Target/Bad.json")).unwrap(),
+        old_target
+    );
+    assert!(original_source
+        .matches_path(&fixture.path("Bad.json"))
+        .unwrap());
+    assert!(original_target
+        .matches_path(&fixture.path("Target/Bad.json"))
+        .unwrap());
+
+    view.update(cx, |v, cx| {
+        v.apply_explorer_workspace_events(
+            vec![FileEvent::Renamed {
+                from: source,
+                to: target,
+            }],
+            cx,
+        );
+    });
+    view.read_with(cx, |v, cx| {
+        use crate::explorer::decorations::DecorationProvider;
+
+        let document = v.open_document(document).unwrap();
+        assert_eq!(document.resource, restored);
+        assert_eq!(document.text.version(), version);
+        let explorer = v.explorer.read(cx);
+        assert!(explorer
+            .problems()
+            .decorate(&WorkspacePath::new("Bad.json").unwrap(), false)
+            .is_some());
+        assert!(explorer
+            .problems()
+            .decorate(&WorkspacePath::new("Target/Bad.json").unwrap(), false)
+            .is_none());
+    });
+}
+
+#[gpui::test]
+fn explorer_permanent_delete_requires_confirmation_even_when_recycle_prompt_is_off(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(
+        r#"{"files.enableTrash": false, "explorer.confirmDelete": false}"#,
+        &["Delete.txt"],
+    );
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("shift-delete");
+    cx.run_until_parked();
+    assert!(fixture.path("Delete.txt").exists());
+    let key = view.read_with(cx, |v, _| {
+        let modal = v.shell.feedback.modal().expect("permanent confirmation");
+        assert_eq!(modal.message.key.as_ref(), "explorer.delete.permanent");
+        assert!(modal.checkbox.is_none());
+        modal.key.clone()
+    });
+    view.update(cx, |v, _| {
+        v.shell
+            .feedback
+            .act(&key, registry::FILE_OP_CONFIRM)
+            .unwrap()
+    });
+    wait_until(&view, cx, "confirmed deletion reaches the tree", |rows| {
+        rows.is_empty()
+    });
+    assert!(!fixture.path("Delete.txt").exists());
+}
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_create_rename_recycle_then_undo_through_the_workbench(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(r#"{"explorer.confirmDelete": false}"#, &["Seed.txt"]);
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(ExplorerAction(registry::NEW_FILE)), cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    cx.simulate_input("Created.txt");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "created entry", |rows| {
+        rows.iter().any(|row| row == "Created.txt")
+    });
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row == "Created.txt")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("f2");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_input("Renamed");
+    cx.simulate_keystrokes("enter");
+    wait_until(&view, cx, "renamed entry", |rows| {
+        rows.iter().any(|row| row == "Renamed.txt")
+    });
+    let index = rows(&view, cx)
+        .iter()
+        .position(|row| row == "Renamed.txt")
+        .unwrap();
+    focus_row(&view, index, cx);
+    cx.simulate_keystrokes("delete");
+    wait_until(&view, cx, "recycled entry", |rows| rows == ["Seed.txt"]);
+    assert!(!fixture.path("Renamed.txt").exists());
+    view.read_with(cx, |v, _| assert!(v.shell.feedback.modal().is_none()));
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(&view, cx, "restored by undo", |rows| {
+        rows.iter().any(|row| row == "Renamed.txt")
+    });
+    assert!(fixture.path("Renamed.txt").is_file());
+}
+
+#[cfg(windows)]
+#[gpui::test]
+#[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+fn explorer_batch_recycle_persists_the_confirmation_choice_without_reformatting(
+    cx: &mut TestAppContext,
+) {
+    let settings = r#"{
+    // Keep my existing comment and indentation.
+    "explorer.confirmDelete": true,
+    "files.enableTrash": true
+}"#;
+    let fixture = Fixture::new(settings, &["First.txt", "Second.txt", "Untouched.txt"]);
+    let (view, cx) = fixture.open(cx);
+    focus_row(&view, 0, cx);
+    list(&view, cx).update(cx, |list, cx| {
+        list.widget.set_selection(vec![0, 1]);
+        cx.notify();
+    });
+    cx.simulate_keystrokes("delete");
+    cx.run_until_parked();
+
+    let key = view.read_with(cx, |v, _| {
+        let modal = v
+            .shell
+            .feedback
+            .modal()
+            .expect("single recycle confirmation");
+        assert_eq!(modal.message.key.as_ref(), "explorer.delete.recycle");
+        assert!(modal
+            .message
+            .args
+            .iter()
+            .any(|(key, count)| { key.as_ref() == "count" && count.as_ref() == "2" }));
+        assert!(modal.checkbox.is_some());
+        modal.key.clone()
+    });
+    assert!(fixture.path("First.txt").exists());
+    assert!(fixture.path("Second.txt").exists());
+    view.update(cx, |v, _| {
+        v.shell.feedback.toggle_modal_checkbox(&key);
+        v.shell
+            .feedback
+            .act(&key, registry::FILE_OP_CONFIRM)
+            .unwrap();
+    });
+    wait_until(&view, cx, "both items reach the recycle bin", |rows| {
+        rows == ["Untouched.txt"]
+    });
+    view.read_with(cx, |v, _| assert!(v.shell.feedback.modal().is_none()));
+    let stored = std::fs::read_to_string(fixture.user.path().join("settings.json")).unwrap();
+    assert_eq!(
+        stored,
+        settings.replace("Delete\": true", "Delete\": false")
+    );
+
+    focus_row(&view, 0, cx);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(&view, cx, "one undo restores both items", |rows| {
+        rows == ["First.txt", "Second.txt", "Untouched.txt"]
     });
 }

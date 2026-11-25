@@ -193,6 +193,10 @@ impl Workbench {
                 let Some(current) = view.open_document(id) else {
                     return;
                 };
+                if view.disk_path(&current.resource).as_deref() != file.path() {
+                    cx.notify();
+                    return;
+                }
                 view.attach_text_file(current, file, cx);
             });
         })
@@ -865,6 +869,72 @@ impl Workbench {
 
     // ------------------------------------------------------------- 外部修改
 
+    pub(super) fn follow_workspace_renames(
+        &mut self,
+        events: &[FileEvent],
+        cx: &mut Context<Self>,
+    ) {
+        use rove_workspace::file_operations::path_after_rename;
+        let root = self.root.clone();
+        let canonical_root = self
+            .explorer
+            .read(cx)
+            .operations_folder()
+            .map(|folder| folder.root().to_path_buf())
+            .unwrap_or_else(|| root.clone());
+        let under_root = |path: &std::path::Path| {
+            let relative = path
+                .strip_prefix(&root)
+                .or_else(|_| path.strip_prefix(&canonical_root))
+                .ok()?;
+            WorkspacePath::new(&relative.to_str()?.replace('\\', "/")).ok()
+        };
+        let mut refreshed = false;
+        for event in events {
+            let FileEvent::Renamed { from, to } = event else {
+                continue;
+            };
+            let map = |resource: &Resource| {
+                let target = match resource {
+                    Resource::Workspace(path) => {
+                        path_after_rename(path, from, to).map(Resource::Workspace)
+                    }
+                    Resource::File(path) => {
+                        let relative = under_root(path)?;
+                        let path = path_after_rename(&relative, from, to)?;
+                        Some(Resource::File(root.join(path.as_str())))
+                    }
+                    Resource::Virtual(_) => None,
+                };
+                target.filter(|target| target != resource)
+            };
+            for (original, document) in self.editor.follow_rename(&map) {
+                refreshed = true;
+                self.follow_structured_rename(&original, &document, cx);
+                if let (Some(from), Some(to)) = (
+                    self.disk_path(&original),
+                    self.disk_path(&document.resource),
+                ) {
+                    self.editing
+                        .saves
+                        .borrow_mut()
+                        .follow_rename(document.id, &from, &to);
+                    if let (Some(files), Some(relative)) = (&self.editing.files, under_root(&to)) {
+                        files.follow_rename(
+                            &original,
+                            canonical_root.join(relative.as_str()),
+                            &document,
+                        );
+                    }
+                }
+            }
+        }
+        if refreshed {
+            self.explorer_revealed = None;
+            cx.notify();
+        }
+    }
+
     /// 工作区文件事件：打开中的文档记下变化，安静期后读盘。
     pub(super) fn note_disk_events(&mut self, events: &[FileEvent], cx: &mut Context<Self>) {
         let now = Instant::now();
@@ -910,12 +980,23 @@ impl Workbench {
     fn read_due_files(&mut self, cx: &mut Context<Self>) {
         let due = self.editing.saves.borrow_mut().due(Instant::now());
         for (document, path) in due {
+            let read_path = path.clone();
             let task = cx
                 .background_executor()
-                .spawn(async move { DiskStamp::read(&path) });
+                .spawn(async move { DiskStamp::read(&read_path) });
             cx.spawn(async move |this, cx| {
                 let disk = task.await.ok().flatten();
                 let _ = this.update(cx, |view, cx| {
+                    let still_current = view
+                        .editing
+                        .saves
+                        .borrow()
+                        .file(document)
+                        .and_then(TextFile::path)
+                        == Some(path.as_path());
+                    if !still_current {
+                        return;
+                    }
                     let effects = view
                         .editing
                         .saves
