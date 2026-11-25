@@ -1049,12 +1049,25 @@ fn explorer_inline_create_rename_remaps_the_open_buffer_and_save_target(cx: &mut
     wait_until(&view, cx, "case-only rename from F2", |rows| {
         rows.iter().any(|row| row.trim() == "foo.cs")
     });
+    let renamed = Resource::Workspace(WorkspacePath::new("Src/foo.cs").unwrap());
+    // The tree can show the new name before the watcher remaps the open tab.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        let resource = view.read_with(cx, |v, _| {
+            v.editor.active().current().unwrap().resource.clone()
+        });
+        if resource == renamed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "open tab did not follow the case-only rename: {resource:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
     view.read_with(cx, |v, _| {
         let tab = v.editor.active().current().unwrap();
-        assert_eq!(
-            tab.resource,
-            Resource::Workspace(WorkspacePath::new("Src/foo.cs").unwrap())
-        );
         assert_eq!(tab.opened().unwrap().document.id, document);
         assert!(tab.dirty);
         assert_eq!(
