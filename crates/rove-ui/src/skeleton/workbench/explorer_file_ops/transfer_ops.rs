@@ -566,6 +566,124 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    #[ignore = "requires a Windows desktop with the Recycle Bin enabled for the test volume"]
+    fn r66_undo_of_an_overwrite_keeps_the_restored_log_and_closes_removed_children(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::follow_tail::{FOLLOW, FOLLOW_STATUS};
+        use crate::shell::layout::LayoutStore;
+        use crate::skeleton::workbench::large_file_tests::{document, open_file, wait_tail};
+        use rove_base::{ByteOffset, Resource, Span};
+        use rove_config::{SettingsOptions, SettingsService};
+
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(user.path().join("settings.json"),
+            r#"{ "workbench.editor.closeOnFileDelete": true, "workbench.editor.enablePreview": false, "explorer.confirmUndo": "light" }"#).unwrap();
+
+        for overwrite_directory in [false, true] {
+            let folder = tempfile::tempdir().unwrap();
+            let incoming = tempfile::tempdir().unwrap();
+            let original = "old active log\n";
+            let replacement = "replacement active log\n";
+            let (source, target, name) = if overwrite_directory {
+                let log_group = incoming.path().join("Logs");
+                let previous = folder.path().join("Logs");
+                std::fs::create_dir(&log_group).unwrap();
+                std::fs::create_dir(&previous).unwrap();
+                std::fs::write(log_group.join("Editor.log"), replacement).unwrap();
+                std::fs::write(log_group.join("OnlyInCopy.log"), "extra log\n").unwrap();
+                (log_group, previous.join("Editor.log"), "Logs/Editor.log")
+            } else {
+                let source = incoming.path().join("Editor.log");
+                std::fs::write(&source, replacement).unwrap();
+                (source, folder.path().join("Editor.log"), "Editor.log")
+            };
+            std::fs::write(&target, original).unwrap();
+            let mut options = SettingsOptions::new(user.path(), user.path().join("backup"));
+            options.watch = None;
+            let settings = Arc::new(SettingsService::open(
+                options,
+                crate::app_settings::registry().unwrap(),
+            ));
+            let root = folder.path().to_owned();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                Workbench::with_settings(
+                    root,
+                    std::time::Instant::now(),
+                    LayoutStore::disabled(),
+                    settings,
+                    cx,
+                )
+                .unwrap()
+            });
+            view.update(cx, |view, cx| {
+                let folder = view.explorer.read(cx).operations_folder().unwrap();
+                let batch = prepare(
+                    &folder,
+                    vec![source],
+                    None,
+                    Transfer::Copy,
+                    Naming::Disabled,
+                    None,
+                )
+                .unwrap();
+                view.run_file_operation(Request::Transfer(batch), cx);
+            });
+            wait_tail(cx, |cx| {
+                view.read_with(cx, |view, _| {
+                    !view.file_operations.busy
+                        && std::fs::read_to_string(&target).as_deref().ok() == Some(replacement)
+                })
+            });
+            let only_in_copy = overwrite_directory.then(|| {
+                open_file(&view, "Logs/OnlyInCopy.log", cx);
+                document(&view, cx).id
+            });
+            open_file(&view, name, cx);
+            let id = document(&view, cx).id;
+            view.update(cx, |view, cx| view.command(FOLLOW, cx));
+            wait_tail(cx, |cx| {
+                view.read_with(cx, |view, _| {
+                    view.shell.status_bar.get(FOLLOW_STATUS).is_some()
+                })
+            });
+
+            eprintln!("R66_UNDO_BEGIN overwrite_directory={overwrite_directory}");
+            view.update(cx, Workbench::undo_file_operation);
+            let reported = std::cell::Cell::new(false);
+            wait_tail(cx, |cx| {
+                view.read_with(cx, |view, _| {
+                    if !view.file_operations.busy && !reported.replace(true) {
+                        eprintln!("R66_UNDO_FINISHED disk={:?} document={:?} extra_open={} follow={:?} modal={:?}",
+                            std::fs::read_to_string(&target),
+                            view.open_document(id).map(|doc| (doc.resource.clone(), doc.text.byte_len())),
+                            only_in_copy.and_then(|id| view.open_document(id)).is_some(),
+                            view.shell.status_bar.get(FOLLOW_STATUS).map(|entry| entry.text.clone()),
+                            view.shell.feedback.modal().map(|modal| modal.message.key.clone()));
+                    }
+                    let Some(open) = view.open_document(id) else {
+                        return false;
+                    };
+                    if open.resource != Resource::Workspace(WorkspacePath::new(name).unwrap())
+                        || open.text.byte_len() != original.len() as u64
+                    {
+                        return false;
+                    }
+                    let mut actual = String::new();
+                    let range = Span::new(ByteOffset(0), ByteOffset(open.text.byte_len())).unwrap();
+                    open.text
+                        .visit_chunks(range, &mut |part| actual.push_str(part))
+                        .is_ok()
+                        && actual == original
+                        && only_in_copy.is_none_or(|id| view.open_document(id).is_none())
+                        && view.shell.status_bar.get(FOLLOW_STATUS).is_some()
+                })
+            });
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
+        }
+    }
+
     #[test]
     fn partial_cut_keeps_the_destination_out_of_the_paste_undo() {
         let fixture = tempfile::tempdir().unwrap();

@@ -163,7 +163,7 @@ impl Workbench {
             events = ready;
         }
         self.reconcile_move_notifications(&mut events);
-        self.apply_explorer_document_changes(events, 0, &[], cx);
+        self.apply_explorer_document_changes(events, 0, None, cx);
     }
 
     fn reconcile_move_notifications(&self, events: &mut Vec<FileEvent>) {
@@ -216,15 +216,26 @@ impl Workbench {
         &mut self,
         events: Vec<FileEvent>,
         confirmed_renames: usize,
-        confirmed_removed: &[WorkspacePath],
+        operation: Option<&Outcome>,
         cx: &mut Context<Self>,
     ) {
-        if events.is_empty() && confirmed_removed.is_empty() {
-            return;
-        }
         let (confirmed, external) = events.split_at(confirmed_renames);
         self.follow_workspace_renames(confirmed, true, cx);
-        self.close_confirmed_explorer_removals(confirmed_removed, cx);
+        if let Some(operation) = operation {
+            self.close_confirmed_explorer_removals(operation, cx);
+            // A successfully restored directory or file gets a new disk identity.
+            // Late native notifications may describe only the earlier removal.
+            let restored: Vec<_> = operation
+                .restored
+                .iter()
+                .cloned()
+                .map(FileEvent::Created)
+                .collect();
+            self.follow_workspace_events(&restored);
+        }
+        if events.is_empty() {
+            return;
+        }
         self.follow_workspace_renames(external, false, cx);
         self.follow_workspace_events(&events);
         self.note_disk_events(&events, cx);
@@ -245,12 +256,8 @@ impl Workbench {
         }
     }
 
-    fn close_confirmed_explorer_removals(
-        &mut self,
-        paths: &[WorkspacePath],
-        cx: &mut Context<Self>,
-    ) {
-        if paths.is_empty() || !self.editor.settings.close_on_delete {
+    fn close_confirmed_explorer_removals(&mut self, operation: &Outcome, cx: &mut Context<Self>) {
+        if operation.removed.is_empty() || !self.editor.settings.close_on_delete {
             return;
         }
         let resources: Vec<_> = self
@@ -264,10 +271,29 @@ impl Workbench {
                     Resource::File(path) => workspace_path(&self.root, path)?,
                     Resource::Virtual(_) => return None,
                 };
-                paths
+                if !operation
+                    .removed
                     .iter()
                     .any(|path| at_or_below(&relative, path))
-                    .then(|| tab.resource.clone())
+                {
+                    return None;
+                }
+                if operation
+                    .restored
+                    .iter()
+                    .any(|path| same_path(&relative, path))
+                {
+                    return None;
+                }
+                if operation
+                    .restored
+                    .iter()
+                    .any(|path| at_or_below(&relative, path))
+                    && !matches!(self.root.join(relative.as_str()).try_exists(), Ok(false))
+                {
+                    return None;
+                }
+                Some(tab.resource.clone())
             })
             .collect();
         let mut changed = false;
@@ -279,16 +305,11 @@ impl Workbench {
         }
     }
 
-    fn finish_explorer_workspace_files(
-        &mut self,
-        moves: &[FileMove],
-        removed: &[WorkspacePath],
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_explorer_workspace_files(&mut self, operation: &Outcome, cx: &mut Context<Self>) {
         self.file_operations.watched_paths.clear();
         let mut logical = Vec::new();
         let mut completed = Vec::new();
-        for movement in moves {
+        for movement in &operation.moves {
             if let (Some(from), Some(to)) = (
                 workspace_path(&self.root, &movement.from),
                 workspace_path(&self.root, &movement.to),
@@ -316,7 +337,7 @@ impl Workbench {
         });
         let confirmed_renames = logical.len();
         logical.append(&mut deferred);
-        self.apply_explorer_document_changes(logical, confirmed_renames, removed, cx);
+        self.apply_explorer_document_changes(logical, confirmed_renames, Some(operation), cx);
     }
 
     fn remember_workspace_moves(&mut self, moves: Vec<WorkspaceMove>) {
@@ -651,7 +672,7 @@ impl Workbench {
                     .saves
                     .borrow_mut()
                     .complete_file_operation(ticket, &save_moves);
-                view.finish_explorer_workspace_files(&result.moves, &result.removed, cx);
+                view.finish_explorer_workspace_files(&result, cx);
                 if !result.undo.is_empty()
                     && ENABLE_UNDO
                         .read(&*view.settings, &Scope::default())
@@ -719,6 +740,7 @@ struct Outcome {
     undo: Vec<UndoStep>,
     moves: Vec<FileMove>,
     removed: Vec<WorkspacePath>,
+    restored: Vec<WorkspacePath>,
     fallback: Option<Deletion>,
     failure: Option<Failure>,
 }
@@ -883,6 +905,7 @@ fn restore(folder: &Folder, root: &Path, mut items: Vec<UndoStep>) -> Outcome {
             }
             #[cfg(windows)]
             UndoStep::Pasted { path, .. } => outcome.removed.push(path.clone()),
+            UndoStep::Trashed(receipt) => outcome.restored.push(receipt.path.clone()),
             _ => {}
         }
         items.pop();

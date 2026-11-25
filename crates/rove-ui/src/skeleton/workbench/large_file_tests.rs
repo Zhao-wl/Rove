@@ -77,7 +77,7 @@ fn settle(cx: &mut VisualTestContext) {
     }
 }
 
-fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
+pub(super) fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
     view.update(cx, |v, cx| {
         v.open_documents()
             .open(
@@ -94,7 +94,7 @@ fn open_file(view: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
     refresh(cx);
 }
 
-fn document(view: &Entity<Workbench>, cx: &VisualTestContext) -> Arc<Document> {
+pub(super) fn document(view: &Entity<Workbench>, cx: &VisualTestContext) -> Arc<Document> {
     view.read_with(cx, |v, _| v.active_large_file_document().unwrap())
 }
 
