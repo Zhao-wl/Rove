@@ -242,6 +242,11 @@ impl MappedText {
         self.storage.is_mapped()
     }
 
+    /// The physical file length captured for this snapshot, including a BOM if present.
+    pub fn raw_byte_len(&self) -> u64 {
+        self.stamp.len
+    }
+
     /// Stop keeping a file mapping open, so a writer can truncate it even while this
     /// snapshot is held by an editor. An existing read can briefly defer unmapping.
     pub fn enable_shared_reads(&self) -> bool {
@@ -333,7 +338,7 @@ impl MappedText {
             &file,
             stamp.len,
             self.encoding,
-            !self.is_memory_mapped(),
+            self.storage.uses_shared_reads(),
         )?);
         let new_len = storage.len();
         if appended && new_len >= self.len {
@@ -483,7 +488,7 @@ fn load_storage(
 ) -> Result<Storage> {
     let skip = encoding.bom_len.min(file_len as usize);
     if file_len == 0 {
-        return Ok(Storage::Owned(Box::default()));
+        return Ok(Storage::owned(Box::default(), shared_reads));
     }
     if shared_reads && encoding.encoding == UTF_8 {
         return Ok(Storage::disk(
@@ -499,8 +504,9 @@ fn load_storage(
         file.seek(SeekFrom::Start(skip as u64))?;
         file.read_to_end(&mut input)?;
         let (text, _) = encoding.encoding.decode_without_bom_handling(&input);
-        return Ok(Storage::Owned(
+        return Ok(Storage::owned(
             text.into_owned().into_bytes().into_boxed_slice(),
+            true,
         ));
     }
     // SAFETY: the mapping is read-only. Readers check byte boundaries and tolerate
@@ -518,8 +524,9 @@ fn load_storage(
     let (text, _) = encoding
         .encoding
         .decode_without_bom_handling(map.get(skip..).unwrap_or_default());
-    Ok(Storage::Owned(
+    Ok(Storage::owned(
         text.into_owned().into_bytes().into_boxed_slice(),
+        false,
     ))
 }
 
@@ -777,6 +784,33 @@ mod tests {
         assert!(!next.is_memory_mapped());
         assert_eq!(collect(&*next, span(0, next.byte_len())), "replacement\n");
         assert_eq!(next.lines().known, 2);
+    }
+
+    #[test]
+    fn decoded_snapshots_keep_their_open_policy_across_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("utf16.log");
+        std::fs::write(&path, [b'a', 0, b'\n', 0]).unwrap();
+        let ordinary = MappedText::open(
+            &path,
+            MappedEncoding {
+                encoding: encoding_rs::UTF_16LE,
+                bom_len: 0,
+            },
+        )
+        .unwrap();
+        assert!(!ordinary.storage.uses_shared_reads());
+        std::fs::write(&path, [b'b', 0, b'\n', 0, b'c', 0]).unwrap();
+        let Reload::Replaced(reloaded) = ordinary.reload().unwrap() else {
+            panic!("the decoded input needs to be reloaded");
+        };
+        assert!(!reloaded.storage.uses_shared_reads());
+        assert!(reloaded.enable_shared_reads());
+        std::fs::write(&path, [b'd', 0, b'\n', 0]).unwrap();
+        let Reload::Replaced(followed) = reloaded.reload().unwrap() else {
+            panic!("the followed input needs to be reloaded");
+        };
+        assert!(followed.storage.uses_shared_reads());
     }
 
     #[test]

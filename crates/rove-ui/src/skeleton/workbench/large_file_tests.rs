@@ -992,8 +992,8 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
         status(&view, tail::FOLLOW_STATUS, cx).is_some_and(|entry| entry.text == "跟随末尾")
     });
 
-    // Rename the live Windows file while its mapping is retained, then create a new
-    // UTF-16 file at the original path. The following buffer must decode the new BOM.
+    // Rename the live Windows file while the previous snapshot is retained.
+    // The replacement at the original path must decode its new UTF-16 BOM.
     std::fs::rename(&path, fixture.folder.path().join("archived.log")).unwrap();
     let mut replacement = vec![0xff, 0xfe];
     replacement.extend("rotated\n".encode_utf16().flat_map(u16::to_le_bytes));
@@ -1009,7 +1009,14 @@ fn r66_follows_real_appends_pauses_resumes_and_keeps_the_rotated_path(cx: &mut T
     assert_eq!(replacement.resource, original.resource);
     assert!(replacement.metadata.bom);
     assert_ne!(replacement.metadata.encoding, original.metadata.encoding);
-    assert!(replacement.metadata.read_only.is_empty());
+    let retained_reasons: Vec<_> = original
+        .metadata
+        .read_only
+        .iter()
+        .filter(|reason| !matches!(reason, ReadOnlyReason::HugeFile))
+        .cloned()
+        .collect();
+    assert_eq!(replacement.metadata.read_only.as_ref(), retained_reasons);
     assert!(view.read_with(cx, |view, _| view.follow_tail.counts.reopens) > 0);
 
     open_file(&view, "small.txt", cx);

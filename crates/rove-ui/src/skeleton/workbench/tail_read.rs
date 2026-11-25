@@ -49,6 +49,30 @@ impl PathWatch {
         let _ = path;
     }
 
+    #[cfg(windows)]
+    fn synchronize_baseline(
+        &self,
+        path: &std::path::Path,
+        generation: Option<u64>,
+        change: &Change,
+    ) -> Result<()> {
+        let (Some(watch), Some(generation)) = (&self.handle, generation) else {
+            return Ok(());
+        };
+        let length = match change {
+            Change::Disk(stamp, _) => stamp.len,
+            Change::Reopened(opened) => match opened.text.mapped() {
+                Some(mapped) => mapped.raw_byte_len(),
+                None => path.metadata()?.len(),
+            },
+            _ => return Ok(()),
+        };
+        // A false result means the watcher raced the read; the caller checks the
+        // observed generation again when it is about to publish the snapshot.
+        watch.accept_baseline(path, generation, length)?;
+        Ok(())
+    }
+
     pub fn generation(&self) -> Option<u64> {
         #[cfg(windows)]
         {
@@ -117,7 +141,14 @@ pub(super) fn read(mut job: ReadJob) -> ReadResult {
         ready
     });
     let changes = if storage_ready {
-        apply(&mut job)
+        let result = apply(&mut job);
+        #[cfg(windows)]
+        let result = result.and_then(|change| {
+            job.watch
+                .synchronize_baseline(&job.path, generation, &change)?;
+            Ok(change)
+        });
+        result
     } else {
         Ok(Change::Unchanged)
     };

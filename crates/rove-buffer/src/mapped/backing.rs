@@ -3,7 +3,10 @@ use std::{
     collections::VecDeque,
     fs::File,
     ops::Range,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
 };
 
 pub(super) const PAGE_BYTES: u64 = 64 * 1024;
@@ -12,7 +15,10 @@ const UTF8_LOOKAHEAD: u64 = 3;
 
 pub(super) enum Storage {
     File(Box<DiskBytes>),
-    Owned(Box<[u8]>),
+    Owned {
+        bytes: Box<[u8]>,
+        shared_reads: AtomicBool,
+    },
 }
 
 pub(super) struct DiskBytes {
@@ -44,10 +50,30 @@ impl Storage {
         }))
     }
 
+    pub(super) fn owned(bytes: Box<[u8]>, shared_reads: bool) -> Self {
+        Self::Owned {
+            bytes,
+            shared_reads: AtomicBool::new(shared_reads),
+        }
+    }
+
+    pub(super) fn uses_shared_reads(&self) -> bool {
+        match self {
+            Self::Owned { shared_reads, .. } => shared_reads.load(Ordering::Relaxed),
+            Self::File(disk) => !matches!(
+                &*disk
+                    .mapping
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+                Mapping::Active(_)
+            ),
+        }
+    }
+
     pub(super) fn len(&self) -> u64 {
         match self {
             Self::File(disk) => disk.len,
-            Self::Owned(bytes) => bytes.len() as u64,
+            Self::Owned { bytes, .. } => bytes.len() as u64,
         }
     }
 
@@ -65,7 +91,13 @@ impl Storage {
     }
 
     pub(super) fn enable_shared_reads(&self) -> bool {
-        let Self::File(disk) = self else { return true };
+        let disk = match self {
+            Self::File(disk) => disk,
+            Self::Owned { shared_reads, .. } => {
+                shared_reads.store(true, Ordering::Relaxed);
+                return true;
+            }
+        };
         let mut state = disk.mapping.lock().unwrap_or_else(|e| e.into_inner());
         if let Mapping::Active(map) = &*state {
             *state = Mapping::Releasing(Arc::downgrade(map));
@@ -82,7 +114,7 @@ impl Storage {
             return visitor(&[]);
         }
         let Self::File(disk) = self else {
-            let Self::Owned(bytes) = self else {
+            let Self::Owned { bytes, .. } = self else {
                 unreachable!()
             };
             return visitor(slice(bytes, range));
@@ -114,7 +146,7 @@ impl Storage {
     // scratch buffer. It does not populate the small viewport cache.
     pub(super) fn read<'a>(&'a self, from: u64, to: u64, buffer: &'a mut Vec<u8>) -> &'a [u8] {
         match self {
-            Self::Owned(bytes) => slice(bytes, from..to),
+            Self::Owned { bytes, .. } => slice(bytes, from..to),
             Self::File(disk) => {
                 buffer.resize((to - from) as usize, 0);
                 let filled = read_at(&disk.file, buffer, from + disk.skip);

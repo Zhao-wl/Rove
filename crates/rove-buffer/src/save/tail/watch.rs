@@ -12,7 +12,7 @@ use std::{
     ptr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc, OnceLock,
+        mpsc, Arc, Mutex, OnceLock,
     },
     thread,
 };
@@ -76,10 +76,15 @@ fn read_changes() -> io::Result<ReadChanges> {
 const BUFFER_BYTES: usize = 64 * 1024;
 const NAME: usize = offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName);
 
-#[derive(Default)]
 struct State {
     generation: AtomicU64,
     live: AtomicBool,
+    target: Mutex<Target>,
+}
+
+struct Target {
+    filenames: Vec<Vec<u16>>,
+    last_len: u64,
 }
 
 /// Watches one followed path for a transient decrease in on-disk size.
@@ -107,27 +112,45 @@ impl TailSizeWatch {
             .open(parent)?;
         let stop = Arc::new(event()?);
         let ready = event()?;
-        let state = Arc::new(State::default());
+        let state = Arc::new(State {
+            generation: AtomicU64::new(0),
+            live: AtomicBool::new(false),
+            target: Mutex::new(Target {
+                filenames,
+                last_len: initial_len,
+            }),
+        });
         let (armed, wait_armed) = mpsc::sync_channel(1);
         let worker_stop = Arc::clone(&stop);
         let worker_state = Arc::clone(&state);
         thread::Builder::new()
             .name("rove-tail-size-watch".into())
             .spawn(move || {
-                watch(
-                    directory,
-                    &worker_stop,
-                    &ready,
-                    &filenames,
-                    initial_len,
-                    &worker_state,
-                    armed,
-                );
+                watch(directory, &worker_stop, &ready, &worker_state, armed);
             })?;
         wait_armed
             .recv()
             .map_err(|_| io::Error::other("file size watcher exited"))??;
         Ok(Self { stop, state })
+    }
+
+    /// Synchronize the physical length and aliases from a baseline read after the
+    /// monitor was armed. Leave the watcher state untouched if the baseline raced a rotation.
+    pub fn accept_baseline(&self, path: &Path, generation: u64, raw_len: u64) -> io::Result<bool> {
+        let filenames = filename_aliases(path)?;
+        let mut target = self
+            .state
+            .target
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self.is_live() || self.generation() != generation {
+            return Ok(false);
+        }
+        *target = Target {
+            filenames,
+            last_len: raw_len,
+        };
+        Ok(true)
     }
 
     pub fn generation(&self) -> u64 {
@@ -192,8 +215,6 @@ fn watch(
     directory: File,
     stop: &OwnedHandle,
     ready: &OwnedHandle,
-    filenames: &[Vec<u16>],
-    mut last_len: u64,
     state: &State,
     armed: mpsc::SyncSender<io::Result<()>>,
 ) {
@@ -238,6 +259,14 @@ fn watch(
             }
             bytes = 0;
         }
+        let mut target = state
+            .target
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Target {
+            filenames,
+            last_len,
+        } = &mut *target;
         let changed = if bytes == 0 || bytes as usize > BUFFER_BYTES {
             true
         } else {
@@ -245,11 +274,12 @@ fn watch(
             // writing it. Only the reported range is exposed.
             let records =
                 unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), bytes as usize) };
-            invalidated(records, filenames, &mut last_len).unwrap_or(true)
+            invalidated(records, filenames, last_len).unwrap_or(true)
         };
         if changed {
             state.generation.fetch_add(1, Ordering::Release);
         }
+        drop(target);
         if arm(&directory, ready, &mut buffer, &mut pending).is_err() {
             break;
         }
@@ -308,7 +338,7 @@ fn invalidated(mut records: &[u8], filenames: &[Vec<u16>], last_len: &mut u64) -
                     ))
                     .ok()?;
                     match action {
-                        FILE_ACTION_MODIFIED => changed |= size < *last_len,
+                        FILE_ACTION_MODIFIED => changed |= size == 0 || size < *last_len,
                         FILE_ACTION_ADDED | FILE_ACTION_RENAMED_NEW_NAME => changed = true,
                         _ => return None,
                     }
@@ -369,4 +399,54 @@ fn query_basename(
         .next()
         .filter(|name| !name.is_empty())
         .map(<[u16]>::to_vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn zero_size_notification_invalidates_even_a_zero_sampled_baseline() {
+        let name: Vec<u16> = "Editor.log".encode_utf16().collect();
+        let mut bytes = vec![0; NAME + name.len() * 2];
+        let action = offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, Action);
+        let count = offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength);
+        bytes[action..action + 4].copy_from_slice(&FILE_ACTION_MODIFIED.to_le_bytes());
+        bytes[count..count + 4].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
+        for (target, code) in bytes[NAME..].chunks_exact_mut(2).zip(&name) {
+            target.copy_from_slice(&code.to_le_bytes());
+        }
+        assert_eq!(invalidated(&bytes, &[name], &mut 0), Some(true));
+    }
+
+    #[test]
+    fn accepted_baseline_tracks_subsequent_in_place_shrinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Editor.log");
+        std::fs::write(&path, vec![b'a'; 12_288]).unwrap();
+        let watch = match TailSizeWatch::start(&path, 0) {
+            Ok(watch) => watch,
+            Err(error) => {
+                eprintln!("已跳过：扩展文件尺寸通知不可用：{error}");
+                return;
+            }
+        };
+        let before = watch.generation();
+        assert!(watch.accept_baseline(&path, before, 12_288).unwrap());
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer.set_len(512).unwrap();
+        writer.sync_all().unwrap();
+        writer.write_all(&[b'b'; 16_384]).unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while watch.generation() == before && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(watch.generation() > before);
+        assert!(watch.is_live());
+        assert!(!watch.accept_baseline(&path, before, 16_384).unwrap());
+    }
 }
