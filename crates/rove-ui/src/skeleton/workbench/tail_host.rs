@@ -596,7 +596,7 @@ impl Workbench {
             self.start_follow_read(id, cx);
         }
         self.poll_follow_paths(cx);
-        self.follow_views_to_end(cx);
+        self.follow_views_to_end(true, cx);
         let mode = self
             .follow_tab(self.editor.focused)
             .and_then(|(tab, document)| {
@@ -756,7 +756,7 @@ impl Workbench {
         match result.change {
             // Indexing can advance the same snapshot without any disk change
             // or a workbench render. Only move views whose known tail changed.
-            Ok(TailChange::Unchanged) => self.follow_views_to_end(cx),
+            Ok(TailChange::Unchanged) => self.follow_views_to_end(false, cx),
             Ok(TailChange::Missing) | Err(_) => {}
             Ok(TailChange::MappedAppend(mapped)) => {
                 self.follow_tail.counts.appends += 1;
@@ -880,7 +880,7 @@ impl Workbench {
         }
     }
 
-    fn follow_views_to_end(&mut self, cx: &mut Context<Self>) {
+    fn follow_views_to_end(&mut self, frame_pending: bool, cx: &mut Context<Self>) {
         let targets: Vec<_> = self
             .editor
             .groups
@@ -910,7 +910,7 @@ impl Workbench {
                 follow.last_end = Some(end);
             }
             code.update(cx, |code, cx| {
-                code.follow_end(end.1, cx);
+                code.follow_end(end.1, frame_pending, cx);
             });
         }
     }

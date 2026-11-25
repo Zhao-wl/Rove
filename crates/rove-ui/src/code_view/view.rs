@@ -924,7 +924,8 @@ impl CodeView {
         self.replace_text(text, keep_view_state, false, cx);
     }
 
-    /// Publish verified tail growth without discarding unaffected row layout.
+    /// Publish verified tail growth while the workbench is preparing this frame.
+    /// Preserve unaffected rows and let that frame draw the new snapshot.
     pub(crate) fn set_appended_text(&mut self, text: Arc<dyn TextSource>, cx: &mut Context<Self>) {
         self.replace_text(Some(text), true, true, cx);
     }
@@ -1008,7 +1009,9 @@ impl CodeView {
         self.recompute_folds(cx);
         self.update_highlights(cx);
         cx.emit(CodeViewEvent::TextChanged);
-        cx.notify();
+        if !appended {
+            cx.notify();
+        }
     }
 
     pub fn text(&self) -> Option<&Arc<dyn TextSource>> {
@@ -1995,20 +1998,27 @@ impl CodeView {
         (metrics.line_top(visual, &self.zones) + 1.0 - metrics.viewport_lines()).max(0.0)
     }
 
-    pub(crate) fn follow_end(&mut self, document_line: u64, cx: &mut Context<Self>) {
+    pub(crate) fn follow_end(
+        &mut self,
+        document_line: u64,
+        frame_pending: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.wrap.map.doc_lines() != self.doc_line_count() {
             self.sync_fold_map();
         }
         if let Some(metrics) = self.metrics() {
             let top = self.follow_top(document_line, &metrics);
-            self.set_scroll_position(
+            self.set_scroll_target(
                 ScrollPosition {
                     top,
                     x: self.scroll.x,
                 },
                 false,
-                cx,
             );
+            if !frame_pending {
+                cx.notify();
+            }
         } else {
             self.reveal_line(document_line, Reveal::Nearest, cx);
         }
@@ -2068,6 +2078,11 @@ impl CodeView {
         animate: bool,
         cx: &mut Context<Self>,
     ) {
+        self.set_scroll_target(p, animate);
+        cx.notify();
+    }
+
+    fn set_scroll_target(&mut self, p: ScrollPosition, animate: bool) {
         let mut target = match self.metrics() {
             Some(m) => p.clamped(&m, &self.zones),
             None => ScrollPosition {
@@ -2091,7 +2106,6 @@ impl CodeView {
             self.animation = None;
             self.scroll = target;
         }
-        cx.notify();
     }
 
     /// 动画中的实际顶边位置（`scroll.top` 始终是目标位置）。
