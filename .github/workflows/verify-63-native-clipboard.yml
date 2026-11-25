@@ -1,0 +1,41 @@
+name: Native clipboard verification for #63
+
+on:
+  push:
+    branches: [codex/qa-63-native-clipboard]
+
+permissions:
+  contents: read
+
+jobs:
+  native-clipboard:
+    if: github.repository == 'Zhao-wl/Rove'
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise Win32 clipboard in a disposable runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'This test is only for a disposable GitHub-hosted machine.'
+          }
+          $production = 'crates/rove-ui/src/skeleton/workbench/explorer_file_ops/native_clipboard.rs'
+          if ((git hash-object $production).Trim() -cne 'ddcf76b20e15cb9be0116802f0cc425505daeb91') {
+            throw 'Unexpected production clipboard source.'
+          }
+          $probe = '.github/native-clipboard-qa'
+          Copy-Item -LiteralPath $production -Destination (Join-Path $probe 'src/native_clipboard.rs')
+          $fixture = Join-Path $env:RUNNER_TEMP ('rove-clipboard-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $fixture | Out-Null
+          cargo run --locked --manifest-path (Join-Path $probe 'Cargo.toml') -- $fixture
+          $exitCode = $LASTEXITCODE
+          $log = Join-Path $fixture 'worker.log'
+          if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log
+          }
+          exit $exitCode
