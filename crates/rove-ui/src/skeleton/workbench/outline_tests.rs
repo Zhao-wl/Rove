@@ -702,10 +702,12 @@ fn structured_format_on_save_preserves_utf16_bom_and_existing_line_endings(
     let after = std::fs::read(&disk).unwrap();
     assert_ne!(after, bytes);
     assert_eq!(&after[..2], &[0xFF, 0xFE]);
+    let (units, _) = after[2..].as_chunks::<2>();
     let after = String::from_utf16(
-        &after[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        &units
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes)
             .collect::<Vec<_>>(),
     )
     .unwrap();
