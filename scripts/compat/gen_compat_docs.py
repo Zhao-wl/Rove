@@ -66,7 +66,6 @@ DIFFERENT_DEFAULTS = [
     ("files.autoGuessEncoding", "false", "true", "Unity 项目中常见 GBK 文件（UX_SPEC §3.5）"),
     ("files.candidateGuessEncodings", "[]", "[\"gbk\"]", "同上"),
     ("workbench.editorAssociations", "{}", "{\"*.md\": \"vscode.markdown.preview.editor\"}", "`.md` 默认以预览打开（D6）"),
-    ("markdown.preview.doubleClickToSwitchToEditor", "false", "true", "`.md` 默认以预览打开（D6），双击切换到源码是主要的编辑入口（UX_SPEC §4.3）"),
 ]
 
 

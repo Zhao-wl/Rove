@@ -376,7 +376,6 @@ mod tests {
         for (key, default) in [
             ("files.autoGuessEncoding", "true"),
             ("files.candidateGuessEncodings", r#"["gbk"]"#),
-            ("markdown.preview.doubleClickToSwitchToEditor", "true"),
             (
                 "workbench.editorAssociations",
                 r#"{"*.md":"vscode.markdown.preview.editor"}"#,
