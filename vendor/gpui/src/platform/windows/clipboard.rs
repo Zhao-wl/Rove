@@ -1,10 +1,10 @@
 use std::sync::LazyLock;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result, ensure};
 use collections::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use windows::Win32::{
-    Foundation::{HANDLE, HGLOBAL},
+    Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND},
     System::{
         DataExchange::{
             CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
@@ -74,12 +74,14 @@ enum ClipboardFormatType {
     Files,
 }
 
-pub(crate) fn write_to_clipboard(item: ClipboardItem) {
-    with_clipboard(|| write_to_clipboard_inner(item));
+pub(crate) fn write_to_clipboard(owner: HWND, item: ClipboardItem) {
+    if let Some(Err(error)) = with_clipboard(Some(owner), || write_to_clipboard_inner(item)) {
+        log::error!("Failed to write clipboard: {error:#}");
+    }
 }
 
 pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
-    with_clipboard(|| {
+    with_clipboard(None, || {
         with_best_match_format(|item_format| match format_to_type(item_format) {
             ClipboardFormatType::Text => read_string_from_clipboard(),
             ClipboardFormatType::Image => read_image_from_clipboard(item_format),
@@ -111,11 +113,11 @@ where
     }
 }
 
-fn with_clipboard<F, T>(f: F) -> Option<T>
+fn with_clipboard<F, T>(owner: Option<HWND>, f: F) -> Option<T>
 where
     F: FnOnce() -> T,
 {
-    match unsafe { OpenClipboard(None) } {
+    match unsafe { OpenClipboard(owner) } {
         Ok(()) => {
             let result = f();
             if let Err(e) = unsafe { CloseClipboard() } {
@@ -149,7 +151,7 @@ fn format_to_type(item_format: u32) -> &'static ClipboardFormatType {
 // Currently, we only write the first item.
 fn write_to_clipboard_inner(item: ClipboardItem) -> Result<()> {
     unsafe {
-        EmptyClipboard()?;
+        EmptyClipboard().context("emptying the clipboard before writing")?;
     }
     match item.entries().first() {
         Some(entry) => match entry {
@@ -187,14 +189,117 @@ fn write_string_to_clipboard(item: &ClipboardString) -> Result<()> {
 }
 
 fn set_data_to_clipboard<T>(data: &[T], format: u32) -> Result<()> {
-    unsafe {
-        let global = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of_val(data))?;
-        let handle = GlobalLock(global);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), handle as _, data.len());
-        let _ = GlobalUnlock(global);
-        SetClipboardData(format, Some(HANDLE(global.0)))?;
+    ClipboardWriteMemory::copy_from(data, |handle| unsafe { GlobalLock(handle) })?.publish_with(
+        |handle| {
+            unsafe { SetClipboardData(format, Some(HANDLE(handle.0))) }
+                .with_context(|| format!("publishing clipboard format {format}"))?;
+            Ok(())
+        },
+    )
+}
+
+struct ClipboardWriteMemory(HGLOBAL);
+
+impl ClipboardWriteMemory {
+    fn copy_from<T>(
+        data: &[T],
+        lock: impl FnOnce(HGLOBAL) -> *mut std::ffi::c_void,
+    ) -> Result<Self> {
+        let bytes = std::mem::size_of_val(data);
+        let block = Self(
+            unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes) }.context("allocating clipboard data")?,
+        );
+        let pointer = lock(block.0);
+        ensure!(
+            !pointer.is_null(),
+            "locking clipboard data: {}",
+            windows_core::Error::from_win32()
+        );
+        // SAFETY: the block was allocated for exactly these bytes and is locked.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr().cast::<u8>(), pointer.cast::<u8>(), bytes);
+            // An ordinary final unlock returns zero with last error NO_ERROR.
+            if let Err(error) = GlobalUnlock(block.0)
+                && error.code().is_err()
+            {
+                return Err(error).context("unlocking clipboard data");
+            }
+        }
+        Ok(block)
     }
-    Ok(())
+
+    fn publish_with(self, publish: impl FnOnce(HGLOBAL) -> Result<()>) -> Result<()> {
+        publish(self.0)?;
+        // SetClipboardData owns the block after success.
+        std::mem::forget(self);
+        Ok(())
+    }
+}
+
+impl Drop for ClipboardWriteMemory {
+    fn drop(&mut self) {
+        // SAFETY: this block remains ours until SetClipboardData succeeds.
+        let _ = unsafe { GlobalFree(Some(self.0)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::System::Memory::GlobalFlags;
+
+    const GMEM_INVALID_HANDLE: u32 = 0x8000;
+
+    #[test]
+    fn clipboard_block_is_released_when_locking_or_publishing_fails() {
+        // These paths exercise ordinary Win32 memory, without opening the clipboard.
+        let data = [0x1234u16, 0x5678];
+        let mut allocated = None;
+        let result = ClipboardWriteMemory::copy_from(&data, |handle| {
+            allocated = Some(handle);
+            std::ptr::null_mut()
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            unsafe { GlobalFlags(allocated.unwrap()) },
+            GMEM_INVALID_HANDLE
+        );
+
+        let block =
+            ClipboardWriteMemory::copy_from(&data, |memory| unsafe { GlobalLock(memory) }).unwrap();
+        let handle = block.0;
+        let result = block.publish_with(|memory| {
+            assert_eq!(memory, handle);
+            anyhow::bail!("injected SetClipboardData failure");
+        });
+        assert!(result.is_err());
+        assert_eq!(unsafe { GlobalFlags(handle) }, GMEM_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn clipboard_block_transfers_only_on_success() {
+        let data = [0x1234u16, 0x5678];
+        let block =
+            ClipboardWriteMemory::copy_from(&data, |memory| unsafe { GlobalLock(memory) }).unwrap();
+        let handle = block.0;
+        let mut receiving_owner = None;
+        block
+            .publish_with(|memory| {
+                assert_eq!(memory, handle);
+                receiving_owner = Some(memory);
+                Ok(())
+            })
+            .unwrap();
+        let received = receiving_owner.unwrap();
+        assert_ne!(unsafe { GlobalFlags(received) }, GMEM_INVALID_HANDLE);
+        let pointer = unsafe { GlobalLock(received) }.cast::<u16>();
+        assert!(!pointer.is_null());
+        let copied = unsafe { [*pointer, *pointer.add(1)] };
+        let _ = unsafe { GlobalUnlock(received) };
+        drop(ClipboardWriteMemory(received));
+        assert_eq!(unsafe { GlobalFlags(received) }, GMEM_INVALID_HANDLE);
+        assert_eq!(copied, data);
+    }
 }
 
 // Here writing PNG to the clipboard to better support other apps. For more info, please ref to

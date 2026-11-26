@@ -568,7 +568,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
-        write_to_clipboard(item);
+        write_to_clipboard(self.handle, item);
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
@@ -1150,20 +1150,27 @@ unsafe extern "system" fn window_procedure(
 
 #[cfg(test)]
 mod tests {
-    use crate::{ClipboardItem, read_from_clipboard, write_to_clipboard};
+    use super::{Platform, WindowsPlatform};
+    use crate::ClipboardItem;
+    use windows::Win32::System::DataExchange::GetClipboardOwner;
 
     #[test]
-    fn test_clipboard() {
-        let item = ClipboardItem::new_string("你好，我是张小白".to_string());
-        write_to_clipboard(item.clone());
-        assert_eq!(read_from_clipboard(), Some(item));
-
-        let item = ClipboardItem::new_string("12345".to_string());
-        write_to_clipboard(item.clone());
-        assert_eq!(read_from_clipboard(), Some(item));
-
-        let item = ClipboardItem::new_string_with_json_metadata("abcdef".to_string(), vec![3, 4]);
-        write_to_clipboard(item.clone());
-        assert_eq!(read_from_clipboard(), Some(item));
+    #[ignore = "requires an isolated Windows clipboard"]
+    fn windows_clipboard_round_trip_with_owned_window() {
+        assert_eq!(
+            std::env::var("ROVE_TEST_ISOLATED_CLIPBOARD").as_deref(),
+            Ok("1"),
+            "run only in a Windows environment with a dedicated clipboard"
+        );
+        let platform = WindowsPlatform::new().unwrap();
+        for item in [
+            ClipboardItem::new_string("你好，我是张小白 🦀".to_string()),
+            ClipboardItem::new_string("12345".to_string()),
+            ClipboardItem::new_string_with_json_metadata("abcdef".to_string(), vec![3, 4]),
+        ] {
+            platform.write_to_clipboard(item.clone());
+            assert_eq!(unsafe { GetClipboardOwner() }.unwrap(), platform.handle);
+            assert_eq!(platform.read_from_clipboard(), Some(item));
+        }
     }
 }
