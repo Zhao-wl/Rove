@@ -2807,6 +2807,6 @@ UNC 路径、映射网络驱动器和重解析点均被拒绝。重新扫描时�
 
 ## Markdown 预览双击（#354）
 
-`markdown.preview.doubleClickToSwitchToEditor` 现与 VS Code 共用默认值 `false`，因此 §6 和
-§10 记录的四项默认值差异减为三项。预览正文默认保留 WebView2 的双击选词，
+`markdown.preview.doubleClickToSwitchToEditor` 现与 VS Code 共用默认值 `false`，因此前文记录的
+四项默认值差异减为三项。预览正文默认保留 WebView2 的双击选词，
 只有将该设置设为 `true` 时，预览宿主才会切到源码并定位到对应行。
