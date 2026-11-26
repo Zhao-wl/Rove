@@ -191,11 +191,6 @@ fn rove_defaults_apply_only_while_unset_and_are_never_written() {
             )),
             Value::Object(Arc::new([("*.md".to_string(), string("default"))].into())),
         ),
-        (
-            "markdown.preview.doubleClickToSwitchToEditor",
-            Value::Bool(true),
-            Value::Bool(false),
-        ),
     ];
     for (key, rove, _) in &rove_defaults {
         assert_eq!(

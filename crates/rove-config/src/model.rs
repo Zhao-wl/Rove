@@ -141,7 +141,7 @@ pub enum Layer {
     LanguageDefault,
     /// 用户 `settings.json` 里的全局值。
     User,
-    /// Rove 默认值（`compat/SETTINGS.md` §3 四项），仅在用户未设置该项时参与。
+    /// Rove 默认值（见 `compat/SETTINGS.md` §3），仅在用户未设置该项时参与。
     RoveDefault,
     /// VS Code 默认值。
     Default,

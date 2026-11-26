@@ -834,10 +834,42 @@ fn idle_timeout_disposes_the_instance(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| assert_eq!(v.markdown.fake.borrow().created, 2));
 }
 
-/// 双击预览定位到源码行；并排时双向滚动同步（≥ 2000 行的文档）。
+#[gpui::test]
+fn double_click_keeps_preview_when_unset_or_disabled(cx: &mut TestAppContext) {
+    let fx = Fixture::new("{}");
+    let (view, cx) = fx.open(cx);
+    open(&view, "README.md", explorer(), cx);
+
+    for settings in [
+        "{}",
+        r#"{"markdown.preview.doubleClickToSwitchToEditor":false}"#,
+    ] {
+        fx.change(settings, cx);
+        assert_eq!(active_kind(&view, cx), ("README.md".into(), true));
+        view.update(cx, |v, _| {
+            let document = v.markdown.requested.unwrap().document;
+            v.markdown
+                .sender_for_test()
+                .try_send(crate::markdown::backend::BackendEvent::Message(
+                    serde_json::json!({
+                        "version": 1, "type": "dblclick", "documentId": document.0, "line": 2.0,
+                    }),
+                ))
+                .unwrap();
+        });
+        settle(cx);
+        assert_eq!(
+            active_kind(&view, cx),
+            ("README.md".into(), true),
+            "{settings}"
+        );
+    }
+}
+
+/// 显式开启后双击预览定位到源码行；并排时双向滚动同步（≥ 2000 行的文档）。
 #[gpui::test]
 fn double_click_and_scroll_sync(cx: &mut TestAppContext) {
-    let fx = Fixture::new("{}");
+    let fx = Fixture::new(r#"{"markdown.preview.doubleClickToSwitchToEditor":true}"#);
     let (view, cx) = fx.open(cx);
     open(
         &view,

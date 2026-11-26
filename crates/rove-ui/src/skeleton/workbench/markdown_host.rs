@@ -933,7 +933,7 @@ impl Workbench {
                 }
             }
             Some("dblclick") if document.is_some() && document == current => {
-                if self.md_key("markdown.preview.doubleClickToSwitchToEditor", true) {
+                if self.md_key("markdown.preview.doubleClickToSwitchToEditor", false) {
                     let line = message["line"].as_f64().unwrap_or(0.0).max(0.0) as u32;
                     if let Some((group, tab)) = self.markdown.owner {
                         self.markdown.backend.borrow_mut().release_focus();

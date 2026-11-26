@@ -143,7 +143,7 @@ fn unsupported_settings_are_never_registered() {
 #[test]
 fn rove_default_differences_match_section_3() {
     let doc = parse_doc();
-    assert_eq!(doc.differences.len(), 4);
+    assert_eq!(doc.differences.len(), 3);
     for (key, (vscode, rove)) in &doc.differences {
         let setting = &catalog().get(key).unwrap().setting;
         let parse = |s: &str| jsonc::parse_value(s).unwrap().unwrap();
@@ -154,7 +154,11 @@ fn rove_default_differences_match_section_3() {
         .entries()
         .filter(|e| e.setting.rove_default.is_some())
         .count();
-    assert_eq!(with_rove_default, 4, "§3 之外不允许有 Rove 默认值差异");
+    assert_eq!(
+        with_rove_default,
+        doc.differences.len(),
+        "§3 之外不允许有 Rove 默认值差异"
+    );
 }
 
 #[test]
