@@ -14,9 +14,9 @@ use super::Picks;
 use crate::{list_widget::quick_input::RowDecor, lists::ItemId, lists::Row};
 use rove_base::WorkspacePath;
 use rove_fuzzy::{
-    ascii_masks, compare_keys, compare_scored, prepare_query, score_ascii_summary, score_item,
-    score_target_summary, utf16_to_byte_ranges, CmpKey, CmpTexts, ItemScore, PreparedQuery, Scored,
-    Summary, Target, LABEL_SCORE_THRESHOLD, SEP,
+    ascii_masks, compare_anything, compare_keys, compare_scored, prepare_query,
+    score_ascii_summary, score_item, score_target_summary, utf16_to_byte_ranges, CmpKey, CmpTexts,
+    ItemScore, PreparedQuery, Scored, Summary, Target, LABEL_SCORE_THRESHOLD, SEP,
 };
 use rove_workspace::{EntryKind, FileEvent, Workspace};
 use std::{
@@ -741,22 +741,32 @@ fn compare_summary_hits(
     b: &SummaryHit,
     query: &PreparedQuery,
 ) -> Ordering {
-    compare_keys(&cmp_key(a), &cmp_key(b), query, || {
-        let text = |hit: &SummaryHit| {
-            index.text(hit.entry).map_or(
-                CmpTexts {
-                    label: "",
-                    description: None,
-                    path: None,
-                },
-                |t| CmpTexts {
-                    label: t.label,
-                    description: t.description,
-                    path: Some(t.path),
-                },
-            )
+    let text = |hit: &SummaryHit| {
+        index.text(hit.entry).map_or(
+            CmpTexts {
+                label: "",
+                description: None,
+                path: None,
+            },
+            |t| CmpTexts {
+                label: t.label,
+                description: t.description,
+                path: Some(t.path),
+            },
+        )
+    };
+    compare_keys(&cmp_key(a), &cmp_key(b), query, || (text(a), text(b))).then_with(|| {
+        // 只按大小写区分的文件名可能被打分比较器判为相等；沿用目录、路径的决胜顺序。
+        let (left, right) = (text(a), text(b));
+        let compare = |left: Option<&str>, right: Option<&str>| match (left, right) {
+            (Some(left), Some(right)) if !left.is_empty() && !right.is_empty() && left != right => {
+                compare_anything(left, right, &query.normalized).cmp(&0)
+            }
+            _ => Ordering::Equal,
         };
-        (text(a), text(b))
+        compare(left.description, right.description)
+            .then_with(|| compare(left.path, right.path))
+            .then_with(|| a.entry.cmp(&b.entry))
     })
 }
 

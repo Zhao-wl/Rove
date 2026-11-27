@@ -464,6 +464,43 @@ fn dynamic_block_scheduling_is_deterministic_and_matches_a_single_thread() {
     }
 }
 
+#[test]
+fn parallel_file_search_preserves_the_order_of_equal_scores_at_the_result_limit() {
+    let mixed_case = index(&["C/Foo.cs", "B/foo.cs", "A/Foo.cs"]);
+    let result = Search::default().run(&mixed_case, "oo", &[], SearchOptions::default());
+    assert_eq!(
+        names(&mixed_case, &result.files),
+        ["A/Foo.cs", "B/foo.cs", "C/Foo.cs"]
+    );
+
+    let mut paths = vec!["Assets/Player.cs".to_string()];
+    paths.extend((0..6_000).map(|n| format!("Assets/A{n:04}/Player{n:04}.CS")));
+    paths.extend((0..6_000).map(|n| format!("Assets/Z{n:04}/Player{n:04}.cs")));
+    let index = index(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+
+    let search = |threads| {
+        let mut search = Search::default();
+        search.set_threads(threads);
+        search.run(&index, "P", &[], SearchOptions::default());
+        search.run(&index, "Pl", &[], SearchOptions::default());
+        search.run(&index, "Pla", &[], SearchOptions::default())
+    };
+    let expected = search(Some(1));
+    assert_eq!(expected.files.len(), MAX_RESULTS);
+    for threads in [None, Some(4), Some(8), Some(12)] {
+        for _ in 0..4 {
+            let actual = search(threads);
+            assert_eq!(actual.files.len(), MAX_RESULTS);
+            let first_difference = actual
+                .files
+                .iter()
+                .zip(&expected.files)
+                .position(|(a, b)| a.entry != b.entry || a.score != b.score);
+            assert_eq!(first_difference, None, "打分线程 {threads:?}");
+        }
+    }
+}
+
 /// 整条优化过的流水线（紧凑数据、摘要打分、前缀剪枝、共享下限、并行、跳过用不上的 description 匹配）必须给出
 /// 与朴素实现（逐个 `score_item` + VS Code 比较器，选出前 N 名）完全相同的结果。
 #[test]
