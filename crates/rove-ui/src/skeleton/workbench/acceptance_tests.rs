@@ -776,7 +776,8 @@ fn acceptance_scenario_13_shared_settings_hot_reload(cx: &mut TestAppContext) {
     };
     let (view, cx) = fx.window(cx);
 
-    let kind = view.read_with(cx, |v, _| v.theme_service.current().kind());
+    let theme = view.read_with(cx, |v, _| v.theme_service.clone());
+    let kind = theme.current().kind();
     assert!(
         matches!(kind, ThemeKind::Dark),
         "初始应当是深色主题：{kind:?}"
@@ -784,7 +785,12 @@ fn acceptance_scenario_13_shared_settings_hot_reload(cx: &mut TestAppContext) {
 
     // ① 外部切浅色主题。
     fx.change(r#"{ "workbench.colorTheme": "Light 2026" }"#, cx);
-    let kind = view.read_with(cx, |v, _| v.theme_service.current().kind());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !matches!(theme.current().kind(), ThemeKind::Light) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        cx.run_until_parked();
+    }
+    let kind = theme.current().kind();
     assert!(
         matches!(kind, ThemeKind::Light),
         "外部改 workbench.colorTheme 后应当实时切成浅色：{kind:?}"
