@@ -1362,9 +1362,19 @@ fn replace_workspace_large_unity_writes_only_the_independent_full_copy(cx: &mut 
 
 #[gpui::test]
 fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut TestAppContext) {
+    use crate::search::view::State;
     use rove_test_support::UnityProject;
+    use std::{
+        cell::Cell,
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    const FIRST_PREVIEW_WAIT: Duration = Duration::from_secs(20);
     let original = rove_test_support::require_unity_project!(UnityProject::Large);
     let fixture = Fixture::new(r#"{"search.maxResults": 10000}"#);
+    let fixture_started = Instant::now();
+    let mut fixture_files = Vec::new();
     let mut folders = vec![original.join("Assets")];
     let mut file_count = 0;
     let mut total_bytes = 0;
@@ -1390,9 +1400,10 @@ fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut Te
             let relative = path.strip_prefix(&original).unwrap();
             let dest = fixture.folder.path().join(relative);
             std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-            std::fs::copy(path, dest).unwrap();
+            let copied = std::fs::copy(&path, dest).unwrap();
+            fixture_files.push((relative.to_owned(), copied));
             file_count += 1;
-            total_bytes += metadata.len();
+            total_bytes += copied;
             if file_count == 1500 {
                 break;
             }
@@ -1405,11 +1416,55 @@ fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut Te
         file_count >= 250,
         "大型 Unity 项目源码样本过少：{file_count}"
     );
+    fixture_files.sort_unstable();
+    let mut fixture_id = DefaultHasher::new();
+    fixture_files.hash(&mut fixture_id);
+    let fixture_id = fixture_id.finish();
+    let fixture_elapsed = fixture_started.elapsed();
+    let open_start = Instant::now();
     let (view, cx) = fixture.open(cx);
+    let open_elapsed = open_start.elapsed();
     let preview_start = Instant::now();
-    prepare(&view, cx, "namespace", "rove_sample_namespace");
+    start_search(&view, cx, "namespace", "rove_sample_namespace");
+    let wait_started = Instant::now();
+    let first_done = Cell::new(None);
+    let observed_ready = reaches(&view, cx, FIRST_PREVIEW_WAIT, |wb, cx| {
+        let search = wb.search.read(cx);
+        if first_done.get().is_none() && matches!(search.state(), State::Done(_)) {
+            first_done.set(Some(wait_started.elapsed()));
+        }
+        search.replacement_test_state().1
+    });
+    let wait_elapsed = wait_started.elapsed();
     let preview_elapsed = preview_start.elapsed();
-    let matches = view.read_with(cx, |wb, cx| wb.search.read(cx).results().match_count());
+    let (state, done, files, matches, stage, published) = view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        (
+            format!("{:?}", search.state()),
+            matches!(search.state(), State::Done(_)),
+            search.results().files().len(),
+            search.results().match_count(),
+            search.replacement_test_preview_stage(),
+            search.replacement_test_published_at(),
+        )
+    });
+    let first_done = first_done.get();
+    let published_since_dispatch = published.map(|at| at.saturating_duration_since(preview_start));
+    let published_since_wait = published.map(|at| at.saturating_duration_since(wait_started));
+    let within_deadline = published_since_wait.is_some_and(|elapsed| elapsed <= FIRST_PREVIEW_WAIT);
+    eprintln!(
+        "[#366 first preview] 夹具 ROVE_TEST_UNITY_LARGE/Assets 的 C# 副本 {file_count} 文件 / \
+         {total_bytes} B，路径+字节数指纹 {fixture_id:016x}，复制与清单 {fixture_elapsed:?}，\
+         工作台打开 {open_elapsed:?}；搜索状态 {state}，Done={done}，首次观察 Done={first_done:?}，\
+         已有 {files} 个文件 / {matches} 处匹配，预览阶段 {stage}，观察 Ready={observed_ready}；\
+         发布距派发 {published_since_dispatch:?}，发布距等待 {published_since_wait:?}，\
+         等待实际 {wait_elapsed:?}，总计 {preview_elapsed:?}，截止 {FIRST_PREVIEW_WAIT:?}，\
+         截止内发布={within_deadline}"
+    );
+    assert!(
+        within_deadline,
+        "首个全局替换预览未在 {FIRST_PREVIEW_WAIT:?} 内发布"
+    );
     assert!(matches > 100, "真实样本匹配过少：{matches}");
     let scroll_elapsed = scroll_replacement_results(&view, cx);
     let (cancel_elapsed, _) = cancel_large_replacement(fixture.folder.path(), &view, cx);
