@@ -437,7 +437,7 @@ impl Search {
         // 文件：只在上一次匹配集合里重新打分（查询是上一次的延长时）；候选多时分给几个线程。
         let candidates = self.candidates(index, &query);
         let total = candidates.map_or(index.len(), <[u32]>::len);
-        let threads = self.threads.unwrap_or_else(|| threads_for(total));
+        let threads = self.workers_for(total, candidates.is_some(), &query);
         // 各线程共享“第 MAX_RESULTS 名的分数下限”：任何一个线程的前 N 名满了，别处低于它的候选就不用考虑了
         // （否则每个线程都要从头填满自己的前 N 名，插入与比较的总量是单线程的几倍）。
         let floor = AtomicI32::new(0);
@@ -476,6 +476,11 @@ impl Search {
             candidates: matched,
         });
         results
+    }
+
+    fn workers_for(&self, total: usize, pruned: bool, query: &PreparedQuery) -> usize {
+        self.threads
+            .unwrap_or_else(|| threads_for(total, pruned, query))
     }
 
     /// 上一次匹配集合（当且仅当本次查询是上一次的延长，且上一次有有效查询、没有引号）。
@@ -533,8 +538,17 @@ struct SummaryHit {
 /// 候选少于这个数时不开线程（线程启动的固定开销比打分还大）。
 const PARALLEL_THRESHOLD: usize = 12_000;
 
-fn threads_for(total: usize) -> usize {
+/// 高匹配密度的多词查询经前缀剪枝后，候选虽变少，剩余打分仍可能很重。
+const PRUNED_MULTIWORD_PARALLEL_MIN: usize = 10_000;
+
+fn threads_for(total: usize, pruned: bool, query: &PreparedQuery) -> usize {
     if total < PARALLEL_THRESHOLD {
+        if pruned
+            && total >= PRUNED_MULTIWORD_PARALLEL_MIN
+            && query.values.as_ref().is_some_and(|parts| parts.len() > 1)
+        {
+            return rayon::current_num_threads().min(2);
+        }
         return 1;
     }
     rayon::current_num_threads()
@@ -898,4 +912,86 @@ fn push_hit(picks: &mut Picks, index: &FileIndex, hit: &Hit) {
             trailing: None,
         },
     );
+}
+
+#[cfg(test)]
+mod pruned_multiword_worker_tests {
+    use super::*;
+
+    #[test]
+    fn pruned_multiword_worker_exception_respects_bounds_query_and_pool() {
+        let pool = |workers| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap()
+        };
+        let mixed = prepare_query("enemy spa");
+        let one_piece = prepare_query("enemy");
+        let one_piece_with_space = prepare_query("enemy ");
+        pool(4).install(|| {
+            let search = Search::default();
+            assert_eq!(search.workers_for(9_999, true, &mixed), 1);
+            assert_eq!(search.workers_for(10_000, true, &mixed), 2);
+            assert_eq!(search.workers_for(11_999, true, &mixed), 2);
+            assert_eq!(search.workers_for(11_999, false, &mixed), 1);
+            assert_eq!(search.workers_for(11_999, true, &one_piece), 1);
+            assert_eq!(search.workers_for(11_999, true, &one_piece_with_space), 1);
+            assert_eq!(search.workers_for(12_000, true, &mixed), 2);
+            assert_eq!(search.workers_for(12_000, false, &mixed), 2);
+            assert_eq!(search.workers_for(24_000, true, &mixed), 4);
+            assert_eq!(search.workers_for(24_000, false, &one_piece), 4);
+        });
+        pool(1).install(|| assert_eq!(Search::default().workers_for(11_999, true, &mixed), 1));
+    }
+
+    #[test]
+    fn pruned_multiword_parallel_search_keeps_order_scores_and_highlights() {
+        let mut index = FileIndex::default();
+        for i in 0..11_620 {
+            let path = format!("Assets/Hot/EnemySpawner{i:05}.cs");
+            index.insert(WorkspacePath::new(&path).unwrap());
+        }
+        for i in 0..2_512 {
+            let path = format!("Assets/Cold/Different{i:05}.cs");
+            index.insert(WorkspacePath::new(&path).unwrap());
+        }
+        assert_eq!(index.len(), 14_132);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut automatic = Search::default();
+            let mut one = Search::default();
+            one.set_threads(Some(1));
+            let options = SearchOptions::default();
+            automatic.run(&index, "enemy sp", &[], options);
+            one.run(&index, "enemy sp", &[], options);
+
+            let query = prepare_query("enemy spa");
+            let candidates = automatic.candidates(&index, &query).unwrap();
+            assert_eq!(candidates.len(), 11_620);
+            assert_eq!(automatic.workers_for(candidates.len(), true, &query), 2);
+            assert_eq!(one.workers_for(candidates.len(), true, &query), 1);
+            assert!(automatic
+                .candidates(&index, &prepare_query("enemy"))
+                .is_none());
+
+            for prefix in ["enemy spa", "enemy spaw"] {
+                let got = automatic.run(&index, prefix, &[], options);
+                let expected = one.run(&index, prefix, &[], options);
+                assert_eq!(got.files.len(), MAX_RESULTS);
+                assert_eq!(got.files.len(), expected.files.len());
+                for (a, b) in got.files.iter().zip(&expected.files) {
+                    assert_eq!(a.entry, b.entry);
+                    assert_eq!(a.score, b.score);
+                }
+                assert_eq!(
+                    automatic.prune.as_ref().unwrap().candidates,
+                    one.prune.as_ref().unwrap().candidates,
+                );
+            }
+        });
+    }
 }
