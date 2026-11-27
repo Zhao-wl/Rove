@@ -304,6 +304,9 @@ pub fn search(
 
 fn searcher(multi_line: bool) -> Searcher {
     SearcherBuilder::new()
+        // File inputs are already decoded (or deliberately left as raw bytes), and replacement
+        // inputs are UTF-8. Keep all reported positions relative to the original search chunk.
+        .bom_sniffing(false)
         .line_number(true)
         .line_terminator(LineTerminator::byte(b'\n'))
         .multi_line(multi_line)
@@ -1000,6 +1003,93 @@ mod tests {
             skipped: AtomicU64::new(0),
             settings: Arc::new(crate::settings::default_settings()),
         }
+    }
+
+    #[test]
+    fn replacement_scan_keeps_a_leading_decoded_bom_character() {
+        let text = "\u{feff}old\r\nvalue";
+        let mut query = SearchQuery::new(r"^\x{FEFF}(old)\r?\n(value)");
+        query.is_regex = true;
+        let config = SearchConfig::from_settings(Arc::new(crate::settings::default_settings()));
+        let mut matcher =
+            ReplacementMatcher::new(&query, &config, Cancellation::default()).unwrap();
+        let (lines, exact) = matcher.scan(text).unwrap();
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].ranges, vec![0..6]);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].bytes, 0..text.len());
+        assert_eq!(exact[0].groups[1], Some(3..6));
+        assert_eq!(exact[0].groups[2], Some(8..13));
+    }
+
+    #[test]
+    fn disk_search_and_replacement_remove_only_one_utf8_bom() {
+        const BOM: &[u8] = b"\xef\xbb\xbf";
+        const BODY: &str = "é old\r\nvalue\n";
+        const MATCH: &str = "old\r\nvalue";
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bom.txt");
+        let mut query = SearchQuery::new(r"(old)\r?\n(value)");
+        query.is_regex = true;
+        let shared = shared_for(&query);
+        let config = SearchConfig::from_settings(shared.settings.clone());
+        let mut replacement =
+            ReplacementMatcher::new(&query, &config, Cancellation::default()).unwrap();
+
+        for bom_count in [1, 2] {
+            let mut bytes = BOM.repeat(bom_count);
+            bytes.extend_from_slice(BODY.as_bytes());
+            std::fs::write(&path, &bytes).unwrap();
+            let prefix = BODY.find(MATCH).unwrap() + (bom_count - 1) * BOM.len();
+            let columns = prefix as u32..(prefix + "old".len()) as u32;
+            let expected = &bytes[BOM.len()..];
+            let mut lines = Vec::new();
+            search_file(&path, &shared, &mut searcher(true), &mut lines).unwrap();
+            assert_eq!(lines.len(), 1, "BOM count {bom_count}");
+            assert_eq!(lines[0].line, 0);
+            assert_eq!(lines[0].ranges, vec![columns.clone()]);
+            assert_eq!(
+                lines[0].preview.as_bytes(),
+                &expected[..prefix + "old".len()]
+            );
+
+            replacement
+                .scan_file(&path, |text, planned_lines, exact| {
+                    assert_eq!(text, expected);
+                    assert_eq!(planned_lines, lines);
+                    assert_eq!(exact.len(), 1);
+                    assert_eq!(exact[0].columns, columns);
+                    assert_eq!(exact[0].bytes, prefix..prefix + MATCH.len());
+                    assert_eq!(&text[exact[0].bytes.clone()], MATCH.as_bytes());
+                    assert_eq!(&text[exact[0].groups[1].clone().unwrap()], b"old");
+                    assert_eq!(&text[exact[0].groups[2].clone().unwrap()], b"value");
+                    let mut edited = text.to_vec();
+                    edited.splice(exact[0].bytes.clone(), b"replacement".iter().copied());
+                    assert_eq!(edited, [&expected[..prefix], b"replacement\n"].concat());
+                })
+                .unwrap()
+                .expect("real file accepted");
+        }
+    }
+
+    #[test]
+    fn replacement_keeps_bom_coordinates_at_a_noninitial_chunk() {
+        let mut text = "x".repeat(CHUNK);
+        text.push_str("\n\u{feff}needle\n");
+        let query = SearchQuery::new("needle");
+        let config = SearchConfig::from_settings(Arc::new(crate::settings::default_settings()));
+        let mut matcher =
+            ReplacementMatcher::new(&query, &config, Cancellation::default()).unwrap();
+        let (lines, exact) = matcher.scan(&text).unwrap();
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line, 1);
+        assert_eq!(lines[0].preview.as_ref(), "\u{feff}needle");
+        assert_eq!(lines[0].ranges, vec![3..9]);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].bytes, CHUNK + 4..CHUNK + 10);
+        assert_eq!(&text[exact[0].bytes.clone()], "needle");
     }
 
     /// 以下几条都走内存映射分支（#145）：阈值调低到一个探测块，免得造 17 MiB 的样本。
