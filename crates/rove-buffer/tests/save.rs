@@ -535,25 +535,31 @@ fn busy_file_retries_once_then_reports_and_retry_succeeds() {
 #[cfg(windows)]
 #[test]
 fn busy_file_released_before_the_automatic_retry_saves_silently() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::Mutex;
+
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("Player.cs");
     std::fs::write(&target, b"abc").unwrap();
     let settings = defaults();
     let mut file = load(&target, &settings);
     type_at(&mut file, 3, "d", Instant::now());
-    let marker = tempfile::tempdir().unwrap();
-    let reached = marker.path().join("locked");
-    let mut child = spawn_child(
-        "child_hold_exclusive",
-        &[
-            ("ROVE_SAVE_TARGET", &target),
-            ("ROVE_SAVE_REACHED", &reached),
-        ],
-        &[("ROVE_SAVE_HOLD_MS", "300".into())],
-    );
-    wait_for(&reached, Duration::from_secs(60));
+    let exclusive = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(&target)
+        .unwrap();
+    let lock = Mutex::new(Some(exclusive));
     let write = WriteOptions {
-        busy_retry_delay: Duration::from_millis(1500),
+        replace_fail_point: Some(save::ReplaceFailPoint(Arc::new(move |attempt| {
+            if attempt == 2 {
+                // 等生产代码真正进入第二次替换，再释放独占句柄。
+                drop(lock.lock().unwrap().take().expect("target still locked"));
+            }
+            // 两次都由 Windows 的真实替换决定成功或失败。
+            None
+        }))),
         ..WriteOptions::default()
     };
     let outcome = file.save(
@@ -563,7 +569,6 @@ fn busy_file_released_before_the_automatic_retry_saves_silently() {
         &write,
         Instant::now(),
     );
-    child.wait().unwrap();
     assert!(
         matches!(outcome, SaveOutcome::Saved { attempts: 2, .. }),
         "{outcome:?}"
