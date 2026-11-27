@@ -9,6 +9,9 @@ use std::cmp::Ordering;
 
 /// `compareAnything(one, other, lookFor)`：返回负数、0、正数。
 pub fn compare_anything(one: &str, other: &str, look_for: &str) -> i32 {
+    if one.is_ascii() && other.is_ascii() && look_for.is_ascii() {
+        return compare_anything_ascii(one.as_bytes(), other.as_bytes(), look_for.as_bytes());
+    }
     let a = one.to_lowercase();
     let b = other.to_lowercase();
 
@@ -33,6 +36,96 @@ pub fn compare_anything(one: &str, other: &str, look_for: &str) -> i32 {
 
     // `localeCompare` 的兜底
     ord(a.cmp(&b))
+}
+
+// The lookup is already normalized by callers where needed. Fold only candidate bytes.
+fn ascii_matches_lower(candidate: &[u8], look_for: &[u8]) -> bool {
+    candidate
+        .iter()
+        .zip(look_for)
+        .all(|(byte, query)| byte.to_ascii_lowercase() == *query)
+}
+
+fn compare_anything_ascii(one: &[u8], other: &[u8], look_for: &[u8]) -> i32 {
+    let prefix = |candidate: &[u8]| {
+        candidate
+            .get(..look_for.len())
+            .is_some_and(|head| ascii_matches_lower(head, look_for))
+    };
+    let a_prefix = prefix(one);
+    let b_prefix = prefix(other);
+    if a_prefix != b_prefix {
+        return ord(b_prefix.cmp(&a_prefix));
+    }
+    // If both match, ASCII byte length is the same as folded UTF-16 length.
+    if a_prefix && one.len() != other.len() {
+        return ord(one.len().cmp(&other.len()));
+    }
+    let suffix = |candidate: &[u8]| {
+        candidate
+            .len()
+            .checked_sub(look_for.len())
+            .is_some_and(|start| ascii_matches_lower(&candidate[start..], look_for))
+    };
+    let by_suffix = suffix(other).cmp(&suffix(one));
+    if by_suffix != Ordering::Equal {
+        return ord(by_suffix);
+    }
+    let by_name = collate_ascii(one, other);
+    if by_name != Ordering::Equal {
+        return ord(by_name);
+    }
+    // Same fallback as compare_file_names on fully folded strings, including leading zero ties.
+    ord(one
+        .iter()
+        .map(u8::to_ascii_lowercase)
+        .cmp(other.iter().map(u8::to_ascii_lowercase)))
+}
+
+fn ascii_number(bytes: &[u8]) -> (&[u8], &[u8]) {
+    let end = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(bytes.len());
+    let (digits, rest) = bytes.split_at(end);
+    let significant = digits
+        .iter()
+        .position(|byte| *byte != b'0')
+        .unwrap_or(digits.len());
+    (&digits[significant..], rest)
+}
+
+fn collate_ascii(mut one: &[u8], mut other: &[u8]) -> Ordering {
+    loop {
+        match (one.split_first(), other.split_first()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some((&x, tail_a)), Some((&y, tail_b))) => {
+                if x.is_ascii_digit() && y.is_ascii_digit() {
+                    let (a, rest_a) = ascii_number(one);
+                    let (b, rest_b) = ascii_number(other);
+                    let digits = a.len().cmp(&b.len()).then_with(|| a.cmp(b));
+                    if digits != Ordering::Equal {
+                        return digits;
+                    }
+                    one = rest_a;
+                    other = rest_b;
+                } else {
+                    if x != y {
+                        // Keep Unicode's whitespace classification for ASCII controls such as VT.
+                        let key = |byte: u8| char_key(char::from(byte.to_ascii_lowercase()));
+                        let order = key(x).cmp(&key(y));
+                        if order != Ordering::Equal {
+                            return order;
+                        }
+                    }
+                    one = tail_a;
+                    other = tail_b;
+                }
+            }
+        }
+    }
 }
 
 /// `compareByPrefix`。
@@ -174,5 +267,148 @@ mod tests {
             "同为前缀时短的在前"
         );
         assert_eq!(compare_anything("xa", "ab", "a"), 1);
+    }
+
+    // The previous compare_anything implementation, with the original
+    // Unicode prefix / collation paths, stays independent of the ASCII branch.
+    fn legacy_anything(one: &str, other: &str, look_for: &str) -> i32 {
+        let a = one.to_lowercase();
+        let b = other.to_lowercase();
+        let prefix = compare_by_prefix(one, other, look_for);
+        if prefix != 0 {
+            return prefix;
+        }
+        let a_suffix = a.ends_with(look_for);
+        let b_suffix = b.ends_with(look_for);
+        if a_suffix != b_suffix {
+            return if a_suffix { -1 } else { 1 };
+        }
+        let name = compare_file_names(&a, &b);
+        if name != 0 {
+            return name;
+        }
+        ord(a.cmp(&b))
+    }
+
+    #[test]
+    fn compare_anything_ascii_exactly_matches_the_original_order() {
+        let verify = |left: &str, right: &str, query: &str| {
+            assert_eq!(
+                compare_anything(left, right, query),
+                legacy_anything(left, right, query),
+                "left={left:?} right={right:?} query={query:?}"
+            );
+        };
+
+        let bytes: Vec<String> = (0u8..=127)
+            .map(|byte| char::from(byte).to_string())
+            .collect();
+        for a in &bytes {
+            for b in &bytes {
+                let left = format!("a{a}001Z");
+                let right = format!("A{b}1z");
+                verify(a, b, "");
+                verify(a, b, a);
+                verify(&left, &right, "z");
+                verify(&left, &right, "Z");
+                verify(&left, &right, "A");
+            }
+        }
+        let long = [
+            format!("file{}1.cs", "0".repeat(1024)),
+            format!("file{}.cs", "9".repeat(1024)),
+            format!("file1{}.cs", "0".repeat(1024)),
+            format!("x{}a0007Y", "0".repeat(1024)),
+            format!("X{}a7y", "0".repeat(1023)),
+        ];
+        let corpus: Vec<&str> = [
+            "",
+            "file0.cs",
+            "file00.cs",
+            "File001.cs",
+            "file1.cs",
+            "file2.cs",
+            "file10.cs",
+            "A0z1",
+            "a00z2",
+            "dir\\FiLe9.CS",
+            "dir/File09.cs",
+            "π1",
+            "π9",
+            "Écho2",
+            "E\u{301}cho10",
+            "İX",
+            "IX",
+            "ΟΣ",
+            "οσ",
+            "ος",
+            "𐐀Name",
+            "𐐨Name",
+            "P😀2",
+            "Pabc",
+            "角色2",
+            "角色10",
+            "Ａ2",
+            "Ａ10",
+            "\x0b0",
+            "\x1c0",
+            "\0",
+        ]
+        .into_iter()
+        .chain(long.iter().map(String::as_str))
+        .collect();
+        for a in &corpus {
+            for b in &corpus {
+                for query in [
+                    "",
+                    "file",
+                    "FILE",
+                    ".cs",
+                    ".CS",
+                    "dir",
+                    "Dir",
+                    "x",
+                    "X",
+                    "π",
+                    "é",
+                    "e\u{301}",
+                    "i",
+                    "i\u{307}",
+                    "p",
+                    "角色",
+                    "not a match",
+                ] {
+                    verify(a, b, query);
+                }
+            }
+        }
+
+        assert_eq!(compare_anything("pz", "Apx", "p"), -1);
+        assert_eq!(
+            compare_anything("pz", "Apx", "P"),
+            1,
+            "prefix lookup remains case-sensitive"
+        );
+        assert_eq!(compare_anything("zB", "aa", "b"), -1);
+        assert_eq!(
+            compare_anything("zB", "aa", "B"),
+            1,
+            "suffix lookup remains case-sensitive"
+        );
+        assert_eq!(
+            compare_anything("a\x0b2", "a\x1c2", "?"),
+            -1,
+            "keep the VT whitespace class"
+        );
+        assert_eq!(
+            compare_anything("f002x3", "f2x10", "?"),
+            -1,
+            "equal numbers advance both runs"
+        );
+        assert_eq!(
+            compare_anything("FILE02", "file2", "?"),
+            -1,
+            "folded codepoint tie"
+        );
     }
 }
