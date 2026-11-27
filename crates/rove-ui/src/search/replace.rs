@@ -649,6 +649,53 @@ pub(crate) struct ApplyRequest {
     pub cancel: Cancellation,
 }
 
+enum PreviewText {
+    Flattened(String),
+    SnapshotUtf8 {
+        storage: String,
+        content_start: usize,
+    },
+}
+
+impl PreviewText {
+    fn from_snapshot(bytes: Vec<u8>, loaded: &LoadedText, allow_reuse: bool) -> Result<Self> {
+        const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
+        let content_start = if loaded.metadata.bom {
+            UTF8_BOM.len()
+        } else {
+            0
+        };
+        // Loading already enforced the file policy. Strict UTF-8 rules out lossy decoding.
+        let storage = if allow_reuse
+            && loaded.metadata.encoding == Encoding::Utf8
+            && (content_start == 0 || bytes.starts_with(UTF8_BOM))
+        {
+            String::from_utf8(bytes).ok()
+        } else {
+            None
+        };
+        match storage {
+            // The String uses the snapshot's allocation. Skip the BOM consumed by the loader;
+            // any subsequent U+FEFF is editable text.
+            Some(storage) => Ok(Self::SnapshotUtf8 {
+                storage,
+                content_start,
+            }),
+            None => contents(loaded.text.as_ref()).map(Self::Flattened),
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Flattened(text) => text,
+            Self::SnapshotUtf8 {
+                storage,
+                content_start,
+            } => &storage[*content_start..],
+        }
+    }
+}
+
 pub(crate) fn prepare_preview(
     request: &PreviewRequest,
     opened: &BTreeMap<rove_base::WorkspacePath, OpenFile>,
@@ -679,7 +726,7 @@ pub(crate) fn prepare_preview(
             } else {
                 contents(open.text.as_ref()).map(|text| {
                     (
-                        text,
+                        PreviewText::Flattened(text),
                         Origin::Open(open.id, open.text.version()),
                         open.read_only,
                         open.eol,
@@ -695,8 +742,13 @@ pub(crate) fn prepare_preview(
                 let snapshot = DiskSnapshot::read(&absolute, huge_size)?;
                 let loaded = load_for_replacement(&snapshot.bytes, settings.as_ref())?;
                 let eol = EditBuffer::from_loaded(&loaded)?.eol();
+                let text = PreviewText::from_snapshot(
+                    snapshot.bytes,
+                    &loaded,
+                    !rule_read_only && !permission,
+                )?;
                 Ok((
-                    contents(loaded.text.as_ref())?,
+                    text,
                     Origin::Disk(DiskSource {
                         path: absolute.clone(),
                         canonical: target,
@@ -709,6 +761,7 @@ pub(crate) fn prepare_preview(
             })
         };
         let result = match loaded.and_then(|(text, origin, open_read_only, eol)| {
+            let text = text.as_str();
             let open = opened.get(path);
             let mut changes = if let Some(open) =
                 open.filter(|open| open.dirty && file.open_result != Some(open.id))
@@ -732,12 +785,12 @@ pub(crate) fn prepare_preview(
                     changes,
                     EditBuffer::from_loaded(&loaded)?,
                     recovery,
-                    &text,
+                    text,
                 )?
             } else {
                 plan(
                     &mut matcher,
-                    &text,
+                    text,
                     &file.lines,
                     &pattern,
                     request.preserve_case,
@@ -911,6 +964,238 @@ mod tests {
                 plan_replacements(&rope, &searcher, &found.matches, &pattern, preserve_case)
                     .unwrap();
             assert_eq!(transaction(changes).unwrap().edits(), in_file);
+        }
+    }
+
+    #[test]
+    fn closed_snapshot_reuses_allocation_and_honors_disk_bom_and_guards() {
+        let settings = rove_search::settings::default_settings();
+        let raw = b"\xef\xbb\xbf\xef\xbb\xbfplain".to_vec();
+        let loaded = load_for_replacement(&raw, &settings).unwrap();
+        let expected = contents(loaded.text.as_ref()).unwrap();
+        let protected = PreviewText::from_snapshot(raw.clone(), &loaded, false).unwrap();
+        assert!(matches!(&protected, PreviewText::Flattened(_)));
+        assert_eq!(protected.as_str(), expected);
+        let original_body = raw.as_ptr().wrapping_add(3);
+        let text = PreviewText::from_snapshot(raw, &loaded, true).unwrap();
+        assert!(matches!(&text, PreviewText::SnapshotUtf8 { .. }));
+        assert_eq!(text.as_str().as_ptr(), original_body);
+        assert_eq!(text.as_str(), "\u{feff}plain");
+        assert_eq!(text.as_str(), expected);
+        assert!(load_for_replacement(b"binary\0content", &settings).is_err());
+    }
+
+    #[test]
+    fn closed_utf8_preview_matches_flattened_plans_and_exact_disk_bytes() {
+        use rove_base::WorkspacePath;
+        use rove_config::{SettingsOptions, SettingsService};
+
+        let directory = tempfile::tempdir().unwrap();
+        let plain = "é old\r\nvalue\ntail\r\n";
+        let unicode = "😀é old\r\nvalue\ntail\r\n";
+        let configure = |name: &str, json: &str| {
+            let user = directory.path().join(name);
+            std::fs::create_dir(&user).unwrap();
+            std::fs::write(user.join("settings.json"), json).unwrap();
+            let backup = user.join("backup");
+            let mut options = SettingsOptions::new(user, backup);
+            options.watch = None;
+            Arc::new(SettingsService::open(
+                options,
+                rove_search::settings::default_settings().0,
+            ))
+        };
+        let utf8 = configure(
+            "utf8",
+            r#"{"files.encoding":"utf8","files.autoGuessEncoding":false}"#,
+        );
+        let legacy = configure(
+            "legacy",
+            r#"{"files.encoding":"windows1252","files.autoGuessEncoding":false}"#,
+        );
+        let with_prefix = |prefix: &[u8], bytes: &[u8]| [prefix, bytes].concat();
+        let utf16 = |text: &str, le: bool| {
+            let bom = if le { [0xff, 0xfe] } else { [0xfe, 0xff] };
+            bom.into_iter()
+                .chain(text.encode_utf16().flat_map(|unit| {
+                    if le {
+                        unit.to_le_bytes()
+                    } else {
+                        unit.to_be_bytes()
+                    }
+                }))
+                .collect::<Vec<_>>()
+        };
+        let unicode_changed = "😀é value:old\ntail\r\n";
+        let expected_cp1252 = b"\xe9 value:old\ntail\r\n".to_vec();
+        let mut lossy = with_prefix(b"\xef\xbb\xbf", unicode.as_bytes());
+        lossy.extend(std::iter::repeat_n(b'x', 160));
+        lossy.push(0xff);
+        let cases = [
+            (
+                "plain UTF-8",
+                unicode.as_bytes().to_vec(),
+                Some(unicode_changed.as_bytes().to_vec()),
+                &utf8,
+                Encoding::Utf8,
+                true,
+            ),
+            (
+                "BOM UTF-8",
+                with_prefix(b"\xef\xbb\xbf", unicode.as_bytes()),
+                Some(with_prefix(b"\xef\xbb\xbf", unicode_changed.as_bytes())),
+                &utf8,
+                Encoding::Utf8,
+                true,
+            ),
+            (
+                "double BOM UTF-8",
+                with_prefix(b"\xef\xbb\xbf\xef\xbb\xbf", unicode.as_bytes()),
+                Some(with_prefix(
+                    b"\xef\xbb\xbf\xef\xbb\xbf",
+                    unicode_changed.as_bytes(),
+                )),
+                &utf8,
+                Encoding::Utf8,
+                true,
+            ),
+            (
+                "UTF-16LE",
+                utf16(unicode, true),
+                Some(utf16(unicode_changed, true)),
+                &legacy,
+                Encoding::Utf16Le,
+                false,
+            ),
+            (
+                "UTF-16BE",
+                utf16(unicode, false),
+                Some(utf16(unicode_changed, false)),
+                &legacy,
+                Encoding::Utf16Be,
+                false,
+            ),
+            (
+                "configured Windows-1252",
+                b"\xe9 old\r\nvalue\ntail\r\n".to_vec(),
+                Some(expected_cp1252),
+                &legacy,
+                Encoding::Other(Arc::from("windows-1252")),
+                false,
+            ),
+            (
+                "strict UTF-8 bytes selected as Windows-1252",
+                b"\xc3\xa9 old\r\nvalue\ntail\r\n".to_vec(),
+                Some(b"\xc3\xa9 value:old\ntail\r\n".to_vec()),
+                &legacy,
+                Encoding::Other(Arc::from("windows-1252")),
+                false,
+            ),
+            (
+                "accepted lossy UTF-8",
+                lossy,
+                None,
+                &utf8,
+                Encoding::Utf8,
+                false,
+            ),
+        ];
+        for (label, original, expected, settings, encoding, borrow_expected) in cases {
+            let relative = WorkspacePath::new("fixture.txt").unwrap();
+            let path = directory.path().join(relative.as_str());
+            std::fs::write(&path, &original).unwrap();
+            let loaded = load_for_replacement(&original, settings.as_ref()).unwrap();
+            assert_eq!(loaded.metadata.encoding, encoding, "{label}");
+            let text = contents(loaded.text.as_ref()).unwrap();
+            assert!(text.contains("old\r\nvalue"), "{label}: {text:?}");
+            if label == "configured Windows-1252" {
+                assert_eq!(text, plain);
+            }
+            let config = SearchConfig::from_settings(settings.clone());
+            let mut query = SearchQuery::new(r"(old)\r?\n(value)");
+            query.is_regex = true;
+            let cancel = Cancellation::default();
+            let mut matcher = ReplacementMatcher::new(&query, &config, cancel.clone()).unwrap();
+            let (lines, exact) = matcher.scan(&text).unwrap();
+            assert_eq!(exact.len(), 1, "{label}");
+            let snapshot_text =
+                PreviewText::from_snapshot(original.clone(), &loaded, true).unwrap();
+            assert_eq!(
+                matches!(&snapshot_text, PreviewText::SnapshotUtf8 { .. }),
+                borrow_expected,
+                "{label}"
+            );
+            assert_eq!(snapshot_text.as_str(), text, "{label}");
+            let template = "$2:$1";
+            let baseline = plan(
+                &mut matcher,
+                &text,
+                &lines,
+                &ReplacePattern::parse(template, true),
+                false,
+            )
+            .unwrap();
+            let request = PreviewRequest {
+                serial: 1,
+                root: directory.path().to_path_buf(),
+                query,
+                template: template.to_owned(),
+                preserve_case: false,
+                files: vec![Arc::new(super::super::model::FileNode::new(
+                    relative.clone(),
+                    lines,
+                ))],
+                cancel: cancel.clone(),
+            };
+            let mut preview =
+                prepare_preview(&request, &BTreeMap::new(), settings.clone()).unwrap();
+            assert_eq!(preview.len(), 1, "{label}");
+            let Some(PreviewFile::Planned(file)) = preview.remove(&relative) else {
+                panic!("{label}: preview did not produce an applicable file");
+            };
+            assert!(!file.read_only && file.remaining.is_empty(), "{label}");
+            let Origin::Disk(origin) = file.origin else {
+                panic!("{label}: expected disk origin");
+            };
+            assert_eq!(origin.format, SourceFormat::of(&loaded), "{label}");
+            assert_eq!(baseline.len(), 1, "{label}");
+            assert_eq!(file.changes.len(), baseline.len(), "{label}");
+            let change = &file.changes[0];
+            let old_path = &baseline[0];
+            assert_eq!(change.line, old_path.line, "{label}");
+            assert_eq!(change.columns, old_path.columns, "{label}");
+            assert_eq!(change.old, old_path.old, "{label}");
+            assert_eq!(change.edit, old_path.edit, "{label}");
+            assert_eq!(change.old.as_ref(), "old\r\nvalue");
+            assert_eq!(change.edit.text.as_ref(), "value:old");
+            assert_eq!(change.edit.range.start().0, exact[0].bytes.start as u64);
+            assert_eq!(change.edit.range.end().0, exact[0].bytes.end as u64);
+            assert_eq!(change.line, exact[0].line);
+            assert_eq!(change.columns, exact[0].columns);
+            assert_eq!(change.columns.start as usize, text.find("old").unwrap());
+
+            let edits = transaction(file.changes).unwrap();
+            let write = WriteOptions::default();
+            let result = DiskUndo::apply(origin, &edits, None, settings.clone(), &write, &cancel);
+            if let Some(expected) = &expected {
+                let (mut undo, _) = result.unwrap();
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    *expected,
+                    "{label}: write bytes"
+                );
+                undo.restore(&write, &cancel).unwrap();
+            } else {
+                assert!(
+                    matches!(result, Err(Failure::Invalid)),
+                    "{label}: lossy write must fail"
+                );
+            }
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                original,
+                "{label}: original bytes"
+            );
         }
     }
 
