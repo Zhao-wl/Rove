@@ -705,21 +705,32 @@ fn prefetch_preview_bytes(mut file: File, huge_size: u64) -> Result<DiskPreviewI
     if metadata.len() > PREFETCH_MAX_BYTES {
         return Ok(DiskPreviewInput::Deferred(file));
     }
+    let Some(bytes) = read_preview_prefix(&mut file, metadata.len(), huge_size)? else {
+        return Ok(DiskPreviewInput::Deferred(file));
+    };
+    drop(file);
+    let stamp = DiskStamp::from_metadata(&metadata, content_hash(&bytes));
+    Ok(DiskPreviewInput::Snapshot(DiskSnapshot { bytes, stamp }))
+}
+
+fn read_preview_prefix(
+    file: &mut File,
+    initial_len: u64,
+    huge_size: u64,
+) -> Result<Option<Vec<u8>>> {
     // One sentinel byte detects growth beyond the prefetch limit. Keep the same
     // handle for the ordered reader if that happens.
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bytes = Vec::with_capacity(initial_len as usize);
     let size_limit = huge_size.min(PREFETCH_MAX_BYTES + 1);
-    (&mut file).take(size_limit).read_to_end(&mut bytes)?;
+    file.take(size_limit).read_to_end(&mut bytes)?;
     if bytes.len() as u64 >= huge_size {
         return Err(Failure::Skipped);
     }
     if bytes.len() as u64 > PREFETCH_MAX_BYTES {
         file.rewind()?;
-        return Ok(DiskPreviewInput::Deferred(file));
+        return Ok(None);
     }
-    drop(file);
-    let stamp = DiskStamp::from_metadata(&metadata, content_hash(&bytes));
-    Ok(DiskPreviewInput::Snapshot(DiskSnapshot { bytes, stamp }))
+    Ok(Some(bytes))
 }
 
 enum PreviewText {
@@ -1307,6 +1318,28 @@ mod tests {
                 "{label}: original bytes"
             );
         }
+    }
+
+    #[test]
+    fn preview_prefetch_pool_and_growing_file_stay_bounded() {
+        let pool = preview_open_pool().expect("a dedicated preview pool");
+        assert_eq!(pool.current_num_threads(), PREVIEW_OPEN_BATCH);
+
+        let mut file = tempfile::tempfile().unwrap();
+        let mut bytes = vec![b'x'; PREFETCH_MAX_BYTES as usize];
+        bytes.extend_from_slice(b"tail");
+        std::io::Write::write_all(&mut file, &bytes).unwrap();
+        file.rewind().unwrap();
+        let initial_len = PREFETCH_MAX_BYTES - 1;
+        let huge_size = bytes.len() as u64 + 1;
+        assert!(read_preview_prefix(&mut file, initial_len, huge_size)
+            .unwrap()
+            .is_none());
+        assert_eq!(file.stream_position().unwrap(), 0);
+        assert_eq!(
+            DiskSnapshot::read_open_file(file, huge_size).unwrap().bytes,
+            bytes
+        );
     }
 
     #[test]
