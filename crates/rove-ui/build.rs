@@ -1,13 +1,18 @@
 //! #29：Markdown 预览的打包资源在构建时用 DEFLATE 压缩后嵌入 `rove.exe`（Mermaid 等合计约 4.3 MB，
 //! 压缩后约 1.3 MB），请求时在内存里解压（`markdown::page::asset`）。woff2 字体本身已压缩，原样嵌入。
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
-fn main() {
+pub(crate) fn main() {
     let source = Path::new("assets/markdown");
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("markdown");
     println!("cargo:rerun-if-changed=assets/markdown");
     compress_dir(source, source, &out);
-    build_info();
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    build_info(&manifest_dir);
 }
 
 /// #76：「关于」对话框要显示的构建信息。
@@ -19,14 +24,14 @@ fn main() {
 /// 这里**故意不**对 `.git/HEAD` 声明 `rerun-if-changed`：那会让每次提交都重编 rove-ui。
 /// 代价是开发构建里的提交号可能停在上一次构建脚本运行时的值；发布流水线显式设环境变量，
 /// 环境变量一变构建脚本就重跑，所以**发布产物里的提交号总是准确的**。
-fn build_info() {
+fn build_info(manifest_dir: &Path) {
     for key in ["ROVE_BUILD_COMMIT", "ROVE_BUILD_DATE", "ROVE_BUILD_CHANNEL"] {
         println!("cargo:rerun-if-env-changed={key}");
     }
     let git = |args: &[&str]| -> Option<String> {
         std::process::Command::new("git")
             .args(args)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .current_dir(manifest_dir)
             .output()
             .ok()
             .filter(|o| o.status.success())
@@ -49,12 +54,15 @@ fn build_info() {
     println!("cargo:rustc-env=ROVE_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=ROVE_BUILD_DATE={date}");
     println!("cargo:rustc-env=ROVE_BUILD_CHANNEL={channel}");
-    println!("cargo:rustc-env=ROVE_GPUI_VERSION={}", gpui_version());
+    println!(
+        "cargo:rustc-env=ROVE_GPUI_VERSION={}",
+        gpui_version(manifest_dir)
+    );
 }
 
 /// 根 `Cargo.toml` 里 `gpui = { version = "=0.2.2", … }` 的版本号。
-fn gpui_version() -> String {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+fn gpui_version(manifest_dir: &Path) -> String {
+    let manifest = manifest_dir
         .parent()
         .and_then(Path::parent)
         .map(|repo| repo.join("Cargo.toml"));
