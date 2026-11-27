@@ -448,8 +448,8 @@ mod tests {
         let count = offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength);
         bytes[action..action + 4].copy_from_slice(&FILE_ACTION_MODIFIED.to_le_bytes());
         bytes[count..count + 4].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
-        for (target, code) in bytes[NAME..].chunks_exact_mut(2).zip(&name) {
-            target.copy_from_slice(&code.to_le_bytes());
+        for (target, code) in bytes[NAME..].as_chunks_mut::<2>().0.iter_mut().zip(&name) {
+            *target = code.to_le_bytes();
         }
         assert_eq!(invalidated(&bytes, &[name], &mut Some(0)), Some(true));
     }
