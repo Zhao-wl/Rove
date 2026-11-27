@@ -328,7 +328,9 @@ fn long_csharp_lines_skip_highlighting_and_keep_following_lines() {
 
 #[test]
 fn newline_insertion_preserves_unchanged_tokens_with_rebased_bytes() {
-    let service = TreeSitterSyntax::default().document();
+    let service = TreeSitterSyntax::default()
+        .with_refresh_budget(Duration::from_secs(5))
+        .document();
     let old = "class C {\n string a = \"中文\";\n int b = 7;\n}\n";
     let initial = parse(&service, "csharp", old, 1);
     let at = old.find("string").unwrap();
@@ -340,6 +342,8 @@ fn newline_insertion_preserves_unchanged_tokens_with_rebased_bytes() {
         &new,
         2,
     );
+    assert_eq!(updated.previous, Some(Version(1)));
+    assert_eq!(updated.snapshot.version(), Version(2));
     assert_eq!(
         updated.changed_lines.as_deref(),
         Some(&[Span::new(Line(1), Line(3)).unwrap()][..])
