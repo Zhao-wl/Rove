@@ -258,3 +258,15 @@ platform reports mouse leave, so a tooltip can dismiss without a GPUI mouse move
 
 窗口每次绘制前清空缓存，最多保存 4096 项。达到上限后的未命中走原路径，错误不入缓存。
 升级 GPUI 后按同一规则重打补丁，并复跑 DPI、缩放、文本绘制和真实日志跟随的性能回放。
+
+## #356 — Windows 剪贴板写入所有者
+
+`src/platform/windows/platform.rs` 将 GPUI 自有的消息窗口作为剪贴板写入所有者，
+`clipboard.rs` 保留读取时的空 HWND。写入失败记录错误，传给系统的全局内存仅在提交成功
+后转移所有权。升级 GPUI 时检查同一窗口的生命周期、写入错误和内存所有权。
+
+运行 GPUI 单测时，在临时源码副本的根 `Cargo.toml` 中将 `vendor/gpui` 加为 workspace
+成员，然后执行 `cargo test -p gpui --lib clipboard_block`。这两个回归只使用普通全局内存。
+在已确认具有独立剪贴板的 Windows 环境中，另设置 `ROVE_TEST_ISOLATED_CLIPBOARD=1`，
+执行 `cargo test -p gpui --lib windows_clipboard_round_trip_with_owned_window -- --ignored`，
+核对所有者、Unicode 文本和 GPUI 元数据往返。
