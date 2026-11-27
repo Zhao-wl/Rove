@@ -26,6 +26,8 @@ pub(super) struct ReplacementState {
     applying: Option<Cancellation>,
     pub(crate) can_undo: bool,
     result: Option<Report>,
+    #[cfg(test)]
+    ready_published_at: Option<std::time::Instant>,
 }
 
 #[derive(Default)]
@@ -54,6 +56,10 @@ impl SearchView {
         }
         self.replace.serial = self.replace.serial.wrapping_add(1);
         self.replace.plans = None;
+        #[cfg(test)]
+        {
+            self.replace.ready_published_at = None;
+        }
         *self.replace.rendered.borrow_mut() = None;
     }
 
@@ -115,6 +121,14 @@ impl SearchView {
             None
         };
         self.list.update(cx, |_, cx| cx.notify());
+        #[cfg(test)]
+        {
+            self.replace.ready_published_at = self
+                .replace
+                .plans
+                .as_ref()
+                .map(|_| std::time::Instant::now());
+        }
         cx.notify();
     }
 
@@ -221,6 +235,11 @@ impl SearchView {
             self.replace.rendered.borrow().is_some(),
             self.replace.can_undo,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replacement_test_published_at(&self) -> Option<std::time::Instant> {
+        self.replace.ready_published_at
     }
 
     #[cfg(test)]

@@ -1041,6 +1041,119 @@ fn replace_workspace_rechecks_read_only_rules_entered_after_preview(cx: &mut Tes
 }
 
 #[gpui::test]
+fn replace_workspace_prefetch_preserves_normal_open_and_protected_results(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"rove.largeFile.threshold":307200,"files.readonlyInclude":{"protected.txt":true}}"#,
+    );
+    let ordinary: Vec<_> = (0..64).map(|i| format!("file_{i:02}.txt")).collect();
+    for path in &ordinary {
+        fixture.file(path, b"needle\r\n");
+    }
+    let open_on_disk = b"needle\r\ndisk text\r\n";
+    fixture.file("open.txt", open_on_disk);
+    fixture.file("protected.txt", b"needle\r\n");
+    let large = [b"needle\n".as_slice(), &vec![b'x'; 260 * 1024]].concat();
+    fixture.file("deferred.txt", &large);
+    let huge = [b"needle\n".as_slice(), &vec![b'x'; 310 * 1024]].concat();
+    fixture.file("huge.txt", &huge);
+
+    let (view, cx) = fixture.open(cx);
+    let opened = open_file(&fixture, &view, cx, "open.txt");
+    view.update(cx, |wb, cx| {
+        let offset = rove_base::ByteOffset(0);
+        wb.editing
+            .saves
+            .borrow_mut()
+            .file_mut(opened)
+            .unwrap()
+            .session_mut()
+            .edit(
+                rove_buffer::edit::Transaction::single(
+                    rove_base::ByteRange::new(offset, offset).unwrap(),
+                    "unsaved\r\n",
+                ),
+                Instant::now(),
+            )
+            .unwrap();
+        wb.sync_document_from_session(opened, cx);
+    });
+    view.read_with(cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        let file = saves.file(opened).unwrap();
+        assert!(file.is_dirty());
+        assert_eq!(
+            file.session().buffer().contents(),
+            "unsaved\r\nneedle\r\ndisk text\r\n"
+        );
+    });
+    assert_eq!(fixture.read("open.txt"), open_on_disk);
+    prepare(&view, cx, "needle", "NEW");
+    view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        for name in ["open.txt", "protected.txt", "deferred.txt", "huge.txt"] {
+            let path = WorkspacePath::new(name).unwrap();
+            assert!(
+                search.results().file(&path).is_some(),
+                "missing search row for {name}"
+            );
+        }
+        assert_eq!(search.results().match_count(), 68);
+        let writable = search.replacement_test_writable_files();
+        assert_eq!(writable.len(), 66);
+        for name in ordinary
+            .iter()
+            .map(String::as_str)
+            .chain(["open.txt", "deferred.txt"])
+        {
+            let path = WorkspacePath::new(name).unwrap();
+            assert!(writable.contains(&path), "{path:?}");
+        }
+        for name in ordinary.iter().map(String::as_str).chain([
+            "open.txt",
+            "protected.txt",
+            "deferred.txt",
+            "huge.txt",
+        ]) {
+            let path = WorkspacePath::new(name).unwrap();
+            assert_eq!(
+                search.replacement_test_comparison(&path),
+                Some(("needle".to_owned(), "NEW".to_owned())),
+                "{path:?}",
+            );
+        }
+    });
+
+    let selected = WorkspacePath::new("file_63.txt").unwrap();
+    focus_file(&view, cx, &selected);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    assert_eq!(fixture.read("file_63.txt"), b"NEW\r\n");
+    assert_eq!(fixture.read("file_00.txt"), b"needle\r\n");
+    let open_path = WorkspacePath::new("open.txt").unwrap();
+    wait(&view, cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        search.results().file(&selected).is_none()
+            && search
+                .replacement_test_writable_files()
+                .contains(&open_path)
+    });
+    focus_file(&view, cx, &open_path);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |wb, _| {
+        wb.editing.saves.borrow().file(opened).is_some_and(|file| {
+            file.is_dirty()
+                && file.session().buffer().contents() == "unsaved\r\nNEW\r\ndisk text\r\n"
+        })
+    });
+    assert_eq!(fixture.read("open.txt"), open_on_disk);
+    assert_eq!(fixture.read("protected.txt"), b"needle\r\n");
+    assert_eq!(fixture.read("deferred.txt"), large);
+    assert_eq!(fixture.read("huge.txt"), huge);
+}
+
+#[gpui::test]
 fn replace_workspace_previews_multiline_captures_in_huge_read_only_file(cx: &mut TestAppContext) {
     let fixture = Fixture::new(r#"{"rove.largeFile.threshold": 128}"#);
     let huge = [b"needle\r\nsize\n".as_slice(), &[b'a'; 200]].concat();
@@ -1362,9 +1475,19 @@ fn replace_workspace_large_unity_writes_only_the_independent_full_copy(cx: &mut 
 
 #[gpui::test]
 fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut TestAppContext) {
+    use crate::search::view::State;
     use rove_test_support::UnityProject;
+    use std::{
+        cell::Cell,
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    const FIRST_PREVIEW_WAIT: Duration = Duration::from_secs(20);
     let original = rove_test_support::require_unity_project!(UnityProject::Large);
     let fixture = Fixture::new(r#"{"search.maxResults": 10000}"#);
+    let fixture_started = Instant::now();
+    let mut fixture_files = Vec::new();
     let mut folders = vec![original.join("Assets")];
     let mut file_count = 0;
     let mut total_bytes = 0;
@@ -1390,9 +1513,10 @@ fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut Te
             let relative = path.strip_prefix(&original).unwrap();
             let dest = fixture.folder.path().join(relative);
             std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-            std::fs::copy(path, dest).unwrap();
+            let copied = std::fs::copy(&path, dest).unwrap();
+            fixture_files.push((relative.to_owned(), copied));
             file_count += 1;
-            total_bytes += metadata.len();
+            total_bytes += copied;
             if file_count == 1500 {
                 break;
             }
@@ -1405,11 +1529,55 @@ fn replace_workspace_large_unity_sample_previews_scrolls_and_cancels(cx: &mut Te
         file_count >= 250,
         "大型 Unity 项目源码样本过少：{file_count}"
     );
+    fixture_files.sort_unstable();
+    let mut fixture_id = DefaultHasher::new();
+    fixture_files.hash(&mut fixture_id);
+    let fixture_id = fixture_id.finish();
+    let fixture_elapsed = fixture_started.elapsed();
+    let open_start = Instant::now();
     let (view, cx) = fixture.open(cx);
+    let open_elapsed = open_start.elapsed();
     let preview_start = Instant::now();
-    prepare(&view, cx, "namespace", "rove_sample_namespace");
+    start_search(&view, cx, "namespace", "rove_sample_namespace");
+    let wait_started = Instant::now();
+    let first_done = Cell::new(None);
+    let observed_ready = reaches(&view, cx, FIRST_PREVIEW_WAIT, |wb, cx| {
+        let search = wb.search.read(cx);
+        if first_done.get().is_none() && matches!(search.state(), State::Done(_)) {
+            first_done.set(Some(wait_started.elapsed()));
+        }
+        search.replacement_test_state().1
+    });
+    let wait_elapsed = wait_started.elapsed();
     let preview_elapsed = preview_start.elapsed();
-    let matches = view.read_with(cx, |wb, cx| wb.search.read(cx).results().match_count());
+    let (state, done, files, matches, stage, published) = view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        (
+            format!("{:?}", search.state()),
+            matches!(search.state(), State::Done(_)),
+            search.results().files().len(),
+            search.results().match_count(),
+            search.replacement_test_preview_stage(),
+            search.replacement_test_published_at(),
+        )
+    });
+    let first_done = first_done.get();
+    let published_since_dispatch = published.map(|at| at.saturating_duration_since(preview_start));
+    let published_since_wait = published.map(|at| at.saturating_duration_since(wait_started));
+    let within_deadline = published_since_wait.is_some_and(|elapsed| elapsed <= FIRST_PREVIEW_WAIT);
+    eprintln!(
+        "[#366 first preview] 夹具 ROVE_TEST_UNITY_LARGE/Assets 的 C# 副本 {file_count} 文件 / \
+         {total_bytes} B，路径+字节数指纹 {fixture_id:016x}，复制与清单 {fixture_elapsed:?}，\
+         工作台打开 {open_elapsed:?}；搜索状态 {state}，Done={done}，首次观察 Done={first_done:?}，\
+         已有 {files} 个文件 / {matches} 处匹配，预览阶段 {stage}，观察 Ready={observed_ready}；\
+         发布距派发 {published_since_dispatch:?}，发布距等待 {published_since_wait:?}，\
+         等待实际 {wait_elapsed:?}，总计 {preview_elapsed:?}，截止 {FIRST_PREVIEW_WAIT:?}，\
+         截止内发布={within_deadline}"
+    );
+    assert!(
+        within_deadline,
+        "首个全局替换预览未在 {FIRST_PREVIEW_WAIT:?} 内发布"
+    );
     assert!(matches > 100, "真实样本匹配过少：{matches}");
     let scroll_elapsed = scroll_replacement_results(&view, cx);
     let (cancel_elapsed, _) = cancel_large_replacement(fixture.folder.path(), &view, cx);
