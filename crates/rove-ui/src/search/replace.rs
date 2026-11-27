@@ -193,7 +193,10 @@ pub(crate) struct DiskSnapshot {
 
 impl DiskSnapshot {
     pub fn read(path: &Path, size_limit: u64) -> Result<Self> {
-        let file = File::open(path)?;
+        Self::read_open_file(File::open(path)?, size_limit)
+    }
+
+    fn read_open_file(file: File, size_limit: u64) -> Result<Self> {
         let metadata = file.metadata()?;
         if metadata.len() >= size_limit {
             return Err(Failure::Skipped);
@@ -649,6 +652,76 @@ pub(crate) struct ApplyRequest {
     pub cancel: Cancellation,
 }
 
+const PREVIEW_OPEN_BATCH: usize = 8;
+const PARALLEL_PREVIEW_MIN_FILES: usize = 64;
+const PREFETCH_MAX_BYTES: u64 = 256 * 1024;
+
+fn preview_open_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        // Keep blocking file I/O out of the Rayon pool used by interactive features.
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(PREVIEW_OPEN_BATCH)
+            .thread_name(|index| format!("rove-preview-open-{index}"))
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
+enum PreviewInput<'a> {
+    Open(&'a OpenFile),
+    Disk(PathBuf, DiskPreviewInput),
+}
+
+enum DiskPreviewInput {
+    Deferred(File),
+    Snapshot(DiskSnapshot),
+}
+
+fn open_preview_disk(
+    absolute: &Path,
+    root: &Path,
+    prefetch_limit: Option<u64>,
+) -> Result<(PathBuf, DiskPreviewInput)> {
+    let canonical = absolute.canonicalize()?;
+    if !canonical.starts_with(root) || absolute.symlink_metadata()?.is_symlink() {
+        return Err(Failure::Skipped);
+    }
+    let file = File::open(absolute)?;
+    let input = if let Some(huge_size) = prefetch_limit {
+        prefetch_preview_bytes(file, huge_size)?
+    } else {
+        DiskPreviewInput::Deferred(file)
+    };
+    Ok((canonical, input))
+}
+
+fn prefetch_preview_bytes(mut file: File, huge_size: u64) -> Result<DiskPreviewInput> {
+    let metadata = file.metadata()?;
+    if metadata.len() >= huge_size {
+        return Err(Failure::Skipped);
+    }
+    if metadata.len() > PREFETCH_MAX_BYTES {
+        return Ok(DiskPreviewInput::Deferred(file));
+    }
+    // One sentinel byte detects growth beyond the prefetch limit. Keep the same
+    // handle for the ordered reader if that happens.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let size_limit = huge_size.min(PREFETCH_MAX_BYTES + 1);
+    (&mut file).take(size_limit).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 >= huge_size {
+        return Err(Failure::Skipped);
+    }
+    if bytes.len() as u64 > PREFETCH_MAX_BYTES {
+        file.rewind()?;
+        return Ok(DiskPreviewInput::Deferred(file));
+    }
+    drop(file);
+    let stamp = DiskStamp::from_metadata(&metadata, content_hash(&bytes));
+    Ok(DiskPreviewInput::Snapshot(DiskSnapshot { bytes, stamp }))
+}
+
 enum PreviewText {
     Flattened(String),
     SnapshotUtf8 {
@@ -708,7 +781,10 @@ pub(crate) fn prepare_preview(
     let mut matcher = ReplacementMatcher::new(&request.query, &config, request.cancel.clone())?;
     let pattern = ReplacePattern::parse(&request.template, request.query.is_regex);
     let mut previews = BTreeMap::new();
-    for file in &request.files {
+    let pool = (request.files.len() >= PARALLEL_PREVIEW_MIN_FILES)
+        .then(preview_open_pool)
+        .flatten();
+    let preflight = |file: &Arc<super::model::FileNode>| {
         request.cancel.check()?;
         let path = &file.path;
         let absolute = request.root.join(path.as_str());
@@ -716,115 +792,149 @@ pub(crate) fn prepare_preview(
         let permission = metadata
             .as_ref()
             .is_ok_and(|meta| meta.permissions().readonly());
-        let rule_read_only = !rules
-            .readonly
-            .evaluate(path.as_str(), permission)
-            .is_empty();
-        let loaded = if let Some(open) = opened.get(path) {
-            if open.text.byte_len() >= huge_size {
-                Err(Failure::Skipped)
-            } else {
-                contents(open.text.as_ref()).map(|text| {
-                    (
-                        PreviewText::Flattened(text),
-                        Origin::Open(open.id, open.text.version()),
-                        open.read_only,
-                        open.eol,
-                    )
-                })
-            }
-        } else {
-            let target = absolute.canonicalize().map_err(Failure::from);
-            target.and_then(|target| {
-                if !target.starts_with(&root) || absolute.symlink_metadata()?.is_symlink() {
-                    return Err(Failure::Skipped);
-                }
-                let snapshot = DiskSnapshot::read(&absolute, huge_size)?;
-                let loaded = load_for_replacement(&snapshot.bytes, settings.as_ref())?;
-                let eol = EditBuffer::from_loaded(&loaded)?.eol();
-                let text = PreviewText::from_snapshot(
-                    snapshot.bytes,
-                    &loaded,
-                    !rule_read_only && !permission,
-                )?;
-                Ok((
-                    text,
-                    Origin::Disk(DiskSource {
-                        path: absolute.clone(),
-                        canonical: target,
-                        stamp: snapshot.stamp,
-                        format: SourceFormat::of(&loaded),
-                    }),
-                    false,
-                    eol,
-                ))
-            })
+        let input = match opened.get(path) {
+            Some(open) => Ok(PreviewInput::Open(open)),
+            None => open_preview_disk(&absolute, &root, pool.map(|_| huge_size))
+                .map(|(canonical, disk)| PreviewInput::Disk(canonical, disk)),
         };
-        let result = match loaded.and_then(|(text, origin, open_read_only, eol)| {
-            let text = text.as_str();
-            let open = opened.get(path);
-            let mut changes = if let Some(open) =
-                open.filter(|open| open.dirty && file.open_result != Some(open.id))
-            {
-                let recovery = open.recovery.as_ref().ok_or(Failure::Changed)?;
-                let original = DiskSnapshot::read(&request.root.join(path.as_str()), huge_size)?;
-                if !original.matches(&recovery.disk) {
-                    return Err(Failure::Changed);
+        Ok::<_, Failure>((absolute, permission, input))
+    };
+    let mut prepare_file =
+        |file: &super::model::FileNode,
+         (absolute, permission, input): (PathBuf, bool, Result<PreviewInput<'_>>)| {
+            request.cancel.check()?;
+            let path = &file.path;
+            let rule_read_only = !rules
+                .readonly
+                .evaluate(path.as_str(), permission)
+                .is_empty();
+            let loaded = input.and_then(|input| match input {
+                PreviewInput::Open(open) => {
+                    if open.text.byte_len() >= huge_size {
+                        Err(Failure::Skipped)
+                    } else {
+                        contents(open.text.as_ref()).map(|text| {
+                            (
+                                PreviewText::Flattened(text),
+                                Origin::Open(open.id, open.text.version()),
+                                open.read_only,
+                                open.eol,
+                            )
+                        })
+                    }
                 }
-                let loaded = load_for_replacement(&original.bytes, settings.as_ref())?;
-                let baseline = contents(loaded.text.as_ref())?;
-                let changes = plan(
-                    &mut matcher,
-                    &baseline,
-                    &file.lines,
-                    &pattern,
-                    request.preserve_case,
-                )?;
-                map_open_changes(
-                    &mut matcher,
+                PreviewInput::Disk(canonical, input) => {
+                    let snapshot = match input {
+                        DiskPreviewInput::Snapshot(snapshot) => snapshot,
+                        DiskPreviewInput::Deferred(file) => {
+                            DiskSnapshot::read_open_file(file, huge_size)?
+                        }
+                    };
+                    let loaded = load_for_replacement(&snapshot.bytes, settings.as_ref())?;
+                    let eol = EditBuffer::from_loaded(&loaded)?.eol();
+                    let text = PreviewText::from_snapshot(
+                        snapshot.bytes,
+                        &loaded,
+                        !rule_read_only && !permission,
+                    )?;
+                    Ok((
+                        text,
+                        Origin::Disk(DiskSource {
+                            path: absolute.clone(),
+                            canonical,
+                            stamp: snapshot.stamp,
+                            format: SourceFormat::of(&loaded),
+                        }),
+                        false,
+                        eol,
+                    ))
+                }
+            });
+            let result = match loaded.and_then(|(text, origin, open_read_only, eol)| {
+                let text = text.as_str();
+                let open = opened.get(path);
+                let mut changes = if let Some(open) =
+                    open.filter(|open| open.dirty && file.open_result != Some(open.id))
+                {
+                    let recovery = open.recovery.as_ref().ok_or(Failure::Changed)?;
+                    let original =
+                        DiskSnapshot::read(&request.root.join(path.as_str()), huge_size)?;
+                    if !original.matches(&recovery.disk) {
+                        return Err(Failure::Changed);
+                    }
+                    let loaded = load_for_replacement(&original.bytes, settings.as_ref())?;
+                    let baseline = contents(loaded.text.as_ref())?;
+                    let changes = plan(
+                        &mut matcher,
+                        &baseline,
+                        &file.lines,
+                        &pattern,
+                        request.preserve_case,
+                    )?;
+                    map_open_changes(
+                        &mut matcher,
+                        changes,
+                        EditBuffer::from_loaded(&loaded)?,
+                        recovery,
+                        text,
+                    )?
+                } else {
+                    plan(
+                        &mut matcher,
+                        text,
+                        &file.lines,
+                        &pattern,
+                        request.preserve_case,
+                    )?
+                };
+                for change in &mut changes {
+                    let normalized =
+                        rove_buffer::edit::transaction::normalize_newlines(&change.edit.text, eol);
+                    if matches!(normalized, std::borrow::Cow::Owned(_)) {
+                        change.edit.text = Arc::from(normalized.as_ref());
+                    }
+                }
+                Ok(FilePlan {
+                    path: path.clone(),
+                    origin,
                     changes,
-                    EditBuffer::from_loaded(&loaded)?,
-                    recovery,
-                    text,
-                )?
-            } else {
-                plan(
+                    remaining: Vec::new(),
+                    read_only: rule_read_only || open_read_only,
+                })
+            }) {
+                Ok(plan) => PreviewFile::Planned(plan),
+                Err(Failure::Cancelled) => return Err(Failure::Cancelled),
+                Err(Failure::Skipped) => PreviewFile::Skipped(skipped_comparisons(
                     &mut matcher,
-                    text,
+                    &root,
+                    &absolute,
                     &file.lines,
+                    request,
                     &pattern,
-                    request.preserve_case,
-                )?
+                )?),
+                Err(_) => PreviewFile::Changed,
             };
-            for change in &mut changes {
-                let normalized =
-                    rove_buffer::edit::transaction::normalize_newlines(&change.edit.text, eol);
-                if matches!(normalized, std::borrow::Cow::Owned(_)) {
-                    change.edit.text = Arc::from(normalized.as_ref());
-                }
-            }
-            Ok(FilePlan {
-                path: path.clone(),
-                origin,
-                changes,
-                remaining: Vec::new(),
-                read_only: rule_read_only || open_read_only,
-            })
-        }) {
-            Ok(plan) => PreviewFile::Planned(plan),
-            Err(Failure::Cancelled) => return Err(Failure::Cancelled),
-            Err(Failure::Skipped) => PreviewFile::Skipped(skipped_comparisons(
-                &mut matcher,
-                &root,
-                &absolute,
-                &file.lines,
-                request,
-                &pattern,
-            )?),
-            Err(_) => PreviewFile::Changed,
+            previews.insert(path.clone(), result);
+            Ok(())
         };
-        previews.insert(path.clone(), result);
+    if let Some(pool) = pool {
+        use rayon::prelude::*;
+
+        // Each request holds at most eight handles or 2 MiB of prefetched file
+        // contents per batch. Keep planning and consumption in the original order.
+        for batch in request.files.chunks(PREVIEW_OPEN_BATCH) {
+            request.cancel.check()?;
+            let inputs: Vec<_> = pool.install(|| batch.par_iter().map(preflight).collect());
+            for (file, input) in batch.iter().zip(inputs) {
+                prepare_file(file, input?)?;
+            }
+        }
+    } else {
+        for file in &request.files {
+            prepare_file(file, preflight(file)?)?;
+        }
     }
+    request.cancel.check()?;
     Ok(previews)
 }
 
@@ -1197,6 +1307,41 @@ mod tests {
                 "{label}: original bytes"
             );
         }
+    }
+
+    #[test]
+    fn prefetched_stamp_rejects_changed_bytes_before_disk_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes.txt");
+        std::fs::write(&path, b"needle\r\n").unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (canonical, input) = open_preview_disk(&path, &root, Some(128)).unwrap();
+        let DiskPreviewInput::Snapshot(snapshot) = input else {
+            panic!("small file must be prefetched");
+        };
+        assert_eq!(snapshot.bytes, b"needle\r\n");
+        let settings = Arc::new(rove_search::settings::default_settings());
+        let loaded = load_for_replacement(&snapshot.bytes, settings.as_ref()).unwrap();
+        std::fs::write(&path, b"stale!\r\n").unwrap();
+        let edit = Transaction::single(
+            ByteRange::new(ByteOffset(0), ByteOffset(6)).unwrap(),
+            "changed",
+        );
+        let result = DiskUndo::apply(
+            DiskSource {
+                path: path.clone(),
+                canonical,
+                stamp: snapshot.stamp,
+                format: SourceFormat::of(&loaded),
+            },
+            &edit,
+            None,
+            settings,
+            &WriteOptions::default(),
+            &Cancellation::default(),
+        );
+        assert!(matches!(result, Err(Failure::Changed)));
+        assert_eq!(std::fs::read(path).unwrap(), b"stale!\r\n");
     }
 
     #[test]

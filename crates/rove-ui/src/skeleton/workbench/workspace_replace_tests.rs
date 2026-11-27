@@ -1041,6 +1041,119 @@ fn replace_workspace_rechecks_read_only_rules_entered_after_preview(cx: &mut Tes
 }
 
 #[gpui::test]
+fn replace_workspace_prefetch_preserves_normal_open_and_protected_results(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(
+        r#"{"rove.largeFile.threshold":307200,"files.readonlyInclude":{"protected.txt":true}}"#,
+    );
+    let ordinary: Vec<_> = (0..64).map(|i| format!("file_{i:02}.txt")).collect();
+    for path in &ordinary {
+        fixture.file(path, b"needle\r\n");
+    }
+    let open_on_disk = b"needle\r\ndisk text\r\n";
+    fixture.file("open.txt", open_on_disk);
+    fixture.file("protected.txt", b"needle\r\n");
+    let large = [b"needle\n".as_slice(), &vec![b'x'; 260 * 1024]].concat();
+    fixture.file("deferred.txt", &large);
+    let huge = [b"needle\n".as_slice(), &vec![b'x'; 310 * 1024]].concat();
+    fixture.file("huge.txt", &huge);
+
+    let (view, cx) = fixture.open(cx);
+    let opened = open_file(&fixture, &view, cx, "open.txt");
+    view.update(cx, |wb, cx| {
+        let offset = rove_base::ByteOffset(0);
+        wb.editing
+            .saves
+            .borrow_mut()
+            .file_mut(opened)
+            .unwrap()
+            .session_mut()
+            .edit(
+                rove_buffer::edit::Transaction::single(
+                    rove_base::ByteRange::new(offset, offset).unwrap(),
+                    "unsaved\r\n",
+                ),
+                Instant::now(),
+            )
+            .unwrap();
+        wb.sync_document_from_session(opened, cx);
+    });
+    view.read_with(cx, |wb, _| {
+        let saves = wb.editing.saves.borrow();
+        let file = saves.file(opened).unwrap();
+        assert!(file.is_dirty());
+        assert_eq!(
+            file.session().buffer().contents(),
+            "unsaved\r\nneedle\r\ndisk text\r\n"
+        );
+    });
+    assert_eq!(fixture.read("open.txt"), open_on_disk);
+    prepare(&view, cx, "needle", "NEW");
+    view.read_with(cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        for name in ["open.txt", "protected.txt", "deferred.txt", "huge.txt"] {
+            let path = WorkspacePath::new(name).unwrap();
+            assert!(
+                search.results().file(&path).is_some(),
+                "missing search row for {name}"
+            );
+        }
+        assert_eq!(search.results().match_count(), 68);
+        let writable = search.replacement_test_writable_files();
+        assert_eq!(writable.len(), 66);
+        for name in ordinary
+            .iter()
+            .map(String::as_str)
+            .chain(["open.txt", "deferred.txt"])
+        {
+            let path = WorkspacePath::new(name).unwrap();
+            assert!(writable.contains(&path), "{path:?}");
+        }
+        for name in ordinary.iter().map(String::as_str).chain([
+            "open.txt",
+            "protected.txt",
+            "deferred.txt",
+            "huge.txt",
+        ]) {
+            let path = WorkspacePath::new(name).unwrap();
+            assert_eq!(
+                search.replacement_test_comparison(&path),
+                Some(("needle".to_owned(), "NEW".to_owned())),
+                "{path:?}",
+            );
+        }
+    });
+
+    let selected = WorkspacePath::new("file_63.txt").unwrap();
+    focus_file(&view, cx, &selected);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |wb, cx| {
+        wb.search.read(cx).replacement_test_state().3
+    });
+    assert_eq!(fixture.read("file_63.txt"), b"NEW\r\n");
+    assert_eq!(fixture.read("file_00.txt"), b"needle\r\n");
+    let open_path = WorkspacePath::new("open.txt").unwrap();
+    wait(&view, cx, |wb, cx| {
+        let search = wb.search.read(cx);
+        search.results().file(&selected).is_none()
+            && search
+                .replacement_test_writable_files()
+                .contains(&open_path)
+    });
+    focus_file(&view, cx, &open_path);
+    command(&view, cx, commands::REPLACE_FILE);
+    wait(&view, cx, |wb, _| {
+        wb.editing.saves.borrow().file(opened).is_some_and(|file| {
+            file.is_dirty()
+                && file.session().buffer().contents() == "unsaved\r\nNEW\r\ndisk text\r\n"
+        })
+    });
+    assert_eq!(fixture.read("open.txt"), open_on_disk);
+    assert_eq!(fixture.read("protected.txt"), b"needle\r\n");
+    assert_eq!(fixture.read("deferred.txt"), large);
+    assert_eq!(fixture.read("huge.txt"), huge);
+}
+
+#[gpui::test]
 fn replace_workspace_previews_multiline_captures_in_huge_read_only_file(cx: &mut TestAppContext) {
     let fixture = Fixture::new(r#"{"rove.largeFile.threshold": 128}"#);
     let huge = [b"needle\r\nsize\n".as_slice(), &[b'a'; 200]].concat();
